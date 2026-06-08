@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnidesk-agent"
+version = "0.1.0"
+description = "Local-first multi-channel computer-use AI assistant with per-step approval gates."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "httpx>=0.26",
+  "pydantic>=2.6",
+  "pyyaml>=6.0",
+  "python-dotenv>=1.0",
+  "pillow>=10.0",
+  "mss>=9.0",
+  "pyautogui>=0.9.54",
+]
+
+[project.optional-dependencies]
+llm = ["openai>=1.40"]
+dev = ["ruff>=0.6", "pytest>=8.0"]
+
+[project.scripts]
+omnidesk = "omnidesk_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["omnidesk_agent*"]

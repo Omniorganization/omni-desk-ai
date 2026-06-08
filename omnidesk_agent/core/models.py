@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Literal
+from uuid import uuid4
+import time
+
+RiskLevel = Literal["low", "medium", "high", "critical"]
+
+
+@dataclass(slots=True)
+class ChannelMessage:
+    channel: str
+    sender_id: str
+    text: str
+    thread_id: str | None = None
+    message_id: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    received_at: float = field(default_factory=time.time)
+
+
+@dataclass(slots=True)
+class PlanStep:
+    description: str
+    tool: str
+    action: str
+    args: dict[str, Any] = field(default_factory=dict)
+    risk: RiskLevel = "medium"
+    requires_confirmation: bool = True
+
+
+@dataclass(slots=True)
+class Plan:
+    goal: str
+    steps: list[PlanStep]
+    rationale: str = ""
+    plan_id: str = field(default_factory=lambda: str(uuid4()))
+
+
+@dataclass(slots=True)
+class ToolResult:
+    ok: bool
+    data: Any = None
+    error: str | None = None
+    summary: str | None = None
+
+
+@dataclass(slots=True)
+class ActionProposal:
+    tool: str
+    action: str
+    args: dict[str, Any]
+    risk: RiskLevel
+    reason: str
+    source: str
+    actor: str
+    action_id: str = field(default_factory=lambda: str(uuid4()))
+
+
+@dataclass(slots=True)
+class ApprovalDecision:
+    allowed: bool
+    mode: Literal["allow", "deny", "dry_run"]
+    reason: str = ""

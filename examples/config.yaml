@@ -1,0 +1,60 @@
+llm:
+  # 使用 rule 可不配置 API key；正式使用可改 openai 并设置 OPENAI_API_KEY
+  provider: rule
+  model: gpt-5.1
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+
+gateway:
+  host: 127.0.0.1
+  port: 18789
+  public_base_url: null
+  shared_secret_env: OMNIDESK_GATEWAY_SECRET
+
+permissions:
+  # 推荐：ask。无 TTY 后台模式默认 deny，避免无人值守执行危险操作。
+  default_mode: ask
+  no_tty_mode: deny
+  audit_log: ~/.omnidesk/audit.log
+  allow_low_risk_from: [local-cli]
+  always_ask_tools: [computer, shell, channels, files]
+  max_shell_seconds: 30
+
+workspace:
+  root: ~/.omnidesk/workspace
+  skills_dirs:
+    - ~/.omnidesk/skills
+  memory_db: ~/.omnidesk/memory.sqlite3
+
+channels:
+  telegram:
+    enabled: false
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    webhook_secret_env: TELEGRAM_WEBHOOK_SECRET
+    allowed_user_ids: []
+  whatsapp_cloud:
+    enabled: false
+    access_token_env: WHATSAPP_CLOUD_TOKEN
+    verify_token_env: WHATSAPP_VERIFY_TOKEN
+    phone_number_id: null
+    graph_version: v21.0
+    allowed_wa_ids: []
+  wechat_official:
+    enabled: false
+    app_id_env: WECHAT_APP_ID
+    app_secret_env: WECHAT_APP_SECRET
+    token_env: WECHAT_TOKEN
+    encoding_aes_key_env: WECHAT_ENCODING_AES_KEY
+    allowed_open_ids: []
+  meta_graph:
+    enabled: false
+    page_access_token_env: META_PAGE_ACCESS_TOKEN
+    page_id: null
+    instagram_account_id: null
+    graph_version: v21.0
+    verify_token_env: META_VERIFY_TOKEN
+    allowed_psids: []
+  ui_bridge:
+    enabled: true
+    require_foreground_confirmation: true
+    allowed_apps: [WhatsApp, Telegram, WeChat, Chrome, Safari, Edge]

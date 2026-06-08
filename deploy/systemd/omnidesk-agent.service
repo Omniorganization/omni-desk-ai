@@ -1,0 +1,13 @@
+[Unit]
+Description=OmniDesk Agent Gateway
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omnidesk --config %h/.omnidesk/config.yaml serve
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
