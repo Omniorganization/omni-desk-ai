@@ -14,6 +14,7 @@ def main() -> None:
     sub.add_parser("doctor")
     sub.add_parser("validate-connectors")
     sub.add_parser("validate-extensions")
+    sub.add_parser("validate-models")
     run_p = sub.add_parser("run"); run_p.add_argument("message")
     remember_p = sub.add_parser("remember"); remember_p.add_argument("text"); remember_p.add_argument("--tags", default="")
     search_p = sub.add_parser("search"); search_p.add_argument("query")
@@ -30,6 +31,12 @@ def main() -> None:
         rt = OmniDeskRuntime(cfg)
         from omnidesk_agent.validation.extensions import validate_extensions
         print(json.dumps(validate_extensions(rt), ensure_ascii=False, indent=2)); return
+    if args.cmd == "validate-models":
+        rt = OmniDeskRuntime(cfg)
+        from omnidesk_agent.validation.models import validate_models
+        print(json.dumps(validate_models(rt), ensure_ascii=False, indent=2))
+        return
+
     if args.cmd == "run":
         rt = OmniDeskRuntime(cfg)
         msg = ChannelMessage(channel="local-cli", sender_id="owner", text=args.message)

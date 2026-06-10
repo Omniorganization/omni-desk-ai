@@ -11,7 +11,8 @@ from omnidesk_agent.channels.wechat_official import WeChatOfficialChannel
 from omnidesk_agent.channels.x_channel import XChannel
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
-from omnidesk_agent.core.llm import OpenAIChatLLM, RuleBasedLLM
+from omnidesk_agent.core.llm import RuleBasedLLM, RouterLLMAdapter
+from omnidesk_agent.models.router import build_model_router
 from omnidesk_agent.core.orchestrator import Orchestrator
 from omnidesk_agent.core.planner import HierarchicalPlanner
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
@@ -44,7 +45,8 @@ class OmniDeskRuntime:
         self._register_builtin_tools()
         self.skills.load()
         self.plugins.load_into(self.tools, cfg)
-        llm = RuleBasedLLM() if cfg.llm.provider == "rule" else OpenAIChatLLM(cfg.llm, self.token_budget)
+        self.model_router = build_model_router(cfg.models, self.token_budget)
+        llm = RuleBasedLLM() if cfg.llm.provider == "rule" else RouterLLMAdapter(self.model_router, task="planner")
         self.planner = HierarchicalPlanner(llm=llm, memory=self.memory, skills=self.skills, tools=self.tools)
         self.orchestrator = Orchestrator(self.planner, self.tools, self.permissions, self.memory, self.execution_strategy)
 

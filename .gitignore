@@ -20,3 +20,7 @@ venv/
 # Build
 build/
 dist/
+~/
+~/.omnidesk/
+*.sqlite3
+*.db

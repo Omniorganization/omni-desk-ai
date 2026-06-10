@@ -22,6 +22,35 @@ class LLMConfig(BaseModel):
     per_task_max_llm_calls: int | None = None
     require_approval_above_estimated_tokens: int = 20000
 
+
+class ModelProfileConfig(BaseModel):
+    enabled: bool = True
+    provider: str = "openai"
+    model: str = "gpt-5.1"
+    api_key_env: str | None = "OPENAI_API_KEY"
+    base_url: str | None = None
+    api_version: str | None = None
+    region: str | None = None
+    temperature: float = 0.2
+    max_output_tokens: int = 1200
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelsConfig(BaseModel):
+    default: str = "fast"
+    max_output_tokens: int = 1200
+    profiles: dict[str, ModelProfileConfig] = Field(default_factory=lambda: {
+        "fast": ModelProfileConfig(provider="openai", model="gpt-5.1-mini", api_key_env="OPENAI_API_KEY", max_output_tokens=800),
+        "planner": ModelProfileConfig(provider="openai", model="gpt-5.1", api_key_env="OPENAI_API_KEY", max_output_tokens=1600),
+        "code": ModelProfileConfig(provider="openai", model="gpt-5.1", api_key_env="OPENAI_API_KEY", max_output_tokens=4000),
+        "vision": ModelProfileConfig(provider="openai", model="gpt-5.1", api_key_env="OPENAI_API_KEY", max_output_tokens=1600),
+        "local": ModelProfileConfig(provider="ollama", model="qwen2.5-coder:7b", api_key_env=None, base_url="http://127.0.0.1:11434"),
+    })
+    routing: dict[str, str] = Field(default_factory=lambda: {
+        "planner": "planner", "tool_plan": "planner", "chat": "fast", "code": "code", "upgrade": "code", "vision": "vision", "private": "local", "summarize": "fast"
+    })
+
 class GatewayConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 18789
@@ -160,6 +189,7 @@ class ChannelsConfig(BaseModel):
 
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
