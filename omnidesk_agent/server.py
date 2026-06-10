@@ -191,7 +191,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
 
     @app.post("/self-upgrade/proposals/{proposal_id}/evaluate")
-    async def evaluate_upgrade_proposal(proposal_id: str, request: Request, body: dict | None = None):
+    async def evaluate_upgrade_proposal(proposal_id: str, request: Request, body: Optional[dict] = None):
         await _admin(request)
         body = body or {}
         return await rt.governance.evaluate_proposal(

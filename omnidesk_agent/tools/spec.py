@@ -140,7 +140,7 @@ def _json_type(value: str) -> str:
     return value
 
 
-def _type_ok(value: Any, expected: Union[str, list][str]) -> bool:
+def _type_ok(value: Any, expected: Union[str, list]) -> bool:
     if isinstance(expected, list):
         return any(_type_ok(value, e) for e in expected)
     mapping = {

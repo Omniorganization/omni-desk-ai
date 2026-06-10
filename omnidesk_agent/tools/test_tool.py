@@ -9,6 +9,7 @@ from omnidesk_agent.tools.base import ToolContext, proposal
 
 
 class TestTool:
+    __test__ = False
     name = "test"
 
     def __init__(self, repo_root: Path):

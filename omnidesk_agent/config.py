@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 import os
 try:
     import yaml
@@ -63,7 +63,7 @@ class GatewayConfig(BaseModel):
     public_base_url: Optional[str] = None
     shared_secret_env: str = "OMNIDESK_GATEWAY_SECRET"
     admin_token_env: str = "OMNIDESK_ADMIN_TOKEN"
-    allow_local_admin_without_token: bool = True
+    allow_local_admin_without_token: bool = False
 
 class PermissionConfig(BaseModel):
     approval_mode: Literal["interactive_cli", "remote_approval", "auto_policy"] = "interactive_cli"
@@ -91,6 +91,8 @@ class PluginConfig(BaseModel):
     enabled: bool = True
     trusted_only: bool = True
     allowlist: list[str] = Field(default_factory=list)
+    allow_in_process: bool = False
+    plugin_timeout_seconds: int = 30
 
 class TelegramConfig(BaseModel):
     enabled: bool = False
@@ -259,9 +261,15 @@ def _safe_yaml_load(stream_or_text):
     """
     if yaml is None:
         raise RuntimeError("PyYAML is required to load YAML config files. Install with: python3 -m pip install PyYAML")
-    return _safe_yaml_load(stream_or_text)
+    loaded = yaml.safe_load(stream_or_text)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError("OmniDesk config root must be a mapping/object")
+    return loaded
 
-def load_config(path: str | Optional[Path] = None) -> AppConfig:
+
+def load_config(path: Optional[Union[str, Path]] = None) -> AppConfig:
     data: dict[str, Any] = {}
     if path:
         p = Path(path).expanduser()

@@ -15,10 +15,11 @@ class SubprocessPluginTool:
     It must not import the main runtime directly.
     """
 
-    def __init__(self, name: str, entrypoint: Path, permissions: list[str]):
+    def __init__(self, name: str, entrypoint: Path, permissions: list[str], timeout_seconds: int = 30):
         self.name = name
         self.entrypoint = entrypoint
         self.permissions = permissions
+        self.timeout_seconds = timeout_seconds
 
     def spec(self):
         from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, obj_schema
@@ -62,12 +63,15 @@ class SubprocessPluginTool:
         }
         proc = await asyncio.create_subprocess_exec(
             "python3",
+            "-I",
             str(self.entrypoint),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=str(self.entrypoint.parent),
+            env={"PYTHONNOUSERSITE": "1", "PATH": "/usr/bin:/bin:/usr/local/bin"},
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps(payload).encode("utf-8")), timeout=30)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps(payload).encode("utf-8")), timeout=self.timeout_seconds)
         if proc.returncode != 0:
             return ToolResult(False, error=stderr.decode("utf-8", errors="replace")[:4000], summary=f"plugin {self.name} failed")
         try:

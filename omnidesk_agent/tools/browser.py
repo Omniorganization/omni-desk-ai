@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import secrets
 from typing import Any, Optional
 from urllib.parse import quote, urlparse
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:
+    httpx = None
 
 from omnidesk_agent.config import ChromeConfig
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal
+
+
+def _require_httpx():
+    if httpx is None:
+        raise RuntimeError("httpx is required for Chrome DevTools browser control. Install with: python3 -m pip install httpx")
+    return httpx
 
 
 class BrowserTool:
@@ -17,11 +28,13 @@ class BrowserTool:
     def __init__(self, cfg: ChromeConfig):
         self.cfg = cfg
         self.base = f"http://{cfg.devtools_host}:{cfg.devtools_port}"
+        self._lock = asyncio.Lock()
 
     def _check_url(self, url: str) -> None:
         if not self.cfg.allowed_origins:
             return
-        origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
         if origin not in self.cfg.allowed_origins:
             raise ValueError(f"Browser origin not allowed: {origin}")
 
@@ -34,7 +47,7 @@ class BrowserTool:
                 raise PermissionError(f"browser.evaluate blocked by deny_js_patterns: {pat}")
 
     async def _tabs(self) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with _require_httpx().AsyncClient(timeout=10) as client:
             r = await client.get(f"{self.base}/json")
             r.raise_for_status()
             return r.json()
@@ -56,43 +69,43 @@ class BrowserTool:
         except ImportError as exc:
             raise RuntimeError("Install websockets or use pip install -e '.[browser]'") from exc
 
-        tab = await self._tab(target_id)
-        current_url = str(tab.get("url") or "")
-        if current_url.startswith("http"):
-            self._check_url(current_url)
+        async with self._lock:
+            tab = await self._tab(target_id)
+            current_url = str(tab.get("url") or "")
+            if current_url.startswith("http"):
+                self._check_url(current_url)
 
-        ws_url = tab.get("webSocketDebuggerUrl")
-        if not ws_url:
-            raise RuntimeError("Chrome tab has no webSocketDebuggerUrl")
-        async with websockets.connect(ws_url, open_timeout=10) as ws:
-            payload = {"id": 1, "method": method, "params": params or {}}
-            await ws.send(json.dumps(payload))
-            while True:
-                msg = json.loads(await ws.recv())
-                if msg.get("id") == 1:
-                    if "error" in msg:
-                        raise RuntimeError(msg["error"])
-                    return msg.get("result", {})
-
+            ws_url = tab.get("webSocketDebuggerUrl")
+            if not ws_url:
+                raise RuntimeError("Chrome tab has no webSocketDebuggerUrl")
+            request_id = secrets.randbelow(2_000_000_000) + 1
+            async with websockets.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
+                payload = {"id": request_id, "method": method, "params": params or {}}
+                await ws.send(json.dumps(payload))
+                while True:
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+                    if msg.get("id") == request_id:
+                        if "error" in msg:
+                            raise RuntimeError(msg["error"])
+                        return msg.get("result", {})
 
     def spec(self):
-        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, obj_schema
         return ToolSpec(
             name=self.name,
             description="Chrome DevTools browser control tool.",
             permissions=["browser.control"],
             actions={
-                "list_tabs": ActionSpec("list_tabs", "List Chrome tabs", {}, risk="low", side_effect=False, requires_approval=False),
-                "new_tab": ActionSpec("new_tab", "Open a new tab", {"url": "string"}, risk="high", side_effect=True, requires_approval=True),
-                "navigate": ActionSpec("navigate", "Navigate current tab", {"url": "string"}, risk="high", side_effect=True, requires_approval=True),
-                "get_dom_text": ActionSpec("get_dom_text", "Read visible DOM text", {}, risk="medium", side_effect=False, requires_approval=True),
-                "click_selector": ActionSpec("click_selector", "Click CSS selector", {"selector": "string"}, risk="high", side_effect=True, requires_approval=True),
-                "type_selector": ActionSpec("type_selector", "Type into CSS selector", {"selector": "string", "text": "string"}, risk="high", side_effect=True, requires_approval=True),
-                "evaluate": ActionSpec("evaluate", "Evaluate JavaScript, disabled by default", {"expression": "string"}, risk="critical", side_effect=True, requires_approval=True),
-                "screenshot": ActionSpec("screenshot", "Capture Chrome page screenshot", {}, risk="medium", side_effect=False, requires_approval=True),
+                "list_tabs": ActionSpec("list_tabs", "List Chrome tabs", obj_schema({}, additional=False), risk="low", side_effect=False, requires_approval=False),
+                "new_tab": ActionSpec("new_tab", "Open a new tab", obj_schema({"url": {"type": "string"}}, required=["url"], additional=False), risk="high", side_effect=True, requires_approval=True),
+                "navigate": ActionSpec("navigate", "Navigate current tab", obj_schema({"url": {"type": "string"}, "target_id": {"type": "string"}}, required=["url"], additional=False), risk="high", side_effect=True, requires_approval=True),
+                "get_dom_text": ActionSpec("get_dom_text", "Read visible DOM text", obj_schema({"target_id": {"type": "string"}}, additional=False), risk="medium", side_effect=False, requires_approval=True),
+                "click_selector": ActionSpec("click_selector", "Click CSS selector", obj_schema({"selector": {"type": "string"}, "target_id": {"type": "string"}}, required=["selector"], additional=False), risk="high", side_effect=True, requires_approval=True),
+                "type_selector": ActionSpec("type_selector", "Type into CSS selector", obj_schema({"selector": {"type": "string"}, "text": {"type": "string"}, "target_id": {"type": "string"}}, required=["selector", "text"], additional=False), risk="high", side_effect=True, requires_approval=True),
+                "evaluate": ActionSpec("evaluate", "Evaluate JavaScript, disabled by default", obj_schema({"expression": {"type": "string"}, "target_id": {"type": "string"}}, required=["expression"], additional=False), risk="critical", side_effect=True, requires_approval=True),
+                "screenshot": ActionSpec("screenshot", "Capture Chrome page screenshot", obj_schema({"target_id": {"type": "string"}}, additional=False), risk="medium", side_effect=False, requires_approval=True),
             },
         )
-
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "list_tabs":
@@ -106,7 +119,7 @@ class BrowserTool:
             self._check_url(url)
             expected = str(args.get("expected_result") or f"Open {url} in Chrome")
             ctx.permissions.verify(proposal("browser", "new_tab", {"url": url, "expected_result": expected}, "high", "打开 Chrome 新标签页", ctx))
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with _require_httpx().AsyncClient(timeout=10) as client:
                 r = await client.put(f"{self.base}/json/new?{quote(url, safe=':/?&=%')}")
                 r.raise_for_status()
             return ToolResult(True, data=r.json(), summary=f"opened chrome tab {url}")

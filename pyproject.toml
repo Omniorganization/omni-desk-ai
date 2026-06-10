@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "omnidesk-agent"
 version = "0.1.0"
 description = "Local-first multi-channel AI desktop assistant runtime"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
@@ -22,7 +22,7 @@ omnidesk = "omnidesk_agent.cli:main"
 
 [project.optional-dependencies]
 llm = ["openai>=1.40"]
-dev = ["ruff>=0.6", "pytest>=8.0", "mypy>=1.10"]
+dev = ["ruff>=0.6", "pytest>=8.0", "mypy>=1.10", "pyright>=1.1.380"]
 gmail = ["google-auth>=2.29", "google-auth-oauthlib>=1.2", "google-api-python-client>=2.130"]
 bedrock = ["boto3>=1.34"]
 test = ["pytest>=8.0"]

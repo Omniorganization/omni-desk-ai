@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Union
 try:
     import httpx
 except ModuleNotFoundError:
@@ -27,13 +27,13 @@ class _BaseLarkFeishuChannel:
         source = str(message.get("chat_id") or sender_id)
         return WebhookEnvelope(source_key=source, sender_id=sender_id, message_id=mid or None, raw=payload)
     api_base = "https://open.larksuite.com/open-apis"
-    def __init__(self, cfg: LarkConfig | FeishuConfig):
+    def __init__(self, cfg: Union[LarkConfig, FeishuConfig]):
         self.cfg = cfg
         self.app_id = os.getenv(cfg.app_id_env, "")
         self.app_secret = os.getenv(cfg.app_secret_env, "")
         self.verification_token = os.getenv(cfg.verification_token_env, "")
 
-    def parse_webhook(self, payload: dict[str, Any]) -> ChannelMessage | Optional[dict[str, str]]:
+    def parse_webhook(self, payload: dict[str, Any]) -> Optional[Union[ChannelMessage, dict[str, str]]]:
         if payload.get("type") == "url_verification":
             if self.verification_token and payload.get("token") != self.verification_token:
                 return None

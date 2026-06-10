@@ -6,6 +6,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from omnidesk_agent.storage.sqlite import connect_sqlite
 from typing import Any, Optional
 
 from omnidesk_agent.validation.webhook_signatures import line_signature_valid
@@ -25,7 +26,7 @@ class WebhookSecurity:
         self.db_path = db_path.expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.cfg = cfg or WebhookSecurityConfig()
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS webhook_seen (
@@ -82,7 +83,7 @@ class WebhookSecurity:
     def _check_rate(self, channel: str, source_key: str) -> None:
         bucket = int(time.time() // self.cfg.rate_limit_window_seconds)
         key = f"{channel}:{source_key}"
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             row = con.execute("SELECT count FROM webhook_rate WHERE key=? AND bucket=?", (key, bucket)).fetchone()
             count = int(row[0]) if row else 0
             if count >= self.cfg.rate_limit_max_requests:
@@ -94,7 +95,7 @@ class WebhookSecurity:
 
     def _mark_seen(self, channel: str, digest: str) -> bool:
         cutoff = time.time() - self.cfg.replay_ttl_seconds
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute("DELETE FROM webhook_seen WHERE created_at < ?", (cutoff,))
             try:
                 con.execute("INSERT INTO webhook_seen (digest, channel, created_at) VALUES (?, ?, ?)", (digest, channel, time.time()))

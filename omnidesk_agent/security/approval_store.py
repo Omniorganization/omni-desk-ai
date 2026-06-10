@@ -5,6 +5,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from omnidesk_agent.storage.sqlite import connect_sqlite
 from typing import Any, Optional
 
 
@@ -16,7 +17,7 @@ class ApprovalStore:
         self._init()
 
     def _init(self) -> None:
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS approvals (
@@ -42,7 +43,7 @@ class ApprovalStore:
         now = time.time()
         ttl = self.ttl_seconds if ttl_seconds is None else ttl_seconds
         expires_at = now + ttl if ttl and ttl > 0 else None
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute(
                 "INSERT INTO approvals (id, status, proposal, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
                 (aid, "pending", json.dumps(proposal, ensure_ascii=False), now, expires_at),
@@ -50,7 +51,7 @@ class ApprovalStore:
         return aid
 
     def get(self, approval_id: str) -> Optional[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             row = con.execute(
                 "SELECT id, status, proposal, result, created_at, expires_at, decided_at FROM approvals WHERE id = ?",
                 (approval_id,),
@@ -64,24 +65,34 @@ class ApprovalStore:
             sql += " WHERE status = ?"
             params = (status,)
         sql += " ORDER BY created_at DESC"
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             rows = con.execute(sql, params).fetchall()
         return [self._row(r) for r in rows]
 
     def decide(self, approval_id: str, status: str, result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         if status not in {"approved", "denied"}:
             raise ValueError("status must be approved or denied")
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT id, status, proposal, result, created_at, expires_at, decided_at FROM approvals WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(approval_id)
+            current = self._row(row)
+            if current.get("expires_at") and time.time() > current["expires_at"]:
+                raise PermissionError(f"approval expired: {approval_id}")
+            if current["status"] != "pending":
+                raise PermissionError(f"approval already decided: {approval_id}")
             con.execute(
-                "UPDATE approvals SET status = ?, result = ?, decided_at = ? WHERE id = ?",
+                "UPDATE approvals SET status = ?, result = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
                 (status, json.dumps(result or {}, ensure_ascii=False), time.time(), approval_id),
             )
             row = con.execute(
                 "SELECT id, status, proposal, result, created_at, expires_at, decided_at FROM approvals WHERE id = ?",
                 (approval_id,),
             ).fetchone()
-        if not row:
-            raise KeyError(approval_id)
         return self._row(row)
 
     def require_approved(self, approval_id: str, expected_proposal: Optional[dict[str, Any]] = None) -> dict[str, Any]:

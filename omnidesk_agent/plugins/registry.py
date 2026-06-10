@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -28,6 +29,8 @@ class PluginRegistry:
             self.trusted_only = bool(config) if isinstance(config, bool) else (True if trusted_only is None else trusted_only)
             self.allowlist = set(allowlist or [])
         self.signing_secret = os.getenv(signing_secret_env or "") if signing_secret_env else None
+        self.allow_in_process = bool(getattr(config, "allow_in_process", False)) if config is not None and not isinstance(config, bool) else False
+        self.plugin_timeout_seconds = int(getattr(config, "plugin_timeout_seconds", 30)) if config is not None and not isinstance(config, bool) else 30
         self.loaded: dict[str, PluginManifest] = {}
 
     def load_into(self, tool_registry, app_config: Optional[Any] = None) -> dict[str, list[str]]:
@@ -46,14 +49,19 @@ class PluginRegistry:
                     continue
                 if self.trusted_only and not manifest.trusted:
                     continue
+                self._check_manifest_name(manifest.name)
                 manifest.verify(plugin_dir, self.signing_secret)
 
                 entrypoint = (plugin_dir / manifest.entrypoint).resolve()
+                if not entrypoint.is_file() or plugin_dir.resolve() not in entrypoint.parents:
+                    raise PermissionError(f"plugin entrypoint escapes plugin directory: {manifest.name}")
                 if manifest.sandbox == "subprocess":
-                    tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions))
+                    tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds))
                     self.loaded[manifest.name] = manifest
                     results[manifest.name] = [manifest.name]
                 elif manifest.sandbox == "in_process":
+                    if not self.allow_in_process:
+                        raise PermissionError(f"in_process plugin sandbox disabled: {manifest.name}")
                     names = self._load_in_process(manifest, entrypoint, tool_registry, app_config)
                     self.loaded[manifest.name] = manifest
                     results[manifest.name] = names
@@ -71,6 +79,11 @@ class PluginRegistry:
             raise RuntimeError(f"Plugin has no register(): {manifest.name}")
         result = module.register(tool_registry, app_config=app_config)
         return list(result or [])
+
+    @staticmethod
+    def _check_manifest_name(name: str) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name or ""):
+            raise PermissionError(f"invalid plugin name: {name!r}")
 
     @staticmethod
     def _manifest_path(plugin_dir: Path) -> Optional[Path]:

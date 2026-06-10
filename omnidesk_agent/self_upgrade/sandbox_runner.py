@@ -30,7 +30,7 @@ class SandboxRunner:
     def allowed(self, argv: list[str]) -> bool:
         return any(len(argv) >= len(prefix) and argv[:len(prefix)] == prefix for prefix in self.allowed_prefixes)
 
-    async def run(self, command: Union[str, list][str], timeout: int = 120) -> TestResult:
+    async def run(self, command: Union[str, list], timeout: int = 120) -> TestResult:
         argv = [str(x) for x in command] if isinstance(command, list) else shlex.split(command)
         if not argv:
             return TestResult(False, str(command), "empty command", 2)
