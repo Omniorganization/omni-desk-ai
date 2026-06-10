@@ -22,20 +22,41 @@ class ComputerTool:
 
 
     def spec(self):
-        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, obj_schema
         return ToolSpec(
             name=self.name,
             description="Computer-use tool for screenshots, clicking, typing, moving mouse, and hotkeys.",
             permissions=["computer.screenshot", "computer.input"],
             actions={
-                "screenshot": ActionSpec("screenshot", "Capture screen to file; base64 opt-in", {"expected_result": "string", "max_width": "integer"}, risk="medium", side_effect=False, requires_approval=True),
-                "click": ActionSpec("click", "Click screen coordinates", {"x": "integer", "y": "integer", "expected_result": "string"}, risk="high", side_effect=True, requires_approval=True),
-                "type_text": ActionSpec("type_text", "Type text into focused UI", {"text": "string", "expected_result": "string"}, risk="high", side_effect=True, requires_approval=True),
-                "hotkey": ActionSpec("hotkey", "Press keyboard shortcut", {"keys": "list[string]", "expected_result": "string"}, risk="high", side_effect=True, requires_approval=True),
-                "move": ActionSpec("move", "Move mouse pointer", {"x": "integer", "y": "integer", "expected_result": "string"}, risk="medium", side_effect=True, requires_approval=True),
+                "screenshot": ActionSpec("screenshot", "Capture screen to file; base64 opt-in", obj_schema({
+                    "expected_result": {"type": "string"},
+                    "max_width": {"type": "integer"},
+                    "return_base64": {"type": "boolean"},
+                    "skip_if_unchanged": {"type": "boolean"},
+                    "skip_if_too_soon": {"type": "boolean"},
+                    "auto_ground": {"type": "boolean"},
+                    "auto_click_grounded": {"type": "boolean"}
+                }, required=["expected_result"], additional=True), risk="medium", side_effect=False, requires_approval=True),
+                "click": ActionSpec("click", "Click screen coordinates", obj_schema({
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                    "expected_result": {"type": "string"}
+                }, required=["x", "y", "expected_result"], additional=True), risk="high", side_effect=True, requires_approval=True),
+                "type_text": ActionSpec("type_text", "Type text into focused UI", obj_schema({
+                    "text": {"type": "string"},
+                    "expected_result": {"type": "string"}
+                }, required=["text", "expected_result"], additional=True), risk="high", side_effect=True, requires_approval=True),
+                "hotkey": ActionSpec("hotkey", "Press keyboard shortcut", obj_schema({
+                    "keys": {"type": "array"},
+                    "expected_result": {"type": "string"}
+                }, required=["keys", "expected_result"], additional=True), risk="high", side_effect=True, requires_approval=True),
+                "move": ActionSpec("move", "Move mouse pointer", obj_schema({
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                    "expected_result": {"type": "string"}
+                }, required=["x", "y", "expected_result"], additional=True), risk="medium", side_effect=True, requires_approval=True),
             },
         )
-
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "screenshot":
@@ -72,10 +93,12 @@ class ComputerTool:
         import pyautogui
 
         img = pyautogui.screenshot()
+        original_width, original_height = img.width, img.height
         max_width = int(args.get("max_width", 960))
+        scale_ratio = 1.0
         if img.width > max_width:
-            ratio = max_width / img.width
-            img = img.resize((max_width, int(img.height * ratio)))
+            scale_ratio = max_width / img.width
+            img = img.resize((max_width, int(img.height * scale_ratio)))
 
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -99,6 +122,11 @@ class ComputerTool:
             "image_path": str(out_path),
             "width": img.width,
             "height": img.height,
+            "original_width": original_width,
+            "original_height": original_height,
+            "scaled_width": img.width,
+            "scaled_height": img.height,
+            "scale_ratio": scale_ratio,
             "hash": digest,
             "expected_result": expected,
             "base64_returned": False,

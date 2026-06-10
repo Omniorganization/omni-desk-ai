@@ -12,7 +12,13 @@ class VisionActionExecutor:
         self.tools = tools
         self.min_click_confidence = min_click_confidence
 
-    async def maybe_click_target(self, grounding_result: ToolResult, instruction: str, ctx: ToolContext) -> ToolResult | None:
+    async def maybe_click_target(
+        self,
+        grounding_result: ToolResult,
+        instruction: str,
+        ctx: ToolContext,
+        screenshot_metadata: dict[str, Any] | None = None,
+    ) -> ToolResult | None:
         if not grounding_result.ok or not isinstance(grounding_result.data, dict):
             return None
         target = self._target(grounding_result)
@@ -34,11 +40,21 @@ class VisionActionExecutor:
         if x is None or y is None:
             return None
 
-        cx = int(float(x) + float(width or 0) / 2)
-        cy = int(float(y) + float(height or 0) / 2)
+        cx = float(x) + float(width or 0) / 2
+        cy = float(y) + float(height or 0) / 2
+
+        scale_ratio = 1.0
+        if screenshot_metadata:
+            scale_ratio = float(screenshot_metadata.get("scale_ratio") or 1.0)
+        if scale_ratio <= 0:
+            scale_ratio = 1.0
+
+        screen_x = int(cx / scale_ratio)
+        screen_y = int(cy / scale_ratio)
+
         return await self.tools.call("computer", "click", {
-            "x": cx,
-            "y": cy,
+            "x": screen_x,
+            "y": screen_y,
             "expected_result": f"Click grounded target for: {instruction}",
         }, ctx)
 

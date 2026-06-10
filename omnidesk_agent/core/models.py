@@ -26,7 +26,16 @@ class PlanStep:
     action: str
     args: dict[str, Any] = field(default_factory=dict)
     risk: RiskLevel = "medium"
-    requires_confirmation: bool = True
+    requires_approval: bool = True
+
+    # Backward-compatible alias for older code/config.
+    @property
+    def requires_confirmation(self) -> bool:
+        return self.requires_approval
+
+    @requires_confirmation.setter
+    def requires_confirmation(self, value: bool) -> None:
+        self.requires_approval = value
 
 
 @dataclass(slots=True)
@@ -55,6 +64,10 @@ class ActionProposal:
     source: str
     actor: str
     action_id: str = field(default_factory=lambda: str(uuid4()))
+    run_id: str | None = None
+    plan_id: str | None = None
+    step_index: int | None = None
+    scope_hash: str | None = None
 
 
 @dataclass(slots=True)

@@ -15,6 +15,28 @@ def obj_schema(properties: dict[str, Any], required: list[str] | None = None, ad
     }
 
 
+def normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    if not schema:
+        return obj_schema({}, additional=True)
+    if schema.get("type") == "object" and "properties" in schema:
+        return schema
+
+    # Backward-compatible shorthand: {"url": "string"} or {"count": "integer"}.
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for key, value in schema.items():
+        if isinstance(value, str):
+            if value.startswith("list[") or value.startswith("list"):
+                properties[key] = {"type": "array"}
+            else:
+                properties[key] = {"type": _json_type(value)}
+            required.append(key)
+        elif isinstance(value, dict):
+            properties[key] = value
+            required.append(key)
+    return obj_schema(properties, required=required, additional=True)
+
+
 @dataclass(slots=True)
 class ActionSpec:
     name: str
@@ -25,12 +47,12 @@ class ActionSpec:
     side_effect: bool = False
     requires_approval: bool = True
 
-    def validate_args(self, args: dict[str, Any]) -> list[str]:
-        """Small built-in JSON Schema subset validator.
+    def __post_init__(self) -> None:
+        self.input_schema = normalize_schema(self.input_schema)
+        if self.output_schema:
+            self.output_schema = normalize_schema(self.output_schema)
 
-        Full jsonschema dependency is intentionally optional. This validates the most important
-        contract fields: type=object, required, properties basic type names, additionalProperties.
-        """
+    def validate_args(self, args: dict[str, Any]) -> list[str]:
         errors: list[str] = []
         schema = self.input_schema or {}
         required = schema.get("required", [])
@@ -98,6 +120,23 @@ class ToolSpecRegistry:
             },
             permissions=[name],
         )
+
+
+def _json_type(value: str) -> str:
+    value = value.lower()
+    if value in {"str", "string"}:
+        return "string"
+    if value in {"int", "integer"}:
+        return "integer"
+    if value in {"float", "number"}:
+        return "number"
+    if value in {"bool", "boolean"}:
+        return "boolean"
+    if value.startswith("list") or value.startswith("array"):
+        return "array"
+    if value in {"dict", "object"}:
+        return "object"
+    return value
 
 
 def _type_ok(value: Any, expected: str | list[str]) -> bool:

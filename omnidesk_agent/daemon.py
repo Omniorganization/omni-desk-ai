@@ -22,6 +22,7 @@ from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.security.permissions import PermissionManager
 from omnidesk_agent.security.approval_store import ApprovalStore
+from omnidesk_agent.security.webhook_security import WebhookSecurity
 from omnidesk_agent.skills.registry import SkillRegistry
 from omnidesk_agent.tools.browser import BrowserTool
 from omnidesk_agent.tools.channel_send import ChannelSendTool
@@ -39,8 +40,9 @@ from omnidesk_agent.tools.ui_bridge_tool import UIBridgeTool
 class OmniDeskRuntime:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
-        self.approval_store = ApprovalStore(cfg.workspace.root / 'approvals.sqlite3')
+        self.approval_store = ApprovalStore(cfg.workspace.root / 'approvals.sqlite3', ttl_seconds=cfg.permissions.approval_ttl_seconds)
         self.permissions = PermissionManager(cfg.permissions, self.approval_store)
+        self.webhook_security = WebhookSecurity(cfg.workspace.root / 'webhooks.sqlite3')
         self.memory = ExperienceStore(cfg.workspace.memory_db)
         self.token_budget = TokenBudgetManager(cfg.workspace.root / "token_budget.sqlite3", TokenBudgetConfig(max_input_chars=cfg.llm.max_input_chars, max_output_tokens=cfg.llm.max_output_tokens, per_task_max_llm_calls=cfg.llm.per_task_max_llm_calls, cache_ttl_seconds=cfg.llm.cache_ttl_seconds, enable_cache=cfg.llm.enable_cache, require_approval_above_estimated_tokens=cfg.llm.require_approval_above_estimated_tokens))
         self.execution_strategy = ResultOrientedExecutionStrategy()
@@ -49,10 +51,10 @@ class OmniDeskRuntime:
         self.plugins = PluginRegistry(cfg.workspace.plugins_dirs, cfg.plugins)
         self.tools = ToolRegistry()
         self.adapters = self._build_channel_adapters()
+        self.model_router = build_model_router(cfg.models, self.token_budget)
         self._register_builtin_tools()
         self.skills.load()
         self.plugins.load_into(self.tools, cfg)
-        self.model_router = build_model_router(cfg.models, self.token_budget)
         llm = RuleBasedLLM() if cfg.llm.provider == "rule" else RouterLLMAdapter(self.model_router, task="planner")
         self.rule_planner = HierarchicalPlanner(llm=llm, memory=self.memory, skills=self.skills, tools=self.tools)
         self.planner = self.rule_planner if cfg.llm.provider == 'rule' else LLMStructuredPlanner(self.model_router, self.memory, self.skills, self.tools, self.rule_planner)
@@ -75,4 +77,4 @@ class OmniDeskRuntime:
         self.tools.register(PullRequestTool(Path.cwd()))
 
     def status(self) -> dict:
-        return {"workspace": str(self.cfg.workspace.root), "tools": self.tools.names(), "skills": sorted(self.skills.skills), "plugins": sorted(self.plugins.plugins), "channels": sorted(self.adapters), "audit_log": str(self.cfg.permissions.audit_log)}
+        return {"workspace": str(self.cfg.workspace.root), "tools": self.tools.names(), "skills": sorted(self.skills.skills), "plugins": sorted(getattr(self.plugins, "loaded", {})), "channels": sorted(self.adapters), "audit_log": str(self.cfg.permissions.audit_log)}

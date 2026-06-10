@@ -69,6 +69,9 @@ class PermissionConfig(BaseModel):
         "curl * | sh", "wget * | sh", "powershell -enc", "sudo rm", "reg delete",
     ])
     max_shell_seconds: int = 30
+    approval_ttl_seconds: int = 600
+    shell_profile: Literal["safe_ci", "upgrade"] = "safe_ci"
+    shell_upgrade_enabled: bool = False
 
 class WorkspaceConfig(BaseModel):
     root: Path = Path("~/.omnidesk/workspace").expanduser()
@@ -169,6 +172,16 @@ class ChromeConfig(BaseModel):
     devtools_host: str = "127.0.0.1"
     devtools_port: int = 9222
     allowed_origins: list[str] = Field(default_factory=list)
+    allow_evaluate: bool = False
+    deny_js_patterns: list[str] = Field(default_factory=lambda: [
+        "document.cookie",
+        "localStorage",
+        "sessionStorage",
+        "indexedDB",
+        "fetch(",
+        "XMLHttpRequest",
+        "navigator.sendBeacon",
+    ])
 
 class UIBridgeConfig(BaseModel):
     enabled: bool = True

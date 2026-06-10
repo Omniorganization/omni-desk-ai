@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import time
 import uuid
@@ -43,13 +44,25 @@ class RunStore:
 
     def create(self, original_message: dict[str, Any]) -> str:
         run_id = str(uuid.uuid4())
+        resume_token = secrets.token_urlsafe(32)
         now = time.time()
         with sqlite3.connect(self.db_path) as con:
             con.execute(
-                "INSERT INTO runs (id, status, original_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (run_id, "planned", json.dumps(original_message, ensure_ascii=False), now, now),
+                """
+                INSERT INTO runs (id, status, original_message, resume_token, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (run_id, "planned", json.dumps(original_message, ensure_ascii=False), resume_token, now, now),
             )
         return run_id
+
+    def require_resume_token(self, run_id: str, resume_token: str | None) -> None:
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        expected = run.get("resume_token")
+        if expected and resume_token != expected:
+            raise PermissionError("invalid resume_token")
 
     def save_waiting(
         self,

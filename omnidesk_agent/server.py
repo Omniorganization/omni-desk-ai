@@ -11,6 +11,12 @@ def create_app(cfg: AppConfig) -> FastAPI:
     approvals = ApprovalStore(cfg.workspace.root / 'approvals.sqlite3')
     app = FastAPI(title="OmniDesk Agent Gateway")
 
+    async def _guard_webhook(channel: str, request: Request, source_key: str = "unknown", message_id: str | None = None) -> bytes:
+        body = await request.body()
+        if hasattr(rt, "webhook_security"):
+            rt.webhook_security.guard(channel=channel, body=body, source_key=source_key, message_id=message_id)
+        return body
+
     @app.get("/health")
     async def health():
         return {"ok": True, **rt.status()}
@@ -27,11 +33,14 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.post("/agent/resume/{run_id}")
     async def resume_agent(run_id: str, body: dict | None = None):
-        return await rt.orchestrator.resume(run_id)
+        body = body or {}
+        return await rt.orchestrator.resume(run_id, resume_token=body.get("resume_token"))
 
     @app.post("/webhooks/telegram")
     async def telegram_webhook(request: Request):
-        msg = rt.adapters["telegram"].parse_update(await request.json())
+        body = await _guard_webhook("telegram", request)
+        import json as _json
+        msg = rt.adapters["telegram"].parse_update(_json.loads(body.decode("utf-8") or "{}"))
         return await rt.orchestrator.handle_message(msg) if msg else {"ok": True, "ignored": True}
 
     @app.get("/webhooks/whatsapp")
@@ -44,7 +53,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.post("/webhooks/whatsapp")
     async def whatsapp_webhook(request: Request):
-        messages = rt.adapters["whatsapp_cloud"].parse_webhook(await request.json())
+        body = await _guard_webhook("whatsapp", request)
+        import json as _json
+        messages = rt.adapters["whatsapp_cloud"].parse_webhook(_json.loads(body.decode("utf-8") or "{}"))
         return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
 
     @app.get("/webhooks/meta")
@@ -57,7 +68,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.post("/webhooks/meta")
     async def meta_webhook(request: Request):
-        messages = rt.adapters["meta_graph"].parse_webhook(await request.json())
+        body = await _guard_webhook("meta", request)
+        import json as _json
+        messages = rt.adapters["meta_graph"].parse_webhook(_json.loads(body.decode("utf-8") or "{}"))
         return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
 
     @app.get("/webhooks/wechat")
@@ -125,8 +138,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
 
     @app.get("/oauth/gmail/start")
-    async def gmail_oauth_start(redirect_uri: str, state: str = "omnidesk-gmail"):
-        return rt.adapters["gmail"].oauth.build_authorization_url(redirect_uri=redirect_uri, state=state)
+    async def gmail_oauth_start(redirect_uri: str, state: str | None = None):
+        # state is intentionally ignored by GmailOAuthManager; it always creates a one-time stored state.
+        return rt.adapters["gmail"].oauth.build_authorization_url(redirect_uri=redirect_uri, state=None)
 
     @app.get("/oauth/gmail/callback")
     async def gmail_oauth_callback(code: str, redirect_uri: str, state: str | None = None):

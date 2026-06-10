@@ -24,18 +24,17 @@ class ShellTool:
         ["git", "branch"],
         ["git", "log"],
         ["git", "ls-tree"],
-        ["git", "add"],
-        ["git", "commit"],
-        ["git", "pull"],
-        ["git", "push"],
-        ["pip", "install", "-e"],
-        ["python3", "-m", "pip", "install", "-e"],
     ]
 
     def __init__(self, cwd: Path, cfg: PermissionConfig):
         self.cwd = cwd.expanduser().resolve()
         self.cfg = cfg
-        self.allowed_prefixes = getattr(cfg, "shell_allowed_commands", None) or self.DEFAULT_ALLOWED_PREFIXES
+        self.allowed_prefixes = list(getattr(cfg, "shell_allowed_commands", None) or self.DEFAULT_ALLOWED_PREFIXES)
+        if getattr(cfg, "shell_upgrade_enabled", False):
+            self.allowed_prefixes.extend([
+                ["git", "add"], ["git", "commit"], ["git", "pull"], ["git", "push"],
+                ["pip", "install", "-e"], ["python3", "-m", "pip", "install", "-e"],
+            ])
 
     def spec(self) -> ToolSpec:
         return ToolSpec(

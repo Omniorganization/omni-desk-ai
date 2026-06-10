@@ -10,42 +10,55 @@ from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
 
 
 class PluginRegistry:
-    def __init__(self, plugins_dir: Path, *, trusted_only: bool = True, allowlist: list[str] | None = None, signing_secret_env: str | None = "OMNIDESK_PLUGIN_SIGNING_SECRET"):
-        self.plugins_dir = plugins_dir.expanduser()
-        self.trusted_only = trusted_only
-        self.allowlist = set(allowlist or [])
+    def __init__(
+        self,
+        plugins_dir,
+        config=None,
+        *,
+        trusted_only: bool | None = None,
+        allowlist: list[str] | None = None,
+        signing_secret_env: str | None = "OMNIDESK_PLUGIN_SIGNING_SECRET",
+    ):
+        dirs = plugins_dir if isinstance(plugins_dir, (list, tuple)) else [plugins_dir]
+        self.plugins_dirs = [Path(d).expanduser() for d in dirs]
+        if config is not None and not isinstance(config, bool):
+            self.trusted_only = bool(getattr(config, "trusted_only", True))
+            self.allowlist = set(getattr(config, "allowlist", []) or [])
+        else:
+            self.trusted_only = bool(config) if isinstance(config, bool) else (True if trusted_only is None else trusted_only)
+            self.allowlist = set(allowlist or [])
         self.signing_secret = os.getenv(signing_secret_env or "") if signing_secret_env else None
         self.loaded: dict[str, PluginManifest] = {}
 
     def load_into(self, tool_registry, app_config: Any | None = None) -> dict[str, list[str]]:
         results: dict[str, list[str]] = {}
-        if not self.plugins_dir.exists():
-            return results
-        for plugin_dir in sorted(p for p in self.plugins_dir.iterdir() if p.is_dir()):
-            manifest_path = self._manifest_path(plugin_dir)
-            if not manifest_path:
+        for root in self.plugins_dirs:
+            if not root.exists():
                 continue
-            manifest = PluginManifest.load(manifest_path)
-            if not manifest.enabled:
-                continue
-            if self.allowlist and manifest.name not in self.allowlist:
-                continue
-            if self.trusted_only and not manifest.trusted:
-                continue
-            manifest.verify(plugin_dir, self.signing_secret)
+            for plugin_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+                manifest_path = self._manifest_path(plugin_dir)
+                if not manifest_path:
+                    continue
+                manifest = PluginManifest.load(manifest_path)
+                if not manifest.enabled:
+                    continue
+                if self.allowlist and manifest.name not in self.allowlist:
+                    continue
+                if self.trusted_only and not manifest.trusted:
+                    continue
+                manifest.verify(plugin_dir, self.signing_secret)
 
-            entrypoint = (plugin_dir / manifest.entrypoint).resolve()
-            if manifest.sandbox == "subprocess":
-                tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions))
-                self.loaded[manifest.name] = manifest
-                results[manifest.name] = [manifest.name]
-            elif manifest.sandbox == "in_process":
-                # Explicitly allowed only for trusted plugins that passed hash/signature checks.
-                names = self._load_in_process(manifest, entrypoint, tool_registry, app_config)
-                self.loaded[manifest.name] = manifest
-                results[manifest.name] = names
-            else:
-                raise ValueError(f"Unsupported plugin sandbox: {manifest.sandbox}")
+                entrypoint = (plugin_dir / manifest.entrypoint).resolve()
+                if manifest.sandbox == "subprocess":
+                    tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions))
+                    self.loaded[manifest.name] = manifest
+                    results[manifest.name] = [manifest.name]
+                elif manifest.sandbox == "in_process":
+                    names = self._load_in_process(manifest, entrypoint, tool_registry, app_config)
+                    self.loaded[manifest.name] = manifest
+                    results[manifest.name] = names
+                else:
+                    raise ValueError(f"Unsupported plugin sandbox: {manifest.sandbox}")
         return results
 
     def _load_in_process(self, manifest: PluginManifest, entrypoint: Path, tool_registry, app_config: Any | None) -> list[str]:
