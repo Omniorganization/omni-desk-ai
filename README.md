@@ -197,3 +197,24 @@ This repository now includes an industrialization baseline:
 - Self-upgrade is PR-only and cannot patch `main` directly.
 - Upgrade sandbox supports Docker no-network read-only execution.
 - CI includes Python 3.9-3.12 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.
+
+
+---
+
+## L10 Industrial Learning Observability
+
+OmniDesk now includes a self-learning observability layer with audit events, learning quality metrics, industrial SLO evaluation, and an AdminAuth-protected dashboard.
+
+```bash
+omnidesk learning-l10-report --days 7
+omnidesk learning-l10-report --days 7 --format html > learning_dashboard.html
+```
+
+Admin API:
+
+```text
+GET /admin/learning/report?days=7
+GET /admin/learning/dashboard?days=7
+```
+
+Tracked metrics include task success rate, experience reuse rate, bad memory rate, stale memory rate, contradiction rate, permission bypass rate, rollback success rate, test coverage, learning quality score, and industrial readiness score.

@@ -19,6 +19,7 @@ def main() -> None:
     sub.add_parser("validate-webhook-signatures")
     sub.add_parser("gmail-auth")
     learn_p = sub.add_parser("learning-report"); learn_p.add_argument("--days", type=int, default=7)
+    l10_p = sub.add_parser("learning-l10-report"); l10_p.add_argument("--days", type=int, default=7); l10_p.add_argument("--format", choices=["json", "html"], default="json")
     metrics_p = sub.add_parser("metrics"); metrics_p.add_argument("--days", type=int, default=7)
     exp_p = sub.add_parser("experience-search"); exp_p.add_argument("query"); exp_p.add_argument("--limit", type=int, default=5)
     up_p = sub.add_parser("upgrade-proposals"); up_p.add_argument("--status", default=None)
@@ -68,6 +69,15 @@ def main() -> None:
     if args.cmd == "learning-report":
         rt = OmniDeskRuntime(cfg)
         print(json.dumps(rt.learning_job.run(days=args.days), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "learning-l10-report":
+        from omnidesk_agent.self_learning.observability.dashboard import LearningDashboard
+        dashboard = LearningDashboard.from_audit_path(cfg.workspace.root / "learning_audit.jsonl")
+        if args.format == "html":
+            print(dashboard.render_html(days=args.days))
+        else:
+            print(json.dumps(dashboard.summary(days=args.days), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "metrics":

@@ -14,6 +14,7 @@ from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
 from omnidesk_agent import __version__
 from omnidesk_agent.observability import JsonEventLogger, MetricsRegistry, new_request_id, public_runtime_status
+from omnidesk_agent.self_learning.observability.dashboard import LearningDashboard
 
 
 def create_app(cfg: AppConfig) -> FastAPI:
@@ -183,6 +184,20 @@ def create_app(cfg: AppConfig) -> FastAPI:
     async def admin_metrics(request: Request):
         await _admin(request)
         return Response(content=metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
+
+    def _learning_dashboard() -> LearningDashboard:
+        path = cfg.workspace.root / "learning_audit.jsonl"
+        return LearningDashboard.from_audit_path(path)
+
+    @app.get("/admin/learning/report")
+    async def admin_learning_report(request: Request, days: int = 7):
+        await _admin(request)
+        return _learning_dashboard().summary(days=days)
+
+    @app.get("/admin/learning/dashboard")
+    async def admin_learning_dashboard(request: Request, days: int = 7):
+        await _admin(request)
+        return Response(content=_learning_dashboard().render_html(days=days), media_type="text/html")
 
     @app.post("/agent/run")
     async def run_agent(request: Request, body: dict):
