@@ -38,6 +38,14 @@ class ApprovalStore:
             )
         return aid
 
+    def get(self, approval_id: str) -> dict[str, Any] | None:
+        with sqlite3.connect(self.db_path) as con:
+            row = con.execute(
+                "SELECT id, status, proposal, result, created_at, decided_at FROM approvals WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+        return self._row(row) if row else None
+
     def list(self, status: str | None = None) -> list[dict[str, Any]]:
         sql = "SELECT id, status, proposal, result, created_at, decided_at FROM approvals"
         params: tuple[Any, ...] = ()
@@ -64,6 +72,19 @@ class ApprovalStore:
         if not row:
             raise KeyError(approval_id)
         return self._row(row)
+
+    def require_approved(self, approval_id: str, expected_proposal: dict[str, Any] | None = None) -> dict[str, Any]:
+        approval = self.get(approval_id)
+        if not approval:
+            raise PermissionError(f"approval not found: {approval_id}")
+        if approval["status"] != "approved":
+            raise PermissionError(f"approval is not approved: {approval_id}")
+        if expected_proposal:
+            proposal = approval.get("proposal") or {}
+            for key in ("tool", "action", "source", "actor"):
+                if expected_proposal.get(key) and proposal.get(key) != expected_proposal.get(key):
+                    raise PermissionError(f"approval proposal mismatch on {key}")
+        return approval
 
     @staticmethod
     def _row(row) -> dict[str, Any]:

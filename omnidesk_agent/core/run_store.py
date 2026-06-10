@@ -23,11 +23,23 @@ class RunStore:
                     current_step_index INTEGER NOT NULL DEFAULT 0,
                     results_json TEXT NOT NULL DEFAULT '[]',
                     waiting_approval_id TEXT,
+                    approval_proposal_json TEXT,
+                    resume_token TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
             )
+            self._migrate(con)
+
+    def _migrate(self, con: sqlite3.Connection) -> None:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
+        for name, ddl in {
+            "approval_proposal_json": "ALTER TABLE runs ADD COLUMN approval_proposal_json TEXT",
+            "resume_token": "ALTER TABLE runs ADD COLUMN resume_token TEXT",
+        }.items():
+            if name not in cols:
+                con.execute(ddl)
 
     def create(self, original_message: dict[str, Any]) -> str:
         run_id = str(uuid.uuid4())
@@ -39,17 +51,31 @@ class RunStore:
             )
         return run_id
 
-    def save_waiting(self, run_id: str, plan_json: dict[str, Any], current_step_index: int, results: list[dict[str, Any]], approval_id: str) -> None:
+    def save_waiting(
+        self,
+        run_id: str,
+        plan_json: dict[str, Any],
+        current_step_index: int,
+        results: list[dict[str, Any]],
+        approval_id: str,
+        approval_proposal: dict[str, Any],
+    ) -> None:
         self.update(run_id, {
             "status": "waiting_approval",
             "plan_json": json.dumps(plan_json, ensure_ascii=False),
             "current_step_index": current_step_index,
             "results_json": json.dumps(results, ensure_ascii=False),
             "waiting_approval_id": approval_id,
+            "approval_proposal_json": json.dumps(approval_proposal, ensure_ascii=False),
         })
 
     def complete(self, run_id: str, status: str, results: list[dict[str, Any]]) -> None:
-        self.update(run_id, {"status": status, "results_json": json.dumps(results, ensure_ascii=False), "waiting_approval_id": None})
+        self.update(run_id, {
+            "status": status,
+            "results_json": json.dumps(results, ensure_ascii=False),
+            "waiting_approval_id": None,
+            "approval_proposal_json": None,
+        })
 
     def update(self, run_id: str, fields: dict[str, Any]) -> None:
         fields = dict(fields)
@@ -62,7 +88,11 @@ class RunStore:
     def get(self, run_id: str) -> dict[str, Any] | None:
         with sqlite3.connect(self.db_path) as con:
             row = con.execute(
-                "SELECT id,status,original_message,plan_json,current_step_index,results_json,waiting_approval_id,created_at,updated_at FROM runs WHERE id=?",
+                """
+                SELECT id,status,original_message,plan_json,current_step_index,results_json,
+                       waiting_approval_id,approval_proposal_json,resume_token,created_at,updated_at
+                FROM runs WHERE id=?
+                """,
                 (run_id,),
             ).fetchone()
         if not row:
@@ -75,6 +105,13 @@ class RunStore:
             "current_step_index": row[4],
             "results": json.loads(row[5]),
             "waiting_approval_id": row[6],
-            "created_at": row[7],
-            "updated_at": row[8],
+            "approval_proposal": json.loads(row[7]) if row[7] else None,
+            "resume_token": row[8],
+            "created_at": row[9],
+            "updated_at": row[10],
         }
+
+    def get_by_approval(self, approval_id: str) -> dict[str, Any] | None:
+        with sqlite3.connect(self.db_path) as con:
+            row = con.execute("SELECT id FROM runs WHERE waiting_approval_id=?", (approval_id,)).fetchone()
+        return self.get(row[0]) if row else None

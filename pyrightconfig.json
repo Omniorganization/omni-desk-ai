@@ -1,0 +1,8 @@
+{
+  "include": ["omnidesk_agent"],
+  "exclude": ["**/__pycache__", ".venv"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportOptionalMemberAccess": "warning"
+}

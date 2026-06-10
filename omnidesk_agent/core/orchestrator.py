@@ -7,6 +7,7 @@ from omnidesk_agent.core.run_store import RunStore
 from omnidesk_agent.core.vision_executor import VisionActionExecutor
 from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.security.approval_required import ApprovalRequired
+from omnidesk_agent.security.approval_store import ApprovalStore
 from omnidesk_agent.security.permissions import PermissionManager
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.registry import ToolRegistry
@@ -22,6 +23,7 @@ class Orchestrator:
         memory: ExperienceStore,
         execution_strategy: ResultOrientedExecutionStrategy | None = None,
         run_store: RunStore | None = None,
+        approval_store: ApprovalStore | None = None,
     ):
         self.planner = planner
         self.tools = tools
@@ -29,6 +31,7 @@ class Orchestrator:
         self.memory = memory
         self.execution_strategy = execution_strategy or ResultOrientedExecutionStrategy()
         self.run_store = run_store
+        self.approval_store = approval_store
         self.vision_executor = VisionActionExecutor(tools)
 
     async def handle_message(self, msg: ChannelMessage) -> dict:
@@ -44,6 +47,17 @@ class Orchestrator:
             return {"ok": False, "status": "not_found", "run_id": run_id}
         if run["status"] != "waiting_approval":
             return {"ok": False, "status": run["status"], "message": "run is not waiting for approval"}
+
+        approval_id = run.get("waiting_approval_id")
+        if not approval_id:
+            return {"ok": False, "status": "missing_approval_id"}
+        if self.approval_store is None:
+            return {"ok": False, "status": "approval_store_unavailable"}
+
+        try:
+            self.approval_store.require_approved(approval_id, run.get("approval_proposal"))
+        except PermissionError as exc:
+            return {"ok": False, "status": "approval_not_satisfied", "approval_id": approval_id, "error": str(exc)}
 
         original = run["original_message"]
         msg = ChannelMessage(**original)
@@ -87,6 +101,18 @@ class Orchestrator:
                             if click_result is not None:
                                 results.append(click_result)
 
+                verification = step.args.get("verification")
+                if verification and "vision" in self.tools.names() and "computer" in self.tools.names():
+                    verify_result = await self.vision_executor.verify_with_retry(
+                        ctx=ctx,
+                        instruction=step.args.get("expected_result", plan.goal),
+                        verification=verification,
+                        retry_policy=step.args.get("retry_policy"),
+                    )
+                    results.append(verify_result)
+                    if not verify_result.ok:
+                        break
+
                 if not result.ok:
                     break
 
@@ -99,6 +125,7 @@ class Orchestrator:
                     start_index + len(results),
                     all_results,
                     approval.approval_id,
+                    approval.proposal,
                 )
             return {
                 "status": "waiting_approval",

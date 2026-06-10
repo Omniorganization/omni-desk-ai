@@ -1,63 +1,68 @@
 from __future__ import annotations
-import importlib.util, json
-from dataclasses import dataclass, field
+
+import importlib.util
+import os
 from pathlib import Path
 from typing import Any
-import yaml
-from omnidesk_agent.config import PluginConfig
-from omnidesk_agent.tools.registry import ToolRegistry
 
-@dataclass(slots=True)
-class Plugin:
-    name: str
-    path: Path
-    trusted: bool = False
-    enabled: bool = True
-    tools: list[str] = field(default_factory=list)
+from omnidesk_agent.plugins.manifest import PluginManifest
+from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
+
 
 class PluginRegistry:
-    def __init__(self, plugin_dirs: list[Path], cfg: PluginConfig):
-        self.plugin_dirs = plugin_dirs
-        self.cfg = cfg
-        self.plugins: dict[str, Plugin] = {}
-    def discover(self) -> dict[str, Plugin]:
-        self.plugins.clear()
-        for root in self.plugin_dirs:
-            root = root.expanduser()
-            if not root.exists():
+    def __init__(self, plugins_dir: Path, *, trusted_only: bool = True, allowlist: list[str] | None = None, signing_secret_env: str | None = "OMNIDESK_PLUGIN_SIGNING_SECRET"):
+        self.plugins_dir = plugins_dir.expanduser()
+        self.trusted_only = trusted_only
+        self.allowlist = set(allowlist or [])
+        self.signing_secret = os.getenv(signing_secret_env or "") if signing_secret_env else None
+        self.loaded: dict[str, PluginManifest] = {}
+
+    def load_into(self, tool_registry, app_config: Any | None = None) -> dict[str, list[str]]:
+        results: dict[str, list[str]] = {}
+        if not self.plugins_dir.exists():
+            return results
+        for plugin_dir in sorted(p for p in self.plugins_dir.iterdir() if p.is_dir()):
+            manifest_path = self._manifest_path(plugin_dir)
+            if not manifest_path:
                 continue
-            manifests = list(root.glob("*/plugin.yaml")) + list(root.glob("*/plugin.yml")) + list(root.glob("*/plugin.json"))
-            for manifest in manifests:
-                meta = self._read_manifest(manifest)
-                name = str(meta.get("name") or manifest.parent.name)
-                self.plugins[name] = Plugin(name=name, path=manifest.parent, trusted=bool(meta.get("trusted", False)), enabled=bool(meta.get("enabled", True)))
-        return self.plugins
-    def load_into(self, tools: ToolRegistry, app_config: Any | None = None) -> dict[str, Plugin]:
-        if not self.cfg.enabled:
-            return {}
-        self.discover()
-        for plugin in self.plugins.values():
-            if not plugin.enabled:
+            manifest = PluginManifest.load(manifest_path)
+            if not manifest.enabled:
                 continue
-            if self.cfg.allowlist and plugin.name not in self.cfg.allowlist:
+            if self.allowlist and manifest.name not in self.allowlist:
                 continue
-            if self.cfg.trusted_only and not plugin.trusted:
+            if self.trusted_only and not manifest.trusted:
                 continue
-            module_path = plugin.path / "plugin.py"
-            if not module_path.exists():
-                continue
-            spec = importlib.util.spec_from_file_location(f"omnidesk_plugin_{plugin.name}", module_path)
-            if not spec or not spec.loader:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            register = getattr(module, "register", None)
-            if callable(register):
-                result = register(tools, app_config)
-                if isinstance(result, list):
-                    plugin.tools = [str(x) for x in result]
-        return self.plugins
+            manifest.verify(plugin_dir, self.signing_secret)
+
+            entrypoint = (plugin_dir / manifest.entrypoint).resolve()
+            if manifest.sandbox == "subprocess":
+                tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions))
+                self.loaded[manifest.name] = manifest
+                results[manifest.name] = [manifest.name]
+            elif manifest.sandbox == "in_process":
+                # Explicitly allowed only for trusted plugins that passed hash/signature checks.
+                names = self._load_in_process(manifest, entrypoint, tool_registry, app_config)
+                self.loaded[manifest.name] = manifest
+                results[manifest.name] = names
+            else:
+                raise ValueError(f"Unsupported plugin sandbox: {manifest.sandbox}")
+        return results
+
+    def _load_in_process(self, manifest: PluginManifest, entrypoint: Path, tool_registry, app_config: Any | None) -> list[str]:
+        spec = importlib.util.spec_from_file_location(f"omnidesk_plugin_{manifest.name}", str(entrypoint))
+        if not spec or not spec.loader:
+            raise RuntimeError(f"Cannot load plugin: {manifest.name}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not hasattr(module, "register"):
+            raise RuntimeError(f"Plugin has no register(): {manifest.name}")
+        result = module.register(tool_registry, app_config=app_config)
+        return list(result or [])
+
     @staticmethod
-    def _read_manifest(path: Path) -> dict[str, Any]:
-        text = path.read_text(encoding="utf-8")
-        return json.loads(text) if path.suffix == ".json" else (yaml.safe_load(text) or {})
+    def _manifest_path(plugin_dir: Path) -> Path | None:
+        for name in ("plugin.yaml", "plugin.yml", "plugin.json"):
+            p = plugin_dir / name
+            if p.exists():
+                return p
+        return None
