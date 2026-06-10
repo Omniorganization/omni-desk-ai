@@ -13,6 +13,24 @@ class GmailTool:
     def __init__(self, adapter: GmailChannel):
         self.adapter = adapter
 
+
+    def spec(self):
+        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+        return ToolSpec(
+            name=self.name,
+            description="Gmail OAuth and Gmail API tool.",
+            permissions=["gmail.read", "gmail.compose", "gmail.send"],
+            actions={
+                "configured": ActionSpec("configured", "Check Gmail configuration", {}, risk="low", side_effect=False, requires_approval=False),
+                "auth_local": ActionSpec("auth_local", "Start local OAuth flow", {}, risk="high", side_effect=True, requires_approval=True),
+                "auth_url": ActionSpec("auth_url", "Build OAuth authorization URL", {"redirect_uri": "string"}, risk="medium", side_effect=False, requires_approval=False),
+                "auth_callback": ActionSpec("auth_callback", "Exchange OAuth callback code", {"code": "string", "redirect_uri": "string", "state": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "build_raw_email": ActionSpec("build_raw_email", "Build raw email payload", {"to": "string", "subject": "string", "body": "string"}, risk="medium", side_effect=False, requires_approval=True),
+                "send_email": ActionSpec("send_email", "Send Gmail email", {"to": "string", "subject": "string", "body": "string"}, risk="high", side_effect=True, requires_approval=True),
+            },
+        )
+
+
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "configured":
             return ToolResult(True, data={"configured": self.adapter.configured(), "authenticated": self.adapter.authenticated()}, summary="checked gmail configuration")

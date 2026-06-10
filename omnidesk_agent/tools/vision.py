@@ -23,6 +23,19 @@ class VisionGroundingTool:
     def __init__(self, router: ModelRouter):
         self.router = router
 
+
+    def spec(self):
+        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+        return ToolSpec(
+            name=self.name,
+            description="Vision grounding tool for screenshots and UI elements.",
+            permissions=["vision.ground"],
+            actions={
+                "ground": ActionSpec("ground", "Locate UI elements in screenshot", {"image_path": "string", "instruction": "string"}, risk="medium", side_effect=False, requires_approval=True)
+            },
+        )
+
+
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "ground":
             raise ValueError(f"Unsupported vision action: {action}")

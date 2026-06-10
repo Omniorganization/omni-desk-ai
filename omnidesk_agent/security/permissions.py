@@ -1,136 +1,131 @@
 from __future__ import annotations
 
-import fnmatch
 import json
+import os
+import re
 import sys
 import time
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 
 from omnidesk_agent.config import PermissionConfig
 from omnidesk_agent.security.approval_required import ApprovalRequired
-from omnidesk_agent.core.models import ActionProposal, ApprovalDecision
 
 
-class PermissionDenied(RuntimeError):
-    pass
+class PermissionDecision:
+    def __init__(self, allowed: bool, mode: str = "allow", reason: str = ""):
+        self.allowed = allowed
+        self.mode = mode
+        self.reason = reason
 
 
 class PermissionManager:
-    """Per-action approval gate.
+    def __init__(self, cfg: PermissionConfig, approval_store=None):
+        self.cfg = cfg
+        self.approval_store = approval_store
+        self.session_allows: set[str] = set()
+        self.audit_log = cfg.audit_log.expanduser()
+        self.audit_log.parent.mkdir(parents=True, exist_ok=True)
 
-    This object is intentionally boring: all side-effect tools call verify() before doing
-    anything. In foreground CLI mode it asks the operator. In daemon/no-tty mode it denies
-    unless the policy can safely auto-allow.
-    """
+    def verify(self, proposal: Any) -> PermissionDecision:
+        proposal_dict = self._proposal_dict(proposal)
+        tool = str(proposal_dict.get("tool", ""))
+        action = str(proposal_dict.get("action", ""))
+        risk = str(proposal_dict.get("risk", "medium"))
+        source = str(proposal_dict.get("source", "unknown"))
+        key = f"{tool}.{action}"
 
-    def __init__(self, config: PermissionConfig):
-        self.config = config
-        self.audit_path: Path = config.audit_log
-        self._session_allow: set[str] = set()
+        self._audit("proposal", proposal_dict)
 
-    def _write_audit(self, proposal: ActionProposal, decision: ApprovalDecision) -> None:
-        row = {
-            "ts": time.time(),
-            "action_id": proposal.action_id,
-            "tool": proposal.tool,
-            "action": proposal.action,
-            "risk": proposal.risk,
-            "source": proposal.source,
-            "actor": proposal.actor,
-            "reason": proposal.reason,
-            "args": self._redact(proposal.args),
-            "decision": decision.mode,
-            "allowed": decision.allowed,
-            "decision_reason": decision.reason,
-        }
-        self.audit_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.audit_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        if risk == "low" and source in getattr(self.cfg, "allow_low_risk_from", []):
+            self._audit("allowed_low_risk", proposal_dict)
+            return PermissionDecision(True, "allow", "low risk allowed")
 
-    def _redact(self, obj):
-        if isinstance(obj, dict):
-            out = {}
-            for k, v in obj.items():
-                lk = str(k).lower()
-                if any(s in lk for s in ["token", "password", "secret", "key", "cookie"]):
-                    out[k] = "<redacted>"
-                else:
-                    out[k] = self._redact(v)
-            return out
-        if isinstance(obj, list):
-            return [self._redact(v) for v in obj]
-        return obj
+        if key in self.session_allows:
+            self._audit("allowed_session", proposal_dict)
+            return PermissionDecision(True, "allow", "session allow")
 
-    def _shell_is_denied(self, command: str) -> str | None:
-        for pattern in self.config.deny_shell_patterns:
-            if fnmatch.fnmatch(command.lower(), pattern.lower()) or pattern.lower() in command.lower():
-                return f"Shell command matches denied pattern: {pattern}"
-        return None
+        mode = getattr(self.cfg, "approval_mode", "interactive_cli")
+        default_mode = getattr(self.cfg, "default_mode", "ask")
 
-    def verify(self, proposal: ActionProposal) -> ApprovalDecision:
-        if proposal.tool == "shell":
-            command = str(proposal.args.get("command", ""))
-            deny_reason = self._shell_is_denied(command)
-            if deny_reason:
-                decision = ApprovalDecision(False, "deny", deny_reason)
-                self._write_audit(proposal, decision)
-                raise PermissionDenied(deny_reason)
+        if mode == "auto_policy":
+            if risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
+                self._audit("allowed_auto_policy", proposal_dict)
+                return PermissionDecision(True, "allow", "auto_policy")
+            return self._remote_or_deny(proposal_dict)
 
-        # Low-risk local reads can be auto-allowed when configured.
-        if (
-            proposal.risk == "low"
-            and proposal.source in self.config.allow_low_risk_from
-            and proposal.tool not in self.config.always_ask_tools
-        ):
-            decision = ApprovalDecision(True, "allow", "auto-allowed low risk local action")
-            self._write_audit(proposal, decision)
-            return decision
+        if mode == "remote_approval":
+            return self._remote_or_deny(proposal_dict)
 
-        fingerprint = f"{proposal.tool}:{proposal.action}:{proposal.risk}:{proposal.source}:{proposal.actor}"
-        if fingerprint in self._session_allow:
-            decision = ApprovalDecision(True, "allow", "allowed earlier in this session")
-            self._write_audit(proposal, decision)
-            return decision
+        if default_mode == "allow":
+            self._audit("allowed_default", proposal_dict)
+            return PermissionDecision(True, "allow", "default allow")
+        if default_mode == "dry_run":
+            self._audit("dry_run", proposal_dict)
+            return PermissionDecision(False, "dry_run", "default dry_run")
+        if default_mode == "deny":
+            self._audit("denied_default", proposal_dict)
+            raise PermissionError("Denied by default permission policy")
 
-        mode = self.config.default_mode
         if not sys.stdin.isatty():
-            mode = self.config.no_tty_mode
+            no_tty = getattr(self.cfg, "no_tty_mode", "deny")
+            if no_tty == "dry_run":
+                self._audit("dry_run_no_tty", proposal_dict)
+                return PermissionDecision(False, "dry_run", "no tty dry_run")
+            self._audit("denied_no_tty", proposal_dict)
+            raise PermissionError("Permission required but no TTY available")
 
-        if mode == "allow":
-            decision = ApprovalDecision(True, "allow", "policy default allow")
-            self._write_audit(proposal, decision)
-            return decision
-        if mode == "dry_run":
-            decision = ApprovalDecision(False, "dry_run", "policy dry-run")
-            self._write_audit(proposal, decision)
-            return decision
-        if mode == "deny":
-            decision = ApprovalDecision(False, "deny", "policy denied without interactive approval")
-            self._write_audit(proposal, decision)
-            raise PermissionDenied(decision.reason)
+        print("\nPermission request:")
+        print(json.dumps(proposal_dict, ensure_ascii=False, indent=2))
+        ans = input("Allow? [y]es / [n]o / [s]ession / [d]ry-run: ").strip().lower()
+        if ans in {"y", "yes"}:
+            self._audit("allowed_interactive", proposal_dict)
+            return PermissionDecision(True, "allow", "interactive")
+        if ans in {"s", "session"}:
+            self.session_allows.add(key)
+            self._audit("allowed_session_new", proposal_dict)
+            return PermissionDecision(True, "allow", "session")
+        if ans in {"d", "dry-run"}:
+            self._audit("dry_run_interactive", proposal_dict)
+            return PermissionDecision(False, "dry_run", "interactive dry_run")
+        self._audit("denied_interactive", proposal_dict)
+        raise PermissionError("Denied by user")
 
-        # Interactive ask.
-        print("\n需要权限验证：")
-        print(f"  action_id: {proposal.action_id}")
-        print(f"  source:    {proposal.source}")
-        print(f"  actor:     {proposal.actor}")
-        print(f"  tool:      {proposal.tool}.{proposal.action}")
-        print(f"  risk:      {proposal.risk}")
-        print(f"  reason:    {proposal.reason}")
-        print(f"  args:      {json.dumps(self._redact(proposal.args), ensure_ascii=False)}")
-        ans = input("批准执行？[y]一次 / [s]本会话同类 / [n]拒绝 / [d]dry-run: ").strip().lower()
-        if ans == "s":
-            self._session_allow.add(fingerprint)
-            decision = ApprovalDecision(True, "allow", "operator approved session scope")
-        elif ans == "y":
-            decision = ApprovalDecision(True, "allow", "operator approved once")
-        elif ans == "d":
-            decision = ApprovalDecision(False, "dry_run", "operator chose dry-run")
-        else:
-            decision = ApprovalDecision(False, "deny", "operator denied")
+    def _remote_or_deny(self, proposal_dict: dict[str, Any]) -> PermissionDecision:
+        if self.approval_store is None:
+            self._audit("denied_no_approval_store", proposal_dict)
+            raise PermissionError("remote_approval requires ApprovalStore")
+        approval_id = self.approval_store.create(proposal_dict)
+        self._audit("approval_required", {"approval_id": approval_id, **proposal_dict})
+        raise ApprovalRequired(approval_id=approval_id, proposal=proposal_dict)
 
-        self._write_audit(proposal, decision)
-        if not decision.allowed and decision.mode != "dry_run":
-            raise PermissionDenied(decision.reason)
-        return decision
+    def _audit(self, event: str, payload: dict[str, Any]) -> None:
+        clean = self._redact(payload)
+        line = json.dumps({"ts": time.time(), "event": event, "payload": clean}, ensure_ascii=False)
+        with self.audit_log.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    @staticmethod
+    def _proposal_dict(proposal: Any) -> dict[str, Any]:
+        if isinstance(proposal, dict):
+            return dict(proposal)
+        if is_dataclass(proposal):
+            return asdict(proposal)
+        if hasattr(proposal, "__dict__"):
+            return dict(proposal.__dict__)
+        return {"proposal": str(proposal)}
+
+    @staticmethod
+    def _redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                if re.search(r"(token|secret|password|api_key|authorization)", str(k), re.I):
+                    out[k] = "[REDACTED]"
+                else:
+                    out[k] = PermissionManager._redact(v)
+            return out
+        if isinstance(value, list):
+            return [PermissionManager._redact(v) for v in value]
+        return value

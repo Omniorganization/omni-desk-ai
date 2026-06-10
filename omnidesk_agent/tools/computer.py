@@ -20,6 +20,23 @@ class ComputerTool:
         self.screenshot_dir = (screenshot_dir or Path("~/.omnidesk/screenshots")).expanduser()
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
 
+
+    def spec(self):
+        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+        return ToolSpec(
+            name=self.name,
+            description="Computer-use tool for screenshots, clicking, typing, moving mouse, and hotkeys.",
+            permissions=["computer.screenshot", "computer.input"],
+            actions={
+                "screenshot": ActionSpec("screenshot", "Capture screen to file; base64 opt-in", {"expected_result": "string", "max_width": "integer"}, risk="medium", side_effect=False, requires_approval=True),
+                "click": ActionSpec("click", "Click screen coordinates", {"x": "integer", "y": "integer", "expected_result": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "type_text": ActionSpec("type_text", "Type text into focused UI", {"text": "string", "expected_result": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "hotkey": ActionSpec("hotkey", "Press keyboard shortcut", {"keys": "list[string]", "expected_result": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "move": ActionSpec("move", "Move mouse pointer", {"x": "integer", "y": "integer", "expected_result": "string"}, risk="medium", side_effect=True, requires_approval=True),
+            },
+        )
+
+
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "screenshot":
             return await self.screenshot(args, ctx)

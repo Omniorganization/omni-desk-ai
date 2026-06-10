@@ -14,6 +14,22 @@ class UIBridgeTool:
         if self.cfg.allowed_apps and app not in self.cfg.allowed_apps:
             raise ValueError(f"App is not allowed for UI bridge: {app}")
 
+
+    def spec(self):
+        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+        return ToolSpec(
+            name=self.name,
+            description="Visible UI bridge for GUI-only applications.",
+            permissions=["ui_bridge.observe", "ui_bridge.input"],
+            actions={
+                "observe": ActionSpec("observe", "Observe visible app screen", {"app": "string", "expected_result": "string"}, risk="medium", side_effect=False, requires_approval=True),
+                "click": ActionSpec("click", "Click visible UI coordinate", {"app": "string", "x": "integer", "y": "integer"}, risk="high", side_effect=True, requires_approval=True),
+                "type_visible_reply": ActionSpec("type_visible_reply", "Type into visible UI", {"app": "string", "text": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "press_send": ActionSpec("press_send", "Press send in visible UI", {"app": "string"}, risk="high", side_effect=True, requires_approval=True),
+            },
+        )
+
+
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         app = str(args.get("app", ""))
         if app:

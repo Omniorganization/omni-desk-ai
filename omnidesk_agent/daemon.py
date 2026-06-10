@@ -14,6 +14,7 @@ from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrate
 from omnidesk_agent.core.llm import RuleBasedLLM, RouterLLMAdapter
 from omnidesk_agent.models.router import build_model_router
 from omnidesk_agent.core.orchestrator import Orchestrator
+from omnidesk_agent.core.run_store import RunStore
 from omnidesk_agent.core.planner import HierarchicalPlanner
 from omnidesk_agent.core.structured_planner import LLMStructuredPlanner
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
@@ -43,6 +44,7 @@ class OmniDeskRuntime:
         self.memory = ExperienceStore(cfg.workspace.memory_db)
         self.token_budget = TokenBudgetManager(cfg.workspace.root / "token_budget.sqlite3", TokenBudgetConfig(max_input_chars=cfg.llm.max_input_chars, max_output_tokens=cfg.llm.max_output_tokens, per_task_max_llm_calls=cfg.llm.per_task_max_llm_calls, cache_ttl_seconds=cfg.llm.cache_ttl_seconds, enable_cache=cfg.llm.enable_cache, require_approval_above_estimated_tokens=cfg.llm.require_approval_above_estimated_tokens))
         self.execution_strategy = ResultOrientedExecutionStrategy()
+        self.run_store = RunStore(cfg.workspace.root / 'runs.sqlite3')
         self.skills = SkillRegistry(cfg.workspace.skills_dirs)
         self.plugins = PluginRegistry(cfg.workspace.plugins_dirs, cfg.plugins)
         self.tools = ToolRegistry()
@@ -54,7 +56,7 @@ class OmniDeskRuntime:
         llm = RuleBasedLLM() if cfg.llm.provider == "rule" else RouterLLMAdapter(self.model_router, task="planner")
         self.rule_planner = HierarchicalPlanner(llm=llm, memory=self.memory, skills=self.skills, tools=self.tools)
         self.planner = self.rule_planner if cfg.llm.provider == 'rule' else LLMStructuredPlanner(self.model_router, self.memory, self.skills, self.tools, self.rule_planner)
-        self.orchestrator = Orchestrator(self.planner, self.tools, self.permissions, self.memory, self.execution_strategy)
+        self.orchestrator = Orchestrator(self.planner, self.tools, self.permissions, self.memory, self.execution_strategy, self.run_store)
 
     def _build_channel_adapters(self) -> dict:
         return {"telegram": TelegramChannel(self.cfg.channels.telegram), "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud), "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official), "meta_graph": MetaGraphChannel(self.cfg.channels.meta_graph), "dingtalk": DingTalkChannel(self.cfg.channels.dingtalk), "lark": LarkChannel(self.cfg.channels.lark), "feishu": FeishuChannel(self.cfg.channels.feishu), "line": LineChannel(self.cfg.channels.line), "x": XChannel(self.cfg.channels.x), "gmail": GmailChannel(self.cfg.channels.gmail)}

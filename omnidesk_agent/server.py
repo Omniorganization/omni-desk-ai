@@ -26,15 +26,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
 
     @app.post("/agent/resume/{run_id}")
-    async def resume_agent(run_id: str, body: dict):
-        # Current implementation records approval state but does not persist suspended coroutine state.
-        # Clients should re-submit the original task after approval; future versions will store resumable runs.
-        return {
-            "ok": False,
-            "status": "resume_not_implemented",
-            "run_id": run_id,
-            "message": "Approval storage is implemented. Stateful resume requires RunStore and will be added next.",
-        }
+    async def resume_agent(run_id: str, body: dict | None = None):
+        return await rt.orchestrator.resume(run_id)
 
     @app.post("/webhooks/telegram")
     async def telegram_webhook(request: Request):

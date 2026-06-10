@@ -74,6 +74,26 @@ class BrowserTool:
                         raise RuntimeError(msg["error"])
                     return msg.get("result", {})
 
+
+    def spec(self):
+        from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+        return ToolSpec(
+            name=self.name,
+            description="Chrome DevTools browser control tool.",
+            permissions=["browser.control"],
+            actions={
+                "list_tabs": ActionSpec("list_tabs", "List Chrome tabs", {}, risk="low", side_effect=False, requires_approval=False),
+                "new_tab": ActionSpec("new_tab", "Open a new tab", {"url": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "navigate": ActionSpec("navigate", "Navigate current tab", {"url": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "get_dom_text": ActionSpec("get_dom_text", "Read visible DOM text", {}, risk="medium", side_effect=False, requires_approval=True),
+                "click_selector": ActionSpec("click_selector", "Click CSS selector", {"selector": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "type_selector": ActionSpec("type_selector", "Type into CSS selector", {"selector": "string", "text": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "evaluate": ActionSpec("evaluate", "Evaluate JavaScript, disabled by default", {"expression": "string"}, risk="critical", side_effect=True, requires_approval=True),
+                "screenshot": ActionSpec("screenshot", "Capture Chrome page screenshot", {}, risk="medium", side_effect=False, requires_approval=True),
+            },
+        )
+
+
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "list_tabs":
             ctx.permissions.verify(proposal("browser", "list_tabs", {}, "low", "列出 Chrome DevTools tabs", ctx))

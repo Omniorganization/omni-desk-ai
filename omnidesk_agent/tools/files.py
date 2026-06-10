@@ -5,38 +5,55 @@ from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
 
 
 class FilesTool:
     name = "files"
 
-    def __init__(self, workspace_root: Path):
-        self.workspace_root = workspace_root.resolve()
+    def __init__(self, root: Path):
+        self.root = root.expanduser().resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
 
-    def _safe_path(self, path: str) -> Path:
-        p = (self.workspace_root / path).expanduser().resolve() if not Path(path).is_absolute() else Path(path).expanduser().resolve()
-        if not str(p).startswith(str(self.workspace_root)):
-            raise ValueError(f"Path outside workspace: {p}")
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=self.name,
+            description="Read and write files inside the Omni-desk workspace.",
+            permissions=["files.read", "files.write"],
+            actions={
+                "read_text": ActionSpec("read_text", "Read a UTF-8 text file from workspace", {"path": "string"}, risk="medium", side_effect=False, requires_approval=True),
+                "write_text": ActionSpec("write_text", "Write a UTF-8 text file inside workspace", {"path": "string", "text": "string"}, risk="high", side_effect=True, requires_approval=True),
+                "list": ActionSpec("list", "List files under a workspace directory", {"path": "string"}, risk="low", side_effect=False, requires_approval=False),
+            },
+        )
+
+    def _safe_path(self, rel: str) -> Path:
+        p = (self.root / rel).expanduser().resolve()
+        if not str(p).startswith(str(self.root)):
+            raise PermissionError(f"path escapes workspace: {rel}")
         return p
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "read_text":
-            p = self._safe_path(str(args["path"]))
-            ctx.permissions.verify(proposal("files", "read_text", {"path": str(p)}, "low", "读取工作区文件", ctx))
-            return ToolResult(True, data=p.read_text(encoding=args.get("encoding", "utf-8")), summary=f"read {p}")
+            path = self._safe_path(str(args["path"]))
+            ctx.permissions.verify(proposal("files", "read_text", {"path": str(path)}, "medium", "读取工作区文件", ctx))
+            text = path.read_text(encoding="utf-8")
+            if len(text) > 20000:
+                text = text[:10000] + "\n...[TRUNCATED]...\n" + text[-10000:]
+            return ToolResult(True, data={"text": text, "path": str(path)}, summary=f"read {path.name}")
+
         if action == "write_text":
-            p = self._safe_path(str(args["path"]))
+            path = self._safe_path(str(args["path"]))
             text = str(args.get("text", ""))
-            decision = ctx.permissions.verify(proposal(
-                "files", "write_text", {"path": str(p), "bytes": len(text.encode())}, "high", "写入工作区文件", ctx
-            ))
-            if decision.mode == "dry_run":
-                return ToolResult(False, summary=f"dry-run: write {p}")
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text, encoding=args.get("encoding", "utf-8"))
-            return ToolResult(True, summary=f"wrote {p}")
+            expected = str(args.get("expected_result") or f"Write {path.name}")
+            ctx.permissions.verify(proposal("files", "write_text", {"path": str(path), "length": len(text), "expected_result": expected}, "high", "写入工作区文件", ctx))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            return ToolResult(True, data={"path": str(path), "bytes": len(text.encode("utf-8"))}, summary=f"wrote {path}")
+
         if action == "list":
-            p = self._safe_path(str(args.get("path", ".")))
-            ctx.permissions.verify(proposal("files", "list", {"path": str(p)}, "low", "列出工作区文件", ctx))
-            return ToolResult(True, data=[str(x.relative_to(self.workspace_root)) for x in p.iterdir()], summary=f"listed {p}")
+            path = self._safe_path(str(args.get("path", ".")))
+            items = [{"name": p.name, "is_dir": p.is_dir(), "size": p.stat().st_size if p.is_file() else None} for p in path.iterdir()]
+            return ToolResult(True, data={"items": items, "path": str(path)}, summary=f"listed {len(items)} items")
+
         raise ValueError(f"Unsupported files action: {action}")
