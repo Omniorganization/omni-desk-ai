@@ -33,6 +33,15 @@ class TelegramChannel:
         self.token = os.getenv(cfg.bot_token_env, "")
         self.base = f"https://api.telegram.org/bot{self.token}" if self.token else ""
 
+
+    def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
+        import hmac
+        from omnidesk_agent.channels.verify import env_secret, header
+        secret = env_secret(self.cfg.webhook_secret_env, channel=self.name)
+        provided = header(headers, "x-telegram-bot-api-secret-token")
+        if not hmac.compare_digest(provided, secret):
+            raise PermissionError("invalid Telegram webhook secret token")
+
     def parse_update(self, update: dict[str, Any]) -> Optional[ChannelMessage]:
         msg = update.get("message") or update.get("business_message")
         if not msg or "text" not in msg:

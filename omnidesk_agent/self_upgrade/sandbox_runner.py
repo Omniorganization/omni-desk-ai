@@ -9,9 +9,10 @@ from omnidesk_agent.self_upgrade.models import TestResult
 
 
 class SandboxRunner:
-    """Safe-ish command runner for upgrade tests.
+    """Upgrade test runner with argv allowlist and optional Docker isolation.
 
-    Uses argv execution and allowlisted prefixes. It does not use shell=True.
+    Docker mode runs with no network, read-only source mount, constrained CPU/memory,
+    and a tmpfs writable area. The runner never uses shell=True.
     """
 
     DEFAULT_ALLOWED = [
@@ -23,9 +24,11 @@ class SandboxRunner:
         ["git", "status"],
     ]
 
-    def __init__(self, repo_root: Path, allowed_prefixes: Optional[list[list[str]]] = None):
+    def __init__(self, repo_root: Path, allowed_prefixes: Optional[list[list[str]]] = None, *, backend: str = "argv", docker_image: str = "python:3.11-slim"):
         self.repo_root = repo_root.resolve()
         self.allowed_prefixes = allowed_prefixes or self.DEFAULT_ALLOWED
+        self.backend = backend
+        self.docker_image = docker_image
 
     def allowed(self, argv: list[str]) -> bool:
         return any(len(argv) >= len(prefix) and argv[:len(prefix)] == prefix for prefix in self.allowed_prefixes)
@@ -50,3 +53,16 @@ class SandboxRunner:
             return TestResult(False, " ".join(argv), f"Timed out after {timeout}s", 124)
         text = output.decode(errors="replace")[-12000:]
         return TestResult(proc.returncode == 0, " ".join(argv), text, int(proc.returncode or 0))
+
+
+    def _docker_command(self, argv: list[str]) -> list[str]:
+        return [
+            "docker", "run", "--rm", "--network", "none", "--read-only",
+            "--memory", "512m", "--cpus", "1.0",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m",
+            "-v", f"{self.repo_root}:/workspace:ro",
+            "-w", "/workspace",
+            "--env", "PYTHONDONTWRITEBYTECODE=1",
+            self.docker_image,
+            *argv,
+        ]

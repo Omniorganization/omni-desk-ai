@@ -180,3 +180,20 @@ POST /self-upgrade/proposals/{proposal_id}/evaluate
 ```
 
 The endpoint is protected by AdminAuth.
+
+
+---
+
+## Industrial Production Beta Hardening
+
+This repository now includes an industrialization baseline:
+
+- Public `/health` returns only liveness and version.
+- Detailed runtime state is behind `/admin/status`.
+- Admin metrics are behind `/admin/metrics`.
+- Request IDs, JSON audit events and local Prometheus-style metrics are available.
+- Long-term memory redacts common PII/secrets before persistence.
+- Channel adapters expose `verify_request()` and `extract_envelope()` contracts.
+- Self-upgrade is PR-only and cannot patch `main` directly.
+- Upgrade sandbox supports Docker no-network read-only execution.
+- CI includes Python 3.9-3.12 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.

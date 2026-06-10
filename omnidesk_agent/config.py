@@ -223,6 +223,29 @@ class ChannelsConfig(BaseModel):
     chrome: ChromeConfig = Field(default_factory=ChromeConfig)
     ui_bridge: UIBridgeConfig = Field(default_factory=UIBridgeConfig)
 
+
+class ObservabilityConfig(BaseModel):
+    request_id_header: str = "x-request-id"
+    expose_public_metrics: bool = False
+    structured_json_logs: bool = True
+
+
+class MemoryPrivacyConfig(BaseModel):
+    redact_pii: bool = True
+    retention_days: int = 30
+    isolate_by_actor: bool = True
+    encrypt_at_rest: bool = False
+
+
+class SandboxConfig(BaseModel):
+    backend: Literal["argv", "docker"] = "argv"
+    docker_image: str = "python:3.11-slim"
+    docker_network: Literal["none", "bridge"] = "none"
+    timeout_seconds: int = 120
+    memory_limit: str = "512m"
+    cpus: str = "1.0"
+
+
 class LearningConfig(BaseModel):
     enabled: bool = True
     daily_report_days: int = 7
@@ -239,6 +262,9 @@ class AppConfig(BaseModel):
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    memory_privacy: MemoryPrivacyConfig = Field(default_factory=MemoryPrivacyConfig)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
     def ensure_dirs(self) -> None:
         self.workspace.root.mkdir(parents=True, exist_ok=True)

@@ -12,12 +12,35 @@ from omnidesk_agent.config import AppConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
+from omnidesk_agent import __version__
+from omnidesk_agent.observability import JsonEventLogger, MetricsRegistry, new_request_id, public_runtime_status
 
 
 def create_app(cfg: AppConfig) -> FastAPI:
     rt = OmniDeskRuntime(cfg)
     approvals = rt.approval_store
     app = FastAPI(title="OmniDesk Agent Gateway")
+    metrics = MetricsRegistry()
+    event_logger = JsonEventLogger()
+    app.state.metrics = metrics
+
+    @app.middleware("http")
+    async def request_context_middleware(request: Request, call_next):
+        request_id = request.headers.get(cfg.observability.request_id_header) or new_request_id()
+        request.state.request_id = request_id
+        started = __import__("time").time()
+        try:
+            response = await call_next(request)
+            metrics.inc("omnidesk_http_requests_total", method=request.method, path=request.url.path, status=getattr(response, "status_code", 0))
+            return response
+        except Exception:
+            metrics.inc("omnidesk_http_errors_total", method=request.method, path=request.url.path)
+            raise
+        finally:
+            elapsed = __import__("time").time() - started
+            metrics.set("omnidesk_http_last_latency_seconds", elapsed, path=request.url.path)
+            event_logger.event("http_request", request_id=request_id, method=request.method, path=request.url.path, elapsed=elapsed)
+
 
     async def _admin(request: Request) -> None:
         decision = await rt.admin_auth.verify_request(request)
@@ -65,6 +88,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
         if not getattr(cfg.gateway, "require_webhook_signatures", True):
             return
         if channel_cfg is None or not bool(getattr(channel_cfg, "enabled", False)):
+            return
+
+        adapter_verify = getattr(adapter, "verify_request", None)
+        if callable(adapter_verify):
+            adapter_verify(dict(request.headers), body, dict(request.query_params), payload)
             return
 
         headers = request.headers
@@ -144,7 +172,17 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"ok": True, **rt.status()}
+        return public_runtime_status(__version__)
+
+    @app.get("/admin/status")
+    async def admin_status(request: Request):
+        await _admin(request)
+        return {"ok": True, "version": __version__, "runtime": rt.status()}
+
+    @app.get("/admin/metrics")
+    async def admin_metrics(request: Request):
+        await _admin(request)
+        return Response(content=metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
 
     @app.post("/agent/run")
     async def run_agent(request: Request, body: dict):

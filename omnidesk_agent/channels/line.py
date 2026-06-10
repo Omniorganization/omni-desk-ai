@@ -37,6 +37,12 @@ class LineChannel:
         expected = base64.b64encode(digest).decode("ascii")
         return hmac.compare_digest(expected, signature)
 
+
+    def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
+        from omnidesk_agent.channels.verify import header
+        if not self.verify_signature(body, header(headers, "x-line-signature")):
+            raise PermissionError("invalid LINE webhook signature")
+
     def parse_webhook(self, payload: dict[str, Any]) -> list[ChannelMessage]:
         out = []
         for event in payload.get("events", []):

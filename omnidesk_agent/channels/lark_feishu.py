@@ -33,6 +33,17 @@ class _BaseLarkFeishuChannel:
         self.app_secret = os.getenv(cfg.app_secret_env, "")
         self.verification_token = os.getenv(cfg.verification_token_env, "")
 
+
+    def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
+        from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
+        token = self.verification_token or env_secret(self.cfg.verification_token_env, channel=self.name)
+        if not isinstance(payload, dict) or payload.get("token") != token:
+            raise PermissionError(f"invalid {self.name} verification token")
+        secret = os.getenv(getattr(self.cfg, "webhook_secret_env", ""), "")
+        signature = header(headers, "x-omnidesk-webhook-signature-256")
+        if secret or signature:
+            verify_hmac_sha256(body, secret or env_secret(self.cfg.webhook_secret_env, channel=self.name), signature, prefix="sha256=")
+
     def parse_webhook(self, payload: dict[str, Any]) -> Optional[Union[ChannelMessage, dict[str, str]]]:
         if payload.get("type") == "url_verification":
             if self.verification_token and payload.get("token") != self.verification_token:

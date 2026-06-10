@@ -1,0 +1,20 @@
+services:
+  omnidesk:
+    build: ../..
+    image: omnidesk-agent:local
+    ports:
+      - "127.0.0.1:18789:18789"
+    environment:
+      OMNIDESK_ADMIN_TOKEN: "change-me"
+      OMNIDESK_GATEWAY_SECRET: "change-me"
+    volumes:
+      - omnidesk-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  omnidesk-data:

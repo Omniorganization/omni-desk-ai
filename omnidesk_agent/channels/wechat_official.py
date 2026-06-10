@@ -44,6 +44,11 @@ class WeChatOfficialChannel:
         digest = hashlib.sha1(raw.encode()).hexdigest()
         return digest == signature
 
+
+    def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
+        if not self.verify_signature(query_params.get("signature", ""), query_params.get("timestamp", ""), query_params.get("nonce", "")):
+            raise PermissionError("invalid WeChat webhook signature")
+
     def parse_xml(self, xml_body: bytes) -> Optional[ChannelMessage]:
         root = ET.fromstring(xml_body)
         msg_type = root.findtext("MsgType")

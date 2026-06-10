@@ -27,6 +27,11 @@ class DingTalkChannel:
         self.robot_token = os.getenv(cfg.robot_access_token_env, "")
         self.robot_secret = os.getenv(cfg.robot_secret_env, "")
 
+
+    def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
+        from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
+        verify_hmac_sha256(body, env_secret(self.cfg.webhook_secret_env, channel=self.name), header(headers, "x-omnidesk-webhook-signature-256"), prefix="sha256=")
+
     def parse_webhook(self, payload: dict[str, Any]) -> Optional[ChannelMessage]:
         conversation_id = str(payload.get("conversationId") or payload.get("conversation_id") or "")
         if self.cfg.allowed_conversation_ids and conversation_id not in self.cfg.allowed_conversation_ids:

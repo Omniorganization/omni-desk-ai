@@ -33,6 +33,11 @@ class XChannel:
         digest = hmac.new(self.crc_token.encode("utf-8"), crc_token.encode("utf-8"), hashlib.sha256).digest()
         return {"response_token": "sha256=" + base64.b64encode(digest).decode("ascii")}
 
+
+    def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
+        from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
+        verify_hmac_sha256(body, env_secret(self.cfg.webhook_secret_env, channel=self.name), header(headers, "x-omnidesk-webhook-signature-256"), prefix="sha256=")
+
     def parse_webhook(self, payload: dict[str, Any]) -> list[ChannelMessage]:
         out = []
         for event in payload.get("direct_message_events", []) or []:

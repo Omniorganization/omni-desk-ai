@@ -5,6 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Optional
+from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter
 
 
 class ExperienceStore:
@@ -18,6 +19,7 @@ class ExperienceStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path.expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.privacy = MemoryPrivacyFilter()
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init()
@@ -95,6 +97,9 @@ class ExperienceStore:
         self.conn.commit()
 
     def add(self, task: str, plan: str = "", outcome: str = "", tags: Optional[list[str]] = None) -> int:
+        task = self.privacy.redact_text(task)
+        plan = self.privacy.redact_text(plan)
+        outcome = self.privacy.redact_text(outcome)
         cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO experiences(created_at, task, plan, outcome, tags) VALUES(?,?,?,?,?)",
@@ -129,6 +134,7 @@ class ExperienceStore:
         return [dict(r) for r in rows]
 
     def add_experience(self, experience: dict[str, Any]) -> int:
+        experience = self.privacy.redact_obj(experience)
         now = time.time()
         values = {
             "created_at": now,

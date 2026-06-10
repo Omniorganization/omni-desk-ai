@@ -11,7 +11,7 @@ RiskLevel = Literal["low", "medium", "high", "critical"]
 class _NoPublicDict:
     """Hide `__dict__` while preserving Python 3.9 dataclass compatibility.
 
-    Python 3.9 does not support `@dataclass(slots=True)`. Using explicit
+    Python 3.9 does not support `@dataclass`. Using explicit
     `__slots__` with dataclass defaults can break collection. This shim keeps
     `dataclasses.asdict()` working and prevents runtime code from relying on
     `obj.__dict__`.

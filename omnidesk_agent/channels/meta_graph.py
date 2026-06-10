@@ -41,6 +41,11 @@ class MetaGraphChannel:
         self.cfg = cfg
         self.token = os.getenv(cfg.page_access_token_env, "")
 
+
+    def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
+        from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
+        verify_hmac_sha256(body, env_secret(self.cfg.app_secret_env, channel=self.name), header(headers, "x-hub-signature-256"), prefix="sha256=")
+
     def parse_webhook(self, payload: dict[str, Any]) -> list[ChannelMessage]:
         out: list[ChannelMessage] = []
         for entry in payload.get("entry", []):
