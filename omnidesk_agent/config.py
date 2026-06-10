@@ -16,6 +16,12 @@ class LLMConfig(BaseModel):
     api_key_env: str = "OPENAI_API_KEY"
     base_url: str | None = None
     temperature: float = 0.2
+    max_input_chars: int = 12000
+    max_output_tokens: int = 1200
+    enable_cache: bool = True
+    cache_ttl_seconds: int = 86400
+    per_task_max_llm_calls: int | None = None
+    require_approval_above_estimated_tokens: int = 20000
 
 
 class GatewayConfig(BaseModel):

@@ -4,6 +4,16 @@ llm:
   model: gpt-5.1
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
+  # Token 防浪费：默认 rule 不消耗 LLM token；切换 openai 后启用以下限制。
+  max_input_chars: 12000
+  max_output_tokens: 1200
+  enable_cache: true
+  cache_ttl_seconds: 86400
+  # 不设置单任务 token 硬预算；已验证必须使用的 token 允许突破阈值并记录审计。
+  per_task_max_llm_calls: null
+  require_approval_above_estimated_tokens: 20000
+  # 说明：超过以上阈值时，未验证必要性的 LLM 调用会被阻止；
+  # 已通过结果导向验证的 verified-required 调用会解除预算限制并记录 budget_overridden。
 
 gateway:
   host: 127.0.0.1
