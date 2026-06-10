@@ -189,6 +189,19 @@ def create_app(cfg: AppConfig) -> FastAPI:
         messages = adapter.parse_webhook(_json(body))
         return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
 
+
+    @app.post("/self-upgrade/proposals/{proposal_id}/evaluate")
+    async def evaluate_upgrade_proposal(proposal_id: str, request: Request, body: dict | None = None):
+        await _admin(request)
+        body = body or {}
+        return await rt.governance.evaluate_proposal(
+            proposal_id,
+            old_permissions=body.get("old_permissions"),
+            new_permissions=body.get("new_permissions"),
+            stable_plan=body.get("stable_plan"),
+            shadow_plan=body.get("shadow_plan"),
+        )
+
     @app.get("/validate/connectors")
     async def validate_connectors_route(request: Request):
         await _admin(request)

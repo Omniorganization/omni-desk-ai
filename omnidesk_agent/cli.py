@@ -24,6 +24,7 @@ def main() -> None:
     up_p = sub.add_parser("upgrade-proposals"); up_p.add_argument("--status", default=None)
     gen_p = sub.add_parser("upgrade-artifact"); gen_p.add_argument("proposal_id")
     fb_p = sub.add_parser("upgrade-feedback"); fb_p.add_argument("proposal_id"); fb_p.add_argument("decision", choices=["approved", "rejected"]); fb_p.add_argument("--reason", default="")
+    eval_p = sub.add_parser("upgrade-evaluate"); eval_p.add_argument("proposal_id")
     run_p = sub.add_parser("run"); run_p.add_argument("message")
     remember_p = sub.add_parser("remember"); remember_p.add_argument("text"); remember_p.add_argument("--tags", default="")
     search_p = sub.add_parser("search"); search_p.add_argument("query")
@@ -92,6 +93,12 @@ def main() -> None:
     if args.cmd == "upgrade-feedback":
         rt = OmniDeskRuntime(cfg)
         print(json.dumps(rt.governance.record_human_feedback(args.proposal_id, args.decision, args.reason), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "upgrade-evaluate":
+        import asyncio
+        rt = OmniDeskRuntime(cfg)
+        print(json.dumps(asyncio.run(rt.governance.evaluate_proposal(args.proposal_id)), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "run":

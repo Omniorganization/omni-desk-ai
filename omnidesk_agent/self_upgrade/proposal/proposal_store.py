@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Optional
 import json, time
 from pathlib import Path
+from typing import Any
 from omnidesk_agent.self_upgrade.proposal.proposal_schema import UpgradeProposal
 
 class UpgradeProposalStore:
@@ -35,6 +36,23 @@ class UpgradeProposalStore:
             for path in sorted((self.root / st).glob("*.json")):
                 proposals.append(UpgradeProposal.from_dict(json.loads(path.read_text(encoding="utf-8"))))
         return sorted(proposals, key=lambda p: (p.score, p.created_at), reverse=True)
+
+
+    def save(self, proposal: UpgradeProposal) -> Path:
+        if proposal.status not in self.STATUSES:
+            raise ValueError(f"unknown proposal status: {proposal.status}")
+        proposal.updated_at = time.time()
+        path = self._path(proposal.proposal_id, proposal.status)
+        path.write_text(json.dumps(proposal.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def update_metadata(self, proposal_id: str, key: str, value: Any) -> UpgradeProposal:
+        proposal = self.get(proposal_id)
+        if proposal is None:
+            raise KeyError(proposal_id)
+        proposal.metadata[key] = value
+        self.save(proposal)
+        return proposal
 
     def transition(self, proposal_id: str, status: str, note: Optional[str] = None) -> UpgradeProposal:
         if status not in self.STATUSES:

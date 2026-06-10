@@ -161,3 +161,22 @@ Local dashboard:
 ## Admin / Webhook / Planner Hardening
 
 Management APIs now use unified AdminAuth; webhooks pass through WebhookSecurity with real adapter envelopes; session approvals are scoped by source/actor/risk/scope_hash; resume tokens are one-time and only exist while waiting; planner context is reduced by ToolSelector; low-confidence vision clicks become approval requests; core type checking is exposed through `scripts/check_core_pyright.sh`.
+
+
+---
+
+## Self-Upgrade Governance Writeback
+
+Upgrade proposals now store regression, security, shadow-mode and canary evaluation results directly in proposal metadata. This closes the loop from proposal generation to evidence-based promotion.
+
+```bash
+omnidesk upgrade-evaluate <proposal_id>
+```
+
+Management endpoint:
+
+```text
+POST /self-upgrade/proposals/{proposal_id}/evaluate
+```
+
+The endpoint is protected by AdminAuth.
