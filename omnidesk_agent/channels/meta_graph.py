@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import os
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:
+    httpx = None
 from typing import Any
 
 from omnidesk_agent.config import MetaGraphConfig
 from omnidesk_agent.core.models import ChannelMessage
 
+
+
+def _require_httpx():
+    if httpx is None:
+        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
+    return httpx
 
 class MetaGraphChannel:
     """Facebook Page / Instagram professional messaging adapter through Meta Graph API.
@@ -49,7 +58,7 @@ class MetaGraphChannel:
             raise RuntimeError("Meta page access token is missing")
         url = f"https://graph.facebook.com/{self.cfg.graph_version}/me/messages"
         body = {"recipient": {"id": recipient_psid}, "message": {"text": text}, "messaging_type": "RESPONSE"}
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _require_httpx().AsyncClient(timeout=20) as client:
             r = await client.post(url, params={"access_token": self.token}, json=body)
             r.raise_for_status()
 
@@ -60,6 +69,6 @@ class MetaGraphChannel:
             raise RuntimeError("Meta page access token is missing")
         url = f"https://graph.facebook.com/{self.cfg.graph_version}/{self.cfg.instagram_account_id}/messages"
         body = {"recipient": {"id": ig_scoped_user_id}, "message": {"text": text}}
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _require_httpx().AsyncClient(timeout=20) as client:
             r = await client.post(url, params={"access_token": self.token}, json=body)
             r.raise_for_status()

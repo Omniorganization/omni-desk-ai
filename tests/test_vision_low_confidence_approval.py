@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import pytest
 
 from omnidesk_agent.core.models import ToolResult
@@ -25,9 +26,11 @@ class DummyTools:
         return ToolResult(True, data=args, summary="clicked")
 
 
-@pytest.mark.asyncio
-async def test_low_confidence_grounded_click_raises_approval():
-    executor = VisionActionExecutor(DummyTools(), min_click_confidence=0.9)
-    ground = ToolResult(True, data={"grounding": {"target": {"x": 10, "y": 20, "width": 10, "height": 10, "confidence": 0.4}}})
-    with pytest.raises(ApprovalRequired):
-        await executor.maybe_click_target(ground, "click", Ctx(), screenshot_metadata={"scale_ratio": 1.0})
+def test_low_confidence_grounded_click_raises_approval():
+    async def run_case():
+        executor = VisionActionExecutor(DummyTools(), min_click_confidence=0.9)
+        ground = ToolResult(True, data={"grounding": {"target": {"x": 10, "y": 20, "width": 10, "height": 10, "confidence": 0.4}}})
+        with pytest.raises(ApprovalRequired):
+            await executor.maybe_click_target(ground, "click", Ctx(), screenshot_metadata={"scale_ratio": 1.0})
+
+    asyncio.run(run_case())

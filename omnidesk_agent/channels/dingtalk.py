@@ -1,9 +1,18 @@
 from __future__ import annotations
 import base64, hashlib, hmac, os, time, urllib.parse
 from typing import Any, Optional
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:
+    httpx = None
 from omnidesk_agent.config import DingTalkConfig
 from omnidesk_agent.core.models import ChannelMessage
+
+
+def _require_httpx():
+    if httpx is None:
+        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
+    return httpx
 
 class DingTalkChannel:
     name = "dingtalk"
@@ -43,6 +52,6 @@ class DingTalkChannel:
 
     async def send_text(self, recipient: str, text: str, **kwargs) -> None:
         body = {"msgtype": "text", "text": {"content": text}}
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _require_httpx().AsyncClient(timeout=20) as client:
             r = await client.post(self._signed_webhook_url(), json=body)
             r.raise_for_status()

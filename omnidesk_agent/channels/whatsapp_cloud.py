@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import os
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:
+    httpx = None
 from typing import Any
 
 from omnidesk_agent.config import WhatsAppCloudConfig
 from omnidesk_agent.core.models import ChannelMessage
 
+
+
+def _require_httpx():
+    if httpx is None:
+        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
+    return httpx
 
 class WhatsAppCloudChannel:
     """WhatsApp Business Platform Cloud API adapter.
@@ -65,6 +74,6 @@ class WhatsAppCloudChannel:
             "type": "text",
             "text": {"body": text},
         }
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _require_httpx().AsyncClient(timeout=20) as client:
             r = await client.post(url, headers={"Authorization": f"Bearer {self.token}"}, json=body)
             r.raise_for_status()

@@ -1,9 +1,18 @@
 from __future__ import annotations
 import base64, hashlib, hmac, os
 from typing import Any
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:
+    httpx = None
 from omnidesk_agent.config import XConfig
 from omnidesk_agent.core.models import ChannelMessage
+
+
+def _require_httpx():
+    if httpx is None:
+        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
+    return httpx
 
 class XChannel:
     name = "x"
@@ -38,6 +47,6 @@ class XChannel:
     async def post_text(self, text: str) -> None:
         if not self.bearer_token:
             raise RuntimeError("X bearer token is missing")
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _require_httpx().AsyncClient(timeout=20) as client:
             r = await client.post("https://api.x.com/2/tweets", headers={"Authorization": f"Bearer {self.bearer_token}"}, json={"text": text})
             r.raise_for_status()

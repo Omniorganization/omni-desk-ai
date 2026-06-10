@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import os
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:
+    httpx = None
 from typing import Any, Optional
 
 from omnidesk_agent.config import TelegramConfig
 from omnidesk_agent.core.models import ChannelMessage
 
+
+
+def _require_httpx():
+    if httpx is None:
+        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
+    return httpx
 
 class TelegramChannel:
     name = "telegram"
@@ -44,6 +53,6 @@ class TelegramChannel:
     async def send_text(self, recipient: str, text: str, **kwargs) -> None:
         if not self.base:
             raise RuntimeError("Telegram token is not configured")
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _require_httpx().AsyncClient(timeout=20) as client:
             r = await client.post(f"{self.base}/sendMessage", json={"chat_id": recipient, "text": text})
             r.raise_for_status()
