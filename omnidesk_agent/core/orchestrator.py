@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 from dataclasses import asdict
 import json
@@ -25,9 +26,9 @@ class Orchestrator:
         tools: ToolRegistry,
         permissions: PermissionManager,
         memory: ExperienceStore,
-        execution_strategy: ResultOrientedExecutionStrategy | None = None,
-        run_store: RunStore | None = None,
-        approval_store: ApprovalStore | None = None,
+        execution_strategy: Optional[ResultOrientedExecutionStrategy] = None,
+        run_store: Optional[RunStore] = None,
+        approval_store: Optional[ApprovalStore] = None,
     ):
         self.planner = planner
         self.tools = tools
@@ -44,7 +45,7 @@ class Orchestrator:
         plan = await self.planner.plan(msg)
         return await self._execute_plan(msg, plan, run_id=run_id, start_index=0, prior_results=[])
 
-    async def resume(self, run_id: str, resume_token: str | None = None) -> dict:
+    async def resume(self, run_id: str, resume_token: Optional[str] = None) -> dict:
         if self.run_store is None:
             return {"ok": False, "status": "resume_unavailable", "message": "RunStore is not configured"}
         try:
@@ -75,7 +76,7 @@ class Orchestrator:
         plan = plan_from_dict(run["plan_json"])
         return await self._execute_plan(msg, plan, run_id=run_id, start_index=int(run["current_step_index"]), prior_results=run["results"])
 
-    async def _execute_plan(self, msg: ChannelMessage, plan: Plan, *, run_id: str | None, start_index: int, prior_results: list[dict]) -> dict:
+    async def _execute_plan(self, msg: ChannelMessage, plan: Plan, *, run_id: Optional[str], start_index: int, prior_results: list[dict]) -> dict:
         ctx = ToolContext(permissions=self.permissions, source=msg.channel, actor=msg.sender_id, run_id=run_id, plan_id=plan.plan_id)
         results: list[ToolResult] = []
         sanitized_prior = list(prior_results)
@@ -136,7 +137,7 @@ class Orchestrator:
         except ApprovalRequired as approval:
             all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
             if self.run_store and run_id:
-                self.run_store.save_waiting(
+                resume_token = self.run_store.save_waiting(
                     run_id,
                     asdict(plan),
                     current_step_index,
@@ -144,8 +145,6 @@ class Orchestrator:
                     approval.approval_id,
                     approval.proposal,
                 )
-                run = self.run_store.get(run_id) or {}
-                resume_token = run.get("resume_token")
             else:
                 resume_token = None
             return {
@@ -164,10 +163,7 @@ class Orchestrator:
         status = "completed" if all(r["ok"] for r in all_results) else "failed"
         if self.run_store and run_id:
             self.run_store.complete(run_id, status, all_results)
-            run = self.run_store.get(run_id) or {}
-            resume_token = run.get("resume_token")
-        else:
-            resume_token = None
+        resume_token = None
 
         outcome = "\n".join([r.get("summary") or r.get("error") or "" for r in all_results])
         compact_steps = [{"description": s.description, "tool": s.tool, "action": s.action, "risk": s.risk, "args_keys": sorted(s.args.keys())} for s in plan.steps]

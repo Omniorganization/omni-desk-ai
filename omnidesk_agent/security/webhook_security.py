@@ -6,7 +6,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.validation.webhook_signatures import line_signature_valid
 
@@ -21,7 +21,7 @@ class WebhookSecurityConfig:
 class WebhookSecurity:
     """Unified replay protection, idempotency and rate limiting for webhooks."""
 
-    def __init__(self, db_path: Path, cfg: WebhookSecurityConfig | None = None):
+    def __init__(self, db_path: Path, cfg: Optional[WebhookSecurityConfig] = None):
         self.db_path = db_path.expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.cfg = cfg or WebhookSecurityConfig()
@@ -52,8 +52,8 @@ class WebhookSecurity:
         channel: str,
         body: bytes,
         source_key: str,
-        message_id: str | None = None,
-        timestamp: float | None = None,
+        message_id: Optional[str] = None,
+        timestamp: Optional[float] = None,
     ) -> dict[str, Any]:
         self._check_timestamp(timestamp)
         self._check_rate(channel, source_key)
@@ -73,7 +73,7 @@ class WebhookSecurity:
         if not hmac.compare_digest(expected, candidate):
             raise PermissionError("invalid HMAC-SHA256 signature")
 
-    def _check_timestamp(self, timestamp: float | None) -> None:
+    def _check_timestamp(self, timestamp: Optional[float]) -> None:
         if timestamp is None:
             return
         if abs(time.time() - timestamp) > self.cfg.replay_ttl_seconds:
@@ -103,6 +103,6 @@ class WebhookSecurity:
                 return False
 
     @staticmethod
-    def _digest(channel: str, body: bytes, message_id: str | None) -> str:
+    def _digest(channel: str, body: bytes, message_id: Optional[str]) -> str:
         seed = (message_id.encode("utf-8") if message_id else body)
         return hashlib.sha256(channel.encode("utf-8") + b":" + seed).hexdigest()

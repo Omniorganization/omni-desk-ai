@@ -10,6 +10,7 @@ from omnidesk_agent.core.plan_schema import StructuredPlan
 from omnidesk_agent.core.plan_validator import PlanValidator
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.models.router import ModelRouter
+from omnidesk_agent.core.tool_selector import ToolSelector
 
 
 class LLMStructuredPlanner:
@@ -22,6 +23,7 @@ class LLMStructuredPlanner:
         self.tools = tools
         self.fallback_planner = fallback_planner
         self.validator = PlanValidator(tools)
+        self.tool_selector = ToolSelector()
 
     async def plan(self, msg: ChannelMessage) -> Plan:
         # Keep rule planner for obvious single-step commands and as fallback.
@@ -30,7 +32,9 @@ class LLMStructuredPlanner:
 
         experiences = self.memory.retrieve_for_task(msg.text, limit=4) if hasattr(self.memory, 'retrieve_for_task') else self.memory.search(msg.text, limit=4)
         skills_context = self.skills.prompt_block(msg.text, max_chars=6000)
-        tools_context = json.dumps(self.tools.describe(), ensure_ascii=False, indent=2) if hasattr(self.tools, "describe") else "{}"
+        all_tools = self.tools.describe() if hasattr(self.tools, "describe") else {}
+        selected_tools = self.tool_selector.select(msg.text, all_tools)
+        tools_context = json.dumps(selected_tools, ensure_ascii=False, indent=2)
 
         system = (
             "You are Omni-deskAi's structured planner. Return only valid JSON matching this schema: "

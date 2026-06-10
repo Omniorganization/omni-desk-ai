@@ -1,9 +1,20 @@
 from __future__ import annotations
 
-from typing import Protocol, Callable, Awaitable
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Optional, Protocol
 from omnidesk_agent.core.models import ChannelMessage
 
 MessageHandler = Callable[[ChannelMessage], Awaitable[dict]]
+
+
+@dataclass
+class WebhookEnvelope:
+    source_key: str = "unknown"
+    sender_id: str = "unknown"
+    message_id: Optional[str] = None
+    timestamp: Optional[float] = None
+    event_type: Optional[str] = None
+    raw: Optional[dict[str, Any]] = None
 
 
 class Channel(Protocol):

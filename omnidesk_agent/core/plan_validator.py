@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 from dataclasses import dataclass
 
@@ -11,7 +12,7 @@ class PlanValidationResult:
     ok: bool
     errors: list[str]
     warnings: list[str]
-    plan: StructuredPlan | None = None
+    plan: Optional[StructuredPlan] = None
 
 
 class PlanValidator:
@@ -22,20 +23,23 @@ class PlanValidator:
         errors: list[str] = []
         warnings: list[str] = []
         available = set(self.tool_registry.names())
-        tool_specs = self.tool_registry.describe() if hasattr(self.tool_registry, "describe") else {}
 
         for i, step in enumerate(plan.steps):
             if step.tool not in available:
                 errors.append(f"step[{i}] unknown tool: {step.tool}")
                 continue
 
-            spec = tool_specs.get(step.tool, {})
-            actions = spec.get("actions", {})
-            action_spec = actions.get(step.action) or actions.get("*")
-            if not action_spec:
+            action_spec = None
+            if hasattr(self.tool_registry, "action_spec"):
+                action_spec = self.tool_registry.action_spec(step.tool, step.action)
+
+            if action_spec is None:
                 errors.append(f"step[{i}] unsupported action for {step.tool}: {step.action}")
             else:
-                schema_errors = _validate_against_schema(step.args, action_spec.get("input_schema", {}))
+                # Reuse ActionSpec's single source of truth for argument validation.
+                normalized_args = dict(step.args)
+                normalized_args.setdefault("expected_result", step.expected_result)
+                schema_errors = action_spec.validate_args(normalized_args)
                 for err in schema_errors:
                     errors.append(f"step[{i}] {step.tool}.{step.action}: {err}")
 
@@ -71,45 +75,3 @@ class PlanValidator:
             ],
             rationale=rationale,
         )
-
-
-def _validate_against_schema(args: dict, schema: dict) -> list[str]:
-    errors: list[str] = []
-    required = schema.get("required", [])
-    props = schema.get("properties", {})
-    for key in required:
-        if key not in args:
-            errors.append(f"missing required arg: {key}")
-    if schema.get("additionalProperties") is False:
-        for key in args:
-            if key not in props and key not in {"expected_result", "retry_policy", "rollback_action", "verification"}:
-                errors.append(f"unknown arg: {key}")
-    for key, prop in props.items():
-        if key not in args:
-            continue
-        expected = prop.get("type")
-        if expected and not _type_ok(args[key], expected):
-            errors.append(f"arg {key} expected {expected}, got {type(args[key]).__name__}")
-    return errors
-
-
-def _type_ok(value, expected) -> bool:
-    if isinstance(expected, list):
-        return any(_type_ok(value, e) for e in expected)
-    mapping = {
-        "string": str,
-        "integer": int,
-        "number": (int, float),
-        "boolean": bool,
-        "object": dict,
-        "array": list,
-        "null": type(None),
-    }
-    typ = mapping.get(expected)
-    if typ is None:
-        return True
-    if expected == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    return isinstance(value, typ)

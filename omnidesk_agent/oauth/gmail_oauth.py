@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.config import GmailConfig
 from omnidesk_agent.oauth.state_store import OAuthStateStore
@@ -36,7 +36,7 @@ class GmailOAuthManager:
     def token_available(self) -> bool:
         return self.cfg.token_file.exists()
 
-    def load_token_json(self) -> dict[str, Any] | None:
+    def load_token_json(self) -> Optional[dict[str, Any]]:
         if not self.cfg.token_file.exists():
             return None
         return json.loads(self.cfg.token_file.read_text(encoding="utf-8"))
@@ -59,7 +59,7 @@ class GmailOAuthManager:
         self.save_token_json(token)
         return token
 
-    def build_authorization_url(self, redirect_uri: str, state: str | None = None) -> dict[str, str]:
+    def build_authorization_url(self, redirect_uri: str, state: Optional[str] = None) -> dict[str, str]:
         # Do not trust caller-provided state. Always create a server-side one-time state.
         self._check_redirect_uri(redirect_uri)
         if not self.credentials_available():
@@ -79,7 +79,7 @@ class GmailOAuthManager:
         )
         return {"authorization_url": auth_url, "state": returned_state}
 
-    def exchange_code(self, code: str, redirect_uri: str, state: str | None = None) -> dict[str, Any]:
+    def exchange_code(self, code: str, redirect_uri: str, state: Optional[str] = None) -> dict[str, Any]:
         self._check_redirect_uri(redirect_uri)
         if not state or not self.state_store.verify_and_use(state, redirect_uri):
             raise PermissionError("Invalid, expired, used, or redirect_uri-mismatched OAuth state")

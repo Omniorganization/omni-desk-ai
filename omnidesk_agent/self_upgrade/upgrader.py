@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ class SelfUpgrader:
     force-pushes, and never restarts the running daemon.
     """
 
-    def __init__(self, repo_root: Path, planner: UpgradePlanner | None = None):
+    def __init__(self, repo_root: Path, planner: Optional[UpgradePlanner] = None):
         self.repo_root = repo_root.resolve()
         self.planner = planner or UpgradePlanner()
         self.patcher = UpgradePatcher(self.repo_root)

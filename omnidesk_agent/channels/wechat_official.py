@@ -4,7 +4,7 @@ import hashlib
 import os
 import time
 import xml.etree.ElementTree as ET
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -20,20 +20,31 @@ class WeChatOfficialChannel:
     """
 
     name = "wechat_official"
+    def extract_envelope(self, payload: bytes):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(payload)
+            sender = str(root.findtext("FromUserName") or "unknown")
+            mid = str(root.findtext("MsgId") or "")
+            ts = float(root.findtext("CreateTime") or 0) or None
+            return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, timestamp=ts, raw={})
+        except Exception:
+            return WebhookEnvelope()
 
     def __init__(self, cfg: WeChatOfficialConfig):
         self.cfg = cfg
         self.token = os.getenv(cfg.token_env, "")
         self.app_id = os.getenv(cfg.app_id_env, "")
         self.app_secret = os.getenv(cfg.app_secret_env, "")
-        self._access_token: tuple[str, float] | None = None
+        self._access_token: Optional[tuple[str, float]] = None
 
     def verify_signature(self, signature: str, timestamp: str, nonce: str) -> bool:
         raw = "".join(sorted([self.token, timestamp, nonce]))
         digest = hashlib.sha1(raw.encode()).hexdigest()
         return digest == signature
 
-    def parse_xml(self, xml_body: bytes) -> ChannelMessage | None:
+    def parse_xml(self, xml_body: bytes) -> Optional[ChannelMessage]:
         root = ET.fromstring(xml_body)
         msg_type = root.findtext("MsgType")
         if msg_type != "text":

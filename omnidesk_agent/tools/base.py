@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 import hashlib
 import json
 
@@ -14,9 +14,9 @@ class ToolContext:
     permissions: PermissionManager
     source: str = "local-cli"
     actor: str = "owner"
-    run_id: str | None = None
-    plan_id: str | None = None
-    step_index: int | None = None
+    run_id: Optional[str] = None
+    plan_id: Optional[str] = None
+    step_index: Optional[int] = None
 
 
 class Tool(Protocol):

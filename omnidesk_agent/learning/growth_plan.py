@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.learning.failure_analyzer import FailureAnalyzer
 
@@ -39,7 +39,7 @@ class GrowthPlan:
 
 
 class GrowthPlanner:
-    def __init__(self, failure_analyzer: FailureAnalyzer | None = None):
+    def __init__(self, failure_analyzer: Optional[FailureAnalyzer] = None):
         self.failure_analyzer = failure_analyzer or FailureAnalyzer()
 
     def propose(self, *, growth_plan: GrowthPlan, failure_summary: list[dict[str, Any]], metrics: dict[str, Any]) -> list[dict[str, Any]]:

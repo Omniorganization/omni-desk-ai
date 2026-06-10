@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 import os
 from omnidesk_agent.models.base import ModelRequest
@@ -25,7 +26,7 @@ def validate_models(runtime) -> dict:
     }
 
 
-async def live_connectivity_test(runtime, profiles: list[str] | None = None) -> dict:
+async def live_connectivity_test(runtime, profiles: Optional[list[str]] = None) -> dict:
     router = runtime.model_router
     selected = profiles or list(router.providers.keys())
     results = {}

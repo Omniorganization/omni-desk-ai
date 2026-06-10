@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -39,7 +39,7 @@ class BrowserTool:
             r.raise_for_status()
             return r.json()
 
-    async def _tab(self, target_id: str | None = None) -> dict[str, Any]:
+    async def _tab(self, target_id: Optional[str] = None) -> dict[str, Any]:
         tabs = await self._tabs()
         if target_id:
             for tab in tabs:
@@ -50,7 +50,7 @@ class BrowserTool:
             raise RuntimeError("No Chrome DevTools tabs available")
         return tabs[0]
 
-    async def _cdp(self, method: str, params: dict[str, Any] | None = None, target_id: str | None = None) -> dict[str, Any]:
+    async def _cdp(self, method: str, params: Optional[dict[str, Any]] = None, target_id: Optional[str] = None) -> dict[str, Any]:
         try:
             import websockets
         except ImportError as exc:

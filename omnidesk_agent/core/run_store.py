@@ -6,7 +6,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 class RunStore:
@@ -44,7 +44,6 @@ class RunStore:
 
     def create(self, original_message: dict[str, Any]) -> str:
         run_id = str(uuid.uuid4())
-        resume_token = secrets.token_urlsafe(32)
         now = time.time()
         with sqlite3.connect(self.db_path) as con:
             con.execute(
@@ -52,17 +51,22 @@ class RunStore:
                 INSERT INTO runs (id, status, original_message, resume_token, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, "planned", json.dumps(original_message, ensure_ascii=False), resume_token, now, now),
+                (run_id, "planned", json.dumps(original_message, ensure_ascii=False), None, now, now),
             )
         return run_id
 
-    def require_resume_token(self, run_id: str, resume_token: str | None) -> None:
+    def require_resume_token(self, run_id: str, resume_token: Optional[str]) -> None:
         run = self.get(run_id)
         if not run:
             raise KeyError(run_id)
         expected = run.get("resume_token")
-        if expected and resume_token != expected:
-            raise PermissionError("invalid resume_token")
+        if run.get("status") == "waiting_approval":
+            if not expected:
+                raise PermissionError("missing stored resume_token")
+            if resume_token != expected:
+                raise PermissionError("invalid resume_token")
+        elif expected:
+            raise PermissionError("resume_token should not exist for non-waiting run")
 
     def save_waiting(
         self,
@@ -72,7 +76,8 @@ class RunStore:
         results: list[dict[str, Any]],
         approval_id: str,
         approval_proposal: dict[str, Any],
-    ) -> None:
+    ) -> str:
+        token = secrets.token_urlsafe(32)
         self.update(run_id, {
             "status": "waiting_approval",
             "plan_json": json.dumps(plan_json, ensure_ascii=False),
@@ -80,7 +85,9 @@ class RunStore:
             "results_json": json.dumps(results, ensure_ascii=False),
             "waiting_approval_id": approval_id,
             "approval_proposal_json": json.dumps(approval_proposal, ensure_ascii=False),
+            "resume_token": token,
         })
+        return token
 
     def complete(self, run_id: str, status: str, results: list[dict[str, Any]]) -> None:
         self.update(run_id, {
@@ -88,6 +95,7 @@ class RunStore:
             "results_json": json.dumps(results, ensure_ascii=False),
             "waiting_approval_id": None,
             "approval_proposal_json": None,
+            "resume_token": None,
         })
 
     def update(self, run_id: str, fields: dict[str, Any]) -> None:
@@ -98,7 +106,7 @@ class RunStore:
         with sqlite3.connect(self.db_path) as con:
             con.execute(f"UPDATE runs SET {assignments} WHERE id = ?", values)
 
-    def get(self, run_id: str) -> dict[str, Any] | None:
+    def get(self, run_id: str) -> Optional[dict[str, Any]]:
         with sqlite3.connect(self.db_path) as con:
             row = con.execute(
                 """
@@ -124,7 +132,7 @@ class RunStore:
             "updated_at": row[10],
         }
 
-    def get_by_approval(self, approval_id: str) -> dict[str, Any] | None:
+    def get_by_approval(self, approval_id: str) -> Optional[dict[str, Any]]:
         with sqlite3.connect(self.db_path) as con:
             row = con.execute("SELECT id FROM runs WHERE waiting_approval_id=?", (approval_id,)).fetchone()
         return self.get(row[0]) if row else None

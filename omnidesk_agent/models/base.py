@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Optional, Protocol
 
 ModelTask = Literal['planner','tool_plan','chat','code','vision','private','summarize','upgrade','embed']
 
@@ -21,8 +21,8 @@ class ModelResponse:
     provider: str
     model: str
     profile: str
-    usage: dict[str, Any] | None = None
-    raw: dict[str, Any] | None = None
+    usage: Optional[dict[str, Any]] = None
+    raw: Optional[dict[str, Any]] = None
 
 class ModelProvider(Protocol):
     provider_name: str

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import email.message
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.config import GmailConfig
 from omnidesk_agent.core.models import ChannelMessage
@@ -16,6 +16,11 @@ class GmailChannel:
     """
 
     name = "gmail"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        sender = str(payload.get("emailAddress") or payload.get("from") or "unknown")
+        mid = str(payload.get("messageId") or payload.get("historyId") or payload.get("id") or "")
+        return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, raw=payload)
 
     def __init__(self, cfg: GmailConfig):
         self.cfg = cfg
@@ -27,7 +32,7 @@ class GmailChannel:
     def authenticated(self) -> bool:
         return self.cfg.token_file.exists()
 
-    def parse_message_summary(self, message: dict[str, Any]) -> ChannelMessage | None:
+    def parse_message_summary(self, message: dict[str, Any]) -> Optional[ChannelMessage]:
         payload = message.get("payload", {})
         headers = {h.get("name", "").lower(): h.get("value", "") for h in payload.get("headers", [])}
         sender = headers.get("from", "")

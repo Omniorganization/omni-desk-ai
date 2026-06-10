@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import Any, Optional
 
 
 class FailureAnalyzer:
@@ -19,7 +19,7 @@ class FailureAnalyzer:
         "security_violation": ["blocked", "denylist", "allowlist", "security", "signature mismatch"],
     }
 
-    def classify(self, task_trace: dict[str, Any] | None = None, error: str | None = None) -> str:
+    def classify(self, task_trace: Optional[dict[str, Any]] = None, error: Optional[str] = None) -> str:
         text_parts = [error or ""]
         if task_trace:
             text_parts.append(str(task_trace.get("status", "")))

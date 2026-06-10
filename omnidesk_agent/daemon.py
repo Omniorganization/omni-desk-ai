@@ -25,6 +25,7 @@ from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.security.permissions import PermissionManager
 from omnidesk_agent.security.approval_store import ApprovalStore
 from omnidesk_agent.security.webhook_security import WebhookSecurity
+from omnidesk_agent.security.admin_auth import AdminAuth
 from omnidesk_agent.skills.registry import SkillRegistry
 from omnidesk_agent.tools.browser import BrowserTool
 from omnidesk_agent.tools.channel_send import ChannelSendTool
@@ -45,6 +46,7 @@ class OmniDeskRuntime:
         self.approval_store = ApprovalStore(cfg.workspace.root / 'approvals.sqlite3', ttl_seconds=cfg.permissions.approval_ttl_seconds)
         self.permissions = PermissionManager(cfg.permissions, self.approval_store)
         self.webhook_security = WebhookSecurity(cfg.workspace.root / 'webhooks.sqlite3')
+        self.admin_auth = AdminAuth(admin_token_env=cfg.gateway.admin_token_env, legacy_secret_env=cfg.gateway.shared_secret_env, allow_local_without_token=cfg.gateway.allow_local_admin_without_token)
         self.memory = ExperienceStore(cfg.workspace.memory_db)
         self.token_budget = TokenBudgetManager(cfg.workspace.root / "token_budget.sqlite3", TokenBudgetConfig(max_input_chars=cfg.llm.max_input_chars, max_output_tokens=cfg.llm.max_output_tokens, per_task_max_llm_calls=cfg.llm.per_task_max_llm_calls, cache_ttl_seconds=cfg.llm.cache_ttl_seconds, enable_cache=cfg.llm.enable_cache, require_approval_above_estimated_tokens=cfg.llm.require_approval_above_estimated_tokens))
         self.execution_strategy = ResultOrientedExecutionStrategy()

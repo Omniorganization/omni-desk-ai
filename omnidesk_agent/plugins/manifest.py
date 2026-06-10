@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -19,15 +19,15 @@ class PluginManifest(BaseModel):
     entrypoint: str = "plugin.py"
     sandbox: str = "subprocess"
     permissions: list[str] = Field(default_factory=list)
-    signature: str | None = None
-    sha256: str | None = None
+    signature: Optional[str] = None
+    sha256: Optional[str] = None
 
     @classmethod
     def load(cls, path: Path) -> "PluginManifest":
         data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.suffix in {".yaml", ".yml"} else json.loads(path.read_text(encoding="utf-8"))
         return cls.model_validate(data)
 
-    def verify(self, plugin_dir: Path, signing_secret: str | None = None) -> None:
+    def verify(self, plugin_dir: Path, signing_secret: Optional[str] = None) -> None:
         entry = (plugin_dir / self.entrypoint).resolve()
         if not entry.exists():
             raise FileNotFoundError(entry)

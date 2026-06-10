@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext
-from omnidesk_agent.tools.spec import ToolSpecRegistry
+from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, ToolSpecRegistry
 
 
 class ToolRegistry:
@@ -24,10 +24,17 @@ class ToolRegistry:
             raise KeyError(f"Unknown tool: {name}")
         return self._tools[name]
 
+    def spec_for(self, name: str) -> ToolSpec:
+        return ToolSpecRegistry.infer(self.get(name))
+
+    def action_spec(self, tool_name: str, action: str) -> Optional[ActionSpec]:
+        spec = self.spec_for(tool_name)
+        return spec.actions.get(action) or spec.actions.get("*")
+
     def describe(self) -> dict[str, dict]:
         return {
-            name: ToolSpecRegistry.infer(tool).to_prompt_dict()
-            for name, tool in self._tools.items()
+            name: self.spec_for(name).to_prompt_dict()
+            for name in self._tools
         }
 
     async def call(self, tool_name: str, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:

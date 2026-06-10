@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
@@ -14,10 +14,10 @@ class RetryPolicy(BaseModel):
 
 
 class VerificationSpec(BaseModel):
-    tool: str | None = None
-    action: str | None = None
+    tool: Optional[str] = None
+    action: Optional[str] = None
     args: dict[str, Any] = Field(default_factory=dict)
-    expected: str | None = None
+    expected: Optional[str] = None
 
 
 class PlanStepSchema(BaseModel):
@@ -29,8 +29,8 @@ class PlanStepSchema(BaseModel):
     requires_approval: bool = True
     expected_result: str
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
-    rollback_action: dict[str, Any] | None = None
-    verification: VerificationSpec | None = None
+    rollback_action: Optional[dict[str, Any]] = None
+    verification: Optional[VerificationSpec] = None
 
     @field_validator("expected_result")
     @classmethod
@@ -46,7 +46,7 @@ class StructuredPlan(BaseModel):
     risk: RiskLevel = "medium"
     steps: list[PlanStepSchema]
     success_criteria: str
-    rollback_plan: str | None = None
+    rollback_plan: Optional[str] = None
 
     @field_validator("steps")
     @classmethod

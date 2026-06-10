@@ -7,6 +7,15 @@ from omnidesk_agent.core.models import ChannelMessage
 
 class LineChannel:
     name = "line"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        event = (payload.get("events") or [{}])[0]
+        source = event.get("source") or {}
+        sender = str(source.get("userId") or source.get("groupId") or source.get("roomId") or "unknown")
+        msg = event.get("message") or {}
+        mid = str(msg.get("id") or event.get("webhookEventId") or "")
+        ts = float(event.get("timestamp")) / 1000.0 if event.get("timestamp") else None
+        return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, timestamp=ts, raw=payload)
     def __init__(self, cfg: LineConfig):
         self.cfg = cfg
         self.token = os.getenv(cfg.channel_access_token_env, "")

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Optional, Union
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 
 
-def obj_schema(properties: dict[str, Any], required: list[str] | None = None, additional: bool = False) -> dict[str, Any]:
+def obj_schema(properties: dict[str, Any], required: Optional[list[str]] = None, additional: bool = False) -> dict[str, Any]:
     return {
         "type": "object",
         "properties": properties,
@@ -60,9 +60,10 @@ class ActionSpec:
         for key in required:
             if key not in args:
                 errors.append(f"missing required arg: {key}")
+        runtime_keys = {"expected_result", "retry_policy", "rollback_action", "verification"}
         if schema.get("additionalProperties") is False:
             for key in args:
-                if key not in props:
+                if key not in props and key not in runtime_keys:
                     errors.append(f"unknown arg: {key}")
         for key, prop in props.items():
             if key not in args:
@@ -139,7 +140,7 @@ def _json_type(value: str) -> str:
     return value
 
 
-def _type_ok(value: Any, expected: str | list[str]) -> bool:
+def _type_ok(value: Any, expected: Union[str, list][str]) -> bool:
     if isinstance(expected, list):
         return any(_type_ok(value, e) for e in expected)
     mapping = {

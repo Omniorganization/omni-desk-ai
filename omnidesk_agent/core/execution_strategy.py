@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -19,7 +19,7 @@ class ResultOrientedExecutionStrategy:
     """Make expensive actions prove their purpose before execution."""
 
     def __init__(self):
-        self._last_screenshot_hash: str | None = None
+        self._last_screenshot_hash: Optional[str] = None
         self._last_screenshot_at = 0.0
         self._recent_expensive_actions: list[tuple[float, str, str, str]] = []
 

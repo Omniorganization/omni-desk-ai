@@ -1,18 +1,24 @@
 from __future__ import annotations
 import base64, hashlib, hmac, os, time, urllib.parse
-from typing import Any
+from typing import Any, Optional
 import httpx
 from omnidesk_agent.config import DingTalkConfig
 from omnidesk_agent.core.models import ChannelMessage
 
 class DingTalkChannel:
     name = "dingtalk"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        sender = str(payload.get("senderStaffId") or payload.get("senderNick") or payload.get("senderId") or "unknown")
+        mid = str(payload.get("msgId") or "")
+        source = str(payload.get("conversationId") or sender)
+        return WebhookEnvelope(source_key=source, sender_id=sender, message_id=mid or None, raw=payload)
     def __init__(self, cfg: DingTalkConfig):
         self.cfg = cfg
         self.robot_token = os.getenv(cfg.robot_access_token_env, "")
         self.robot_secret = os.getenv(cfg.robot_secret_env, "")
 
-    def parse_webhook(self, payload: dict[str, Any]) -> ChannelMessage | None:
+    def parse_webhook(self, payload: dict[str, Any]) -> Optional[ChannelMessage]:
         conversation_id = str(payload.get("conversationId") or payload.get("conversation_id") or "")
         if self.cfg.allowed_conversation_ids and conversation_id not in self.cfg.allowed_conversation_ids:
             return None

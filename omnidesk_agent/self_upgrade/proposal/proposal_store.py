@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import json, time
 from pathlib import Path
 from omnidesk_agent.self_upgrade.proposal.proposal_schema import UpgradeProposal
@@ -18,14 +19,14 @@ class UpgradeProposalStore:
         path.write_text(json.dumps(proposal.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
-    def get(self, proposal_id: str) -> UpgradeProposal | None:
+    def get(self, proposal_id: str) -> Optional[UpgradeProposal]:
         for status in self.STATUSES:
             path = self._path(proposal_id, status)
             if path.exists():
                 return UpgradeProposal.from_dict(json.loads(path.read_text(encoding="utf-8")))
         return None
 
-    def list(self, status: str | None = None) -> list[UpgradeProposal]:
+    def list(self, status: Optional[str] = None) -> list[UpgradeProposal]:
         statuses = [status] if status else sorted(self.STATUSES)
         proposals = []
         for st in statuses:
@@ -35,7 +36,7 @@ class UpgradeProposalStore:
                 proposals.append(UpgradeProposal.from_dict(json.loads(path.read_text(encoding="utf-8"))))
         return sorted(proposals, key=lambda p: (p.score, p.created_at), reverse=True)
 
-    def transition(self, proposal_id: str, status: str, note: str | None = None) -> UpgradeProposal:
+    def transition(self, proposal_id: str, status: str, note: Optional[str] = None) -> UpgradeProposal:
         if status not in self.STATUSES:
             raise ValueError(f"unknown proposal status: {status}")
         proposal = self.get(proposal_id)
@@ -52,7 +53,7 @@ class UpgradeProposalStore:
             old_path.unlink()
         return proposal
 
-    def approve(self, proposal_id: str, note: str | None = None) -> UpgradeProposal:
+    def approve(self, proposal_id: str, note: Optional[str] = None) -> UpgradeProposal:
         return self.transition(proposal_id, "approved", note=note)
 
     def reject(self, proposal_id: str, reason: str) -> UpgradeProposal:
@@ -62,7 +63,7 @@ class UpgradeProposalStore:
             f.write(json.dumps({"proposal_id": proposal_id, "decision": "rejected", "user_reason": reason, "future_rule": self._infer_future_rule(reason), "created_at": time.time()}, ensure_ascii=False) + "\n")
         return proposal
 
-    def mark_implemented(self, proposal_id: str, note: str | None = None) -> UpgradeProposal:
+    def mark_implemented(self, proposal_id: str, note: Optional[str] = None) -> UpgradeProposal:
         return self.transition(proposal_id, "implemented", note=note)
 
     def _path(self, proposal_id: str, status: str) -> Path:

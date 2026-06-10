@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import httpx
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.config import TelegramConfig
 from omnidesk_agent.core.models import ChannelMessage
@@ -10,13 +10,21 @@ from omnidesk_agent.core.models import ChannelMessage
 
 class TelegramChannel:
     name = "telegram"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        msg = payload.get("message") or payload.get("edited_message") or payload.get("channel_post") or {}
+        chat = msg.get("chat") or {}
+        user = msg.get("from") or {}
+        sender = str(user.get("id") or chat.get("id") or "unknown")
+        mid = str(msg.get("message_id") or payload.get("update_id") or "")
+        return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, raw=payload)
 
     def __init__(self, cfg: TelegramConfig):
         self.cfg = cfg
         self.token = os.getenv(cfg.bot_token_env, "")
         self.base = f"https://api.telegram.org/bot{self.token}" if self.token else ""
 
-    def parse_update(self, update: dict[str, Any]) -> ChannelMessage | None:
+    def parse_update(self, update: dict[str, Any]) -> Optional[ChannelMessage]:
         msg = update.get("message") or update.get("business_message")
         if not msg or "text" not in msg:
             return None

@@ -4,7 +4,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 class ExperienceStore:
@@ -94,7 +94,7 @@ class ExperienceStore:
             pass
         self.conn.commit()
 
-    def add(self, task: str, plan: str = "", outcome: str = "", tags: list[str] | None = None) -> int:
+    def add(self, task: str, plan: str = "", outcome: str = "", tags: Optional[list[str]] = None) -> int:
         cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO experiences(created_at, task, plan, outcome, tags) VALUES(?,?,?,?,?)",
@@ -221,7 +221,7 @@ class ExperienceStore:
 
     def record_metric(self, *, success: bool, manual_intervention: bool = False, tool_error: bool = False,
                       repeat_failure: bool = False, skill_reuse: bool = False, rollback: bool = False,
-                      security_violation: bool = False, day: str | None = None) -> None:
+                      security_violation: bool = False, day: Optional[str] = None) -> None:
         if day is None:
             day = time.strftime("%Y-%m-%d", time.localtime())
         cur = self.conn.cursor()

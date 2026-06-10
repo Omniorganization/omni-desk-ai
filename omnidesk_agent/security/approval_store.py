@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 class ApprovalStore:
@@ -37,7 +37,7 @@ class ApprovalStore:
         if "expires_at" not in cols:
             con.execute("ALTER TABLE approvals ADD COLUMN expires_at REAL")
 
-    def create(self, proposal: dict[str, Any], ttl_seconds: int | None = None) -> str:
+    def create(self, proposal: dict[str, Any], ttl_seconds: Optional[int] = None) -> str:
         aid = str(uuid.uuid4())
         now = time.time()
         ttl = self.ttl_seconds if ttl_seconds is None else ttl_seconds
@@ -49,7 +49,7 @@ class ApprovalStore:
             )
         return aid
 
-    def get(self, approval_id: str) -> dict[str, Any] | None:
+    def get(self, approval_id: str) -> Optional[dict[str, Any]]:
         with sqlite3.connect(self.db_path) as con:
             row = con.execute(
                 "SELECT id, status, proposal, result, created_at, expires_at, decided_at FROM approvals WHERE id = ?",
@@ -57,7 +57,7 @@ class ApprovalStore:
             ).fetchone()
         return self._row(row) if row else None
 
-    def list(self, status: str | None = None) -> list[dict[str, Any]]:
+    def list(self, status: Optional[str] = None) -> list[dict[str, Any]]:
         sql = "SELECT id, status, proposal, result, created_at, expires_at, decided_at FROM approvals"
         params: tuple[Any, ...] = ()
         if status:
@@ -68,7 +68,7 @@ class ApprovalStore:
             rows = con.execute(sql, params).fetchall()
         return [self._row(r) for r in rows]
 
-    def decide(self, approval_id: str, status: str, result: dict[str, Any] | None = None) -> dict[str, Any]:
+    def decide(self, approval_id: str, status: str, result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         if status not in {"approved", "denied"}:
             raise ValueError("status must be approved or denied")
         with sqlite3.connect(self.db_path) as con:
@@ -84,7 +84,7 @@ class ApprovalStore:
             raise KeyError(approval_id)
         return self._row(row)
 
-    def require_approved(self, approval_id: str, expected_proposal: dict[str, Any] | None = None) -> dict[str, Any]:
+    def require_approved(self, approval_id: str, expected_proposal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         approval = self.get(approval_id)
         if not approval:
             raise PermissionError(f"approval not found: {approval_id}")

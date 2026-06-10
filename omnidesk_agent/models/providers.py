@@ -1,18 +1,18 @@
 from __future__ import annotations
 import base64, json, os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 import httpx
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
 
 @dataclass
 class ProviderSettings:
     profile_name: str; provider: str; model: str
-    api_key_env: str | None = None; base_url: str | None = None; api_version: str | None = None; region: str | None = None
+    api_key_env: Optional[str] = None; base_url: Optional[str] = None; api_version: Optional[str] = None; region: Optional[str] = None
     max_output_tokens: int = 1200; temperature: float = 0.2
-    extra_headers: dict[str,str] | None = None; extra_body: dict[str,Any] | None = None
+    extra_headers: Optional[dict[str,str]] = None; extra_body: Optional[dict[str,Any]] = None
 
-def env(name: str | None) -> str: return os.getenv(name or '', '')
+def env(name: Optional[str]) -> str: return os.getenv(name or '', '')
 def msgs(system,user): return [{'role':'system','content':system},{'role':'user','content':user}]
 
 class OpenAIResponsesProvider:

@@ -154,3 +154,10 @@ Local dashboard:
 ```text
 /self-upgrade/dashboard
 ```
+
+
+---
+
+## Admin / Webhook / Planner Hardening
+
+Management APIs now use unified AdminAuth; webhooks pass through WebhookSecurity with real adapter envelopes; session approvals are scoped by source/actor/risk/scope_hash; resume tokens are one-time and only exist while waiting; planner context is reduced by ToolSelector; low-confidence vision clicks become approval requests; core type checking is exposed through `scripts/check_core_pyright.sh`.

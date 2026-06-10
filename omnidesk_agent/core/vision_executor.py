@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext
+from omnidesk_agent.tools.base import ToolContext, proposal
 
 
 class VisionActionExecutor:
@@ -17,8 +17,8 @@ class VisionActionExecutor:
         grounding_result: ToolResult,
         instruction: str,
         ctx: ToolContext,
-        screenshot_metadata: dict[str, Any] | None = None,
-    ) -> ToolResult | None:
+        screenshot_metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[ToolResult]:
         if not grounding_result.ok or not isinstance(grounding_result.data, dict):
             return None
         target = self._target(grounding_result)
@@ -26,13 +26,6 @@ class VisionActionExecutor:
             return None
 
         confidence = float(target.get("confidence") or 0)
-        if confidence < self.min_click_confidence:
-            return ToolResult(
-                False,
-                summary="vision target confidence below threshold; human approval required",
-                data={"confidence": confidence, "threshold": self.min_click_confidence, "target": target},
-            )
-
         x = target.get("x")
         y = target.get("y")
         width = target.get("width", 0)
@@ -52,11 +45,34 @@ class VisionActionExecutor:
         screen_x = int(cx / scale_ratio)
         screen_y = int(cy / scale_ratio)
 
-        return await self.tools.call("computer", "click", {
+        click_args = {
             "x": screen_x,
             "y": screen_y,
             "expected_result": f"Click grounded target for: {instruction}",
-        }, ctx)
+            "vision_confidence": confidence,
+            "vision_threshold": self.min_click_confidence,
+        }
+
+        if confidence < self.min_click_confidence:
+            if ctx is None:
+                return ToolResult(
+                    False,
+                    summary="vision target confidence below threshold; approval required",
+                    data={"confidence": confidence, "threshold": self.min_click_confidence, "target": target, "click_args": click_args},
+                )
+            decision = ctx.permissions.verify(proposal(
+                "computer",
+                "click",
+                click_args,
+                "high",
+                "Low-confidence vision target requires human approval before clicking",
+                ctx,
+            ))
+            if not decision.allowed:
+                return ToolResult(False, summary="low-confidence grounded click not executed", data={"decision": decision.mode, "click_args": click_args})
+            # If interactive approval allowed it, execute the click.
+
+        return await self.tools.call("computer", "click", click_args, ctx)
 
     async def verify_with_retry(
         self,
@@ -64,14 +80,14 @@ class VisionActionExecutor:
         ctx: ToolContext,
         instruction: str,
         verification: dict[str, Any],
-        retry_policy: dict[str, Any] | None = None,
+        retry_policy: Optional[dict[str, Any]] = None,
     ) -> ToolResult:
         retry_policy = retry_policy or {}
         max_retries = int(retry_policy.get("max_retries", 0))
         backoff = float(retry_policy.get("backoff_seconds", 1.0))
         expected = str(verification.get("expected") or verification.get("expected_result") or instruction)
 
-        last_result: ToolResult | None = None
+        last_result: Optional[ToolResult] = None
         for attempt in range(max_retries + 1):
             shot = await self.tools.call("computer", "screenshot", {
                 "expected_result": f"Verify result: {expected}",
@@ -96,7 +112,7 @@ class VisionActionExecutor:
         return ToolResult(False, data={"last_result": self._safe_result(last_result), "expected": expected}, summary=f"vision verification failed: {expected}")
 
     @staticmethod
-    def _target(result: ToolResult) -> dict[str, Any] | None:
+    def _target(result: ToolResult) -> Optional[dict[str, Any]]:
         data = result.data if isinstance(result.data, dict) else {}
         grounding = data.get("grounding", {})
         if not isinstance(grounding, dict):
@@ -122,7 +138,7 @@ class VisionActionExecutor:
         return False
 
     @staticmethod
-    def _safe_result(result: ToolResult | None) -> dict[str, Any] | None:
+    def _safe_result(result: Optional[ToolResult]) -> Optional[dict[str, Any]]:
         if result is None:
             return None
         return {"ok": result.ok, "summary": result.summary, "error": result.error, "data": result.data}

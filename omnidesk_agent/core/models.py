@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from uuid import uuid4
 import time
 
@@ -13,8 +13,8 @@ class ChannelMessage:
     channel: str
     sender_id: str
     text: str
-    thread_id: str | None = None
-    message_id: str | None = None
+    thread_id: Optional[str] = None
+    message_id: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
     received_at: float = field(default_factory=time.time)
 
@@ -50,8 +50,8 @@ class Plan:
 class ToolResult:
     ok: bool
     data: Any = None
-    error: str | None = None
-    summary: str | None = None
+    error: Optional[str] = None
+    summary: Optional[str] = None
 
 
 @dataclass
@@ -64,10 +64,10 @@ class ActionProposal:
     source: str
     actor: str
     action_id: str = field(default_factory=lambda: str(uuid4()))
-    run_id: str | None = None
-    plan_id: str | None = None
-    step_index: int | None = None
-    scope_hash: str | None = None
+    run_id: Optional[str] = None
+    plan_id: Optional[str] = None
+    step_index: Optional[int] = None
+    scope_hash: Optional[str] = None
 
 
 @dataclass

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.learning.failure_analyzer import FailureAnalyzer
 
@@ -8,10 +8,10 @@ from omnidesk_agent.learning.failure_analyzer import FailureAnalyzer
 class ExperienceExtractor:
     """Turn raw run output into structured experience memory."""
 
-    def __init__(self, failure_analyzer: FailureAnalyzer | None = None):
+    def __init__(self, failure_analyzer: Optional[FailureAnalyzer] = None):
         self.failure_analyzer = failure_analyzer or FailureAnalyzer()
 
-    def extract(self, *, task: str, plan: dict[str, Any], run_result: dict[str, Any], tags: list[str] | None = None) -> dict[str, Any]:
+    def extract(self, *, task: str, plan: dict[str, Any], run_result: dict[str, Any], tags: Optional[list[str]] = None) -> dict[str, Any]:
         status = run_result.get("status", "unknown")
         success = status == "completed"
         failure_reason = None if success else self.failure_analyzer.classify(run_result, self._first_error(run_result))

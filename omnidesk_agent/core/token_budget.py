@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 import hashlib
 import json
@@ -22,7 +23,7 @@ class TokenBudgetConfig:
 
     # Per-task hard budget has been removed by design.
     # Kept only for backward config compatibility; it is not used as a hard limit.
-    per_task_max_llm_calls: int | None = None
+    per_task_max_llm_calls: Optional[int] = None
 
 
 @dataclass
@@ -31,9 +32,9 @@ class TokenDecision:
     reason: str
     estimated_input_tokens: int
     estimated_output_tokens: int
-    cache_key: str | None = None
-    truncated_system: str | None = None
-    truncated_user: str | None = None
+    cache_key: Optional[str] = None
+    truncated_system: Optional[str] = None
+    truncated_user: Optional[str] = None
     budget_overridden: bool = False
     verified_required: bool = False
 
@@ -48,7 +49,7 @@ class TokenBudgetManager:
       that the budget was overridden.
     """
 
-    def __init__(self, db_path: Path, config: TokenBudgetConfig | None = None):
+    def __init__(self, db_path: Path, config: Optional[TokenBudgetConfig] = None):
         self.db_path = db_path.expanduser()
         self.config = config or TokenBudgetConfig()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +130,7 @@ class TokenBudgetManager:
         system: str,
         user: str,
         task_id: str = "default",
-        expected_output_tokens: int | None = None,
+        expected_output_tokens: Optional[int] = None,
         verified_required: bool = False,
     ) -> TokenDecision:
         cfg = self.config
@@ -190,7 +191,7 @@ class TokenBudgetManager:
             verified_required=verified_required,
         )
 
-    def get_cached(self, cache_key: str) -> str | None:
+    def get_cached(self, cache_key: str) -> Optional[str]:
         if not self.config.enable_cache:
             return None
         cutoff = time.time() - self.config.cache_ttl_seconds

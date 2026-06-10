@@ -16,6 +16,17 @@ class WhatsAppCloudChannel:
     """
 
     name = "whatsapp_cloud"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        try:
+            value = payload.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
+            msg = (value.get("messages") or [{}])[0]
+            sender = str(msg.get("from") or "unknown")
+            mid = str(msg.get("id") or "")
+            ts = float(msg.get("timestamp")) if msg.get("timestamp") else None
+            return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, timestamp=ts, raw=payload)
+        except Exception:
+            return WebhookEnvelope(raw=payload)
 
     def __init__(self, cfg: WhatsAppCloudConfig):
         self.cfg = cfg

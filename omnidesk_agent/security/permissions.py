@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
 from dataclasses import asdict, is_dataclass
-from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.config import PermissionConfig
@@ -28,13 +26,22 @@ class PermissionManager:
         self.audit_log = cfg.audit_log.expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
 
+    def session_key(self, proposal_dict: dict[str, Any]) -> str:
+        source = str(proposal_dict.get("source", "unknown"))
+        actor = str(proposal_dict.get("actor", "unknown"))
+        risk = str(proposal_dict.get("risk", "medium"))
+        scope_hash = str(proposal_dict.get("scope_hash") or "")
+        tool = str(proposal_dict.get("tool", ""))
+        action = str(proposal_dict.get("action", ""))
+        fallback_scope = f"{tool}.{action}"
+        return f"{source}|{actor}|{risk}|{scope_hash or fallback_scope}"
+
     def verify(self, proposal: Any) -> PermissionDecision:
         proposal_dict = self._proposal_dict(proposal)
         tool = str(proposal_dict.get("tool", ""))
-        action = str(proposal_dict.get("action", ""))
         risk = str(proposal_dict.get("risk", "medium"))
         source = str(proposal_dict.get("source", "unknown"))
-        key = f"{tool}.{action}"
+        session_key = self.session_key(proposal_dict)
 
         self._audit("proposal", proposal_dict)
 
@@ -42,8 +49,8 @@ class PermissionManager:
             self._audit("allowed_low_risk", proposal_dict)
             return PermissionDecision(True, "allow", "low risk allowed")
 
-        if key in self.session_allows:
-            self._audit("allowed_session", proposal_dict)
+        if session_key in self.session_allows:
+            self._audit("allowed_session", {"session_key": session_key, **proposal_dict})
             return PermissionDecision(True, "allow", "session allow")
 
         mode = getattr(self.cfg, "approval_mode", "interactive_cli")
@@ -83,8 +90,8 @@ class PermissionManager:
             self._audit("allowed_interactive", proposal_dict)
             return PermissionDecision(True, "allow", "interactive")
         if ans in {"s", "session"}:
-            self.session_allows.add(key)
-            self._audit("allowed_session_new", proposal_dict)
+            self.session_allows.add(session_key)
+            self._audit("allowed_session_new", {"session_key": session_key, **proposal_dict})
             return PermissionDecision(True, "allow", "session")
         if ans in {"d", "dry-run"}:
             self._audit("dry_run_interactive", proposal_dict)

@@ -7,6 +7,12 @@ from omnidesk_agent.core.models import ChannelMessage
 
 class XChannel:
     name = "x"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        event = (payload.get("direct_message_events") or [{}])[0]
+        sender = str((event.get("message_create") or {}).get("sender_id") or "unknown")
+        mid = str(event.get("id") or "")
+        return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, raw=payload)
     def __init__(self, cfg: XConfig):
         self.cfg = cfg
         self.bearer_token = os.getenv(cfg.bearer_token_env, "")

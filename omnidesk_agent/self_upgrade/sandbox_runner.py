@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional, Union
 
 import asyncio
 import shlex
@@ -22,14 +23,14 @@ class SandboxRunner:
         ["git", "status"],
     ]
 
-    def __init__(self, repo_root: Path, allowed_prefixes: list[list[str]] | None = None):
+    def __init__(self, repo_root: Path, allowed_prefixes: Optional[list[list[str]]] = None):
         self.repo_root = repo_root.resolve()
         self.allowed_prefixes = allowed_prefixes or self.DEFAULT_ALLOWED
 
     def allowed(self, argv: list[str]) -> bool:
         return any(len(argv) >= len(prefix) and argv[:len(prefix)] == prefix for prefix in self.allowed_prefixes)
 
-    async def run(self, command: str | list[str], timeout: int = 120) -> TestResult:
+    async def run(self, command: Union[str, list][str], timeout: int = 120) -> TestResult:
         argv = [str(x) for x in command] if isinstance(command, list) else shlex.split(command)
         if not argv:
             return TestResult(False, str(command), "empty command", 2)

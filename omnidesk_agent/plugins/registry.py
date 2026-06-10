@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.plugins.manifest import PluginManifest
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
@@ -15,9 +15,9 @@ class PluginRegistry:
         plugins_dir,
         config=None,
         *,
-        trusted_only: bool | None = None,
-        allowlist: list[str] | None = None,
-        signing_secret_env: str | None = "OMNIDESK_PLUGIN_SIGNING_SECRET",
+        trusted_only: Optional[bool] = None,
+        allowlist: Optional[list[str]] = None,
+        signing_secret_env: Optional[str] = "OMNIDESK_PLUGIN_SIGNING_SECRET",
     ):
         dirs = plugins_dir if isinstance(plugins_dir, (list, tuple)) else [plugins_dir]
         self.plugins_dirs = [Path(d).expanduser() for d in dirs]
@@ -30,7 +30,7 @@ class PluginRegistry:
         self.signing_secret = os.getenv(signing_secret_env or "") if signing_secret_env else None
         self.loaded: dict[str, PluginManifest] = {}
 
-    def load_into(self, tool_registry, app_config: Any | None = None) -> dict[str, list[str]]:
+    def load_into(self, tool_registry, app_config: Optional[Any] = None) -> dict[str, list[str]]:
         results: dict[str, list[str]] = {}
         for root in self.plugins_dirs:
             if not root.exists():
@@ -61,7 +61,7 @@ class PluginRegistry:
                     raise ValueError(f"Unsupported plugin sandbox: {manifest.sandbox}")
         return results
 
-    def _load_in_process(self, manifest: PluginManifest, entrypoint: Path, tool_registry, app_config: Any | None) -> list[str]:
+    def _load_in_process(self, manifest: PluginManifest, entrypoint: Path, tool_registry, app_config: Optional[Any]) -> list[str]:
         spec = importlib.util.spec_from_file_location(f"omnidesk_plugin_{manifest.name}", str(entrypoint))
         if not spec or not spec.loader:
             raise RuntimeError(f"Cannot load plugin: {manifest.name}")
@@ -73,7 +73,7 @@ class PluginRegistry:
         return list(result or [])
 
     @staticmethod
-    def _manifest_path(plugin_dir: Path) -> Path | None:
+    def _manifest_path(plugin_dir: Path) -> Optional[Path]:
         for name in ("plugin.yaml", "plugin.yml", "plugin.json"):
             p = plugin_dir / name
             if p.exists():

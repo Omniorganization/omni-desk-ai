@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 import os
-import yaml
-from pydantic import BaseModel, Field
+try:
+    import yaml
+except ModuleNotFoundError:  # allow config models to import before optional deps are installed
+    yaml = None
+try:
+    from pydantic import BaseModel, Field
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError("pydantic is required. Install with: python3 -m pip install pydantic") from exc
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 PermissionMode = Literal["ask", "allow", "deny", "dry_run"]
@@ -13,13 +19,13 @@ class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-5.1"
     api_key_env: str = "OPENAI_API_KEY"
-    base_url: str | None = None
+    base_url: Optional[str] = None
     temperature: float = 0.2
     max_input_chars: int = 12000
     max_output_tokens: int = 1200
     enable_cache: bool = True
     cache_ttl_seconds: int = 86400
-    per_task_max_llm_calls: int | None = None
+    per_task_max_llm_calls: Optional[int] = None
     require_approval_above_estimated_tokens: int = 20000
 
 
@@ -27,10 +33,10 @@ class ModelProfileConfig(BaseModel):
     enabled: bool = True
     provider: str = "openai"
     model: str = "gpt-5.1"
-    api_key_env: str | None = "OPENAI_API_KEY"
-    base_url: str | None = None
-    api_version: str | None = None
-    region: str | None = None
+    api_key_env: Optional[str] = "OPENAI_API_KEY"
+    base_url: Optional[str] = None
+    api_version: Optional[str] = None
+    region: Optional[str] = None
     temperature: float = 0.2
     max_output_tokens: int = 1200
     extra_headers: dict[str, str] = Field(default_factory=dict)
@@ -54,8 +60,10 @@ class ModelsConfig(BaseModel):
 class GatewayConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 18789
-    public_base_url: str | None = None
+    public_base_url: Optional[str] = None
     shared_secret_env: str = "OMNIDESK_GATEWAY_SECRET"
+    admin_token_env: str = "OMNIDESK_ADMIN_TOKEN"
+    allow_local_admin_without_token: bool = True
 
 class PermissionConfig(BaseModel):
     approval_mode: Literal["interactive_cli", "remote_approval", "auto_policy"] = "interactive_cli"
@@ -94,7 +102,7 @@ class WhatsAppCloudConfig(BaseModel):
     enabled: bool = False
     access_token_env: str = "WHATSAPP_CLOUD_TOKEN"
     verify_token_env: str = "WHATSAPP_VERIFY_TOKEN"
-    phone_number_id: str | None = None
+    phone_number_id: Optional[str] = None
     graph_version: str = "v21.0"
     allowed_wa_ids: list[str] = Field(default_factory=list)
 
@@ -109,8 +117,8 @@ class WeChatOfficialConfig(BaseModel):
 class MetaGraphConfig(BaseModel):
     enabled: bool = False
     page_access_token_env: str = "META_PAGE_ACCESS_TOKEN"
-    page_id: str | None = None
-    instagram_account_id: str | None = None
+    page_id: Optional[str] = None
+    instagram_account_id: Optional[str] = None
     graph_version: str = "v21.0"
     verify_token_env: str = "META_VERIFY_TOKEN"
     allowed_psids: list[str] = Field(default_factory=list)
@@ -243,13 +251,23 @@ def deep_update(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
             base[k] = v
     return base
 
-def load_config(path: str | Path | None = None) -> AppConfig:
+
+def _safe_yaml_load(stream_or_text):
+    """Load YAML config when PyYAML is installed.
+
+    Importing config models does not require PyYAML. Loading a YAML file does.
+    """
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to load YAML config files. Install with: python3 -m pip install PyYAML")
+    return _safe_yaml_load(stream_or_text)
+
+def load_config(path: str | Optional[Path] = None) -> AppConfig:
     data: dict[str, Any] = {}
     if path:
         p = Path(path).expanduser()
         if p.exists():
             with p.open("r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+                data = _safe_yaml_load(f) or {}
     cfg = AppConfig.model_validate(data)
     cfg.ensure_dirs()
     return cfg

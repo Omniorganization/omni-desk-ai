@@ -1,12 +1,22 @@
 from __future__ import annotations
 import os
-from typing import Any
+from typing import Any, Optional
 import httpx
 from omnidesk_agent.config import LarkConfig, FeishuConfig
 from omnidesk_agent.core.models import ChannelMessage
 
 class _BaseLarkFeishuChannel:
     name = "lark"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        event = payload.get("event") or {}
+        sender = event.get("sender") or {}
+        sid = sender.get("sender_id", {}) if isinstance(sender.get("sender_id", {}), dict) else {}
+        sender_id = str(sid.get("open_id") or sid.get("user_id") or event.get("open_id") or "unknown")
+        message = event.get("message") or {}
+        mid = str(message.get("message_id") or payload.get("uuid") or "")
+        source = str(message.get("chat_id") or sender_id)
+        return WebhookEnvelope(source_key=source, sender_id=sender_id, message_id=mid or None, raw=payload)
     api_base = "https://open.larksuite.com/open-apis"
     def __init__(self, cfg: LarkConfig | FeishuConfig):
         self.cfg = cfg
@@ -14,7 +24,7 @@ class _BaseLarkFeishuChannel:
         self.app_secret = os.getenv(cfg.app_secret_env, "")
         self.verification_token = os.getenv(cfg.verification_token_env, "")
 
-    def parse_webhook(self, payload: dict[str, Any]) -> ChannelMessage | dict[str, str] | None:
+    def parse_webhook(self, payload: dict[str, Any]) -> ChannelMessage | Optional[dict[str, str]]:
         if payload.get("type") == "url_verification":
             if self.verification_token and payload.get("token") != self.verification_token:
                 return None

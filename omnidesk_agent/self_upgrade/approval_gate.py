@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +32,7 @@ class UpgradeGateDecision:
 class UpgradeApprovalGate:
     """Classify upgrade actions into allowed / approval-required / forbidden."""
 
-    def classify_action(self, action: str, files_to_change: list[str] | None = None) -> UpgradeGateDecision:
+    def classify_action(self, action: str, files_to_change: Optional[list[str]] = None) -> UpgradeGateDecision:
         lower = action.lower()
         files = [f.lower() for f in files_to_change or []]
         if any(forbidden in lower for forbidden in FORBIDDEN_ACTIONS):

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -35,7 +36,7 @@ class SkillRegistry:
     def match(self, query: str, limit: int = 5) -> list[Skill]:
         scored = [(s.score(query), s) for s in self.skills.values()]
         return [s for score, s in sorted(scored, key=lambda x: x[0], reverse=True) if score > 0][:limit]
-    def prompt_block(self, query: str | None = None, max_chars: int = 6000) -> str:
+    def prompt_block(self, query: Optional[str] = None, max_chars: int = 6000) -> str:
         skills = self.match(query, limit=5) if query else list(self.skills.values())
         if not skills:
             return ""

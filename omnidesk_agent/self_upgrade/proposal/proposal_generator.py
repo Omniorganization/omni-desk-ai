@@ -1,10 +1,10 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Optional
 from omnidesk_agent.self_upgrade.proposal.proposal_schema import UpgradeProposal
 from omnidesk_agent.self_upgrade.scoring.upgrade_scorer import UpgradeScorer
 
 class UpgradeProposalGenerator:
-    def __init__(self, scorer: UpgradeScorer | None = None):
+    def __init__(self, scorer: Optional[UpgradeScorer] = None):
         self.scorer = scorer or UpgradeScorer()
     def from_failure_summary(self, item: dict[str, Any]) -> UpgradeProposal:
         reason = item.get("failure_reason") or "unknown"

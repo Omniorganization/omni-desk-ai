@@ -5,7 +5,7 @@ import hashlib
 import io
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal
@@ -14,8 +14,8 @@ from omnidesk_agent.tools.base import ToolContext, proposal
 class ComputerTool:
     name = "computer"
 
-    def __init__(self, screenshot_dir: Path | None = None):
-        self._last_screenshot_hash: str | None = None
+    def __init__(self, screenshot_dir: Optional[Path] = None):
+        self._last_screenshot_hash: Optional[str] = None
         self._last_screenshot_at: float = 0.0
         self.screenshot_dir = (screenshot_dir or Path("~/.omnidesk/screenshots")).expanduser()
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)

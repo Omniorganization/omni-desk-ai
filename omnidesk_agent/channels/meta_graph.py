@@ -16,6 +16,17 @@ class MetaGraphChannel:
     """
 
     name = "meta_graph"
+    def extract_envelope(self, payload: dict[str, Any]):
+        from omnidesk_agent.channels.base import WebhookEnvelope
+        try:
+            event = payload.get("entry", [{}])[0].get("messaging", [{}])[0]
+            sender = str((event.get("sender") or {}).get("id") or "unknown")
+            msg = event.get("message") or event.get("postback") or {}
+            mid = str(msg.get("mid") or event.get("timestamp") or "")
+            ts = float(event.get("timestamp")) / 1000.0 if event.get("timestamp") else None
+            return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, timestamp=ts, raw=payload)
+        except Exception:
+            return WebhookEnvelope(raw=payload)
 
     def __init__(self, cfg: MetaGraphConfig):
         self.cfg = cfg

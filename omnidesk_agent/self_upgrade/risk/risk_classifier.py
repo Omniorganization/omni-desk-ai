@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Optional
 class UpgradeRiskClassifier:
     TYPE_RISK = {"prompt": "low", "skill": "low", "workflow": "medium", "test": "low", "code": "high", "permission": "critical", "deployment": "critical"}
-    def classify(self, proposal: Any, permission_diff: dict | None = None) -> dict:
+    def classify(self, proposal: Any, permission_diff: Optional[dict] = None) -> dict:
         upgrade_type = getattr(proposal, "upgrade_type", "workflow")
         risk = self.TYPE_RISK.get(upgrade_type, "medium")
         if permission_diff and permission_diff.get("requires_human_approval"):

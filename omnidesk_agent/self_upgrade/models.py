@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 UpgradeStatus = Literal[
@@ -84,8 +84,8 @@ class TestResult:
 class UpgradeRun:
     request: UpgradeRequest
     plan: UpgradePlan
-    patch: PatchResult | None = None
+    patch: Optional[PatchResult] = None
     tests: list[TestResult] = field(default_factory=list)
     status: UpgradeStatus = "draft"
-    branch: str | None = None
-    pull_request_url: str | None = None
+    branch: Optional[str] = None
+    pull_request_url: Optional[str] = None
