@@ -1,0 +1,42 @@
+from __future__ import annotations
+import base64, hashlib, hmac, os, time, urllib.parse
+from typing import Any
+import httpx
+from omnidesk_agent.config import DingTalkConfig
+from omnidesk_agent.core.models import ChannelMessage
+
+class DingTalkChannel:
+    name = "dingtalk"
+    def __init__(self, cfg: DingTalkConfig):
+        self.cfg = cfg
+        self.robot_token = os.getenv(cfg.robot_access_token_env, "")
+        self.robot_secret = os.getenv(cfg.robot_secret_env, "")
+
+    def parse_webhook(self, payload: dict[str, Any]) -> ChannelMessage | None:
+        conversation_id = str(payload.get("conversationId") or payload.get("conversation_id") or "")
+        if self.cfg.allowed_conversation_ids and conversation_id not in self.cfg.allowed_conversation_ids:
+            return None
+        text_obj = payload.get("text")
+        text = text_obj.get("content", "") if isinstance(text_obj, dict) else (payload.get("content") or payload.get("text") or "")
+        sender = str(payload.get("senderStaffId") or payload.get("senderId") or payload.get("senderNick") or "unknown")
+        if not text:
+            return None
+        return ChannelMessage(channel=self.name, sender_id=sender, thread_id=conversation_id or sender, message_id=str(payload.get("msgId") or ""), text=str(text).strip(), raw=payload)
+
+    def _signed_webhook_url(self) -> str:
+        if not self.robot_token:
+            raise RuntimeError("DingTalk robot token is missing")
+        url = f"https://oapi.dingtalk.com/robot/send?access_token={self.robot_token}"
+        if self.robot_secret:
+            timestamp = str(round(time.time() * 1000))
+            string_to_sign = f"{timestamp}\n{self.robot_secret}".encode("utf-8")
+            digest = hmac.new(self.robot_secret.encode("utf-8"), string_to_sign, hashlib.sha256).digest()
+            sign = urllib.parse.quote_plus(base64.b64encode(digest))
+            url += f"&timestamp={timestamp}&sign={sign}"
+        return url
+
+    async def send_text(self, recipient: str, text: str, **kwargs) -> None:
+        body = {"msgtype": "text", "text": {"content": text}}
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(self._signed_webhook_url(), json=body)
+            r.raise_for_status()

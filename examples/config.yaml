@@ -1,19 +1,14 @@
 llm:
-  # 使用 rule 可不配置 API key；正式使用可改 openai 并设置 OPENAI_API_KEY
   provider: rule
   model: gpt-5.1
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
-  # Token 防浪费：默认 rule 不消耗 LLM token；切换 openai 后启用以下限制。
   max_input_chars: 12000
   max_output_tokens: 1200
   enable_cache: true
   cache_ttl_seconds: 86400
-  # 不设置单任务 token 硬预算；已验证必须使用的 token 允许突破阈值并记录审计。
   per_task_max_llm_calls: null
   require_approval_above_estimated_tokens: 20000
-  # 说明：超过以上阈值时，未验证必要性的 LLM 调用会被阻止；
-  # 已通过结果导向验证的 verified-required 调用会解除预算限制并记录 budget_overridden。
 
 gateway:
   host: 127.0.0.1
@@ -22,19 +17,25 @@ gateway:
   shared_secret_env: OMNIDESK_GATEWAY_SECRET
 
 permissions:
-  # 推荐：ask。无 TTY 后台模式默认 deny，避免无人值守执行危险操作。
   default_mode: ask
   no_tty_mode: deny
   audit_log: ~/.omnidesk/audit.log
   allow_low_risk_from: [local-cli]
-  always_ask_tools: [computer, shell, channels, files]
+  always_ask_tools: [computer, shell, channels, files, ui_bridge, browser, gmail]
   max_shell_seconds: 30
 
 workspace:
   root: ~/.omnidesk/workspace
   skills_dirs:
     - ~/.omnidesk/skills
+  plugins_dirs:
+    - ~/.omnidesk/plugins
   memory_db: ~/.omnidesk/memory.sqlite3
+
+plugins:
+  enabled: true
+  trusted_only: true
+  allowlist: []
 
 channels:
   telegram:
@@ -64,7 +65,70 @@ channels:
     graph_version: v21.0
     verify_token_env: META_VERIFY_TOKEN
     allowed_psids: []
+  dingtalk:
+    enabled: false
+    robot_access_token_env: DINGTALK_ROBOT_TOKEN
+    robot_secret_env: DINGTALK_ROBOT_SECRET
+    app_key_env: DINGTALK_APP_KEY
+    app_secret_env: DINGTALK_APP_SECRET
+    allowed_conversation_ids: []
+  lark:
+    enabled: false
+    app_id_env: LARK_APP_ID
+    app_secret_env: LARK_APP_SECRET
+    verification_token_env: LARK_VERIFICATION_TOKEN
+    encrypt_key_env: LARK_ENCRYPT_KEY
+    allowed_open_ids: []
+  feishu:
+    enabled: false
+    app_id_env: FEISHU_APP_ID
+    app_secret_env: FEISHU_APP_SECRET
+    verification_token_env: FEISHU_VERIFICATION_TOKEN
+    encrypt_key_env: FEISHU_ENCRYPT_KEY
+    allowed_open_ids: []
+  line:
+    enabled: false
+    channel_access_token_env: LINE_CHANNEL_ACCESS_TOKEN
+    channel_secret_env: LINE_CHANNEL_SECRET
+    allowed_user_ids: []
+  x:
+    enabled: false
+    bearer_token_env: X_BEARER_TOKEN
+    api_key_env: X_API_KEY
+    api_secret_env: X_API_SECRET
+    access_token_env: X_ACCESS_TOKEN
+    access_secret_env: X_ACCESS_SECRET
+    webhook_crc_token_env: X_WEBHOOK_CRC_TOKEN
+    allowed_user_ids: []
+  gmail:
+    enabled: false
+    credentials_file: ~/.omnidesk/google/credentials.json
+    token_file: ~/.omnidesk/google/gmail_token.json
+    allowed_senders: []
+    readonly: false
+  chrome:
+    enabled: true
+    devtools_host: 127.0.0.1
+    devtools_port: 9222
+    allowed_origins: []
   ui_bridge:
     enabled: true
     require_foreground_confirmation: true
-    allowed_apps: [WhatsApp, Telegram, WeChat, Chrome, Safari, Edge]
+    allowed_apps:
+      - WhatsApp
+      - WhatsApp Business
+      - WeChat
+      - DingTalk
+      - Lark
+      - Feishu
+      - Xiaohongshu
+      - LINE
+      - X
+      - Telegram
+      - Facebook
+      - Instagram
+      - Google Chrome
+      - Gmail
+      - Chrome
+      - Safari
+      - Edge
