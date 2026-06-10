@@ -9,6 +9,7 @@ from omnidesk_agent.core.run_store import RunStore
 from omnidesk_agent.core.serialization import message_from_dict, plan_from_dict
 from omnidesk_agent.core.vision_executor import VisionActionExecutor
 from omnidesk_agent.memory.experience import ExperienceStore
+from omnidesk_agent.learning.experience_extractor import ExperienceExtractor
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.approval_store import ApprovalStore
 from omnidesk_agent.security.permissions import PermissionManager
@@ -36,6 +37,7 @@ class Orchestrator:
         self.run_store = run_store
         self.approval_store = approval_store
         self.vision_executor = VisionActionExecutor(tools)
+        self.experience_extractor = ExperienceExtractor()
 
     async def handle_message(self, msg: ChannelMessage) -> dict:
         run_id = self.run_store.create(asdict(msg)) if self.run_store else None
@@ -170,6 +172,32 @@ class Orchestrator:
         outcome = "\n".join([r.get("summary") or r.get("error") or "" for r in all_results])
         compact_steps = [{"description": s.description, "tool": s.tool, "action": s.action, "risk": s.risk, "args_keys": sorted(s.args.keys())} for s in plan.steps]
         self.memory.add(task=msg.text[:1000], plan=json.dumps(compact_steps, ensure_ascii=False), outcome=outcome[:2000], tags=[msg.channel])
+        try:
+            structured = self.experience_extractor.extract(
+                task=msg.text,
+                plan={"steps": compact_steps},
+                run_result={
+                    "status": status,
+                    "run_id": run_id,
+                    "plan_id": plan.plan_id,
+                    "goal": plan.goal,
+                    "steps": [asdict(s) for s in plan.steps],
+                    "results": all_results,
+                },
+                tags=[msg.channel],
+            )
+            self.memory.add_experience(structured)
+            self.memory.record_metric(
+                success=status == "completed",
+                manual_intervention=any("approval" in str(r).lower() for r in all_results),
+                tool_error=any((not r.get("ok")) and r.get("error") for r in all_results),
+                repeat_failure=bool(structured.get("failure_reason") and structured.get("failure_reason") != "unknown"),
+                skill_reuse=bool(structured.get("reusable_skill")),
+                security_violation=structured.get("failure_reason") == "security_violation",
+            )
+        except Exception:
+            # Learning failures must never break task execution.
+            pass
 
         return {
             "status": status,

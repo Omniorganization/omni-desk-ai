@@ -28,7 +28,7 @@ class LLMStructuredPlanner:
         if self._should_use_rule(msg.text):
             return await self.fallback_planner.plan(msg)
 
-        experiences = self.memory.search(msg.text, limit=4)
+        experiences = self.memory.retrieve_for_task(msg.text, limit=4) if hasattr(self.memory, 'retrieve_for_task') else self.memory.search(msg.text, limit=4)
         skills_context = self.skills.prompt_block(msg.text, max_chars=6000)
         tools_context = json.dumps(self.tools.describe(), ensure_ascii=False, indent=2) if hasattr(self.tools, "describe") else "{}"
 

@@ -18,6 +18,9 @@ def main() -> None:
     sub.add_parser("validate-models-live")
     sub.add_parser("validate-webhook-signatures")
     sub.add_parser("gmail-auth")
+    learn_p = sub.add_parser("learning-report"); learn_p.add_argument("--days", type=int, default=7)
+    metrics_p = sub.add_parser("metrics"); metrics_p.add_argument("--days", type=int, default=7)
+    exp_p = sub.add_parser("experience-search"); exp_p.add_argument("query"); exp_p.add_argument("--limit", type=int, default=5)
     run_p = sub.add_parser("run"); run_p.add_argument("message")
     remember_p = sub.add_parser("remember"); remember_p.add_argument("text"); remember_p.add_argument("--tags", default="")
     search_p = sub.add_parser("search"); search_p.add_argument("query")
@@ -56,6 +59,21 @@ def main() -> None:
         rt = OmniDeskRuntime(cfg)
         token = rt.adapters["gmail"].oauth.run_local_flow()
         print(json.dumps({"ok": True, "token_saved": True, "keys": sorted(token.keys())}, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "learning-report":
+        rt = OmniDeskRuntime(cfg)
+        print(json.dumps(rt.learning_job.run(days=args.days), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "metrics":
+        rt = OmniDeskRuntime(cfg)
+        print(json.dumps(rt.memory.metrics_report(days=args.days), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "experience-search":
+        rt = OmniDeskRuntime(cfg)
+        print(json.dumps(rt.memory.retrieve_for_task(args.query, limit=args.limit), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "run":

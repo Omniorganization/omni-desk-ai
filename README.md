@@ -101,3 +101,31 @@ macOS launchd：
 cp deploy/launchd/com.omnidesk.agent.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.omnidesk.agent.plist
 ```
+
+---
+
+## Self-Learning Loop
+
+Omni-deskAi now includes a safer self-learning loop:
+
+```text
+task result
+  -> structured experience extraction
+  -> failure classification
+  -> experience retrieval before planning
+  -> daily learning report
+  -> growth-oriented improvement proposals
+  -> approval gate
+  -> sandbox tests
+  -> rollback-aware upgrade workflow
+```
+
+New commands:
+
+```bash
+omnidesk learning-report --days 7
+omnidesk metrics --days 7
+omnidesk experience-search "browser captcha login" --limit 5
+```
+
+The system prefers low-risk skill/workflow improvements before core runtime changes. Core planner, permission, shell, security and self-upgrade changes require human approval.

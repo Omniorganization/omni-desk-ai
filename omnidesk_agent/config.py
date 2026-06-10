@@ -206,6 +206,13 @@ class ChannelsConfig(BaseModel):
     chrome: ChromeConfig = Field(default_factory=ChromeConfig)
     ui_bridge: UIBridgeConfig = Field(default_factory=UIBridgeConfig)
 
+class LearningConfig(BaseModel):
+    enabled: bool = True
+    daily_report_days: int = 7
+    growth_plan_file: Path = Path("~/.omnidesk/growth_plan.json").expanduser()
+    max_recent_failures: int = 50
+
+
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
@@ -214,6 +221,7 @@ class AppConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    learning: LearningConfig = Field(default_factory=LearningConfig)
 
     def ensure_dirs(self) -> None:
         self.workspace.root.mkdir(parents=True, exist_ok=True)
@@ -225,6 +233,7 @@ class AppConfig(BaseModel):
             d.mkdir(parents=True, exist_ok=True)
         self.channels.gmail.credentials_file.parent.mkdir(parents=True, exist_ok=True)
         self.channels.gmail.token_file.parent.mkdir(parents=True, exist_ok=True)
+        self.learning.growth_plan_file.parent.mkdir(parents=True, exist_ok=True)
 
 def deep_update(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     for k, v in update.items():
