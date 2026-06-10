@@ -4,9 +4,11 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
+from omnidesk_agent.security.approval_store import ApprovalStore
 
 def create_app(cfg: AppConfig) -> FastAPI:
     rt = OmniDeskRuntime(cfg)
+    approvals = ApprovalStore(cfg.workspace.root / 'approvals.sqlite3')
     app = FastAPI(title="OmniDesk Agent Gateway")
 
     @app.get("/health")
@@ -115,5 +117,32 @@ def create_app(cfg: AppConfig) -> FastAPI:
     async def validate_extensions_route():
         from omnidesk_agent.validation.extensions import validate_extensions
         return validate_extensions(rt)
+
+
+    @app.get("/oauth/gmail/start")
+    async def gmail_oauth_start(redirect_uri: str, state: str = "omnidesk-gmail"):
+        return rt.adapters["gmail"].oauth.build_authorization_url(redirect_uri=redirect_uri, state=state)
+
+    @app.get("/oauth/gmail/callback")
+    async def gmail_oauth_callback(code: str, redirect_uri: str, state: str | None = None):
+        token = rt.adapters["gmail"].oauth.exchange_code(code=code, redirect_uri=redirect_uri, state=state)
+        return {"ok": True, "token_saved": True, "keys": sorted(token.keys())}
+
+    @app.post("/approvals")
+    async def create_approval(body: dict):
+        approval_id = approvals.create(body)
+        return {"ok": True, "id": approval_id}
+
+    @app.get("/approvals")
+    async def list_approvals(status: str | None = None):
+        return {"ok": True, "approvals": approvals.list(status)}
+
+    @app.post("/approvals/{approval_id}/approve")
+    async def approve_request(approval_id: str, body: dict | None = None):
+        return {"ok": True, "approval": approvals.decide(approval_id, "approved", body or {})}
+
+    @app.post("/approvals/{approval_id}/deny")
+    async def deny_request(approval_id: str, body: dict | None = None):
+        return {"ok": True, "approval": approvals.decide(approval_id, "denied", body or {})}
 
     return app

@@ -20,7 +20,15 @@ venv/
 # Build
 build/
 dist/
+
+# Runtime/state files
+~
 ~/
 ~/.omnidesk/
+.omnidesk/
 *.sqlite3
-*.db
+*.db-shm
+*.db-wal
+screenshots/
+.pytest_cache/
+*.pyc

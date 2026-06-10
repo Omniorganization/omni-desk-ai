@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import time
+
+
+def line_signature_valid(body: bytes, channel_secret: str, signature: str) -> bool:
+    digest = hmac.new(channel_secret.encode("utf-8"), body, hashlib.sha256).digest()
+    expected = base64.b64encode(digest).decode("ascii")
+    return hmac.compare_digest(expected, signature)
+
+
+def dingtalk_signature(secret: str, timestamp_ms: str) -> str:
+    msg = f"{timestamp_ms}\n{secret}".encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def wechat_signature(token: str, timestamp: str, nonce: str) -> str:
+    arr = sorted([token, timestamp, nonce])
+    return hashlib.sha1("".join(arr).encode("utf-8")).hexdigest()
+
+
+def x_crc_response(crc_token: str, consumer_secret: str) -> str:
+    digest = hmac.new(consumer_secret.encode("utf-8"), crc_token.encode("utf-8"), hashlib.sha256).digest()
+    return "sha256=" + base64.b64encode(digest).decode("ascii")

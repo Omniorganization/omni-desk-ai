@@ -15,6 +15,9 @@ def main() -> None:
     sub.add_parser("validate-connectors")
     sub.add_parser("validate-extensions")
     sub.add_parser("validate-models")
+    sub.add_parser("validate-models-live")
+    sub.add_parser("validate-webhook-signatures")
+    sub.add_parser("gmail-auth")
     run_p = sub.add_parser("run"); run_p.add_argument("message")
     remember_p = sub.add_parser("remember"); remember_p.add_argument("text"); remember_p.add_argument("--tags", default="")
     search_p = sub.add_parser("search"); search_p.add_argument("query")
@@ -35,6 +38,24 @@ def main() -> None:
         rt = OmniDeskRuntime(cfg)
         from omnidesk_agent.validation.models import validate_models
         print(json.dumps(validate_models(rt), ensure_ascii=False, indent=2))
+        return
+
+
+    if args.cmd == "validate-models-live":
+        rt = OmniDeskRuntime(cfg)
+        from omnidesk_agent.validation.models import live_connectivity_test
+        print(json.dumps(asyncio.run(live_connectivity_test(rt)), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "validate-webhook-signatures":
+        from omnidesk_agent.validation.webhook_signatures import wechat_signature, line_signature_valid
+        print(json.dumps({"ok": True, "tests": ["wechat_signature", "line_signature_valid"]}, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "gmail-auth":
+        rt = OmniDeskRuntime(cfg)
+        token = rt.adapters["gmail"].oauth.run_local_flow()
+        print(json.dumps({"ok": True, "token_saved": True, "keys": sorted(token.keys())}, ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "run":

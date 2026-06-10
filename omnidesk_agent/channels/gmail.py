@@ -1,16 +1,32 @@
 from __future__ import annotations
-import base64, email.message
+
+import base64
+import email.message
 from typing import Any
+
 from omnidesk_agent.config import GmailConfig
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.oauth.gmail_oauth import GmailOAuthManager
+
 
 class GmailChannel:
+    """Gmail API adapter.
+
+    This uses official Google OAuth credentials. It does not scrape browser cookies or sessions.
+    """
+
     name = "gmail"
-    scopes = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.modify"]
+
     def __init__(self, cfg: GmailConfig):
         self.cfg = cfg
+        self.oauth = GmailOAuthManager(cfg)
+
     def configured(self) -> bool:
         return self.cfg.credentials_file.exists() or self.cfg.token_file.exists()
+
+    def authenticated(self) -> bool:
+        return self.cfg.token_file.exists()
+
     def parse_message_summary(self, message: dict[str, Any]) -> ChannelMessage | None:
         payload = message.get("payload", {})
         headers = {h.get("name", "").lower(): h.get("value", "") for h in payload.get("headers", [])}
@@ -19,7 +35,15 @@ class GmailChannel:
             return None
         subject = headers.get("subject", "")
         snippet = message.get("snippet", "")
-        return ChannelMessage(channel=self.name, sender_id=sender, thread_id=str(message.get("threadId", "")), message_id=str(message.get("id", "")), text=f"Subject: {subject}\n\n{snippet}", raw=message)
+        return ChannelMessage(
+            channel=self.name,
+            sender_id=sender,
+            thread_id=str(message.get("threadId", "")),
+            message_id=str(message.get("id", "")),
+            text=f"Subject: {subject}\n\n{snippet}",
+            raw=message,
+        )
+
     def build_raw_email(self, to: str, subject: str, body: str) -> dict[str, str]:
         msg = email.message.EmailMessage()
         msg["To"] = to
@@ -27,3 +51,13 @@ class GmailChannel:
         msg.set_content(body)
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
         return {"raw": raw}
+
+    async def send_email(self, to: str, subject: str, body: str) -> dict[str, Any]:
+        service = self.oauth.build_service()
+        raw = self.build_raw_email(to, subject, body)
+        return service.users().messages().send(userId="me", body=raw).execute()
+
+    async def list_messages(self, query: str = "", max_results: int = 10) -> list[dict[str, Any]]:
+        service = self.oauth.build_service()
+        resp = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+        return resp.get("messages", [])

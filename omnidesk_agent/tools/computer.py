@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import time
+from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
@@ -13,9 +14,11 @@ from omnidesk_agent.tools.base import ToolContext, proposal
 class ComputerTool:
     name = "computer"
 
-    def __init__(self):
+    def __init__(self, screenshot_dir: Path | None = None):
         self._last_screenshot_hash: str | None = None
         self._last_screenshot_at: float = 0.0
+        self.screenshot_dir = (screenshot_dir or Path("~/.omnidesk/screenshots")).expanduser()
+        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "screenshot":
@@ -33,23 +36,18 @@ class ComputerTool:
     def _require_expected_result(self, args: dict[str, Any], action: str) -> str:
         expected = str(args.get("expected_result") or args.get("reason") or "").strip()
         if not expected:
-            raise ValueError(
-                f"computer.{action} requires expected_result/reason before execution "
-                "to avoid wasteful screen/action loops"
-            )
+            raise ValueError(f"computer.{action} requires expected_result/reason before execution")
         return expected
 
     async def screenshot(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         expected = self._require_expected_result(args, "screenshot")
         min_interval = float(args.get("min_interval_seconds", 1.0))
+        return_base64 = bool(args.get("return_base64", False))
 
         decision = ctx.permissions.verify(proposal(
-            "computer",
-            "screenshot",
-            {"expected_result": expected, "max_width": args.get("max_width", 960)},
-            "medium",
-            "读取当前屏幕前先声明结果目标，避免无目的截图和视觉 token 浪费",
-            ctx,
+            "computer", "screenshot",
+            {"expected_result": expected, "max_width": args.get("max_width", 960), "return_base64": return_base64},
+            "medium", "读取当前屏幕前先声明结果目标，默认保存文件而非返回 base64", ctx
         ))
         if decision.mode == "dry_run":
             return ToolResult(False, summary="dry-run: screenshot skipped")
@@ -69,43 +67,37 @@ class ComputerTool:
         now = time.time()
 
         if args.get("skip_if_unchanged", True) and digest == self._last_screenshot_hash:
-            return ToolResult(
-                True,
-                data={"skipped_analysis": True, "reason": "unchanged_screenshot", "hash": digest},
-                summary="screenshot unchanged; skip visual analysis",
-            )
+            return ToolResult(True, data={"skipped_analysis": True, "reason": "unchanged_screenshot", "hash": digest}, summary="screenshot unchanged; skip visual analysis")
 
         if args.get("skip_if_too_soon", True) and now - self._last_screenshot_at < min_interval:
-            return ToolResult(
-                True,
-                data={"skipped_analysis": True, "reason": "too_frequent", "hash": digest},
-                summary="screenshot too frequent; wait for UI change before analysis",
-            )
+            return ToolResult(True, data={"skipped_analysis": True, "reason": "too_frequent", "hash": digest}, summary="screenshot too frequent; wait for UI change before analysis")
 
         self._last_screenshot_hash = digest
         self._last_screenshot_at = now
-        b64 = base64.b64encode(raw).decode("ascii")
-        return ToolResult(
-            True,
-            data={
-                "png_base64": b64,
-                "width": img.width,
-                "height": img.height,
-                "hash": digest,
-                "expected_result": expected,
-            },
-            summary=f"screenshot captured for: {expected}",
-        )
+
+        out_path = self.screenshot_dir / f"{digest}.png"
+        out_path.write_bytes(raw)
+
+        data: dict[str, Any] = {
+            "image_path": str(out_path),
+            "width": img.width,
+            "height": img.height,
+            "hash": digest,
+            "expected_result": expected,
+            "base64_returned": False,
+        }
+        if return_base64:
+            data["png_base64"] = base64.b64encode(raw).decode("ascii")
+            data["base64_returned"] = True
+
+        return ToolResult(True, data=data, summary=f"screenshot saved to {out_path}")
 
     async def click(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         expected = self._require_expected_result(args, "click")
         x, y = int(args["x"]), int(args["y"])
         button = args.get("button", "left")
         clicks = int(args.get("clicks", 1))
-        decision = ctx.permissions.verify(proposal(
-            "computer", "click", {"x": x, "y": y, "button": button, "clicks": clicks, "expected_result": expected}, "high",
-            "即将点击屏幕坐标；执行前必须明确点击后的目标结果", ctx
-        ))
+        decision = ctx.permissions.verify(proposal("computer", "click", {"x": x, "y": y, "button": button, "clicks": clicks, "expected_result": expected}, "high", "即将点击屏幕坐标", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: click({x},{y})")
         import pyautogui
@@ -115,9 +107,7 @@ class ComputerTool:
     async def move(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         expected = self._require_expected_result(args, "move")
         x, y = int(args["x"]), int(args["y"])
-        decision = ctx.permissions.verify(proposal(
-            "computer", "move", {"x": x, "y": y, "expected_result": expected}, "medium", "即将移动鼠标；执行前必须明确目标结果", ctx
-        ))
+        decision = ctx.permissions.verify(proposal("computer", "move", {"x": x, "y": y, "expected_result": expected}, "medium", "即将移动鼠标", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: move({x},{y})")
         import pyautogui
@@ -127,11 +117,7 @@ class ComputerTool:
     async def type_text(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         expected = self._require_expected_result(args, "type_text")
         text = str(args.get("text", ""))
-        preview = text[:200]
-        decision = ctx.permissions.verify(proposal(
-            "computer", "type_text", {"text_preview": preview, "length": len(text), "expected_result": expected}, "high",
-            "即将向当前焦点窗口输入文本；执行前必须明确输入后的目标结果", ctx
-        ))
+        decision = ctx.permissions.verify(proposal("computer", "type_text", {"text_preview": text[:200], "length": len(text), "expected_result": expected}, "high", "即将向当前焦点窗口输入文本", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: type {len(text)} chars")
         import pyautogui
@@ -143,9 +129,7 @@ class ComputerTool:
         keys = list(args.get("keys", []))
         if not keys:
             raise ValueError("hotkey requires keys list")
-        decision = ctx.permissions.verify(proposal(
-            "computer", "hotkey", {"keys": keys, "expected_result": expected}, "high", "即将触发系统/应用快捷键；执行前必须明确目标结果", ctx
-        ))
+        decision = ctx.permissions.verify(proposal("computer", "hotkey", {"keys": keys, "expected_result": expected}, "high", "即将触发系统/应用快捷键", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: hotkey {keys}")
         import pyautogui

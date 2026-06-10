@@ -26,6 +26,8 @@ from omnidesk_agent.tools.computer import ComputerTool
 from omnidesk_agent.tools.files import FilesTool
 from omnidesk_agent.tools.git_tool import GitTool
 from omnidesk_agent.tools.gmail_tool import GmailTool
+from omnidesk_agent.tools.vision import VisionGroundingTool
+from omnidesk_agent.tools.pr_tool import PullRequestTool
 from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.tools.shell import ShellTool
 from omnidesk_agent.tools.test_tool import TestTool
@@ -54,7 +56,7 @@ class OmniDeskRuntime:
         return {"telegram": TelegramChannel(self.cfg.channels.telegram), "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud), "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official), "meta_graph": MetaGraphChannel(self.cfg.channels.meta_graph), "dingtalk": DingTalkChannel(self.cfg.channels.dingtalk), "lark": LarkChannel(self.cfg.channels.lark), "feishu": FeishuChannel(self.cfg.channels.feishu), "line": LineChannel(self.cfg.channels.line), "x": XChannel(self.cfg.channels.x), "gmail": GmailChannel(self.cfg.channels.gmail)}
 
     def _register_builtin_tools(self) -> None:
-        self.tools.register(ComputerTool())
+        self.tools.register(ComputerTool(self.cfg.workspace.root / 'screenshots'))
         self.tools.register(ShellTool(self.cfg.workspace.root, self.cfg.permissions))
         self.tools.register(FilesTool(self.cfg.workspace.root))
         self.tools.register(GitTool(Path.cwd()))
@@ -63,6 +65,8 @@ class OmniDeskRuntime:
         self.tools.register(UIBridgeTool(self.cfg.channels.ui_bridge, self.tools))
         self.tools.register(BrowserTool(self.cfg.channels.chrome))
         self.tools.register(GmailTool(self.adapters["gmail"]))
+        self.tools.register(VisionGroundingTool(self.model_router))
+        self.tools.register(PullRequestTool(Path.cwd()))
 
     def status(self) -> dict:
         return {"workspace": str(self.cfg.workspace.root), "tools": self.tools.names(), "skills": sorted(self.skills.skills), "plugins": sorted(self.plugins.plugins), "channels": sorted(self.adapters), "audit_log": str(self.cfg.permissions.audit_log)}
