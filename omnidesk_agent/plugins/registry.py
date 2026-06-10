@@ -60,11 +60,7 @@ class PluginRegistry:
                     self.loaded[manifest.name] = manifest
                     results[manifest.name] = [manifest.name]
                 elif manifest.sandbox == "in_process":
-                    if not self.allow_in_process:
-                        raise PermissionError(f"in_process plugin sandbox disabled: {manifest.name}")
-                    names = self._load_in_process(manifest, entrypoint, tool_registry, app_config)
-                    self.loaded[manifest.name] = manifest
-                    results[manifest.name] = names
+                    raise PermissionError(f"in_process plugin sandbox is forbidden in production: {manifest.name}")
                 else:
                     raise ValueError(f"Unsupported plugin sandbox: {manifest.sandbox}")
         return results

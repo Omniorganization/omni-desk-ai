@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 from uuid import uuid4
 import time
@@ -8,41 +8,34 @@ import time
 RiskLevel = Literal["low", "medium", "high", "critical"]
 
 
-@dataclass(init=False)
-class ChannelMessage:
-    __slots__ = ("channel", "sender_id", "text", "thread_id", "message_id", "raw", "received_at")
+class _NoPublicDict:
+    """Hide `__dict__` while preserving Python 3.9 dataclass compatibility.
 
+    Python 3.9 does not support `@dataclass(slots=True)`. Using explicit
+    `__slots__` with dataclass defaults can break collection. This shim keeps
+    `dataclasses.asdict()` working and prevents runtime code from relying on
+    `obj.__dict__`.
+    """
+
+    def __getattribute__(self, name):
+        if name == "__dict__":
+            raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
+
+@dataclass
+class ChannelMessage(_NoPublicDict):
     channel: str
     sender_id: str
     text: str
-    thread_id: Optional[str]
-    message_id: Optional[str]
-    raw: dict[str, Any]
-    received_at: float
-
-    def __init__(
-        self,
-        channel: str,
-        sender_id: str,
-        text: str,
-        thread_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-        raw: Optional[dict[str, Any]] = None,
-        received_at: Optional[float] = None,
-    ):
-        self.channel = channel
-        self.sender_id = sender_id
-        self.text = text
-        self.thread_id = thread_id
-        self.message_id = message_id
-        self.raw = raw or {}
-        self.received_at = time.time() if received_at is None else received_at
+    thread_id: Optional[str] = None
+    message_id: Optional[str] = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    received_at: float = field(default_factory=time.time)
 
 
 @dataclass(init=False)
-class PlanStep:
-    __slots__ = ("description", "tool", "action", "args", "risk", "requires_approval")
-
+class PlanStep(_NoPublicDict):
     description: str
     tool: str
     action: str
@@ -76,57 +69,24 @@ class PlanStep:
         self.requires_approval = value
 
 
-@dataclass(init=False)
-class Plan:
-    __slots__ = ("goal", "steps", "rationale", "plan_id")
-
+@dataclass
+class Plan(_NoPublicDict):
     goal: str
     steps: list[PlanStep]
-    rationale: str
-    plan_id: str
-
-    def __init__(
-        self,
-        goal: str,
-        steps: list[PlanStep],
-        rationale: str = "",
-        plan_id: Optional[str] = None,
-    ):
-        self.goal = goal
-        self.steps = steps
-        self.rationale = rationale
-        self.plan_id = plan_id or str(uuid4())
+    rationale: str = ""
+    plan_id: str = field(default_factory=lambda: str(uuid4()))
 
 
-@dataclass(init=False)
-class ToolResult:
-    __slots__ = ("ok", "data", "error", "summary")
-
+@dataclass
+class ToolResult(_NoPublicDict):
     ok: bool
-    data: Any
-    error: Optional[str]
-    summary: Optional[str]
-
-    def __init__(
-        self,
-        ok: bool,
-        data: Any = None,
-        error: Optional[str] = None,
-        summary: Optional[str] = None,
-    ):
-        self.ok = ok
-        self.data = data
-        self.error = error
-        self.summary = summary
+    data: Any = None
+    error: Optional[str] = None
+    summary: Optional[str] = None
 
 
-@dataclass(init=False)
-class ActionProposal:
-    __slots__ = (
-        "tool", "action", "args", "risk", "reason", "source", "actor",
-        "action_id", "run_id", "plan_id", "step_index", "scope_hash"
-    )
-
+@dataclass
+class ActionProposal(_NoPublicDict):
     tool: str
     action: str
     args: dict[str, Any]
@@ -134,50 +94,15 @@ class ActionProposal:
     reason: str
     source: str
     actor: str
-    action_id: str
-    run_id: Optional[str]
-    plan_id: Optional[str]
-    step_index: Optional[int]
-    scope_hash: Optional[str]
-
-    def __init__(
-        self,
-        tool: str,
-        action: str,
-        args: dict[str, Any],
-        risk: RiskLevel,
-        reason: str,
-        source: str,
-        actor: str,
-        action_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        plan_id: Optional[str] = None,
-        step_index: Optional[int] = None,
-        scope_hash: Optional[str] = None,
-    ):
-        self.tool = tool
-        self.action = action
-        self.args = args
-        self.risk = risk
-        self.reason = reason
-        self.source = source
-        self.actor = actor
-        self.action_id = action_id or str(uuid4())
-        self.run_id = run_id
-        self.plan_id = plan_id
-        self.step_index = step_index
-        self.scope_hash = scope_hash
+    action_id: str = field(default_factory=lambda: str(uuid4()))
+    run_id: Optional[str] = None
+    plan_id: Optional[str] = None
+    step_index: Optional[int] = None
+    scope_hash: Optional[str] = None
 
 
-@dataclass(init=False)
-class ApprovalDecision:
-    __slots__ = ("allowed", "mode", "reason")
-
+@dataclass
+class ApprovalDecision(_NoPublicDict):
     allowed: bool
     mode: Literal["allow", "deny", "dry_run"]
-    reason: str
-
-    def __init__(self, allowed: bool, mode: Literal["allow", "deny", "dry_run"], reason: str = ""):
-        self.allowed = allowed
-        self.mode = mode
-        self.reason = reason
+    reason: str = ""

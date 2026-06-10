@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Optional
 
+import base64
+import hashlib
 import hmac
 import json
 import os
@@ -27,6 +29,91 @@ def create_app(cfg: AppConfig) -> FastAPI:
             return {}
         return json.loads(body.decode("utf-8"))
 
+
+    def _channel_cfg(channel: str):
+        return {
+            "telegram": cfg.channels.telegram,
+            "whatsapp": cfg.channels.whatsapp_cloud,
+            "meta": cfg.channels.meta_graph,
+            "wechat": cfg.channels.wechat_official,
+            "dingtalk": cfg.channels.dingtalk,
+            "lark": cfg.channels.lark,
+            "feishu": cfg.channels.feishu,
+            "line": cfg.channels.line,
+            "x": cfg.channels.x,
+        }.get(channel)
+
+    def _env(name: str) -> str:
+        return os.getenv(name, "")
+
+    def _require_secret(env_name: str, channel: str) -> str:
+        secret = _env(env_name)
+        if not secret:
+            raise PermissionError(f"{channel} webhook signature secret is not configured: {env_name}")
+        return secret
+
+    def _verify_hmac_header(body: bytes, secret: str, signature: str, *, prefix: str = "sha256=") -> None:
+        if not signature:
+            raise PermissionError("missing webhook signature header")
+        digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        candidate = signature[len(prefix):] if prefix and signature.startswith(prefix) else signature
+        if not hmac.compare_digest(candidate, digest):
+            raise PermissionError("invalid webhook signature")
+
+    def _verify_required_webhook_signature(channel: str, adapter, request: Request, body: bytes, payload) -> None:
+        channel_cfg = _channel_cfg(channel)
+        if not getattr(cfg.gateway, "require_webhook_signatures", True):
+            return
+        if channel_cfg is None or not bool(getattr(channel_cfg, "enabled", False)):
+            return
+
+        headers = request.headers
+
+        if channel == "telegram":
+            secret = _require_secret(channel_cfg.webhook_secret_env, channel)
+            provided = headers.get("x-telegram-bot-api-secret-token", "")
+            if not hmac.compare_digest(provided, secret):
+                raise PermissionError("invalid Telegram webhook secret token")
+            return
+
+        if channel == "whatsapp":
+            secret = _require_secret(channel_cfg.app_secret_env, channel)
+            _verify_hmac_header(body, secret, headers.get("x-hub-signature-256", ""), prefix="sha256=")
+            return
+
+        if channel == "meta":
+            secret = _require_secret(channel_cfg.app_secret_env, channel)
+            _verify_hmac_header(body, secret, headers.get("x-hub-signature-256", ""), prefix="sha256=")
+            return
+
+        if channel == "line":
+            signature = headers.get("x-line-signature", "")
+            if not adapter.verify_signature(body, signature):
+                raise PermissionError("invalid LINE webhook signature")
+            return
+
+        if channel == "wechat":
+            q = request.query_params
+            if not adapter.verify_signature(q.get("signature", ""), q.get("timestamp", ""), q.get("nonce", "")):
+                raise PermissionError("invalid WeChat webhook signature")
+            return
+
+        if channel in {"lark", "feishu"}:
+            token = getattr(adapter, "verification_token", "") or _require_secret(channel_cfg.verification_token_env, channel)
+            if not isinstance(payload, dict) or payload.get("token") != token:
+                raise PermissionError(f"invalid {channel} verification token")
+            secret_env = getattr(channel_cfg, "webhook_secret_env", "")
+            secret = _env(secret_env) if secret_env else ""
+            signature = headers.get("x-omnidesk-webhook-signature-256", "")
+            if secret or signature:
+                _verify_hmac_header(body, secret or _require_secret(secret_env, channel), signature, prefix="sha256=")
+            return
+
+        secret_env = getattr(channel_cfg, "webhook_secret_env", "")
+        secret = _require_secret(secret_env, channel)
+        _verify_hmac_header(body, secret, headers.get("x-omnidesk-webhook-signature-256", ""), prefix="sha256=")
+
+
     def _envelope(adapter, payload):
         if hasattr(adapter, "extract_envelope"):
             return adapter.extract_envelope(payload)
@@ -37,6 +124,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         body = await request.body()
         try:
             actual_payload = payload if payload is not None else _json(body)
+            _verify_required_webhook_signature(channel, adapter, request, body, actual_payload)
             envelope = _envelope(adapter, actual_payload)
             if hasattr(rt, "webhook_security"):
                 rt.webhook_security.guard(
@@ -122,13 +210,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
     @app.post("/webhooks/wechat")
     async def wechat_webhook(request: Request):
         adapter = rt.adapters["wechat_official"]
-        body = await request.body()
-        try:
-            envelope = adapter.extract_envelope(body)
-            if hasattr(rt, "webhook_security"):
-                rt.webhook_security.guard(channel="wechat", body=body, source_key=envelope.source_key, message_id=envelope.message_id, timestamp=envelope.timestamp)
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        body, _ = await _guard_webhook("wechat", adapter, request, payload=await request.body())
         msg = adapter.parse_xml(body)
         if not msg:
             return Response(content="success", media_type="text/plain")
@@ -164,19 +246,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
     @app.post("/webhooks/line")
     async def line_webhook(request: Request):
         adapter = rt.adapters["line"]
-        body = await request.body()
-        signature = request.headers.get("x-line-signature", "")
-        if cfg.channels.line.enabled and not adapter.verify_signature(body, signature):
-            raise HTTPException(403, "LINE signature verification failed")
+        body, _ = await _guard_webhook("line", adapter, request)
         payload = _json(body)
-        try:
-            envelope = adapter.extract_envelope(payload)
-            if hasattr(rt, "webhook_security"):
-                rt.webhook_security.guard(channel="line", body=body, source_key=envelope.source_key, message_id=envelope.message_id, timestamp=envelope.timestamp)
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
         messages = adapter.parse_webhook(payload)
         return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
+
 
     @app.get("/webhooks/x")
     async def x_crc(request: Request):

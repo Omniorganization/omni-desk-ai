@@ -28,10 +28,16 @@ class FilesTool:
         )
 
     def _safe_path(self, rel: str) -> Path:
-        p = (self.root / rel).expanduser().resolve()
-        if not str(p).startswith(str(self.root)):
-            raise PermissionError(f"path escapes workspace: {rel}")
-        return p
+        raw = Path(rel).expanduser()
+        if raw.is_absolute():
+            candidate = raw.resolve()
+        else:
+            candidate = (self.root / raw).resolve()
+        try:
+            candidate.relative_to(self.root)
+        except ValueError as exc:
+            raise PermissionError(f"path escapes workspace: {rel}") from exc
+        return candidate
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "read_text":

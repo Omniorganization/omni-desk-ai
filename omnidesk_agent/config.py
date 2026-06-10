@@ -64,6 +64,7 @@ class GatewayConfig(BaseModel):
     shared_secret_env: str = "OMNIDESK_GATEWAY_SECRET"
     admin_token_env: str = "OMNIDESK_ADMIN_TOKEN"
     allow_local_admin_without_token: bool = False
+    require_webhook_signatures: bool = True
 
 class PermissionConfig(BaseModel):
     approval_mode: Literal["interactive_cli", "remote_approval", "auto_policy"] = "interactive_cli"
@@ -104,6 +105,7 @@ class WhatsAppCloudConfig(BaseModel):
     enabled: bool = False
     access_token_env: str = "WHATSAPP_CLOUD_TOKEN"
     verify_token_env: str = "WHATSAPP_VERIFY_TOKEN"
+    app_secret_env: str = "WHATSAPP_APP_SECRET"
     phone_number_id: Optional[str] = None
     graph_version: str = "v21.0"
     allowed_wa_ids: list[str] = Field(default_factory=list)
@@ -123,12 +125,14 @@ class MetaGraphConfig(BaseModel):
     instagram_account_id: Optional[str] = None
     graph_version: str = "v21.0"
     verify_token_env: str = "META_VERIFY_TOKEN"
+    app_secret_env: str = "META_APP_SECRET"
     allowed_psids: list[str] = Field(default_factory=list)
 
 class DingTalkConfig(BaseModel):
     enabled: bool = False
     robot_access_token_env: str = "DINGTALK_ROBOT_TOKEN"
     robot_secret_env: str = "DINGTALK_ROBOT_SECRET"
+    webhook_secret_env: str = "DINGTALK_WEBHOOK_SECRET"
     app_key_env: str = "DINGTALK_APP_KEY"
     app_secret_env: str = "DINGTALK_APP_SECRET"
     allowed_conversation_ids: list[str] = Field(default_factory=list)
@@ -138,6 +142,7 @@ class LarkConfig(BaseModel):
     app_id_env: str = "LARK_APP_ID"
     app_secret_env: str = "LARK_APP_SECRET"
     verification_token_env: str = "LARK_VERIFICATION_TOKEN"
+    webhook_secret_env: str = "LARK_WEBHOOK_SECRET"
     encrypt_key_env: str = "LARK_ENCRYPT_KEY"
     allowed_open_ids: list[str] = Field(default_factory=list)
 
@@ -146,6 +151,7 @@ class FeishuConfig(BaseModel):
     app_id_env: str = "FEISHU_APP_ID"
     app_secret_env: str = "FEISHU_APP_SECRET"
     verification_token_env: str = "FEISHU_VERIFICATION_TOKEN"
+    webhook_secret_env: str = "FEISHU_WEBHOOK_SECRET"
     encrypt_key_env: str = "FEISHU_ENCRYPT_KEY"
     allowed_open_ids: list[str] = Field(default_factory=list)
 
@@ -163,6 +169,7 @@ class XConfig(BaseModel):
     access_token_env: str = "X_ACCESS_TOKEN"
     access_secret_env: str = "X_ACCESS_SECRET"
     webhook_crc_token_env: str = "X_WEBHOOK_CRC_TOKEN"
+    webhook_secret_env: str = "X_WEBHOOK_SECRET"
     allowed_user_ids: list[str] = Field(default_factory=list)
 
 class GmailConfig(BaseModel):
