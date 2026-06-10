@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-@dataclass(slots=True)
+@dataclass
 class TokenBudgetConfig:
     # Token budget is now a guardrail, not a hard blocker for verified-required calls.
     max_input_chars: int = 12000
@@ -25,7 +25,7 @@ class TokenBudgetConfig:
     per_task_max_llm_calls: int | None = None
 
 
-@dataclass(slots=True)
+@dataclass
 class TokenDecision:
     allowed: bool
     reason: str

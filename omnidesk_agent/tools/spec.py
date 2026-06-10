@@ -37,7 +37,7 @@ def normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return obj_schema(properties, required=required, additional=True)
 
 
-@dataclass(slots=True)
+@dataclass
 class ActionSpec:
     name: str
     description: str
@@ -73,7 +73,7 @@ class ActionSpec:
         return errors
 
 
-@dataclass(slots=True)
+@dataclass
 class ToolSpec:
     name: str
     description: str

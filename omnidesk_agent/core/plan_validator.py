@@ -6,7 +6,7 @@ from omnidesk_agent.core.models import Plan, PlanStep
 from omnidesk_agent.core.plan_schema import StructuredPlan
 
 
-@dataclass(slots=True)
+@dataclass
 class PlanValidationResult:
     ok: bool
     errors: list[str]

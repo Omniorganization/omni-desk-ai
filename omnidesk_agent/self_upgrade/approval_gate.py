@@ -21,7 +21,7 @@ HIGH_RISK_KEYWORDS = [
 ]
 
 
-@dataclass(slots=True)
+@dataclass
 class UpgradeGateDecision:
     allowed: bool
     mode: str

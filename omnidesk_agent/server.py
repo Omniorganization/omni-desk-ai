@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
+from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
 from omnidesk_agent.security.approval_store import ApprovalStore
 
 def create_app(cfg: AppConfig) -> FastAPI:
@@ -16,6 +17,10 @@ def create_app(cfg: AppConfig) -> FastAPI:
         if hasattr(rt, "webhook_security"):
             rt.webhook_security.guard(channel=channel, body=body, source_key=source_key, message_id=message_id)
         return body
+
+    dashboard_router = create_dashboard_router(rt)
+    if dashboard_router is not None:
+        app.include_router(dashboard_router)
 
     @app.get("/health")
     async def health():

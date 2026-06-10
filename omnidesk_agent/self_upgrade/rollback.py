@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-@dataclass(slots=True)
+@dataclass
 class Snapshot:
     commit: str
     branch: str

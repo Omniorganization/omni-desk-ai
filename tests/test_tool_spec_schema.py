@@ -1,3 +1,4 @@
+from __future__ import annotations
 from omnidesk_agent.tools.spec import ActionSpec, obj_schema
 
 

@@ -11,7 +11,7 @@ from typing import Any
 from omnidesk_agent.validation.webhook_signatures import line_signature_valid
 
 
-@dataclass(slots=True)
+@dataclass
 class WebhookSecurityConfig:
     replay_ttl_seconds: int = 300
     rate_limit_window_seconds: int = 60

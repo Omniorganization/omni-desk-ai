@@ -21,6 +21,9 @@ def main() -> None:
     learn_p = sub.add_parser("learning-report"); learn_p.add_argument("--days", type=int, default=7)
     metrics_p = sub.add_parser("metrics"); metrics_p.add_argument("--days", type=int, default=7)
     exp_p = sub.add_parser("experience-search"); exp_p.add_argument("query"); exp_p.add_argument("--limit", type=int, default=5)
+    up_p = sub.add_parser("upgrade-proposals"); up_p.add_argument("--status", default=None)
+    gen_p = sub.add_parser("upgrade-artifact"); gen_p.add_argument("proposal_id")
+    fb_p = sub.add_parser("upgrade-feedback"); fb_p.add_argument("proposal_id"); fb_p.add_argument("decision", choices=["approved", "rejected"]); fb_p.add_argument("--reason", default="")
     run_p = sub.add_parser("run"); run_p.add_argument("message")
     remember_p = sub.add_parser("remember"); remember_p.add_argument("text"); remember_p.add_argument("--tags", default="")
     search_p = sub.add_parser("search"); search_p.add_argument("query")
@@ -74,6 +77,21 @@ def main() -> None:
     if args.cmd == "experience-search":
         rt = OmniDeskRuntime(cfg)
         print(json.dumps(rt.memory.retrieve_for_task(args.query, limit=args.limit), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "upgrade-proposals":
+        rt = OmniDeskRuntime(cfg)
+        print(json.dumps([p.to_dict() for p in rt.proposal_store.list(status=args.status)], ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "upgrade-artifact":
+        rt = OmniDeskRuntime(cfg)
+        print(json.dumps(rt.governance.generate_artifact(args.proposal_id), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "upgrade-feedback":
+        rt = OmniDeskRuntime(cfg)
+        print(json.dumps(rt.governance.record_human_feedback(args.proposal_id, args.decision, args.reason), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "run":

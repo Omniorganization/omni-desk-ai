@@ -16,7 +16,7 @@ UpgradeStatus = Literal[
 ]
 
 
-@dataclass(slots=True)
+@dataclass
 class UpgradeRequest:
     title: str
     reason: str
@@ -25,7 +25,7 @@ class UpgradeRequest:
     risk: RiskLevel = "medium"
 
 
-@dataclass(slots=True)
+@dataclass
 class UpgradePlan:
     title: str
     goal: str
@@ -65,14 +65,14 @@ class UpgradePlan:
 """
 
 
-@dataclass(slots=True)
+@dataclass
 class PatchResult:
     changed_files: list[str]
     summary: str
     diff: str
 
 
-@dataclass(slots=True)
+@dataclass
 class TestResult:
     ok: bool
     command: str
@@ -80,7 +80,7 @@ class TestResult:
     exit_code: int
 
 
-@dataclass(slots=True)
+@dataclass
 class UpgradeRun:
     request: UpgradeRequest
     plan: UpgradePlan

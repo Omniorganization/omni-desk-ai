@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pathlib import Path
 from omnidesk_agent.config import GmailConfig
 from omnidesk_agent.oauth.gmail_oauth import GmailOAuthManager

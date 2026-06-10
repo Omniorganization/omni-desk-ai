@@ -1,3 +1,4 @@
+from __future__ import annotations
 from omnidesk_agent.self_upgrade.skill_sandbox import SkillSandbox
 
 

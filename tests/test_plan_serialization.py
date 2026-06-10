@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import asdict
 
 from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-@dataclass(slots=True)
+@dataclass
 class Skill:
     name: str
     path: Path

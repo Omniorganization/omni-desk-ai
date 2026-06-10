@@ -129,3 +129,28 @@ omnidesk experience-search "browser captcha login" --limit 5
 ```
 
 The system prefers low-risk skill/workflow improvements before core runtime changes. Core planner, permission, shell, security and self-upgrade changes require human approval.
+
+
+---
+
+## Governed Self-Improving Agent
+
+Omni-deskAi now includes a governed self-upgrade pipeline:
+
+```text
+Upgrade Proposal -> Scoring -> Risk Classification -> Permission Diff -> Sandbox / Regression Tests -> Shadow Mode -> Canary Release -> Human Approval -> Stable Release -> Upgrade Memory
+```
+
+New commands:
+
+```bash
+omnidesk upgrade-proposals
+omnidesk upgrade-artifact <proposal_id>
+omnidesk upgrade-feedback <proposal_id> rejected --reason "too risky"
+```
+
+Local dashboard:
+
+```text
+/self-upgrade/dashboard
+```

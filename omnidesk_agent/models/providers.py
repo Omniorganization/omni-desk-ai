@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
 
-@dataclass(slots=True)
+@dataclass
 class ProviderSettings:
     profile_name: str; provider: str; model: str
     api_key_env: str | None = None; base_url: str | None = None; api_version: str | None = None; region: str | None = None

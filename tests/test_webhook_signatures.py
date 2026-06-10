@@ -1,3 +1,4 @@
+from __future__ import annotations
 from omnidesk_agent.validation.webhook_signatures import line_signature_valid, wechat_signature
 
 

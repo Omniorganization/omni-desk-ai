@@ -8,7 +8,7 @@ from typing import Any
 from omnidesk_agent.learning.failure_analyzer import FailureAnalyzer
 
 
-@dataclass(slots=True)
+@dataclass
 class GrowthPlan:
     long_term_goal: str = "become an autonomous ecommerce operations assistant"
     focus_areas: list[str] = field(default_factory=lambda: [

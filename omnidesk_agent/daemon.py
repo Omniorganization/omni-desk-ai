@@ -20,6 +20,7 @@ from omnidesk_agent.core.structured_planner import LLMStructuredPlanner
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
 from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.learning.daily_job import DailySelfLearningJob
+from omnidesk_agent.self_upgrade.governance import GovernedSelfImprovement
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.security.permissions import PermissionManager
 from omnidesk_agent.security.approval_store import ApprovalStore
@@ -61,6 +62,8 @@ class OmniDeskRuntime:
         self.planner = self.rule_planner if cfg.llm.provider == 'rule' else LLMStructuredPlanner(self.model_router, self.memory, self.skills, self.tools, self.rule_planner)
         self.orchestrator = Orchestrator(self.planner, self.tools, self.permissions, self.memory, self.execution_strategy, self.run_store, self.approval_store)
         self.learning_job = DailySelfLearningJob(self.memory, cfg.workspace.root)
+        self.governance = GovernedSelfImprovement(cfg.workspace.root, Path.cwd())
+        self.proposal_store = self.governance.proposal_store
 
     def _build_channel_adapters(self) -> dict:
         return {"telegram": TelegramChannel(self.cfg.channels.telegram), "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud), "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official), "meta_graph": MetaGraphChannel(self.cfg.channels.meta_graph), "dingtalk": DingTalkChannel(self.cfg.channels.dingtalk), "lark": LarkChannel(self.cfg.channels.lark), "feishu": FeishuChannel(self.cfg.channels.feishu), "line": LineChannel(self.cfg.channels.line), "x": XChannel(self.cfg.channels.x), "gmail": GmailChannel(self.cfg.channels.gmail)}

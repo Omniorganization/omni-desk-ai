@@ -1,3 +1,4 @@
+from __future__ import annotations
 import pytest
 from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
 

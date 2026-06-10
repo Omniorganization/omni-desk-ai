@@ -1,3 +1,4 @@
+from __future__ import annotations
 import time
 import pytest
 from omnidesk_agent.security.webhook_security import WebhookSecurity, WebhookSecurityConfig

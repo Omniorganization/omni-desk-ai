@@ -9,7 +9,7 @@ from omnidesk_agent.core.models import ActionProposal, ToolResult
 from omnidesk_agent.security.permissions import PermissionManager
 
 
-@dataclass(slots=True)
+@dataclass
 class ToolContext:
     permissions: PermissionManager
     source: str = "local-cli"

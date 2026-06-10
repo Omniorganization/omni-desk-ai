@@ -1,3 +1,4 @@
+from __future__ import annotations
 from omnidesk_agent.learning.failure_analyzer import FailureAnalyzer
 
 

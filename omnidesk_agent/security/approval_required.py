@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass(slots=True)
+@dataclass
 class ApprovalRequired(Exception):
     approval_id: str
     proposal: dict[str, Any]

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from omnidesk_agent.core.plan_schema import StructuredPlan
 from omnidesk_agent.core.plan_validator import PlanValidator
 

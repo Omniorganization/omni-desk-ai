@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pathlib import Path
 from omnidesk_agent.core.token_budget import TokenBudgetManager, TokenBudgetConfig
 

@@ -8,7 +8,7 @@ import time
 RiskLevel = Literal["low", "medium", "high", "critical"]
 
 
-@dataclass(slots=True)
+@dataclass
 class ChannelMessage:
     channel: str
     sender_id: str
@@ -19,7 +19,7 @@ class ChannelMessage:
     received_at: float = field(default_factory=time.time)
 
 
-@dataclass(slots=True)
+@dataclass
 class PlanStep:
     description: str
     tool: str
@@ -38,7 +38,7 @@ class PlanStep:
         self.requires_approval = value
 
 
-@dataclass(slots=True)
+@dataclass
 class Plan:
     goal: str
     steps: list[PlanStep]
@@ -46,7 +46,7 @@ class Plan:
     plan_id: str = field(default_factory=lambda: str(uuid4()))
 
 
-@dataclass(slots=True)
+@dataclass
 class ToolResult:
     ok: bool
     data: Any = None
@@ -54,7 +54,7 @@ class ToolResult:
     summary: str | None = None
 
 
-@dataclass(slots=True)
+@dataclass
 class ActionProposal:
     tool: str
     action: str
@@ -70,7 +70,7 @@ class ActionProposal:
     scope_hash: str | None = None
 
 
-@dataclass(slots=True)
+@dataclass
 class ApprovalDecision:
     allowed: bool
     mode: Literal["allow", "deny", "dry_run"]

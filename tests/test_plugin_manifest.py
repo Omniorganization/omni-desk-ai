@@ -1,3 +1,4 @@
+from __future__ import annotations
 import hashlib
 from omnidesk_agent.plugins.manifest import PluginManifest
 

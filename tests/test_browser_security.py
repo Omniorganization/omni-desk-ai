@@ -1,3 +1,4 @@
+from __future__ import annotations
 from omnidesk_agent.config import ChromeConfig
 from omnidesk_agent.tools.browser import BrowserTool
 

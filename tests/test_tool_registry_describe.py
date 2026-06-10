@@ -1,3 +1,4 @@
+from __future__ import annotations
 from omnidesk_agent.tools.registry import ToolRegistry
 
 

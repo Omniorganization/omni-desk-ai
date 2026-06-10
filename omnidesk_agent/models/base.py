@@ -4,7 +4,7 @@ from typing import Any, Literal, Protocol
 
 ModelTask = Literal['planner','tool_plan','chat','code','vision','private','summarize','upgrade','embed']
 
-@dataclass(slots=True)
+@dataclass
 class ModelRequest:
     system: str
     user: str
@@ -15,7 +15,7 @@ class ModelRequest:
     task_id: str = 'default'
     metadata: dict[str, Any] = field(default_factory=dict)
 
-@dataclass(slots=True)
+@dataclass
 class ModelResponse:
     text: str
     provider: str

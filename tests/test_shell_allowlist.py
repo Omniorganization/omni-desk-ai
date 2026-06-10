@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pathlib import Path
 from omnidesk_agent.config import PermissionConfig
 from omnidesk_agent.tools.shell import ShellTool
