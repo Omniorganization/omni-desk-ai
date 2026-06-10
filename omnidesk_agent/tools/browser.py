@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import base64
 import json
 from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
-import websockets
 
 from omnidesk_agent.config import ChromeConfig
 from omnidesk_agent.core.models import ToolResult
@@ -14,15 +12,6 @@ from omnidesk_agent.tools.base import ToolContext, proposal
 
 
 class BrowserTool:
-    """Google Chrome DevTools Protocol connector.
-
-    Start Chrome manually with:
-      /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
-
-    This tool uses official CDP endpoints and still requires permission checks before navigation,
-    evaluation, clicking, typing, or screenshot actions.
-    """
-
     name = "browser"
 
     def __init__(self, cfg: ChromeConfig):
@@ -35,6 +24,14 @@ class BrowserTool:
         origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
         if origin not in self.cfg.allowed_origins:
             raise ValueError(f"Browser origin not allowed: {origin}")
+
+    def _check_js(self, expression: str) -> None:
+        if not getattr(self.cfg, "allow_evaluate", False):
+            raise PermissionError("browser.evaluate is disabled by config. Use safe actions: get_dom_text, click_selector, type_selector.")
+        lowered = expression.lower()
+        for pat in getattr(self.cfg, "deny_js_patterns", []) or []:
+            if pat.lower() in lowered:
+                raise PermissionError(f"browser.evaluate blocked by deny_js_patterns: {pat}")
 
     async def _tabs(self) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -54,7 +51,16 @@ class BrowserTool:
         return tabs[0]
 
     async def _cdp(self, method: str, params: dict[str, Any] | None = None, target_id: str | None = None) -> dict[str, Any]:
+        try:
+            import websockets
+        except ImportError as exc:
+            raise RuntimeError("Install websockets or use pip install -e '.[browser]'") from exc
+
         tab = await self._tab(target_id)
+        current_url = str(tab.get("url") or "")
+        if current_url.startswith("http"):
+            self._check_url(current_url)
+
         ws_url = tab.get("webSocketDebuggerUrl")
         if not ws_url:
             raise RuntimeError("Chrome tab has no webSocketDebuggerUrl")
@@ -95,12 +101,9 @@ class BrowserTool:
 
         if action == "evaluate":
             expression = str(args["expression"])
+            self._check_js(expression)
             expected = str(args.get("expected_result") or "Evaluate JavaScript in visible Chrome tab")
-            ctx.permissions.verify(proposal(
-                "browser", "evaluate",
-                {"expression_preview": expression[:300], "expected_result": expected},
-                "high", "执行 Chrome DevTools JavaScript", ctx
-            ))
+            ctx.permissions.verify(proposal("browser", "evaluate", {"expression_preview": expression[:300], "expected_result": expected}, "critical", "执行高风险 Chrome JavaScript", ctx))
             result = await self._cdp("Runtime.evaluate", {"expression": expression, "returnByValue": True}, args.get("target_id"))
             return ToolResult(True, data=result, summary="evaluated javascript in chrome")
 
@@ -124,11 +127,7 @@ class BrowserTool:
             selector = str(args["selector"])
             text = str(args["text"])
             expected = str(args.get("expected_result") or f"Type into selector {selector}")
-            ctx.permissions.verify(proposal(
-                "browser", "type_selector",
-                {"selector": selector, "text_preview": text[:200], "expected_result": expected},
-                "high", "向网页选择器输入文本", ctx
-            ))
+            ctx.permissions.verify(proposal("browser", "type_selector", {"selector": selector, "text_preview": text[:200], "expected_result": expected}, "high", "向网页选择器输入文本", ctx))
             js = (
                 f"const el=document.querySelector({json.dumps(selector)});"
                 f"if(el){{el.focus();el.value={json.dumps(text)};el.dispatchEvent(new Event('input',{{bubbles:true}}));}}"

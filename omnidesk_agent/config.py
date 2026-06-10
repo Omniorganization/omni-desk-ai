@@ -58,6 +58,7 @@ class GatewayConfig(BaseModel):
     shared_secret_env: str = "OMNIDESK_GATEWAY_SECRET"
 
 class PermissionConfig(BaseModel):
+    approval_mode: Literal["interactive_cli", "remote_approval", "auto_policy"] = "interactive_cli"
     default_mode: PermissionMode = "ask"
     no_tty_mode: PermissionMode = "deny"
     audit_log: Path = Path("~/.omnidesk/audit.log").expanduser()
@@ -156,7 +157,12 @@ class GmailConfig(BaseModel):
     credentials_file: Path = Path("~/.omnidesk/google/credentials.json").expanduser()
     token_file: Path = Path("~/.omnidesk/google/gmail_token.json").expanduser()
     allowed_senders: list[str] = Field(default_factory=list)
-    readonly: bool = False
+    readonly: bool = True
+    allow_send: bool = False
+    allow_modify: bool = False
+    allow_compose: bool = True
+    oauth_redirect_allowlist: list[str] = Field(default_factory=list)
+    oauth_state_ttl_seconds: int = 600
 
 class ChromeConfig(BaseModel):
     enabled: bool = True

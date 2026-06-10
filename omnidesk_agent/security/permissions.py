@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from omnidesk_agent.config import PermissionConfig
+from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.core.models import ActionProposal, ApprovalDecision
 
 

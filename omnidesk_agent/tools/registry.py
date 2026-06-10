@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from omnidesk_agent.core.models import ToolResult
+from omnidesk_agent.tools.spec import ToolSpecRegistry
 from omnidesk_agent.tools.base import Tool, ToolContext
 
 
