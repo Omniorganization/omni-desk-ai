@@ -13,13 +13,13 @@ def test_runtime_wires_learning_loop_into_orchestrator(tmp_path: Path):
     cfg.workspace.skills_dirs = [tmp_path / "skills"]
     cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
     cfg.permissions.audit_log = tmp_path / "audit.log"
-    cfg.channels.gmail.credentials_file = tmp_path / "google" / "credentials.json"
-    cfg.channels.gmail.token_file = tmp_path / "google" / "token.json"
-    cfg.learning.growth_plan_file = tmp_path / "growth_plan.json"
     cfg.llm.provider = "rule"
     cfg.channels.chrome.enabled = False
     cfg.plugins.enabled = False
     cfg.memory_privacy.encrypt_at_rest = False
+    cfg.channels.gmail.credentials_file = tmp_path / "google" / "credentials.json"
+    cfg.channels.gmail.token_file = tmp_path / "google" / "token.json"
+    cfg.learning.growth_plan_file = tmp_path / "growth_plan.json"
     cfg.ensure_dirs()
 
     rt = OmniDeskRuntime(cfg)

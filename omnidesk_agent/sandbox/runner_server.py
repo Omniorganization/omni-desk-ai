@@ -8,6 +8,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tarfile
+import io
 import threading
 import time
 from dataclasses import dataclass
@@ -42,7 +44,10 @@ class RunnerConfig:
     nonce_ttl_seconds: int = int(os.getenv("OMNIDESK_SANDBOX_NONCE_TTL_SECONDS", "300"))
     container_runtime: str = os.getenv("OMNIDESK_CONTAINER_RUNTIME", "docker")
     allowed_workspace_root: Path = Path(os.getenv("OMNIDESK_SANDBOX_ALLOWED_WORKSPACE_ROOT", "/srv/omnidesk-sandbox-workspaces")).resolve()
-    allow_workspace_paths: bool = os.getenv("OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS", "1").lower() in {"1", "true", "yes"}
+    allow_workspace_paths: bool = os.getenv("OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS", "0").lower() in {"1", "true", "yes"}
+    require_hmac: bool = os.getenv("OMNIDESK_SANDBOX_REQUIRE_HMAC", "1" if os.getenv("OMNIDESK_ENV") == "production" else "0").lower() in {"1", "true", "yes"}
+    max_archive_files: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILES", "512"))
+    max_archive_file_bytes: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILE_BYTES", str(1024 * 1024)))
     default_image: str = os.getenv("OMNIDESK_SANDBOX_IMAGE", "python:3.11-slim@sha256:" + "a" * 64)
 
 
@@ -71,7 +76,7 @@ def _prune_nonces(now: float, ttl: int) -> None:
 def _verify_signature(headers: dict[str, str], body: bytes, cfg: RunnerConfig) -> tuple[bool, str]:
     secret = os.getenv(cfg.hmac_secret_env, "")
     if not secret:
-        return True, "hmac not configured"
+        return (False, "hmac is required") if cfg.require_hmac else (True, "hmac not configured")
     ts = headers.get("x-omnidesk-sandbox-timestamp", "")
     nonce = headers.get("x-omnidesk-sandbox-nonce", "")
     sig = headers.get("x-omnidesk-sandbox-signature", "")
@@ -119,6 +124,49 @@ def _build_docker_command(payload: dict[str, Any], workspace: Path, cfg: RunnerC
     ]
 
 
+def _safe_extract_workspace_archive(raw: bytes, dest: Path, cfg: RunnerConfig) -> None:
+    """Extract a tar/tar.gz workspace with path, symlink, count, and size guards."""
+    total = 0
+    count = 0
+    try:
+        tf = tarfile.open(fileobj=io.BytesIO(raw), mode="r:*")
+    except tarfile.TarError as exc:
+        raise ValueError(f"invalid workspace archive: {exc}") from exc
+    with tf:
+        members = tf.getmembers()
+        if len(members) > cfg.max_archive_files:
+            raise ValueError("workspace archive contains too many files")
+        for member in members:
+            count += 1
+            name = member.name
+            if name.startswith("/") or ".." in Path(name).parts:
+                raise ValueError("workspace archive contains unsafe path")
+            target = (dest / name).resolve()
+            if not _is_relative_to(target, dest):
+                raise ValueError("workspace archive path escapes destination")
+            if member.issym() or member.islnk():
+                raise ValueError("workspace archive may not contain links")
+            if member.isfile():
+                if member.size > cfg.max_archive_file_bytes:
+                    raise ValueError("workspace archive file exceeds maximum size")
+                total += int(member.size)
+                if total > cfg.max_archive_bytes:
+                    raise ValueError("workspace archive exceeds maximum size")
+            elif not (member.isdir() or member.isfile()):
+                raise ValueError("workspace archive contains unsupported entry")
+        for member in members:
+            target = (dest / member.name).resolve()
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                src = tf.extractfile(member)
+                if src is None:
+                    raise ValueError("workspace archive file could not be read")
+                with src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out, length=1024 * 1024)
+
+
 def _workspace_from_payload(payload: dict[str, Any], cfg: RunnerConfig) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
     archive_b64 = payload.get("workspace_archive_base64")
     if archive_b64:
@@ -126,10 +174,13 @@ def _workspace_from_payload(payload: dict[str, Any], cfg: RunnerConfig) -> tuple
         if len(raw) > cfg.max_archive_bytes:
             raise ValueError("workspace archive exceeds maximum size")
         tmp = tempfile.TemporaryDirectory(prefix="omnidesk-sandbox-")
-        # Artifact protocol placeholder: store uploaded archive bytes under an isolated temporary root.
-        # Production deployments can replace this with a tar extractor that validates paths/symlinks.
-        (Path(tmp.name) / "workspace.archive").write_bytes(raw)
-        return Path(tmp.name).resolve(), tmp
+        root = Path(tmp.name).resolve()
+        try:
+            _safe_extract_workspace_archive(raw, root, cfg)
+        except Exception:
+            tmp.cleanup()
+            raise
+        return root, tmp
     if not cfg.allow_workspace_paths:
         raise ValueError("workspace path payloads are disabled; use workspace_archive_base64")
     workspace = Path(str(payload.get("workspace") or cfg.allowed_workspace_root)).resolve()

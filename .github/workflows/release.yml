@@ -13,7 +13,9 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip build cyclonedx-bom
       - run: pip install -e ".[dev,test]"
-      - run: python scripts/check_lock_hashes.py requirements.lock
+      - run: |
+          python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.dev.lock
       - run: scripts/build_release.sh
         env:
           OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}

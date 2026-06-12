@@ -60,7 +60,7 @@ def test_runner_workspace_must_be_under_allowed_root(tmp_path):
     root.mkdir()
     inside = root / "job1"
     inside.mkdir()
-    cfg = RunnerConfig(allowed_workspace_root=root)
+    cfg = RunnerConfig(allowed_workspace_root=root, allow_workspace_paths=True)
     workspace, tmp = _workspace_from_payload({"workspace": str(inside)}, cfg)
     assert workspace == inside.resolve()
     assert tmp is None

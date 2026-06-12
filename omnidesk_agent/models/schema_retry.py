@@ -4,11 +4,15 @@ import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
-try:  # jsonschema is a production dependency from 0.7.8 onward.
-    from jsonschema import Draft202012Validator, ValidationError as JsonSchemaValidationError
-except Exception:  # pragma: no cover - defensive import fallback
-    Draft202012Validator = None  # type: ignore[assignment]
-    JsonSchemaValidationError = ValueError  # type: ignore[assignment]
+
+
+def _load_jsonschema_validator():
+    """Lazily import jsonschema to keep CLI/server cold-start lightweight."""
+    try:
+        from jsonschema import Draft202012Validator, ValidationError as JsonSchemaValidationError
+        return Draft202012Validator, JsonSchemaValidationError
+    except Exception:  # pragma: no cover - dependency fallback for minimal installs
+        return None, ValueError
 
 
 class StructuredOutputError(ValueError):
@@ -32,6 +36,7 @@ def validate_json_text(text: str, schema: Optional[dict[str, Any]] = None) -> An
 
 
 def _validate_payload(payload: Any, schema: dict[str, Any]) -> None:
+    Draft202012Validator, JsonSchemaValidationError = _load_jsonschema_validator()
     if Draft202012Validator is not None:
         try:
             Draft202012Validator.check_schema(schema)

@@ -14,6 +14,8 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev,test]"
-      - run: python scripts/check_lock_hashes.py requirements.lock
+      - run: |
+          python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.dev.lock
       - run: python scripts/production_smoke_test.py --help
       - run: echo "Staging deployment must run post-deploy /health, /admin/status and rollback drill in the target environment."

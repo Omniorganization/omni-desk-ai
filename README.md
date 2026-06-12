@@ -229,7 +229,7 @@ This version adds role-aware AdminAuth, IP allowlist, admin audit, one-time resu
 
 ---
 
-## 0.7.11-industrial-rc6
+## 0.7.12-industrial-rc7
 
 This release adds industrial RC3 hardening: governed memory writes, plugin runtime permission validation, rootless Docker sandbox isolation, PR/artifact promotion metadata, SQLite migration/close governance, release SBOM/signing workflow, initialized runtime metrics, and an 80% global CI coverage gate with security/core/tools grouped gates at 90%/85%/85%.
 

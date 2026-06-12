@@ -4,6 +4,9 @@ import asyncio
 import hashlib
 import hmac
 import json
+import base64
+import io
+import tarfile
 import os
 import time
 import uuid
@@ -49,13 +52,31 @@ class RemoteSandboxClient:
     async def run_command(self, *, argv: list[str], workspace: Path, timeout_seconds: int, readonly: bool = True) -> RemoteSandboxResult:
         payload = {
             "argv": argv,
-            "workspace": str(workspace),
+            "workspace_archive_base64": self._archive_workspace(workspace),
             "timeout_seconds": int(timeout_seconds),
             "readonly": bool(readonly),
             "request_id": str(uuid.uuid4()),
             "nonce": str(uuid.uuid4()),
         }
         return await asyncio.to_thread(self._post_run, payload, timeout_seconds)
+
+    def _archive_workspace(self, workspace: Path) -> str:
+        workspace = workspace.resolve()
+        if not workspace.exists():
+            raise RemoteSandboxError(f"workspace does not exist: {workspace}")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            if workspace.is_file():
+                tf.add(workspace, arcname=workspace.name, recursive=False)
+            else:
+                for child in sorted(workspace.rglob("*")):
+                    if ".git" in child.parts or "__pycache__" in child.parts:
+                        continue
+                    rel = child.relative_to(workspace)
+                    if any(part == ".." for part in rel.parts):
+                        continue
+                    tf.add(child, arcname=str(rel), recursive=False)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _post_run(self, payload: dict[str, Any], timeout_seconds: int) -> RemoteSandboxResult:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

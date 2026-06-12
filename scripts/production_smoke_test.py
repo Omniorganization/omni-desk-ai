@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import io
+import tarfile
 import hashlib
 import hmac
 import json
@@ -11,6 +13,17 @@ import time
 import uuid
 import urllib.request
 from typing import Optional
+
+
+
+def build_smoke_workspace_archive() -> str:
+    buf = io.BytesIO()
+    content = b"print('omnidesk sandbox smoke')\n"
+    info = tarfile.TarInfo("hello.py")
+    info.size = len(content)
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        tf.addfile(info, io.BytesIO(content))
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def request_json(url: str, token: Optional[str] = None) -> dict:
@@ -65,7 +78,7 @@ def check_sandbox() -> dict | None:
         raise RuntimeError(f"sandbox runner not ready: health={health} ready={ready}")
     payload = {
         "argv": ["python", "-m", "compileall", "."],
-        "workspace_archive_base64": base64.b64encode(b"smoke").decode("ascii"),
+        "workspace_archive_base64": build_smoke_workspace_archive(),
         "timeout_seconds": int(os.getenv("OMNIDESK_SMOKE_SANDBOX_TIMEOUT", "30")),
         "readonly": True,
     }

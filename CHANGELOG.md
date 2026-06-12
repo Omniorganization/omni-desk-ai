@@ -1,4 +1,4 @@
-## 0.7.11-industrial-rc6
+## 0.7.12-industrial-rc7
 
 - Ensure release source archives include `.github/workflows` so CI/CD contract tests run green from clean packages.
 - Install hash-locked dependencies in Docker image builds before installing the OmniDesk wheel with `--no-deps`.
@@ -6,7 +6,7 @@
 
 # Changelog
 
-## 0.7.11-industrial-rc6
+## 0.7.12-industrial-rc7
 
 - Removed placeholder base-image digests; Docker builds now require explicit digest-pinned `PYTHON_BASE_IMAGE_DIGEST`.
 - Added sandbox-runner readiness, HMAC nonce replay protection, and allowed workspace root checks.

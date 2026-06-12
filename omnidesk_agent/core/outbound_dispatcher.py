@@ -29,8 +29,8 @@ class OutboundDispatcher:
         self.poll_interval_seconds = poll_interval_seconds
         self.lease_seconds = lease_seconds
         self._task: Optional[asyncio.Task] = None
-        self._stop: Optional[asyncio.Event] = None
-        self._stop_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stop: asyncio.Event | None = None
+        self._stop_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_stop_event(self) -> asyncio.Event:
         loop = asyncio.get_running_loop()
@@ -47,8 +47,7 @@ class OutboundDispatcher:
         self._task = asyncio.create_task(self.run_forever())
 
     async def stop(self) -> None:
-        if self._stop is not None:
-            self._stop.set()
+        self._get_stop_event().set()
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=2.0)
@@ -60,8 +59,8 @@ class OutboundDispatcher:
                     pass
 
     async def run_forever(self) -> None:
-        stop = self._get_stop_event()
-        while not stop.is_set():
+        stop_event = self._get_stop_event()
+        while not stop_event.is_set():
             processed = await self.run_once()
             if not processed:
                 await asyncio.sleep(self.poll_interval_seconds)

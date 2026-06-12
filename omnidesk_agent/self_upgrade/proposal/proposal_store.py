@@ -11,7 +11,7 @@ class UpgradeProposalStore:
 
     def __init__(self, root: Path):
         self.root = root.expanduser()
-        self.metrics = None
+        self.metrics: Any = None
         for status in sorted(self.STATUSES):
             (self.root / status).mkdir(parents=True, exist_ok=True)
 

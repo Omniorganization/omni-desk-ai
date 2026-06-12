@@ -29,8 +29,8 @@ class BrowserTool:
     def __init__(self, cfg: ChromeConfig):
         self.cfg = cfg
         self.base = f"http://{cfg.devtools_host}:{cfg.devtools_port}"
-        self._lock: Optional[asyncio.Lock] = None
-        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
