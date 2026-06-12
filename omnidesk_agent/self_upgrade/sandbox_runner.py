@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Literal, Optional, Union, Any
+from typing import Literal, Optional, Union
 
 import asyncio
 import shlex
 from pathlib import Path
 
-from omnidesk_agent.config import SandboxConfig
+from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE, SandboxConfig
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.self_upgrade.models import TestResult
 
@@ -38,7 +38,7 @@ class SandboxRunner:
     ):
         self.repo_root = repo_root.resolve()
         self.allowed_prefixes = allowed_prefixes or self.DEFAULT_ALLOWED
-        self.sandbox_cfg = sandbox_cfg or SandboxConfig(backend=backend or "argv", docker_image=docker_image or "python:3.11-slim")
+        self.sandbox_cfg = sandbox_cfg or SandboxConfig(backend=backend or "argv", docker_image=docker_image or DEFAULT_SANDBOX_IMAGE)
         self.backend = str(backend or self.sandbox_cfg.backend)
         if self.backend not in {"argv", "docker", "remote_docker"}:
             raise ValueError(f"unsupported sandbox backend: {self.backend}")

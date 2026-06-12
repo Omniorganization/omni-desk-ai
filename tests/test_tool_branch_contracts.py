@@ -113,6 +113,11 @@ class FakeBrowserTool(BrowserTool):
         return {"method": method, "params": params or {}, "target_id": target_id}
 
 
+class RiskyBrowserTool(FakeBrowserTool):
+    async def _tabs(self):
+        return [{"id": "risk-tab", "title": "Ads Manager", "url": "https://business.facebook.com/adsmanager"}]
+
+
 @pytest.mark.asyncio
 async def test_browser_tool_validation_and_action_branches():
     cfg = ChromeConfig(allowed_origins=["https://allowed.test"], allow_evaluate=True)
@@ -136,6 +141,27 @@ async def test_browser_tool_validation_and_action_branches():
         tool._check_js("document.cookie")
     with pytest.raises(ValueError, match="Unsupported browser action"):
         await tool.call("unknown", {}, _ctx())
+
+
+@pytest.mark.asyncio
+async def test_browser_high_risk_context_and_actor_binding():
+    cfg = ChromeConfig(allowed_origins=["https://business.facebook.com"], allow_evaluate=True)
+    tool = RiskyBrowserTool(cfg)
+    permissions = Permissions()
+    ctx = ToolContext(permissions=permissions, actor="alice")
+
+    assert (await tool.call("click_selector", {"selector": "#publish"}, ctx)).ok is True
+    proposal = permissions.proposals[-1]
+    assert proposal.risk == "critical"
+    assert proposal.args["selector"] == "#publish"
+    assert proposal.args["url"] == "https://business.facebook.com/adsmanager"
+    assert proposal.args["origin"] == "https://business.facebook.com"
+    assert proposal.args["title"] == "Ads Manager"
+    assert proposal.args["actor"] == "alice"
+    assert proposal.args["high_risk"] is True
+
+    with pytest.raises(PermissionError, match="already bound to actor alice"):
+        await tool.call("screenshot", {}, ToolContext(permissions=Permissions(), actor="bob"))
 
 
 @pytest.mark.asyncio

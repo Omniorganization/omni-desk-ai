@@ -14,6 +14,7 @@ except ModuleNotFoundError as exc:
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 PermissionMode = Literal["ask", "allow", "deny", "dry_run"]
+DEFAULT_SANDBOX_IMAGE = "python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457"
 
 class LLMConfig(BaseModel):
     provider: str = "openai"
@@ -113,7 +114,7 @@ class PermissionConfig(BaseModel):
     shell_profile: Literal["safe_ci", "upgrade"] = "safe_ci"
     shell_upgrade_enabled: bool = False
     shell_backend: Literal["argv", "docker", "remote_docker"] = "argv"
-    shell_docker_image: str = "python:3.11-slim"
+    shell_docker_image: str = DEFAULT_SANDBOX_IMAGE
     shell_docker_network: str = "none"
     shell_docker_memory: str = "512m"
     shell_docker_cpus: str = "1.0"
@@ -239,6 +240,17 @@ class ChromeConfig(BaseModel):
         "XMLHttpRequest",
         "navigator.sendBeacon",
     ])
+    high_risk_url_patterns: list[str] = Field(default_factory=lambda: [
+        "bank",
+        "billing",
+        "checkout",
+        "payment",
+        "payments",
+        "adsmanager",
+        "business.facebook.com",
+        "admin",
+        "console",
+    ])
 
 class UIBridgeConfig(BaseModel):
     enabled: bool = True
@@ -282,7 +294,7 @@ class MemoryPrivacyConfig(BaseModel):
 
 class SandboxConfig(BaseModel):
     backend: Literal["argv", "docker", "remote_docker"] = "docker"
-    docker_image: str = "python:3.11-slim"
+    docker_image: str = DEFAULT_SANDBOX_IMAGE
     require_pinned_image: bool = False
     runner_url: Optional[str] = None
     runner_token_env: str = "OMNIDESK_SANDBOX_RUNNER_TOKEN"

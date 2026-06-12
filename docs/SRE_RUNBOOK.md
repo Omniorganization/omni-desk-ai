@@ -127,4 +127,4 @@ If `/var/run/docker.sock` is detected in a deployment review, treat the deployme
 
 ## Digest-pinned images
 
-For production releases, build with `--build-arg PYTHON_BASE_IMAGE=python:3.11-slim@sha256:<digest>` and set `sandbox.docker_image` to a digest-pinned image. Tag-only images are rejected by production validation.
+For production releases, build with `--build-arg PYTHON_BASE_IMAGE=python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457` or a newer reviewed digest, and set `sandbox.docker_image` to the same digest-pinned image. Tag-only images are rejected by production validation.

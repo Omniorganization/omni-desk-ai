@@ -8,14 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from omnidesk_agent.config import AppConfig, ModelsConfig
+from omnidesk_agent.config import AppConfig, DEFAULT_SANDBOX_IMAGE, ModelsConfig
 from omnidesk_agent.core.token_budget import TokenBudgetManager
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
 from omnidesk_agent.models.cost_store import ModelCostStore
 from omnidesk_agent.models.router import ModelRouter
 from omnidesk_agent.sandbox.runner_server import (
     RunnerConfig,
-    _build_docker_command,
     _runtime_ready,
     _verify_signature,
     _workspace_from_payload,
@@ -27,12 +26,12 @@ PINNED = "python:3.11-slim@sha256:" + VALID_DIGEST
 PLACEHOLDER = "python:3.11-slim@sha256:" + ("0123456789abcdef" * 4)
 
 
-def test_dockerfiles_require_explicit_digest_build_arg():
-    assert Path("Dockerfile").read_text().startswith("ARG PYTHON_BASE_IMAGE\n")
+def test_dockerfiles_use_digest_pinned_default_build_arg():
+    assert Path("Dockerfile").read_text().startswith(f"ARG PYTHON_BASE_IMAGE={DEFAULT_SANDBOX_IMAGE}\n")
     assert "0123456789abcdef" not in Path("Dockerfile").read_text()
-    assert Path("deploy/sandbox-runner/Dockerfile").read_text().startswith("ARG PYTHON_BASE_IMAGE\n")
-    assert "${PYTHON_BASE_IMAGE_DIGEST:?set" in Path("deploy/docker/docker-compose.yml").read_text()
-    assert "PYTHON_BASE_IMAGE=${{ vars.PYTHON_BASE_IMAGE_DIGEST }}" in Path(".github/workflows/docker-scan.yml").read_text()
+    assert Path("deploy/sandbox-runner/Dockerfile").read_text().startswith(f"ARG PYTHON_BASE_IMAGE={DEFAULT_SANDBOX_IMAGE}\n")
+    assert DEFAULT_SANDBOX_IMAGE in Path("deploy/docker/docker-compose.yml").read_text()
+    assert "vars.PYTHON_BASE_IMAGE_DIGEST || env.PYTHON_BASE_IMAGE_DIGEST" in Path(".github/workflows/docker-scan.yml").read_text()
 
 
 def test_digest_validator_rejects_pattern_placeholder():

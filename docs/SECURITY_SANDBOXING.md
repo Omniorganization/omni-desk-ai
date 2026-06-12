@@ -26,6 +26,10 @@ Do not expose `/var/run/docker.sock` to the OmniDesk application container. A co
 
 Production plugin execution must use `sandbox: docker`. `subprocess` is retained for development and test only, because it cannot provide strong namespace, network, memory, or syscall isolation.
 
+## Browser control policy
+
+Chrome DevTools control is a high-risk capability because it can interact with already-authenticated browser sessions. Browser actions are fail-closed when `channels.chrome.allowed_origins` is empty. Each controlled tab is bound to the first actor that uses it, and high-risk URLs such as banking, payment, ads manager, admin, and console pages are escalated to `critical` approval risk. Approval payloads include the current URL, origin, title, selector, actor, and expected result where available.
+
 ## RC3 remote sandbox requirement
 
 For production Docker Compose/Kubernetes deployments, use `sandbox.backend=remote_docker` instead of local Docker execution inside the application container. The app container must never mount `/var/run/docker.sock`. Local `sandbox.backend=docker` is only acceptable on a dedicated runner host where the OmniDesk app process itself is the sandbox runner and no application secrets or user data are colocated.

@@ -1,19 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
-import pytest
-
-fastapi = pytest.importorskip("fastapi")
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.server_routes.admin_routes import register_admin_routes
 from omnidesk_agent.server_routes.agent_routes import register_agent_routes
-from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
 
 

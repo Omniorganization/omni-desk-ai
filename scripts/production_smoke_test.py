@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--help" in argv or "-h" in argv:
         print(
-            "Usage: production_smoke_test.py [--help]\n"
+            "Usage: production_smoke_test.py [--help] [--sandbox-only]\n"
             "\n"
             "Environment variables:\n"
             "  OMNIDESK_SMOKE_BASE_URL              App base URL, default http://127.0.0.1:18789\n"
@@ -104,7 +104,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     try:
-        result = {"ok": True, "app": check_app(), "sandbox": check_sandbox()}
+        if "--sandbox-only" in argv:
+            sandbox = check_sandbox()
+            if sandbox is None:
+                raise RuntimeError("OMNIDESK_SMOKE_SANDBOX_URL is required for --sandbox-only")
+            result = {"ok": True, "sandbox": sandbox}
+        else:
+            result = {"ok": True, "app": check_app(), "sandbox": check_sandbox()}
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1

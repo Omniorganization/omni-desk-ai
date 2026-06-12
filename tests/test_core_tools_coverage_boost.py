@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -18,8 +17,11 @@ from omnidesk_agent.core.structured_planner import LLMStructuredPlanner
 from omnidesk_agent.core.worker import WebhookWorker
 from omnidesk_agent.models.base import ModelResponse
 from omnidesk_agent.tools.base import ToolContext
+from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.tools.shell import ShellTool
+from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, normalize_schema, _json_type, _type_ok
 from omnidesk_agent.tools.ui_bridge_tool import UIBridgeTool
+from omnidesk_agent.security.approval_required import ApprovalRequired
 
 
 class Perms:
@@ -301,11 +303,6 @@ def test_shell_call_success_failure_timeout_and_arg_parsing(monkeypatch, tmp_pat
         assert not timeout.ok and "timed out" in timeout.error
 
     asyncio.run(run_case())
-
-from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, ToolSpecRegistry, normalize_schema, _type_ok, _json_type
-from omnidesk_agent.tools.registry import ToolRegistry
-from omnidesk_agent.security.approval_required import ApprovalRequired
-
 
 def test_tool_spec_and_registry_remaining_error_branches():
     schema = normalize_schema({"obj": {"type": "object"}, "flag": "boolean", "items": "array", "ratio": "number", "meta": "dict"})

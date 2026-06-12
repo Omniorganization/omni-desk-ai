@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 from omnidesk_agent.core.job_queue import JobQueue

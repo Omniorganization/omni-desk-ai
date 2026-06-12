@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
+from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool, validate_plugin_permissions
 from omnidesk_agent.tools.base import proposal
 
@@ -24,7 +25,7 @@ class DockerPluginTool(SubprocessPluginTool):
         permissions: list[str],
         timeout_seconds: int = 30,
         max_output_bytes: int = 200000,
-        image: str = "python:3.11-slim",
+        image: str = DEFAULT_SANDBOX_IMAGE,
     ):
         validate_plugin_permissions(permissions)
         super().__init__(name, entrypoint, permissions, timeout_seconds, max_output_bytes)

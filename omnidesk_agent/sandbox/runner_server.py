@@ -17,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
+
 
 ALLOWED_PREFIXES = [
     ["python", "-m", "compileall"],
@@ -48,7 +50,7 @@ class RunnerConfig:
     require_hmac: bool = os.getenv("OMNIDESK_SANDBOX_REQUIRE_HMAC", "1" if os.getenv("OMNIDESK_ENV") == "production" else "0").lower() in {"1", "true", "yes"}
     max_archive_files: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILES", "512"))
     max_archive_file_bytes: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILE_BYTES", str(1024 * 1024)))
-    default_image: str = os.getenv("OMNIDESK_SANDBOX_IMAGE", "python:3.11-slim@sha256:" + "a" * 64)
+    default_image: str = os.getenv("OMNIDESK_SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE)
 
 
 def _allowed(argv: list[str]) -> bool:

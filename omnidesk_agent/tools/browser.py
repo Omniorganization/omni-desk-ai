@@ -13,7 +13,7 @@ except ModuleNotFoundError:
     httpx = None
 
 from omnidesk_agent.config import ChromeConfig
-from omnidesk_agent.core.models import ToolResult
+from omnidesk_agent.core.models import RiskLevel, ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal
 
 
@@ -31,6 +31,7 @@ class BrowserTool:
         self.base = f"http://{cfg.devtools_host}:{cfg.devtools_port}"
         self._lock: asyncio.Lock | None = None
         self._lock_loop: asyncio.AbstractEventLoop | None = None
+        self._tab_actors: dict[str, str] = {}
 
     def _get_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
@@ -50,6 +51,58 @@ class BrowserTool:
         origin = f"{parsed.scheme}://{parsed.netloc}"
         if origin not in self.cfg.allowed_origins:
             raise ValueError(f"Browser origin not allowed: {origin}")
+
+    @staticmethod
+    def _origin(url: str) -> str:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _is_high_risk_url(self, url: str) -> bool:
+        haystack = url.lower()
+        return any(pattern.lower() in haystack for pattern in getattr(self.cfg, "high_risk_url_patterns", []) or [])
+
+    def _bind_tab_actor(self, tab_id: str, actor: str) -> None:
+        if not tab_id:
+            return
+        bound = self._tab_actors.get(tab_id)
+        if bound and bound != actor:
+            raise PermissionError(f"Chrome tab {tab_id} is already bound to actor {bound}")
+        self._tab_actors[tab_id] = actor
+
+    async def _browser_context(self, target_id: Optional[str], actor: str) -> dict[str, Any]:
+        meta: dict[str, Any] = {"actor": actor}
+        try:
+            tab = await self._tab(target_id)
+        except Exception:
+            return meta
+        tab_id = str(tab.get("id") or target_id or "")
+        url = str(tab.get("url") or "")
+        if url.startswith("http"):
+            self._check_url(url)
+        self._bind_tab_actor(tab_id, actor)
+        meta.update({
+            "tab_id": tab_id,
+            "target_id": target_id,
+            "title": str(tab.get("title") or ""),
+            "url": url,
+            "origin": self._origin(url),
+            "high_risk": self._is_high_risk_url(url),
+        })
+        return meta
+
+    def _proposal_args(self, meta: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(extra)
+        for key in ("actor", "tab_id", "target_id", "title", "url", "origin", "target_url", "target_origin", "high_risk"):
+            value = meta.get(key)
+            if value not in (None, ""):
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _risk(default: RiskLevel, meta: dict[str, Any]) -> RiskLevel:
+        return "critical" if meta.get("high_risk") else default
 
     def _check_js(self, expression: str) -> None:
         if not getattr(self.cfg, "allow_evaluate", False):
@@ -165,7 +218,8 @@ class BrowserTool:
             url = str(args["url"])
             self._check_url(url)
             expected = str(args.get("expected_result") or f"Open {url} in Chrome")
-            ctx.permissions.verify(proposal("browser", "new_tab", {"url": url, "expected_result": expected}, "high", "打开 Chrome 新标签页", ctx))
+            meta = {"actor": ctx.actor, "target_url": url, "target_origin": self._origin(url), "high_risk": self._is_high_risk_url(url)}
+            ctx.permissions.verify(proposal("browser", "new_tab", self._proposal_args(meta, {"expected_result": expected}), self._risk("high", meta), "打开 Chrome 新标签页", ctx))
             async with _require_httpx().AsyncClient(timeout=10) as client:
                 r = await client.put(f"{self.base}/json/new?{quote(url, safe=':/?&=%')}")
                 r.raise_for_status()
@@ -175,7 +229,9 @@ class BrowserTool:
             url = str(args["url"])
             self._check_url(url)
             expected = str(args.get("expected_result") or f"Navigate Chrome tab to {url}")
-            ctx.permissions.verify(proposal("browser", "navigate", {"url": url, "expected_result": expected}, "high", "导航 Chrome 标签页", ctx))
+            meta = await self._browser_context(args.get("target_id"), ctx.actor)
+            meta.update({"target_url": url, "target_origin": self._origin(url), "high_risk": bool(meta.get("high_risk")) or self._is_high_risk_url(url)})
+            ctx.permissions.verify(proposal("browser", "navigate", self._proposal_args(meta, {"expected_result": expected}), self._risk("high", meta), "导航 Chrome 标签页", ctx))
             result = await self._cdp("Page.navigate", {"url": url}, args.get("target_id"))
             return ToolResult(True, data=result, summary=f"navigated to {url}")
 
@@ -183,13 +239,15 @@ class BrowserTool:
             expression = str(args["expression"])
             self._check_js(expression)
             expected = str(args.get("expected_result") or "Evaluate JavaScript in visible Chrome tab")
-            ctx.permissions.verify(proposal("browser", "evaluate", {"expression_preview": expression[:300], "expected_result": expected}, "critical", "执行高风险 Chrome JavaScript", ctx))
+            meta = await self._browser_context(args.get("target_id"), ctx.actor)
+            ctx.permissions.verify(proposal("browser", "evaluate", self._proposal_args(meta, {"expression_preview": expression[:300], "expected_result": expected}), "critical", "执行高风险 Chrome JavaScript", ctx))
             result = await self._cdp("Runtime.evaluate", {"expression": expression, "returnByValue": True}, args.get("target_id"))
             return ToolResult(True, data=result, summary="evaluated javascript in chrome")
 
         if action == "get_dom_text":
             expected = str(args.get("expected_result") or "Read visible page text from Chrome")
-            ctx.permissions.verify(proposal("browser", "get_dom_text", {"expected_result": expected}, "medium", "读取当前页面文本", ctx))
+            meta = await self._browser_context(args.get("target_id"), ctx.actor)
+            ctx.permissions.verify(proposal("browser", "get_dom_text", self._proposal_args(meta, {"expected_result": expected}), self._risk("medium", meta), "读取当前页面文本", ctx))
             try:
                 node_id = await self._query_node_id("body", args.get("target_id"))
                 result = await self._cdp("DOM.getOuterHTML", {"nodeId": node_id}, args.get("target_id"))
@@ -207,7 +265,8 @@ class BrowserTool:
         if action == "click_selector":
             selector = str(args["selector"])
             expected = str(args.get("expected_result") or f"Click selector {selector}")
-            ctx.permissions.verify(proposal("browser", "click_selector", {"selector": selector, "expected_result": expected}, "high", "点击网页选择器", ctx))
+            meta = await self._browser_context(args.get("target_id"), ctx.actor)
+            ctx.permissions.verify(proposal("browser", "click_selector", self._proposal_args(meta, {"selector": selector, "expected_result": expected}), self._risk("high", meta), "点击网页选择器", ctx))
             try:
                 node_id = await self._query_node_id(selector, args.get("target_id"))
                 x, y = await self._node_center(node_id, args.get("target_id"))
@@ -225,7 +284,8 @@ class BrowserTool:
             selector = str(args["selector"])
             text = str(args["text"])
             expected = str(args.get("expected_result") or f"Type into selector {selector}")
-            ctx.permissions.verify(proposal("browser", "type_selector", {"selector": selector, "text_preview": text[:200], "expected_result": expected}, "high", "向网页选择器输入文本", ctx))
+            meta = await self._browser_context(args.get("target_id"), ctx.actor)
+            ctx.permissions.verify(proposal("browser", "type_selector", self._proposal_args(meta, {"selector": selector, "text_preview": text[:200], "expected_result": expected}), self._risk("high", meta), "向网页选择器输入文本", ctx))
             try:
                 node_id = await self._query_node_id(selector, args.get("target_id"))
                 x, y = await self._node_center(node_id, args.get("target_id"))
@@ -246,7 +306,8 @@ class BrowserTool:
 
         if action == "screenshot":
             expected = str(args.get("expected_result") or "Capture Chrome page screenshot")
-            ctx.permissions.verify(proposal("browser", "screenshot", {"expected_result": expected}, "medium", "截取 Chrome 页面", ctx))
+            meta = await self._browser_context(args.get("target_id"), ctx.actor)
+            ctx.permissions.verify(proposal("browser", "screenshot", self._proposal_args(meta, {"expected_result": expected}), self._risk("medium", meta), "截取 Chrome 页面", ctx))
             result = await self._cdp("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": False}, args.get("target_id"))
             return ToolResult(True, data={"png_base64": result.get("data", ""), "expected_result": expected}, summary="captured chrome screenshot")
 

@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import json
 import os
-from typing import Optional
 
 from fastapi import HTTPException, Request
 

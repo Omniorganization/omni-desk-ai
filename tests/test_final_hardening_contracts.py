@@ -8,6 +8,9 @@ import pytest
 
 from omnidesk_agent.config import AppConfig, ChromeConfig, GmailConfig
 from omnidesk_agent.core.models import ApprovalDecision
+from omnidesk_agent.observability import MetricsRegistry
+from omnidesk_agent.server_routes.admin_routes import _runtime_slo_snapshot
+from omnidesk_agent.self_upgrade.governance import GovernedSelfImprovement
 from omnidesk_agent.self_upgrade.patcher import UpgradePatcher
 from omnidesk_agent.self_upgrade.proposal.proposal_schema import UpgradeProposal
 from omnidesk_agent.self_upgrade.state_machine import UpgradeStateMachine, normalize_upgrade_checks
@@ -185,10 +188,6 @@ def test_production_rejects_subprocess_plugins_when_enabled():
     })
     assert "plugins.default_sandbox must be docker in production" in result["issues"]
 
-from omnidesk_agent.observability import MetricsRegistry
-from omnidesk_agent.server_routes.admin_routes import _runtime_slo_snapshot
-
-
 class SLOJobQueue:
     def stats(self):
         return {"completed": 99, "dead_letter": 1}
@@ -231,9 +230,6 @@ def test_runtime_slo_snapshot_uses_real_metrics_not_static_defaults():
     assert snapshot["tool_error_rate"] == 1 / 101
     assert snapshot["plugin_timeout_rate"] == 1 / 51
     assert snapshot["job_dead_letter_rate"] == 0.01
-
-from omnidesk_agent.self_upgrade.governance import GovernedSelfImprovement
-
 
 def test_governance_evaluation_writes_state_machine_checks_contract(tmp_path: Path):
     async def run_case():

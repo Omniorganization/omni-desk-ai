@@ -26,14 +26,14 @@ sandbox:
   backend: remote_docker
   runner_url: http://sandbox-runner:18890
   runner_token_env: OMNIDESK_SANDBOX_RUNNER_TOKEN
-  docker_image: python:3.11-slim@sha256:<real-pinned-digest>
+  docker_image: python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 ```
 
 Deployment steps:
 
 ```bash
-export PYTHON_BASE_IMAGE_DIGEST='python:3.11-slim@sha256:<real-base-digest>'
-export OMNIDESK_SANDBOX_IMAGE='python:3.11-slim@sha256:<real-sandbox-digest>'
+export PYTHON_BASE_IMAGE_DIGEST='python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457'
+export OMNIDESK_SANDBOX_IMAGE='python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457'
 export OMNIDESK_SANDBOX_IMAGE_ALLOWLIST="$OMNIDESK_SANDBOX_IMAGE"
 export OMNIDESK_SANDBOX_RUNNER_TOKEN='<strong-token>'
 export OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET='<strong-hmac-secret>'

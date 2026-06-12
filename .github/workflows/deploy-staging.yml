@@ -18,4 +18,11 @@ jobs:
           python scripts/check_lock_hashes.py requirements.runtime.lock
           python scripts/check_lock_hashes.py requirements.dev.lock
       - run: python scripts/production_smoke_test.py --help
+      - name: Sandbox runner /ready smoke
+        if: ${{ vars.OMNIDESK_STAGING_SANDBOX_URL != '' }}
+        env:
+          OMNIDESK_SMOKE_SANDBOX_URL: ${{ vars.OMNIDESK_STAGING_SANDBOX_URL }}
+          OMNIDESK_SMOKE_SANDBOX_TOKEN: ${{ secrets.OMNIDESK_STAGING_SANDBOX_TOKEN }}
+          OMNIDESK_SMOKE_SANDBOX_HMAC_SECRET: ${{ secrets.OMNIDESK_STAGING_SANDBOX_HMAC_SECRET }}
+        run: python scripts/production_smoke_test.py --sandbox-only
       - run: echo "Staging deployment must run post-deploy /health, /admin/status and rollback drill in the target environment."

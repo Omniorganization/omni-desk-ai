@@ -5,6 +5,7 @@ import hmac
 
 import pytest
 
+from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.plugins.docker_runner import DockerPluginTool
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
@@ -60,6 +61,7 @@ def test_plugin_registry_loads_docker_sandbox(tmp_path, monkeypatch):
     assert "--security-opt" in cmd and "no-new-privileges" in cmd
     assert "--pids-limit" in cmd and "128" in cmd
     assert "--user" in cmd and "65534:65534" in cmd
+    assert DEFAULT_SANDBOX_IMAGE in cmd
 
 
 def test_plugin_registry_keeps_subprocess_sandbox(tmp_path, monkeypatch):

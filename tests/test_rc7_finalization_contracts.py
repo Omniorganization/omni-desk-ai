@@ -10,6 +10,7 @@ import pytest
 
 from omnidesk_agent.models.schema_retry import validate_json_text
 from omnidesk_agent.sandbox.runner_server import RunnerConfig, _workspace_from_payload, _verify_signature
+from scripts import production_smoke_test
 from scripts.production_smoke_test import build_smoke_workspace_archive
 
 
@@ -25,7 +26,6 @@ def _tar_b64(files: dict[str, bytes]) -> str:
 
 def test_schema_retry_does_not_import_jsonschema_on_module_import(monkeypatch):
     sys.modules.pop("jsonschema", None)
-    import omnidesk_agent.models.schema_retry as schema_retry
 
     assert "jsonschema" not in sys.modules
     validate_json_text('{"kind":"ok"}', {"type": "object", "required": ["kind"]})
@@ -61,6 +61,16 @@ def test_smoke_workspace_archive_is_real_tar_gz():
     raw = base64.b64decode(build_smoke_workspace_archive())
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
         assert "hello.py" in tf.getnames()
+
+
+def test_smoke_sandbox_only_skips_app_check(monkeypatch):
+    monkeypatch.setattr(production_smoke_test, "check_sandbox", lambda: {"ready": {"ok": True}})
+
+    def fail_app():
+        raise AssertionError("app check should not run in sandbox-only mode")
+
+    monkeypatch.setattr(production_smoke_test, "check_app", fail_app)
+    assert production_smoke_test.main(["--sandbox-only"]) == 0
 
 
 def test_docker_runtime_uses_runtime_lock_and_builder_uses_dev_lock():

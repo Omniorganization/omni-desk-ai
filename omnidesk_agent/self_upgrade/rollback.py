@@ -3,12 +3,20 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 
 @dataclass
 class Snapshot:
     commit: str
     branch: str
+
+
+@dataclass
+class RollbackResult:
+    rolled_back: bool
+    health_ok: bool
+    message: str
 
 
 class RollbackManager:
@@ -29,6 +37,35 @@ class RollbackManager:
     def rollback(self, snapshot: Snapshot) -> str:
         self._run(["git", "reset", "--hard", snapshot.commit])
         return f"rolled back to {snapshot.commit} on {snapshot.branch}"
+
+    def rollback_if_unhealthy(
+        self,
+        snapshot: Snapshot,
+        *,
+        upgrade_id: str,
+        memory: Any | None = None,
+        health_check: Callable[[], bool] | None = None,
+    ) -> RollbackResult:
+        check = health_check or self.health_check
+        health_ok = bool(check())
+        if health_ok:
+            return RollbackResult(rolled_back=False, health_ok=True, message="health check passed; rollback not required")
+        message = self.rollback(snapshot)
+        if memory is not None:
+            memory.record({
+                "upgrade_id": upgrade_id,
+                "change_type": "rollback",
+                "target": snapshot.branch,
+                "rollback": True,
+                "verdict": "rolled_back",
+                "metadata": {
+                    "snapshot_commit": snapshot.commit,
+                    "snapshot_branch": snapshot.branch,
+                    "health_ok": False,
+                    "message": message,
+                },
+            })
+        return RollbackResult(rolled_back=True, health_ok=False, message=message)
 
     def _run(self, argv: list[str]) -> str:
         result = subprocess.run(argv, cwd=self.repo_root, text=True, capture_output=True, timeout=60)

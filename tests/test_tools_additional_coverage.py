@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import pytest
 
 from omnidesk_agent.config import ChromeConfig
-from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.models.base import ModelResponse
 from omnidesk_agent.security.permissions import PermissionDecision
 from omnidesk_agent.tools.base import ToolContext
@@ -14,7 +13,6 @@ from omnidesk_agent.tools.files import FilesTool
 from omnidesk_agent.tools.git_tool import GitTool
 from omnidesk_agent.tools.pr_tool import PullRequestTool
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpecRegistry, normalize_schema
-from omnidesk_agent.tools.test_tool import TestTool
 from omnidesk_agent.tools.vision import VisionGroundingTool
 
 

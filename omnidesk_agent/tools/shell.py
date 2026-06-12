@@ -5,7 +5,7 @@ import shlex
 from pathlib import Path
 from typing import Any, Optional
 
-from omnidesk_agent.config import PermissionConfig, SandboxConfig
+from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE, PermissionConfig, SandboxConfig
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
@@ -73,7 +73,7 @@ class ShellTool:
         return any(len(argv) >= len(prefix) and argv[:len(prefix)] == prefix for prefix in readonly_prefixes)
 
     def _docker_argv(self, argv: list[str]) -> list[str]:
-        image = getattr(self.sandbox_cfg, "docker_image", getattr(self.cfg, "shell_docker_image", "python:3.11-slim"))
+        image = getattr(self.sandbox_cfg, "docker_image", getattr(self.cfg, "shell_docker_image", DEFAULT_SANDBOX_IMAGE))
         network = getattr(self.sandbox_cfg, "docker_network", getattr(self.cfg, "shell_docker_network", "none"))
         memory = getattr(self.sandbox_cfg, "memory_limit", getattr(self.cfg, "shell_docker_memory", "512m"))
         cpus = getattr(self.sandbox_cfg, "cpus", getattr(self.cfg, "shell_docker_cpus", "1.0"))
