@@ -2,13 +2,18 @@ services:
   omnidesk:
     build: ../..
     image: omnidesk-agent:local
+    command: ["omnidesk", "--config", "/data/config.yaml", "serve", "--host", "0.0.0.0"]
     ports:
       - "127.0.0.1:18789:18789"
     environment:
-      OMNIDESK_ADMIN_TOKEN: "change-me"
-      OMNIDESK_GATEWAY_SECRET: "change-me"
+      OMNIDESK_ENV: production
+      OMNIDESK_ADMIN_TOKEN: "${OMNIDESK_ADMIN_TOKEN:?set OMNIDESK_ADMIN_TOKEN}"
+      OMNIDESK_GATEWAY_SECRET: "${OMNIDESK_GATEWAY_SECRET:?set OMNIDESK_GATEWAY_SECRET}"
+      OMNIDESK_PLUGIN_SIGNING_SECRET: "${OMNIDESK_PLUGIN_SIGNING_SECRET:?set OMNIDESK_PLUGIN_SIGNING_SECRET}"
+      OMNIDESK_MEMORY_ENCRYPTION_KEY: "${OMNIDESK_MEMORY_ENCRYPTION_KEY:?set OMNIDESK_MEMORY_ENCRYPTION_KEY}"
     volumes:
       - omnidesk-data:/data
+      - ./config.production.yaml:/data/config.yaml:ro
     read_only: true
     tmpfs:
       - /tmp:size=128m,noexec,nosuid

@@ -1,18 +1,12 @@
 from __future__ import annotations
-import base64, hashlib, hmac, os
+import base64
+import hashlib
+import hmac
+import os
 from typing import Any
-try:
-    import httpx
-except ModuleNotFoundError:
-    httpx = None
 from omnidesk_agent.config import LineConfig
 from omnidesk_agent.core.models import ChannelMessage
-
-
-def _require_httpx():
-    if httpx is None:
-        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
-    return httpx
+from omnidesk_agent.channels.http_client import ChannelHttpClient
 
 class LineChannel:
     name = "line"
@@ -29,6 +23,7 @@ class LineChannel:
         self.cfg = cfg
         self.token = os.getenv(cfg.channel_access_token_env, "")
         self.secret = os.getenv(cfg.channel_secret_env, "")
+        self.http = ChannelHttpClient()
 
     def verify_signature(self, body: bytes, signature: str) -> bool:
         if not self.secret:
@@ -59,6 +54,4 @@ class LineChannel:
     async def send_text(self, recipient: str, text: str, **kwargs) -> None:
         if not self.token:
             raise RuntimeError("LINE channel access token is missing")
-        async with _require_httpx().AsyncClient(timeout=20) as client:
-            r = await client.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {self.token}"}, json={"to": recipient, "messages": [{"type": "text", "text": text}]})
-            r.raise_for_status()
+        await self.http.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {self.token}"}, json={"to": recipient, "messages": [{"type": "text", "text": text}]})

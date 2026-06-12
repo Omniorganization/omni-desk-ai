@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from omnidesk_agent.plugins.manifest import PluginManifest
+from omnidesk_agent.plugins.docker_runner import DockerPluginTool
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
 
 
@@ -33,6 +34,10 @@ class PluginRegistry:
         self.plugin_timeout_seconds = int(getattr(config, "plugin_timeout_seconds", 30)) if config is not None and not isinstance(config, bool) else 30
         self.loaded: dict[str, PluginManifest] = {}
 
+    @property
+    def plugins(self) -> dict[str, PluginManifest]:
+        return dict(self.loaded)
+
     def load_into(self, tool_registry, app_config: Optional[Any] = None) -> dict[str, list[str]]:
         results: dict[str, list[str]] = {}
         for root in self.plugins_dirs:
@@ -57,6 +62,10 @@ class PluginRegistry:
                     raise PermissionError(f"plugin entrypoint escapes plugin directory: {manifest.name}")
                 if manifest.sandbox == "subprocess":
                     tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds))
+                    self.loaded[manifest.name] = manifest
+                    results[manifest.name] = [manifest.name]
+                elif manifest.sandbox == "docker":
+                    tool_registry.register(DockerPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds))
                     self.loaded[manifest.name] = manifest
                     results[manifest.name] = [manifest.name]
                 elif manifest.sandbox == "in_process":

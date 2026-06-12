@@ -39,6 +39,8 @@ class LearningMetricsCalculator:
         drift_events = [e for e in items if e.event_type == "drift_detected"]
         safety_events = [e for e in items if e.event_type == "safety_event"]
         rollback_events = [e for e in items if e.event_type == "rollback_event"]
+        replay_events = [e for e in items if e.event_type == "replay_evaluation"]
+        skill_promotion_events = [e for e in items if e.event_type == "skill_promotion"]
         coverage_events = [e for e in items if e.event_type == "test_coverage" and e.test_coverage is not None]
 
         success_count = sum(1 for e in task_events if e.outcome == "success")
@@ -53,6 +55,12 @@ class LearningMetricsCalculator:
         reuse_deltas = [float(e.reuse_success_delta) for e in reuse_events if e.reuse_success_delta is not None]
         confidence_values = [float(e.confidence) for e in memory_events if e.confidence is not None]
         coverage_values = [float(e.test_coverage) for e in coverage_events if e.test_coverage is not None]
+        precision_values = [float(e.memory_precision_score) for e in memory_events if e.memory_precision_score is not None]
+        relevance_values = [float(e.retrieval_relevance_score) for e in reuse_events if e.retrieval_relevance_score is not None]
+        generalization_values = [float(e.experience_generalization_score) for e in memory_events if e.experience_generalization_score is not None]
+        regression_values = [float(e.learning_regression_score) for e in replay_events if e.learning_regression_score is not None]
+        policy_values = [float(e.policy_improvement_score) for e in replay_events if e.policy_improvement_score is not None]
+        skill_promotion_success_count = sum(1 for e in skill_promotion_events if e.skill_promotion_success is True)
 
         metrics = {
             "event_count": len(items),
@@ -71,6 +79,12 @@ class LearningMetricsCalculator:
             "high_risk_misexecution_rate": _rate(high_risk_misexecution_count, len(safety_events)),
             "rollback_success_rate": _rate(rollback_success_count, len(rollback_events)),
             "test_coverage": _average(coverage_values),
+            "memory_precision_score": _average(precision_values),
+            "retrieval_relevance_score": _average(relevance_values),
+            "experience_generalization_score": _average(generalization_values),
+            "learning_regression_score": _average(regression_values),
+            "policy_improvement_score": _average(policy_values),
+            "skill_promotion_success_rate": _rate(skill_promotion_success_count, len(skill_promotion_events)),
         }
         metrics["learning_quality_score"] = self.learning_quality_score(metrics)
         metrics["industrial_readiness_score"] = self.industrial_readiness_score(metrics)
@@ -84,16 +98,33 @@ class LearningMetricsCalculator:
         bad_memory = metrics.get("bad_memory_rate")
         stale_memory = metrics.get("stale_memory_rate")
         contradiction = metrics.get("contradiction_rate")
+        memory_precision = metrics.get("memory_precision_score")
+        retrieval_relevance = metrics.get("retrieval_relevance_score")
+        generalization = metrics.get("experience_generalization_score")
+        regression = metrics.get("learning_regression_score")
+        policy_improvement = metrics.get("policy_improvement_score")
+        skill_success = metrics.get("skill_promotion_success_rate")
 
         if task_success is not None:
-            score += min(max(task_success, 0.0), 1.0) * 30
+            score += min(max(task_success, 0.0), 1.0) * 20
         if reuse_rate is not None:
-            score += min(max(reuse_rate, 0.0), 1.0) * 20
+            score += min(max(reuse_rate, 0.0), 1.0) * 10
         if reuse_delta is not None:
-            score += max(min((reuse_delta + 0.2) / 0.4, 1.0), 0.0) * 15
-        score += (1.0 - min(max(bad_memory if bad_memory is not None else 0.0, 0.0), 1.0)) * 15
-        score += (1.0 - min(max(stale_memory if stale_memory is not None else 0.0, 0.0), 1.0)) * 10
-        score += (1.0 - min(max(contradiction if contradiction is not None else 0.0, 0.0), 1.0)) * 10
+            score += max(min((reuse_delta + 0.2) / 0.4, 1.0), 0.0) * 10
+        score += (1.0 - min(max(bad_memory if bad_memory is not None else 0.0, 0.0), 1.0)) * 10
+        score += (1.0 - min(max(stale_memory if stale_memory is not None else 0.0, 0.0), 1.0)) * 7.5
+        score += (1.0 - min(max(contradiction if contradiction is not None else 0.0, 0.0), 1.0)) * 7.5
+        for value, weight in (
+            (memory_precision, 10),
+            (retrieval_relevance, 7.5),
+            (generalization, 7.5),
+            (policy_improvement, 5),
+            (skill_success, 5),
+        ):
+            if value is not None:
+                score += min(max(value, 0.0), 1.0) * weight
+        if regression is not None:
+            score += (1.0 - min(max(regression, 0.0), 1.0)) * 10
         return round(score, 2)
 
     def industrial_readiness_score(self, metrics: dict[str, Any]) -> int:

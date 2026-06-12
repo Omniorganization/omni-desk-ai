@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import secrets
-import sqlite3
 import time
 from pathlib import Path
+
+from omnidesk_agent.storage.sqlite import connect_sqlite
+from omnidesk_agent.storage.migrations import Migration, apply_migrations
 
 
 class OAuthStateStore:
@@ -11,7 +13,7 @@ class OAuthStateStore:
         self.db_path = db_path.expanduser()
         self.ttl_seconds = ttl_seconds
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS oauth_states (
@@ -22,16 +24,17 @@ class OAuthStateStore:
                 )
                 """
             )
+            apply_migrations(con, [Migration(1, "oauth_state_schema_baseline", lambda _con: None)])
 
     def create(self, redirect_uri: str) -> str:
         state = secrets.token_urlsafe(32)
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute("INSERT INTO oauth_states (state, redirect_uri, created_at) VALUES (?, ?, ?)", (state, redirect_uri, time.time()))
         return state
 
     def verify_and_use(self, state: str, redirect_uri: str) -> bool:
         cutoff = time.time() - self.ttl_seconds
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             row = con.execute("SELECT redirect_uri, created_at, used_at FROM oauth_states WHERE state = ?", (state,)).fetchone()
             if not row:
                 return False

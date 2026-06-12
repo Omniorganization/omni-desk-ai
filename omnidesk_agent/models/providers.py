@@ -1,5 +1,7 @@
 from __future__ import annotations
-import base64, json, os
+import base64
+import json
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 import httpx
@@ -19,7 +21,7 @@ class OpenAIResponsesProvider:
     provider_name='openai'
     def __init__(self,s:ProviderSettings): self.settings=s; self.model=s.model; self.profile_name=s.profile_name
     async def complete(self, request:ModelRequest)->ModelResponse:
-        key=env(self.settings.api_key_env); 
+        key=env(self.settings.api_key_env)
         if not key: raise RuntimeError(f'Missing {self.settings.api_key_env}')
         base=(self.settings.base_url or 'https://api.openai.com/v1').rstrip('/')
         body={'model':self.model,'input':[{'role':'system','content':request.system},{'role':'user','content':request.user}], 'max_output_tokens':self.settings.max_output_tokens}
@@ -35,7 +37,7 @@ class OpenAICompatibleProvider:
     provider_name='openai_compatible'
     def __init__(self,s:ProviderSettings): self.settings=s; self.model=s.model; self.profile_name=s.profile_name
     async def complete(self, request:ModelRequest)->ModelResponse:
-        key=env(self.settings.api_key_env); 
+        key=env(self.settings.api_key_env)
         if not key: raise RuntimeError(f'Missing {self.settings.api_key_env}')
         base=(self.settings.base_url or 'https://api.openai.com/v1').rstrip('/')
         body={'model':self.model,'messages':msgs(request.system,request.user),'temperature':self.settings.temperature,'max_tokens':self.settings.max_output_tokens}
@@ -63,7 +65,7 @@ class AnthropicProvider:
     provider_name='anthropic'
     def __init__(self,s): self.settings=s; self.model=s.model; self.profile_name=s.profile_name
     async def complete(self, request):
-        key=env(self.settings.api_key_env); 
+        key=env(self.settings.api_key_env)
         if not key: raise RuntimeError(f'Missing {self.settings.api_key_env}')
         base=(self.settings.base_url or 'https://api.anthropic.com').rstrip('/')
         body={'model':self.model,'max_tokens':self.settings.max_output_tokens,'temperature':self.settings.temperature,'system':request.system,'messages':[{'role':'user','content':request.user}]}
@@ -76,7 +78,7 @@ class GeminiProvider:
     provider_name='gemini'
     def __init__(self,s): self.settings=s; self.model=s.model; self.profile_name=s.profile_name
     async def complete(self, request):
-        key=env(self.settings.api_key_env); 
+        key=env(self.settings.api_key_env)
         if not key: raise RuntimeError(f'Missing {self.settings.api_key_env}')
         parts=[{'text':f'{request.system}\n\n{request.user}'}]
         for img in request.images:
@@ -101,7 +103,7 @@ class OllamaProvider:
 class CohereProvider(OpenAICompatibleProvider):
     provider_name='cohere'
     async def complete(self, request):
-        key=env(self.settings.api_key_env); 
+        key=env(self.settings.api_key_env)
         if not key: raise RuntimeError(f'Missing {self.settings.api_key_env}')
         base=(self.settings.base_url or 'https://api.cohere.com').rstrip('/')
         body={'model':self.model,'messages':msgs(request.system,request.user),'temperature':self.settings.temperature,'max_tokens':self.settings.max_output_tokens}

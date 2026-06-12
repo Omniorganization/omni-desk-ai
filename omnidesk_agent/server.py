@@ -1,29 +1,52 @@
 from __future__ import annotations
 from typing import Optional
+from contextlib import asynccontextmanager
 
-import base64
 import hashlib
 import hmac
 import json
 import os
+import weakref
 from fastapi import FastAPI, Request, Response, HTTPException
 
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
+from omnidesk_agent.validation.production import assert_production_config_safe
 from omnidesk_agent import __version__
-from omnidesk_agent.observability import JsonEventLogger, MetricsRegistry, new_request_id, public_runtime_status
+from omnidesk_agent.observability import JsonEventLogger, MetricsRegistry, new_request_id, public_runtime_status, initialize_runtime_metrics
 from omnidesk_agent.self_learning.observability.dashboard import LearningDashboard
 
 
 def create_app(cfg: AppConfig) -> FastAPI:
+    assert_production_config_safe(cfg)
     rt = OmniDeskRuntime(cfg)
     approvals = rt.approval_store
-    app = FastAPI(title="OmniDesk Agent Gateway")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        await rt.start()
+        try:
+            yield
+        finally:
+            await rt.aclose()
+
+    app = FastAPI(title="OmniDesk Agent Gateway", lifespan=lifespan)
+    weakref.finalize(app, rt.close)
     metrics = MetricsRegistry()
     event_logger = JsonEventLogger()
     app.state.metrics = metrics
+    app.state.runtime = rt
+    initialize_runtime_metrics(metrics)
+    rt.metrics = metrics
+    rt.job_queue.metrics = metrics
+    rt.outbound_messages.metrics = metrics
+    rt.orchestrator.metrics = metrics
+    rt.permissions.metrics = metrics
+    rt.tools.metrics = metrics
+    if getattr(rt, "learning_loop", None) is not None:
+        rt.learning_loop.metrics = metrics
 
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next):
@@ -43,8 +66,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
             event_logger.event("http_request", request_id=request_id, method=request.method, path=request.url.path, elapsed=elapsed)
 
 
-    async def _admin(request: Request) -> None:
-        decision = await rt.admin_auth.verify_request(request)
+    async def _admin(request: Request, role: str = "viewer") -> None:
+        decision = await rt.admin_auth.verify_request(request, required_role=role)
         if not decision.ok:
             raise HTTPException(status_code=403, detail=decision.reason)
 
@@ -167,6 +190,17 @@ def create_app(cfg: AppConfig) -> FastAPI:
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    def _enqueue_webhook_message(message: Optional[ChannelMessage]) -> dict:
+        if message is None:
+            return {"ok": True, "ignored": True}
+        source_key = message.thread_id or message.sender_id or "unknown"
+        job = rt.job_queue.enqueue(message, source_key=source_key)
+        return {"ok": True, "queued": True, "job_id": job["job_id"], "created": job["created"]}
+
+    def _enqueue_webhook_messages(messages: list[ChannelMessage]) -> dict:
+        jobs = [_enqueue_webhook_message(message) for message in messages]
+        return {"ok": True, "queued": True, "count": len(messages), "jobs": jobs}
+
     dashboard_router = create_dashboard_router(rt, admin_auth=rt.admin_auth)
     if dashboard_router is not None:
         app.include_router(dashboard_router)
@@ -177,13 +211,73 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.get("/admin/status")
     async def admin_status(request: Request):
-        await _admin(request)
+        await _admin(request, "viewer")
         return {"ok": True, "version": __version__, "runtime": rt.status()}
 
     @app.get("/admin/metrics")
     async def admin_metrics(request: Request):
-        await _admin(request)
+        await _admin(request, "viewer")
         return Response(content=metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
+
+    @app.get("/admin/jobs")
+    async def admin_jobs(request: Request, status: Optional[str] = None, limit: int = 50):
+        await _admin(request, "operator")
+        return {"ok": True, "stats": rt.job_queue.stats(), "jobs": rt.job_queue.list(status=status, limit=limit)}
+
+    @app.get("/admin/outbound-messages")
+    async def admin_outbound_messages(request: Request, status: Optional[str] = None, limit: int = 50):
+        await _admin(request, "operator")
+        return {"ok": True, "stats": rt.outbound_messages.stats(), "messages": rt.outbound_messages.list(status=status, limit=limit)}
+
+    @app.get("/admin/outbound")
+    async def admin_outbound_alias(request: Request, status: Optional[str] = None, limit: int = 50):
+        await _admin(request, "operator")
+        return {"ok": True, "stats": rt.outbound_messages.stats(), "messages": rt.outbound_messages.list(status=status, limit=limit)}
+
+    @app.post("/admin/outbound/{message_id}/retry")
+    async def admin_retry_outbound(message_id: str, request: Request):
+        await _admin(request, "operator")
+        try:
+            return {"ok": True, **rt.outbound_messages.requeue(message_id)}
+        except KeyError as exc:
+            raise HTTPException(404, "outbound message not found") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/admin/outbound/{message_id}/cancel")
+    async def admin_cancel_outbound(message_id: str, request: Request):
+        await _admin(request, "operator")
+        try:
+            return {"ok": True, **rt.outbound_messages.cancel(message_id)}
+        except KeyError as exc:
+            raise HTTPException(404, "outbound message not found") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/admin/jobs/dead-letter")
+    async def admin_dead_letter_jobs(request: Request, limit: int = 50):
+        await _admin(request, "operator")
+        return {"ok": True, "jobs": rt.job_queue.list_dead_letters(limit=limit)}
+
+    @app.post("/admin/jobs/dead-letter/{job_id}/requeue")
+    async def admin_requeue_dead_letter_job(job_id: str, request: Request):
+        await _admin(request, "operator")
+        try:
+            return {"ok": True, **rt.job_queue.requeue_dead_letter(job_id)}
+        except KeyError as exc:
+            raise HTTPException(404, "job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/admin/jobs/dead-letter/{job_id}")
+    async def admin_purge_dead_letter_job(job_id: str, request: Request):
+        await _admin(request, "owner")
+        try:
+            return {"ok": True, **rt.job_queue.purge_dead_letter(job_id)}
+        except KeyError as exc:
+            raise HTTPException(404, "job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     def _learning_dashboard() -> LearningDashboard:
         path = cfg.workspace.root / "learning_audit.jsonl"
@@ -191,17 +285,17 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.get("/admin/learning/report")
     async def admin_learning_report(request: Request, days: int = 7):
-        await _admin(request)
+        await _admin(request, "viewer")
         return _learning_dashboard().summary(days=days)
 
     @app.get("/admin/learning/dashboard")
     async def admin_learning_dashboard(request: Request, days: int = 7):
-        await _admin(request)
+        await _admin(request, "viewer")
         return Response(content=_learning_dashboard().render_html(days=days), media_type="text/html")
 
     @app.post("/agent/run")
     async def run_agent(request: Request, body: dict):
-        await _admin(request)
+        await _admin(request, "operator")
         # Legacy body secret remains accepted for older local integrations.
         secret = os.getenv(cfg.gateway.shared_secret_env, "")
         provided = body.get("secret", "")
@@ -212,7 +306,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.post("/agent/resume/{run_id}")
     async def resume_agent(run_id: str, request: Request, body: Optional[dict] = None):
-        await _admin(request)
+        await _admin(request, "owner")
         body = body or {}
         return await rt.orchestrator.resume(run_id, resume_token=body.get("resume_token"))
 
@@ -221,7 +315,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         adapter = rt.adapters["telegram"]
         body, _ = await _guard_webhook("telegram", adapter, request)
         msg = adapter.parse_update(_json(body))
-        return await rt.orchestrator.handle_message(msg) if msg else {"ok": True, "ignored": True}
+        return _enqueue_webhook_message(msg)
 
     @app.get("/webhooks/whatsapp")
     async def whatsapp_verify(request: Request):
@@ -236,7 +330,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         adapter = rt.adapters["whatsapp_cloud"]
         body, _ = await _guard_webhook("whatsapp", adapter, request)
         messages = adapter.parse_webhook(_json(body))
-        return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
+        return _enqueue_webhook_messages(messages)
 
     @app.get("/webhooks/meta")
     async def meta_verify(request: Request):
@@ -251,7 +345,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         adapter = rt.adapters["meta_graph"]
         body, _ = await _guard_webhook("meta", adapter, request)
         messages = adapter.parse_webhook(_json(body))
-        return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
+        return _enqueue_webhook_messages(messages)
 
     @app.get("/webhooks/wechat")
     async def wechat_verify(request: Request):
@@ -267,8 +361,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
         msg = adapter.parse_xml(body)
         if not msg:
             return Response(content="success", media_type="text/plain")
-        await rt.orchestrator.handle_message(msg)
-        text = "已收到，并完成安全规划。需要执行发消息/点击/写文件等动作时会请求授权。"
+        _enqueue_webhook_message(msg)
+        text = "已收到，消息已进入异步处理队列。需要执行发消息/点击/写文件等动作时会请求授权。"
         return Response(content=adapter.passive_text_reply(msg, text), media_type="application/xml")
 
     @app.post("/webhooks/dingtalk")
@@ -276,7 +370,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         adapter = rt.adapters["dingtalk"]
         body, _ = await _guard_webhook("dingtalk", adapter, request)
         msg = adapter.parse_webhook(_json(body))
-        return await rt.orchestrator.handle_message(msg) if msg else {"ok": True, "ignored": True}
+        return _enqueue_webhook_message(msg)
 
     @app.post("/webhooks/lark")
     async def lark_webhook(request: Request):
@@ -285,7 +379,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
         parsed = adapter.parse_webhook(_json(body))
         if isinstance(parsed, dict) and "challenge" in parsed:
             return parsed
-        return await rt.orchestrator.handle_message(parsed) if parsed else {"ok": True, "ignored": True}
+        if isinstance(parsed, ChannelMessage):
+            return _enqueue_webhook_message(parsed)
+        return {"ok": True, "ignored": True}
 
     @app.post("/webhooks/feishu")
     async def feishu_webhook(request: Request):
@@ -294,7 +390,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
         parsed = adapter.parse_webhook(_json(body))
         if isinstance(parsed, dict) and "challenge" in parsed:
             return parsed
-        return await rt.orchestrator.handle_message(parsed) if parsed else {"ok": True, "ignored": True}
+        if isinstance(parsed, ChannelMessage):
+            return _enqueue_webhook_message(parsed)
+        return {"ok": True, "ignored": True}
 
     @app.post("/webhooks/line")
     async def line_webhook(request: Request):
@@ -302,7 +400,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         body, _ = await _guard_webhook("line", adapter, request)
         payload = _json(body)
         messages = adapter.parse_webhook(payload)
-        return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
+        return _enqueue_webhook_messages(messages)
 
 
     @app.get("/webhooks/x")
@@ -314,63 +412,68 @@ def create_app(cfg: AppConfig) -> FastAPI:
         adapter = rt.adapters["x"]
         body, _ = await _guard_webhook("x", adapter, request)
         messages = adapter.parse_webhook(_json(body))
-        return {"ok": True, "count": len(messages), "results": [await rt.orchestrator.handle_message(m) for m in messages]}
+        return _enqueue_webhook_messages(messages)
 
 
     @app.post("/self-upgrade/proposals/{proposal_id}/evaluate")
     async def evaluate_upgrade_proposal(proposal_id: str, request: Request, body: Optional[dict] = None):
-        await _admin(request)
         body = body or {}
+        allow_canary = bool(body.get("allow_canary", False))
+        await _admin(request, "owner" if allow_canary else "operator")
         return await rt.governance.evaluate_proposal(
             proposal_id,
             old_permissions=body.get("old_permissions"),
             new_permissions=body.get("new_permissions"),
             stable_plan=body.get("stable_plan"),
             shadow_plan=body.get("shadow_plan"),
+            allow_canary=allow_canary,
         )
 
     @app.get("/validate/connectors")
     async def validate_connectors_route(request: Request):
-        await _admin(request)
+        await _admin(request, "operator")
         from omnidesk_agent.validation.connectors import validate_connectors
         return validate_connectors(rt)
 
     @app.get("/validate/extensions")
     async def validate_extensions_route(request: Request):
-        await _admin(request)
+        await _admin(request, "operator")
         from omnidesk_agent.validation.extensions import validate_extensions
         return validate_extensions(rt)
 
     @app.get("/oauth/gmail/start")
     async def gmail_oauth_start(request: Request, redirect_uri: str, state: Optional[str] = None):
-        await _admin(request)
+        await _admin(request, "owner")
         return rt.adapters["gmail"].oauth.build_authorization_url(redirect_uri=redirect_uri, state=None)
 
     @app.get("/oauth/gmail/callback")
     async def gmail_oauth_callback(request: Request, code: str, redirect_uri: str, state: Optional[str] = None):
-        await _admin(request)
-        token = rt.adapters["gmail"].oauth.exchange_code(code=code, redirect_uri=redirect_uri, state=state)
+        await _admin(request, "owner")
+        try:
+            token = rt.adapters["gmail"].oauth.exchange_code(code=code, redirect_uri=redirect_uri, state=state)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         return {"ok": True, "token_saved": True, "keys": sorted(token.keys())}
 
     @app.post("/approvals")
     async def create_approval(request: Request, body: dict):
-        await _admin(request)
+        await _admin(request, "operator")
         approval_id = approvals.create(body)
         return {"ok": True, "id": approval_id}
 
     @app.get("/approvals")
     async def list_approvals(request: Request, status: Optional[str] = None):
-        await _admin(request)
+        await _admin(request, "viewer")
         return {"ok": True, "approvals": approvals.list(status)}
 
     @app.post("/approvals/{approval_id}/approve")
     async def approve_request(approval_id: str, request: Request, body: Optional[dict] = None):
-        await _admin(request)
+        await _admin(request, "owner")
         return {"ok": True, "approval": approvals.decide(approval_id, "approved", body or {})}
 
     @app.post("/approvals/{approval_id}/deny")
     async def deny_request(approval_id: str, request: Request, body: Optional[dict] = None):
-        await _admin(request)
+        await _admin(request, "owner")
         return {"ok": True, "approval": approvals.decide(approval_id, "denied", body or {})}
 
     return app

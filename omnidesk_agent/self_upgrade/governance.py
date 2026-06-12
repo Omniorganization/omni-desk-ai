@@ -15,6 +15,7 @@ from omnidesk_agent.self_upgrade.testing.security_test_runner import SecurityTes
 from omnidesk_agent.self_upgrade.release.shadow_mode import ShadowModeEvaluator
 from omnidesk_agent.self_upgrade.release.canary_release import CanaryReleaseManager
 from omnidesk_agent.self_upgrade.memory.upgrade_memory import UpgradeMemory
+from omnidesk_agent.self_upgrade.state_machine import UpgradeStateMachine
 
 
 class GovernedSelfImprovement:
@@ -37,6 +38,7 @@ class GovernedSelfImprovement:
         self.shadow = ShadowModeEvaluator()
         self.canary = CanaryReleaseManager(self.workspace_root / "canary_state.json")
         self.memory = UpgradeMemory(self.workspace_root / "upgrade_memory.sqlite3")
+        self.state_machine = UpgradeStateMachine()
         self.prompt_generator = PromptPatchGenerator()
         self.workflow_generator = WorkflowPatchGenerator()
         self.code_generator = CodePatchGenerator()
@@ -62,6 +64,7 @@ class GovernedSelfImprovement:
         else:
             path = self.code_generator.generate(proposal, output_root)
 
+        proposal.metadata['state'] = 'ARTIFACT_GENERATED'
         proposal.metadata.setdefault("artifacts", []).append({
             "path": str(path),
             "risk": risk,
@@ -77,6 +80,7 @@ class GovernedSelfImprovement:
         new_permissions: Optional[list[str]] = None,
         stable_plan: Optional[dict[str, Any]] = None,
         shadow_plan: Optional[dict[str, Any]] = None,
+        allow_canary: bool = False,
     ) -> dict:
         """Run governance gates and write results back into proposal metadata.
 
@@ -89,8 +93,8 @@ class GovernedSelfImprovement:
           - canary_result
 
         Promotion policy:
-          - Can auto-enable canary only when risk classifier says low-risk canary
-            is allowed and regression/security checks passed.
+          - Can enable canary only when owner-authorized, risk classifier says
+            low-risk canary is allowed, and regression/security checks passed.
           - Never auto-merges and never promotes to stable.
         """
 
@@ -116,13 +120,15 @@ class GovernedSelfImprovement:
             "reason": "not eligible",
         }
         checks_ok = bool(regression.get("ok")) and bool(security.get("ok"))
-        if checks_ok and risk.get("can_auto_canary") and not perm_diff.requires_human_approval:
+        if allow_canary and checks_ok and risk.get("can_auto_canary") and not perm_diff.requires_human_approval:
             canary_result = self.canary.enable(
                 target=proposal.proposal_id,
                 version=f"proposal-{proposal.proposal_id}",
                 allowed_risk="low",
             )
             canary_result["enabled"] = True
+        elif not allow_canary:
+            canary_result["reason"] = "canary_requires_owner_authorization"
         elif not checks_ok:
             canary_result["reason"] = "regression_or_security_check_failed"
         elif perm_diff.requires_human_approval:
@@ -140,6 +146,7 @@ class GovernedSelfImprovement:
         }
 
         proposal.metadata["governance_evaluation"] = evidence
+        proposal.metadata["state"] = "CANARY" if canary_result.get("enabled") else ("BLOCKED" if not checks_ok else "HUMAN_REVIEW")
         self.proposal_store.save(proposal)
 
         verdict = "effective" if canary_result.get("enabled") else "pending_review"
@@ -175,3 +182,8 @@ class GovernedSelfImprovement:
             "human_feedback": reason,
         })
         return proposal.to_dict()
+
+    def close(self) -> None:
+        close = getattr(self.memory, "close", None)
+        if callable(close):
+            close()

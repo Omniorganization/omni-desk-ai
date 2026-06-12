@@ -3,10 +3,12 @@ from typing import Optional
 
 import hashlib
 import json
-import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from omnidesk_agent.storage.sqlite import connect_sqlite
+from omnidesk_agent.storage.migrations import Migration, apply_migrations
 
 
 @dataclass
@@ -56,7 +58,7 @@ class TokenBudgetManager:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS llm_cache (
@@ -82,6 +84,7 @@ class TokenBudgetManager:
                 )
                 """
             )
+            apply_migrations(con, [Migration(1, "token_budget_schema_baseline", lambda _con: None)])
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
@@ -195,7 +198,7 @@ class TokenBudgetManager:
         if not self.config.enable_cache:
             return None
         cutoff = time.time() - self.config.cache_ttl_seconds
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             row = con.execute(
                 "SELECT response, created_at FROM llm_cache WHERE cache_key = ?",
                 (cache_key,),
@@ -210,7 +213,7 @@ class TokenBudgetManager:
     def put_cached(self, *, cache_key: str, model: str, response: str) -> None:
         if not self.config.enable_cache:
             return
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute(
                 """
                 INSERT OR REPLACE INTO llm_cache
@@ -231,7 +234,7 @@ class TokenBudgetManager:
         budget_overridden: bool,
         reason: str,
     ) -> None:
-        with sqlite3.connect(self.db_path) as con:
+        with connect_sqlite(self.db_path) as con:
             con.execute(
                 """
                 INSERT INTO llm_usage

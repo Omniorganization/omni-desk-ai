@@ -69,6 +69,13 @@ workspace:
     - ~/.omnidesk/plugins
   memory_db: ~/.omnidesk/memory.sqlite3
 
+github:
+  enabled: true
+  repo_root: null
+  remote_name: origin
+  host: github.com
+  require_write_access: true
+
 plugins:
   enabled: true
   trusted_only: true

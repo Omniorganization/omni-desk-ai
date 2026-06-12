@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from omnidesk_agent.config import UIBridgeConfig
-from omnidesk_agent.core.models import ChannelMessage, ToolResult
+from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.tools.base import ToolContext
 

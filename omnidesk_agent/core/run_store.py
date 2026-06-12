@@ -7,6 +7,7 @@ import time
 import uuid
 from pathlib import Path
 from omnidesk_agent.storage.sqlite import connect_sqlite
+from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from typing import Any, Optional
 
 
@@ -33,6 +34,7 @@ class RunStore:
                 """
             )
             self._migrate(con)
+            apply_migrations(con, [Migration(1, "run_store_schema_baseline", lambda _con: None)])
 
     def _migrate(self, con: sqlite3.Connection) -> None:
         cols = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
@@ -93,6 +95,10 @@ class RunStore:
             "resume_token": token,
         })
         return token
+
+    def consume_resume_token(self, run_id: str, resume_token: Optional[str]) -> None:
+        self.require_resume_token(run_id, resume_token)
+        self.update(run_id, {"resume_token": None})
 
     def complete(self, run_id: str, status: str, results: list[dict[str, Any]]) -> None:
         self.update(run_id, {

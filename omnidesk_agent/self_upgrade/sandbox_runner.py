@@ -27,6 +27,8 @@ class SandboxRunner:
     def __init__(self, repo_root: Path, allowed_prefixes: Optional[list[list[str]]] = None, *, backend: str = "argv", docker_image: str = "python:3.11-slim"):
         self.repo_root = repo_root.resolve()
         self.allowed_prefixes = allowed_prefixes or self.DEFAULT_ALLOWED
+        if backend not in {"argv", "docker"}:
+            raise ValueError(f"unsupported sandbox backend: {backend}")
         self.backend = backend
         self.docker_image = docker_image
 
@@ -40,8 +42,9 @@ class SandboxRunner:
         if not self.allowed(argv):
             return TestResult(False, " ".join(argv), f"blocked by sandbox allowlist: {argv}", 126)
 
+        exec_argv = self._docker_command(argv) if self.backend == "docker" else argv
         proc = await asyncio.create_subprocess_exec(
-            *argv,
+            *exec_argv,
             cwd=str(self.repo_root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -50,9 +53,9 @@ class SandboxRunner:
             output, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
-            return TestResult(False, " ".join(argv), f"Timed out after {timeout}s", 124)
+            return TestResult(False, " ".join(exec_argv), f"Timed out after {timeout}s", 124)
         text = output.decode(errors="replace")[-12000:]
-        return TestResult(proc.returncode == 0, " ".join(argv), text, int(proc.returncode or 0))
+        return TestResult(proc.returncode == 0, " ".join(exec_argv), text, int(proc.returncode or 0))
 
 
     def _docker_command(self, argv: list[str]) -> list[str]:

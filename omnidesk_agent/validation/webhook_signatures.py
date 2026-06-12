@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import time
 
 
 def line_signature_valid(body: bytes, channel_secret: str, signature: str) -> bool:

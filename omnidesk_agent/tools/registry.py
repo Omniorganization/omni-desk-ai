@@ -5,11 +5,13 @@ from typing import Any, Optional
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, ToolSpecRegistry
+from omnidesk_agent.security.approval_required import ApprovalRequired
 
 
 class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, Any] = {}
+        self.metrics: Any = None
 
     def register(self, tool: Any) -> None:
         if not getattr(tool, "name", None):
@@ -40,6 +42,18 @@ class ToolRegistry:
     async def call(self, tool_name: str, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         tool = self.get(tool_name)
         try:
-            return await tool.call(action, args, ctx)
+            result = await tool.call(action, args, ctx)
+            self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="ok" if result.ok else "error")
+            return result
+        except ApprovalRequired:
+            self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="approval_required")
+            raise
         except Exception as exc:
+            self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="exception")
             return ToolResult(False, error=f"{type(exc).__name__}: {exc}", summary=f"{tool_name}.{action} failed")
+
+    def _metric(self, name: str, **labels: Any) -> None:
+        metrics = getattr(self, "metrics", None)
+        inc = getattr(metrics, "inc", None)
+        if callable(inc):
+            inc(name, **labels)

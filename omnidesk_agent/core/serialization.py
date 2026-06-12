@@ -7,7 +7,7 @@ from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep
 
 
 def dataclass_to_dict(obj: Any) -> dict[str, Any]:
-    if is_dataclass(obj):
+    if is_dataclass(obj) and not isinstance(obj, type):
         return asdict(obj)
     if isinstance(obj, dict):
         return dict(obj)
@@ -21,12 +21,10 @@ def plan_from_dict(data: dict[str, Any]) -> Plan:
         if "requires_confirmation" in raw and "requires_approval" not in raw:
             raw["requires_approval"] = raw.pop("requires_confirmation")
         steps.append(PlanStep(**raw))
-    return Plan(
-        goal=data["goal"],
-        steps=steps,
-        rationale=data.get("rationale", ""),
-        plan_id=data.get("plan_id") or data.get("id"),
-    )
+    plan_id = data.get("plan_id") or data.get("id")
+    if plan_id is not None:
+        return Plan(goal=data["goal"], steps=steps, rationale=data.get("rationale", ""), plan_id=str(plan_id))
+    return Plan(goal=data["goal"], steps=steps, rationale=data.get("rationale", ""))
 
 
 def message_from_dict(data: dict[str, Any]) -> ChannelMessage:

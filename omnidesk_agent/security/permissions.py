@@ -23,6 +23,7 @@ class PermissionManager:
         self.cfg = cfg
         self.approval_store = approval_store
         self.session_allows: set[str] = set()
+        self.metrics: Any = None
         self.audit_log = cfg.audit_log.expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -44,13 +45,16 @@ class PermissionManager:
         session_key = self.session_key(proposal_dict)
 
         self._audit("proposal", proposal_dict)
+        self._metric("omnidesk_approval_proposals_total", tool=tool, risk=risk, source=source)
 
         if risk == "low" and source in getattr(self.cfg, "allow_low_risk_from", []):
             self._audit("allowed_low_risk", proposal_dict)
+            self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="low_risk")
             return PermissionDecision(True, "allow", "low risk allowed")
 
         if session_key in self.session_allows:
             self._audit("allowed_session", {"session_key": session_key, **proposal_dict})
+            self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="session")
             return PermissionDecision(True, "allow", "session allow")
 
         mode = getattr(self.cfg, "approval_mode", "interactive_cli")
@@ -59,6 +63,7 @@ class PermissionManager:
         if mode == "auto_policy":
             if risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
                 self._audit("allowed_auto_policy", proposal_dict)
+                self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="auto_policy")
                 return PermissionDecision(True, "allow", "auto_policy")
             return self._remote_or_deny(proposal_dict)
 
@@ -67,9 +72,11 @@ class PermissionManager:
 
         if default_mode == "allow":
             self._audit("allowed_default", proposal_dict)
+            self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="default")
             return PermissionDecision(True, "allow", "default allow")
         if default_mode == "dry_run":
             self._audit("dry_run", proposal_dict)
+            self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="dry_run", mode="default")
             return PermissionDecision(False, "dry_run", "default dry_run")
         if default_mode == "deny":
             self._audit("denied_default", proposal_dict)
@@ -95,9 +102,25 @@ class PermissionManager:
             return PermissionDecision(True, "allow", "session")
         if ans in {"d", "dry-run"}:
             self._audit("dry_run_interactive", proposal_dict)
+            self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="dry_run", mode="interactive")
             return PermissionDecision(False, "dry_run", "interactive dry_run")
         self._audit("denied_interactive", proposal_dict)
+        self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="deny", mode="interactive")
         raise PermissionError("Denied by user")
+
+    def allow_approved_proposal(self, proposal: Any) -> str:
+        """Allow the exact approved proposal scope during a resume call.
+
+        Remote approval is normally implemented by raising ApprovalRequired. After
+        a human approves that proposal, resume must execute the originally blocked
+        step once instead of creating a fresh approval for the same scope.
+        """
+        proposal_dict = self._proposal_dict(proposal)
+        session_key = self.session_key(proposal_dict)
+        self.session_allows.add(session_key)
+        self._audit("allowed_after_remote_approval", {"session_key": session_key, **proposal_dict})
+        self._metric("omnidesk_approval_resume_grants_total", tool=str(proposal_dict.get("tool", "")), risk=str(proposal_dict.get("risk", "medium")))
+        return session_key
 
     def _remote_or_deny(self, proposal_dict: dict[str, Any]) -> PermissionDecision:
         if self.approval_store is None:
@@ -105,6 +128,7 @@ class PermissionManager:
             raise PermissionError("remote_approval requires ApprovalStore")
         approval_id = self.approval_store.create(proposal_dict)
         self._audit("approval_required", {"approval_id": approval_id, **proposal_dict})
+        self._metric("omnidesk_approval_required_total", tool=str(proposal_dict.get("tool", "")), risk=str(proposal_dict.get("risk", "medium")))
         raise ApprovalRequired(approval_id=approval_id, proposal=proposal_dict)
 
     def _audit(self, event: str, payload: dict[str, Any]) -> None:
@@ -113,11 +137,17 @@ class PermissionManager:
         with self.audit_log.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
+    def _metric(self, name: str, **labels: Any) -> None:
+        metrics = getattr(self, "metrics", None)
+        inc = getattr(metrics, "inc", None)
+        if callable(inc):
+            inc(name, **labels)
+
     @staticmethod
     def _proposal_dict(proposal: Any) -> dict[str, Any]:
         if isinstance(proposal, dict):
             return dict(proposal)
-        if is_dataclass(proposal):
+        if is_dataclass(proposal) and not isinstance(proposal, type):
             return asdict(proposal)
         if hasattr(proposal, "__dict__"):
             return dict(proposal.__dict__)

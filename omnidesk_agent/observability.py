@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, Optional
+from typing import Any
 
 
 def new_request_id() -> str:
@@ -70,3 +70,55 @@ def redact_runtime_status(status: dict[str, Any]) -> dict[str, Any]:
         if key in redacted:
             redacted[key] = "<redacted>"
     return redacted
+
+
+DEFAULT_RUNTIME_METRICS = [
+    "agent_runs_total",
+    "agent_runs_failed_total",
+    "tool_calls_total",
+    "tool_call_latency_seconds",
+    "approval_required_total",
+    "approval_denied_total",
+    "resume_failed_total",
+    "planner_fallback_total",
+    "webhook_blocked_total",
+    "plugin_failures_total",
+    "self_upgrade_proposals_total",
+    "memory_write_blocked_total",
+    "bad_memory_detected_total",
+    "omnidesk_planner_requests_total",
+    "omnidesk_planner_results_total",
+    "omnidesk_tool_calls_total",
+    "omnidesk_approval_proposals_total",
+    "omnidesk_approval_required_total",
+    "omnidesk_approval_decisions_total",
+    "omnidesk_approval_resume_grants_total",
+    "omnidesk_approval_waiting_runs_total",
+    "omnidesk_jobs_enqueued_total",
+    "omnidesk_jobs_completed_total",
+    "omnidesk_jobs_failed_total",
+    "omnidesk_jobs_dead_lettered_total",
+    "omnidesk_jobs_dead_letter_requeued_total",
+    "omnidesk_jobs_dead_letter_purged_total",
+    "omnidesk_outbound_messages_total",
+    "omnidesk_jobs_stale_recovered_total",
+    "omnidesk_plugin_load_total",
+    "omnidesk_plugin_call_total",
+    "omnidesk_self_upgrade_proposals_total",
+    "omnidesk_self_upgrade_artifacts_total",
+    "omnidesk_learning_experiments_created_total",
+    "omnidesk_learning_experiment_assignments_total",
+    "omnidesk_learning_experiment_observations_total",
+    "omnidesk_learning_experiment_promotions_total",
+    "omnidesk_memory_review_agent_votes_total",
+    "omnidesk_skill_versions_registered_total",
+    "omnidesk_skill_version_benchmarks_total",
+    "omnidesk_causal_root_cause_reports_total",
+    "omnidesk_learning_roi_evaluations_total",
+    "omnidesk_world_model_observations_total",
+]
+
+
+def initialize_runtime_metrics(metrics: MetricsRegistry) -> None:
+    for name in DEFAULT_RUNTIME_METRICS:
+        metrics.inc(name, 0)

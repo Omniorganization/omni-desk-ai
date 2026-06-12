@@ -5,8 +5,9 @@ from omnidesk_agent.tools.base import ToolContext, proposal
 
 class ChannelSendTool:
     name = "channels"
-    def __init__(self, adapters: dict[str, Any]):
+    def __init__(self, adapters: dict[str, Any], outbound_store: Any = None):
         self.adapters = adapters
+        self.outbound_store = outbound_store
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "send_text":
@@ -22,8 +23,11 @@ class ChannelSendTool:
                 return ToolResult(False, error=f"Unknown channel adapter: {channel}")
             if not hasattr(adapter, "send_text"):
                 return ToolResult(False, error=f"Channel {channel} does not support send_text")
+            if self.outbound_store:
+                outbound_id = self.outbound_store.create(channel=channel, recipient=recipient, payload={"type": "text", "text": text, "options": args.get("options", {})})
+                return ToolResult(True, data={"outbound_id": outbound_id, "status": "pending"}, summary=f"queued text via {channel} to {recipient}")
             await adapter.send_text(recipient, text, **args.get("options", {}))
-            return ToolResult(True, summary=f"sent text via {channel} to {recipient}")
+            return ToolResult(True, data={"outbound_id": None, "status": "sent"}, summary=f"sent text via {channel} to {recipient}")
         if action == "send_email":
             adapter = self.adapters.get("gmail")
             if not adapter:

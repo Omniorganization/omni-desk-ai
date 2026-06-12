@@ -14,8 +14,8 @@ def test_canary_only_low_risk(tmp_path):
     assert not manager.should_use_canary("planner", "high")
 
 def test_upgrade_memory_effectiveness(tmp_path):
-    memory = UpgradeMemory(tmp_path / "upgrade.sqlite3")
-    memory.record({"upgrade_id": "u1", "change_type": "workflow", "target": "browser", "verdict": "effective"})
-    report = memory.effectiveness("workflow")
-    assert report["effective_rate"] == 1
-    assert report["recommendation"] == "continue"
+    with UpgradeMemory(tmp_path / "upgrade.sqlite3") as memory:
+        memory.record({"upgrade_id": "u1", "change_type": "workflow", "target": "browser", "verdict": "effective"})
+        report = memory.effectiveness("workflow")
+        assert report["effective_rate"] == 1
+        assert report["recommendation"] == "continue"

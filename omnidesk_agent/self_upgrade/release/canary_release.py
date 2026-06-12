@@ -1,5 +1,6 @@
 from __future__ import annotations
-import json, time
+import json
+import time
 from pathlib import Path
 class CanaryReleaseManager:
     def __init__(self, state_file: Path): self.state_file=state_file.expanduser(); self.state_file.parent.mkdir(parents=True, exist_ok=True)

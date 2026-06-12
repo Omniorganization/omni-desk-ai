@@ -16,7 +16,7 @@ def create_dashboard_router(runtime, admin_auth=None):
     @router.get("/self-upgrade/dashboard", response_class=HTMLResponse)
     async def dashboard(request):
         if admin_auth is not None:
-            decision = await admin_auth.verify_request(request)
+            decision = await admin_auth.verify_request(request, required_role='viewer')
             if not decision.ok:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=403, detail=decision.reason)
@@ -26,7 +26,7 @@ def create_dashboard_router(runtime, admin_auth=None):
     @router.get("/self-upgrade/proposals")
     async def proposals(request):
         if admin_auth is not None:
-            decision = await admin_auth.verify_request(request)
+            decision = await admin_auth.verify_request(request, required_role='viewer')
             if not decision.ok:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=403, detail=decision.reason)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
 
 
@@ -9,3 +11,32 @@ def test_docker_sandbox_command_is_networkless_and_readonly(tmp_path):
     assert "--network" in cmd and "none" in cmd
     assert "--read-only" in cmd
     assert any(str(tmp_path.resolve()) in part and part.endswith(":/workspace:ro") for part in cmd)
+
+
+def test_docker_backend_executes_docker_command(tmp_path, monkeypatch):
+    captured = {}
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok", None
+
+        def kill(self):
+            captured["killed"] = True
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["cwd"] = kwargs["cwd"]
+        return Proc()
+
+    async def run_case():
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        runner = SandboxRunner(tmp_path, backend="docker", docker_image="python:3.11-slim")
+        result = await runner.run(["python", "-m", "compileall", "."])
+        assert result.ok is True
+        assert result.command.startswith("docker run --rm")
+        assert captured["argv"][:6] == ["docker", "run", "--rm", "--network", "none", "--read-only"]
+        assert captured["cwd"] == str(tmp_path.resolve())
+
+    asyncio.run(run_case())

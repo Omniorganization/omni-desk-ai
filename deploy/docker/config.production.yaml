@@ -1,0 +1,53 @@
+workspace:
+  root: /data/workspace
+  memory_db: /data/memory.sqlite3
+  skills_dirs:
+    - /data/skills
+  plugins_dirs:
+    - /data/plugins
+
+permissions:
+  approval_mode: remote_approval
+  default_mode: ask
+  no_tty_mode: deny
+  audit_log: /data/audit.log
+  shell_backend: docker
+
+gateway:
+  host: 0.0.0.0
+  port: 18789
+  public_base_url: https://your-domain.example
+  allow_local_admin_without_token: false
+  require_webhook_signatures: true
+  admin_allowed_ips: []
+
+sandbox:
+  backend: docker
+  docker_image: python:3.11-slim
+  docker_network: none
+  timeout_seconds: 120
+  memory_limit: 512m
+  cpus: "1.0"
+
+plugins:
+  enabled: true
+  trusted_only: true
+  allow_in_process: false
+  default_sandbox: docker
+
+observability:
+  expose_public_metrics: false
+  structured_json_logs: true
+
+memory_privacy:
+  redact_pii: true
+  isolate_by_actor: true
+  encrypt_at_rest: true
+  encryption_backend: local_fernet
+  encryption_key_env: OMNIDESK_MEMORY_ENCRYPTION_KEY
+  encryption_key_id: docker-prod
+  retention_days: 30
+
+channels:
+  chrome:
+    enabled: false

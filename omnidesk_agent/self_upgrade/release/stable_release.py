@@ -1,5 +1,6 @@
 from __future__ import annotations
-import json, time
+import json
+import time
 from pathlib import Path
 class StableReleaseManager:
     def __init__(self, release_log: Path): self.release_log=release_log.expanduser(); self.release_log.parent.mkdir(parents=True, exist_ok=True)

@@ -43,20 +43,28 @@ def test_enabled_telegram_webhook_requires_secret_header(monkeypatch, tmp_path):
         cfg = AppConfig()
         cfg.workspace.root = tmp_path
         cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+        cfg.workspace.skills_dirs = [tmp_path / "skills"]
+        cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
         cfg.permissions.audit_log = tmp_path / "audit.log"
+        cfg.channels.gmail.credentials_file = tmp_path / "google" / "credentials.json"
+        cfg.channels.gmail.token_file = tmp_path / "google" / "token.json"
+        cfg.learning.growth_plan_file = tmp_path / "growth_plan.json"
         cfg.channels.telegram.enabled = True
         cfg.gateway.allow_local_admin_without_token = True
         cfg.ensure_dirs()
         monkeypatch.setenv(cfg.channels.telegram.webhook_secret_env, "s3cret")
         app = create_app(cfg)
-        guard = _find_guard(app)
+        try:
+            guard = _find_guard(app)
 
-        body1 = json.dumps({"message": {"message_id": 1, "from": {"id": 2}, "text": "hi"}}).encode()
-        with pytest.raises(fastapi.HTTPException) as exc:
-            await guard("telegram", Adapter(), DummyRequest(body1, headers={}))
-        assert exc.value.status_code == 403
+            body1 = json.dumps({"message": {"message_id": 1, "from": {"id": 2}, "text": "hi"}}).encode()
+            with pytest.raises(fastapi.HTTPException) as exc:
+                await guard("telegram", Adapter(), DummyRequest(body1, headers={}))
+            assert exc.value.status_code == 403
 
-        body2 = json.dumps({"message": {"message_id": 2, "from": {"id": 2}, "text": "hi"}}).encode()
-        await guard("telegram", Adapter(), DummyRequest(body2, headers={"x-telegram-bot-api-secret-token": "s3cret"}))
+            body2 = json.dumps({"message": {"message_id": 2, "from": {"id": 2}, "text": "hi"}}).encode()
+            await guard("telegram", Adapter(), DummyRequest(body2, headers={"x-telegram-bot-api-secret-token": "s3cret"}))
+        finally:
+            app.state.runtime.close()
 
     asyncio.run(run_case())

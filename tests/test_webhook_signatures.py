@@ -5,7 +5,9 @@ from omnidesk_agent.validation.webhook_signatures import line_signature_valid, w
 def test_line_signature_valid():
     body = b'{"events":[]}'
     secret = "secret"
-    import base64, hashlib, hmac
+    import base64
+    import hashlib
+    import hmac
     sig = base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
     assert line_signature_valid(body, secret, sig)
 

@@ -1,0 +1,8 @@
+[run]
+source = omnidesk_agent
+omit =
+    omnidesk_agent/__init__.py
+
+[report]
+show_missing = True
+skip_empty = True

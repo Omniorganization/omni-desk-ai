@@ -28,11 +28,19 @@ class BrowserTool:
     def __init__(self, cfg: ChromeConfig):
         self.cfg = cfg
         self.base = f"http://{cfg.devtools_host}:{cfg.devtools_port}"
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
     def _check_url(self, url: str) -> None:
         if not self.cfg.allowed_origins:
-            return
+            raise ValueError("Browser origin allowlist is empty; configure channels.chrome.allowed_origins before enabling browser control.")
         parsed = urlparse(url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
         if origin not in self.cfg.allowed_origins:
@@ -69,7 +77,7 @@ class BrowserTool:
         except ImportError as exc:
             raise RuntimeError("Install websockets or use pip install -e '.[browser]'") from exc
 
-        async with self._lock:
+        async with self._get_lock():
             tab = await self._tab(target_id)
             current_url = str(tab.get("url") or "")
             if current_url.startswith("http"):

@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
-from typing import Any
-import hashlib, json, time
+from typing import Any, Optional
+import hashlib
+import json
+import time
 
 @dataclass
 class UpgradeProposal:
@@ -23,6 +25,10 @@ class UpgradeProposal:
     strategic_value: float = 0.5
     score: float = 0.0
     status: str = "pending"
+    artifact_hash: Optional[str] = None
+    test_report_path: Optional[str] = None
+    pr_url: Optional[str] = None
+    merge_sha: Optional[str] = None
     proposal_id: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)

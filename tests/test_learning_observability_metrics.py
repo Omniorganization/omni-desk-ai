@@ -14,10 +14,17 @@ def test_learning_metrics_compute_quality_and_readiness():
         LearningEvent(event_type="memory_review", memory_status="deprecated", stale=True),
         LearningEvent(event_type="safety_event", permission_bypass=False, high_risk_misexecution=False),
         LearningEvent(event_type="test_coverage", test_coverage=0.85),
+        LearningEvent(event_type="replay_evaluation", policy_improvement_score=0.75, learning_regression_score=0.0),
+        LearningEvent(event_type="skill_promotion", skill_promotion_success=True),
+        LearningEvent(event_type="experience_reused", retrieval_relevance_score=0.8),
     ]
     metrics = LearningMetricsCalculator().compute(events).to_dict()
     assert metrics["task_success_rate"] == 2 / 3
     assert metrics["bad_memory_rate"] == 0.5
     assert metrics["stale_memory_rate"] == 0.5
     assert metrics["test_coverage"] == 0.85
+    assert metrics["policy_improvement_score"] == 0.75
+    assert metrics["learning_regression_score"] == 0.0
+    assert metrics["skill_promotion_success_rate"] == 1
+    assert metrics["retrieval_relevance_score"] == 0.8
     assert 0 <= metrics["industrial_readiness_score"] <= 100

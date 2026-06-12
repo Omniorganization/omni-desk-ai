@@ -6,6 +6,7 @@ import time
 import uuid
 from pathlib import Path
 from omnidesk_agent.storage.sqlite import connect_sqlite
+from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from typing import Any, Optional
 
 
@@ -32,6 +33,7 @@ class ApprovalStore:
                 """
             )
             self._migrate(con)
+            apply_migrations(con, [Migration(1, "approval_store_schema_baseline", lambda _con: None)])
 
     def _migrate(self, con: sqlite3.Connection) -> None:
         cols = {row[1] for row in con.execute("PRAGMA table_info(approvals)").fetchall()}

@@ -1,11 +1,10 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Any, Optional
 
 from dataclasses import asdict
 import json
 
 from omnidesk_agent.core.models import ChannelMessage, Plan, ToolResult
-from omnidesk_agent.core.planner import HierarchicalPlanner
 from omnidesk_agent.core.run_store import RunStore
 from omnidesk_agent.core.serialization import message_from_dict, plan_from_dict
 from omnidesk_agent.core.vision_executor import VisionActionExecutor
@@ -22,13 +21,14 @@ from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrate
 class Orchestrator:
     def __init__(
         self,
-        planner: HierarchicalPlanner,
+        planner: Any,
         tools: ToolRegistry,
         permissions: PermissionManager,
         memory: ExperienceStore,
         execution_strategy: Optional[ResultOrientedExecutionStrategy] = None,
         run_store: Optional[RunStore] = None,
         approval_store: Optional[ApprovalStore] = None,
+        learning_loop: Optional[Any] = None,
     ):
         self.planner = planner
         self.tools = tools
@@ -39,17 +39,31 @@ class Orchestrator:
         self.approval_store = approval_store
         self.vision_executor = VisionActionExecutor(tools)
         self.experience_extractor = ExperienceExtractor()
+        self.metrics: Any = None
+        self.learning_loop = learning_loop
 
     async def handle_message(self, msg: ChannelMessage) -> dict:
         run_id = self.run_store.create(asdict(msg)) if self.run_store else None
-        plan = await self.planner.plan(msg)
-        return await self._execute_plan(msg, plan, run_id=run_id, start_index=0, prior_results=[])
+        learning_assignment = None
+        if self.learning_loop is not None:
+            try:
+                learning_assignment = self.learning_loop.assign_policy(msg)
+            except Exception:
+                learning_assignment = None
+        self._metric("omnidesk_planner_requests_total", channel=msg.channel)
+        try:
+            plan = await self.planner.plan(msg)
+            self._metric("omnidesk_planner_results_total", channel=msg.channel, status="ok")
+        except Exception:
+            self._metric("omnidesk_planner_results_total", channel=msg.channel, status="error")
+            raise
+        return await self._execute_plan(msg, plan, run_id=run_id, start_index=0, prior_results=[], learning_assignment=learning_assignment)
 
     async def resume(self, run_id: str, resume_token: Optional[str] = None) -> dict:
         if self.run_store is None:
             return {"ok": False, "status": "resume_unavailable", "message": "RunStore is not configured"}
         try:
-            self.run_store.require_resume_token(run_id, resume_token)
+            self.run_store.consume_resume_token(run_id, resume_token) if hasattr(self.run_store, 'consume_resume_token') else self.run_store.require_resume_token(run_id, resume_token)
         except (KeyError, PermissionError) as exc:
             return {"ok": False, "status": "resume_denied", "run_id": run_id, "error": str(exc)}
 
@@ -67,6 +81,10 @@ class Orchestrator:
 
         try:
             self.approval_store.require_approved(approval_id, run.get("approval_proposal"))
+            if hasattr(self.permissions, "allow_approved_proposal"):
+                self.permissions.allow_approved_proposal(run.get("approval_proposal") or {})
+            if self.run_store:
+                self.run_store.update(run_id, {"status": "running", "waiting_approval_id": None})
         except PermissionError as exc:
             return {"ok": False, "status": "approval_not_satisfied", "approval_id": approval_id, "error": str(exc)}
 
@@ -74,9 +92,9 @@ class Orchestrator:
         if not run["plan_json"]:
             return {"ok": False, "status": "missing_plan"}
         plan = plan_from_dict(run["plan_json"])
-        return await self._execute_plan(msg, plan, run_id=run_id, start_index=int(run["current_step_index"]), prior_results=run["results"])
+        return await self._execute_plan(msg, plan, run_id=run_id, start_index=int(run["current_step_index"]), prior_results=run["results"], learning_assignment=None)
 
-    async def _execute_plan(self, msg: ChannelMessage, plan: Plan, *, run_id: Optional[str], start_index: int, prior_results: list[dict]) -> dict:
+    async def _execute_plan(self, msg: ChannelMessage, plan: Plan, *, run_id: Optional[str], start_index: int, prior_results: list[dict], learning_assignment: Optional[dict[str, Any]] = None) -> dict:
         ctx = ToolContext(permissions=self.permissions, source=msg.channel, actor=msg.sender_id, run_id=run_id, plan_id=plan.plan_id)
         results: list[ToolResult] = []
         sanitized_prior = list(prior_results)
@@ -135,6 +153,7 @@ class Orchestrator:
                     break
 
         except ApprovalRequired as approval:
+            self._metric("omnidesk_approval_waiting_runs_total", tool=str(approval.proposal.get("tool", "")) if isinstance(approval.proposal, dict) else "unknown")
             all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
             if self.run_store and run_id:
                 resume_token = self.run_store.save_waiting(
@@ -157,6 +176,7 @@ class Orchestrator:
                 "goal": plan.goal,
                 "current_step_index": current_step_index,
                 "results": all_results,
+            "learning_assignment": learning_assignment,
             }
 
         all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
@@ -179,6 +199,7 @@ class Orchestrator:
                     "goal": plan.goal,
                     "steps": [asdict(s) for s in plan.steps],
                     "results": all_results,
+            "learning_assignment": learning_assignment,
                 },
                 tags=[msg.channel],
             )
@@ -195,6 +216,14 @@ class Orchestrator:
             # Learning failures must never break task execution.
             pass
 
+        if self.learning_loop is not None:
+            try:
+                self.learning_loop.observe_result(learning_assignment, status=status, result_count=len(all_results), safety_violation=any("security" in str(r).lower() for r in all_results))
+            except Exception:
+                pass
+
+        self._metric("omnidesk_agent_runs_total", channel=msg.channel, status=status)
+
         return {
             "status": status,
             "run_id": run_id,
@@ -204,7 +233,14 @@ class Orchestrator:
             "rationale": plan.rationale,
             "steps": [asdict(s) for s in plan.steps],
             "results": all_results,
+            "learning_assignment": learning_assignment,
         }
+
+    def _metric(self, name: str, **labels: Any) -> None:
+        metrics = getattr(self, "metrics", None)
+        inc = getattr(metrics, "inc", None)
+        if callable(inc):
+            inc(name, **labels)
 
     @staticmethod
     def _sanitize_result(result: ToolResult) -> dict:

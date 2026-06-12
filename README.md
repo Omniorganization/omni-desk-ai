@@ -218,3 +218,17 @@ GET /admin/learning/dashboard?days=7
 ```
 
 Tracked metrics include task success rate, experience reuse rate, bad memory rate, stale memory rate, contradiction rate, permission bypass rate, rollback success rate, test coverage, learning quality score, and industrial readiness score.
+
+
+---
+
+## Industrial Runtime Hardening
+
+This version adds role-aware AdminAuth, IP allowlist, admin audit, one-time resume token consumption, Docker-capable shell backend, subprocess plugin output limits, self-upgrade state-machine evidence, and runtime memory governance.
+
+
+---
+
+## 0.7.0-industrial-final
+
+This release fixes all known test failures and adds final industrial hardening: governed memory writes, plugin runtime permission validation, Docker plugin isolation, PR promotion gates, SQLite migrations, release SBOM workflow, initialized runtime metrics and a 65% CI coverage gate.

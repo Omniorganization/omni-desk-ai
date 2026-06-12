@@ -43,6 +43,18 @@ class ModelProfileConfig(BaseModel):
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
+class ModelCircuitBreakerConfig(BaseModel):
+    failure_threshold: int = 5
+    reset_seconds: int = 60
+
+
+class ModelRouteConfig(BaseModel):
+    primary: str
+    fallback: list[str] = Field(default_factory=list)
+    max_retries: int = 1
+    circuit_breaker: ModelCircuitBreakerConfig = Field(default_factory=ModelCircuitBreakerConfig)
+
+
 class ModelsConfig(BaseModel):
     default: str = "fast"
     max_output_tokens: int = 1200
@@ -53,8 +65,15 @@ class ModelsConfig(BaseModel):
         "vision": ModelProfileConfig(provider="openai", model="gpt-5.1", api_key_env="OPENAI_API_KEY", max_output_tokens=1600),
         "local": ModelProfileConfig(provider="ollama", model="qwen2.5-coder:7b", api_key_env=None, base_url="http://127.0.0.1:11434"),
     })
-    routing: dict[str, str] = Field(default_factory=lambda: {
-        "planner": "planner", "tool_plan": "planner", "chat": "fast", "code": "code", "upgrade": "code", "vision": "vision", "private": "local", "summarize": "fast"
+    routing: dict[str, Any] = Field(default_factory=lambda: {
+        "planner": {"primary": "planner", "fallback": ["fast", "local"], "max_retries": 1},
+        "tool_plan": {"primary": "planner", "fallback": ["fast"], "max_retries": 1},
+        "chat": {"primary": "fast", "fallback": ["local"], "max_retries": 1},
+        "code": {"primary": "code", "fallback": ["planner"], "max_retries": 1},
+        "upgrade": {"primary": "code", "fallback": ["planner"], "max_retries": 1},
+        "vision": {"primary": "vision", "fallback": ["planner"], "max_retries": 1},
+        "private": {"primary": "local", "fallback": [], "max_retries": 1},
+        "summarize": {"primary": "fast", "fallback": ["local"], "max_retries": 1},
     })
 
 class GatewayConfig(BaseModel):
@@ -63,7 +82,11 @@ class GatewayConfig(BaseModel):
     public_base_url: Optional[str] = None
     shared_secret_env: str = "OMNIDESK_GATEWAY_SECRET"
     admin_token_env: str = "OMNIDESK_ADMIN_TOKEN"
+    viewer_token_env: str = "OMNIDESK_VIEWER_TOKEN"
+    operator_token_env: str = "OMNIDESK_OPERATOR_TOKEN"
+    owner_token_env: str = "OMNIDESK_OWNER_TOKEN"
     allow_local_admin_without_token: bool = False
+    admin_allowed_ips: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1", "localhost"])
     require_webhook_signatures: bool = True
 
 class PermissionConfig(BaseModel):
@@ -81,6 +104,11 @@ class PermissionConfig(BaseModel):
     approval_ttl_seconds: int = 600
     shell_profile: Literal["safe_ci", "upgrade"] = "safe_ci"
     shell_upgrade_enabled: bool = False
+    shell_backend: Literal["argv", "docker"] = "argv"
+    shell_docker_image: str = "python:3.11-slim"
+    shell_docker_network: str = "none"
+    shell_docker_memory: str = "512m"
+    shell_docker_cpus: str = "1.0"
 
 class WorkspaceConfig(BaseModel):
     root: Path = Path("~/.omnidesk/workspace").expanduser()
@@ -88,11 +116,20 @@ class WorkspaceConfig(BaseModel):
     plugins_dirs: list[Path] = Field(default_factory=lambda: [Path("~/.omnidesk/plugins").expanduser()])
     memory_db: Path = Path("~/.omnidesk/memory.sqlite3").expanduser()
 
+
+class GitHubConfig(BaseModel):
+    enabled: bool = True
+    repo_root: Optional[Path] = None
+    remote_name: str = "origin"
+    host: str = "github.com"
+    require_write_access: bool = True
+
 class PluginConfig(BaseModel):
     enabled: bool = True
     trusted_only: bool = True
     allowlist: list[str] = Field(default_factory=list)
     allow_in_process: bool = False
+    default_sandbox: Literal["docker", "subprocess"] = "docker"
     plugin_timeout_seconds: int = 30
 
 class TelegramConfig(BaseModel):
@@ -183,6 +220,8 @@ class GmailConfig(BaseModel):
     allow_compose: bool = True
     oauth_redirect_allowlist: list[str] = Field(default_factory=list)
     oauth_state_ttl_seconds: int = 600
+    encrypt_token_at_rest: bool = False
+    token_encryption_key_env: str = "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY"
 
 class ChromeConfig(BaseModel):
     enabled: bool = True
@@ -235,10 +274,13 @@ class MemoryPrivacyConfig(BaseModel):
     retention_days: int = 30
     isolate_by_actor: bool = True
     encrypt_at_rest: bool = False
+    encryption_backend: Literal["local_fernet"] = "local_fernet"
+    encryption_key_env: str = "OMNIDESK_MEMORY_ENCRYPTION_KEY"
+    encryption_key_id: str = "default"
 
 
 class SandboxConfig(BaseModel):
-    backend: Literal["argv", "docker"] = "argv"
+    backend: Literal["argv", "docker"] = "docker"
     docker_image: str = "python:3.11-slim"
     docker_network: Literal["none", "bridge"] = "none"
     timeout_seconds: int = 120
@@ -259,6 +301,7 @@ class AppConfig(BaseModel):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
+    github: GitHubConfig = Field(default_factory=GitHubConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)

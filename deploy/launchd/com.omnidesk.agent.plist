@@ -5,13 +5,13 @@
   <key>Label</key><string>com.omnidesk.agent</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/omnidesk</string>
-    <string>--config</string><string>~/.omnidesk/config.yaml</string>
-    <string>serve</string>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>exec /usr/local/bin/omnidesk --config "$HOME/.omnidesk/config.yaml" serve</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>~/.omnidesk/launchd.out.log</string>
-  <key>StandardErrorPath</key><string>~/.omnidesk/launchd.err.log</string>
+  <key>StandardOutPath</key><string>/tmp/omnidesk.launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/omnidesk.launchd.err.log</string>
 </dict>
 </plist>

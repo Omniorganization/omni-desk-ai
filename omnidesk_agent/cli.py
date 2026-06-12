@@ -1,11 +1,29 @@
 from __future__ import annotations
-import argparse, asyncio, json
-from pathlib import Path
+
+import argparse
+import asyncio
+from contextlib import contextmanager
+import json
+from typing import Iterator
+
 import uvicorn
-from omnidesk_agent.config import load_config
+
+from omnidesk_agent.config import AppConfig, load_config
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.server import create_app
+
+
+@contextmanager
+def runtime_context(cfg: AppConfig) -> Iterator[OmniDeskRuntime]:
+    rt = OmniDeskRuntime(cfg)
+    try:
+        yield rt
+    finally:
+        close = getattr(rt, "close", None)
+        if callable(close):
+            close()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="omnidesk")
@@ -14,6 +32,7 @@ def main() -> None:
     sub.add_parser("doctor")
     sub.add_parser("validate-connectors")
     sub.add_parser("validate-extensions")
+    gh_p = sub.add_parser("validate-github"); gh_p.add_argument("--head", default=None)
     sub.add_parser("validate-models")
     sub.add_parser("validate-models-live")
     sub.add_parser("validate-webhook-signatures")
@@ -32,94 +51,115 @@ def main() -> None:
     serve_p = sub.add_parser("serve"); serve_p.add_argument("--host"); serve_p.add_argument("--port", type=int)
     args = parser.parse_args()
     cfg = load_config(args.config)
+
     if args.cmd == "doctor":
-        rt = OmniDeskRuntime(cfg); print(json.dumps(rt.status(), ensure_ascii=False, indent=2)); return
-    if args.cmd == "validate-connectors":
-        rt = OmniDeskRuntime(cfg)
-        from omnidesk_agent.validation.connectors import validate_connectors
-        print(json.dumps(validate_connectors(rt), ensure_ascii=False, indent=2)); return
-    if args.cmd == "validate-extensions":
-        rt = OmniDeskRuntime(cfg)
-        from omnidesk_agent.validation.extensions import validate_extensions
-        print(json.dumps(validate_extensions(rt), ensure_ascii=False, indent=2)); return
-    if args.cmd == "validate-models":
-        rt = OmniDeskRuntime(cfg)
-        from omnidesk_agent.validation.models import validate_models
-        print(json.dumps(validate_models(rt), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.status(), ensure_ascii=False, indent=2))
         return
 
+    if args.cmd == "validate-connectors":
+        from omnidesk_agent.validation.connectors import validate_connectors
+        with runtime_context(cfg) as rt:
+            print(json.dumps(validate_connectors(rt), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "validate-extensions":
+        from omnidesk_agent.validation.extensions import validate_extensions
+        with runtime_context(cfg) as rt:
+            print(json.dumps(validate_extensions(rt), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "validate-github":
+        from omnidesk_agent.validation.github import validate_github
+        with runtime_context(cfg) as rt:
+            print(json.dumps(validate_github(rt, head=args.head), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "validate-models":
+        from omnidesk_agent.validation.models import validate_models
+        with runtime_context(cfg) as rt:
+            print(json.dumps(validate_models(rt), ensure_ascii=False, indent=2))
+        return
 
     if args.cmd == "validate-models-live":
-        rt = OmniDeskRuntime(cfg)
         from omnidesk_agent.validation.models import live_connectivity_test
-        print(json.dumps(asyncio.run(live_connectivity_test(rt)), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(asyncio.run(live_connectivity_test(rt)), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "validate-webhook-signatures":
-        from omnidesk_agent.validation.webhook_signatures import wechat_signature, line_signature_valid
         print(json.dumps({"ok": True, "tests": ["wechat_signature", "line_signature_valid"]}, ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "gmail-auth":
-        rt = OmniDeskRuntime(cfg)
-        token = rt.adapters["gmail"].oauth.run_local_flow()
-        print(json.dumps({"ok": True, "token_saved": True, "keys": sorted(token.keys())}, ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            token = rt.adapters["gmail"].oauth.run_local_flow()
+            print(json.dumps({"ok": True, "token_saved": True, "keys": sorted(token.keys())}, ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "learning-report":
-        rt = OmniDeskRuntime(cfg)
-        print(json.dumps(rt.learning_job.run(days=args.days), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.learning_job.run(days=args.days), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "learning-l10-report":
         from omnidesk_agent.self_learning.observability.dashboard import LearningDashboard
         dashboard = LearningDashboard.from_audit_path(cfg.workspace.root / "learning_audit.jsonl")
-        if args.format == "html":
-            print(dashboard.render_html(days=args.days))
-        else:
-            print(json.dumps(dashboard.summary(days=args.days), ensure_ascii=False, indent=2))
+        print(dashboard.render_html(days=args.days) if args.format == "html" else json.dumps(dashboard.summary(days=args.days), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "metrics":
-        rt = OmniDeskRuntime(cfg)
-        print(json.dumps(rt.memory.metrics_report(days=args.days), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.memory.metrics_report(days=args.days), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "experience-search":
-        rt = OmniDeskRuntime(cfg)
-        print(json.dumps(rt.memory.retrieve_for_task(args.query, limit=args.limit), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.memory.retrieve_for_task(args.query, limit=args.limit), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "upgrade-proposals":
-        rt = OmniDeskRuntime(cfg)
-        print(json.dumps([p.to_dict() for p in rt.proposal_store.list(status=args.status)], ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps([p.to_dict() for p in rt.proposal_store.list(status=args.status)], ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "upgrade-artifact":
-        rt = OmniDeskRuntime(cfg)
-        print(json.dumps(rt.governance.generate_artifact(args.proposal_id), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.governance.generate_artifact(args.proposal_id), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "upgrade-feedback":
-        rt = OmniDeskRuntime(cfg)
-        print(json.dumps(rt.governance.record_human_feedback(args.proposal_id, args.decision, args.reason), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.governance.record_human_feedback(args.proposal_id, args.decision, args.reason), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "upgrade-evaluate":
-        import asyncio
-        rt = OmniDeskRuntime(cfg)
-        print(json.dumps(asyncio.run(rt.governance.evaluate_proposal(args.proposal_id)), ensure_ascii=False, indent=2))
+        with runtime_context(cfg) as rt:
+            print(json.dumps(asyncio.run(rt.governance.evaluate_proposal(args.proposal_id)), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "run":
-        rt = OmniDeskRuntime(cfg)
-        msg = ChannelMessage(channel="local-cli", sender_id="owner", text=args.message)
-        print(json.dumps(asyncio.run(rt.orchestrator.handle_message(msg)), ensure_ascii=False, indent=2)); return
+        with runtime_context(cfg) as rt:
+            msg = ChannelMessage(channel="local-cli", sender_id="owner", text=args.message)
+            print(json.dumps(asyncio.run(rt.orchestrator.handle_message(msg)), ensure_ascii=False, indent=2))
+        return
+
     if args.cmd == "remember":
-        rt = OmniDeskRuntime(cfg)
-        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
-        print(f"remembered experience #{rt.memory.add(args.text, tags=tags)}"); return
+        with runtime_context(cfg) as rt:
+            tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+            print(f"remembered experience #{rt.memory.add(args.text, tags=tags)}")
+        return
+
     if args.cmd == "search":
-        rt = OmniDeskRuntime(cfg); print(json.dumps(rt.memory.search(args.query), ensure_ascii=False, indent=2)); return
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.memory.search(args.query), ensure_ascii=False, indent=2))
+        return
+
     if args.cmd == "serve":
-        app = create_app(cfg); uvicorn.run(app, host=args.host or cfg.gateway.host, port=args.port or cfg.gateway.port); return
+        if args.host:
+            cfg.gateway.host = args.host
+        if args.port:
+            cfg.gateway.port = args.port
+        app = create_app(cfg)
+        uvicorn.run(app, host=cfg.gateway.host, port=cfg.gateway.port)
+        return

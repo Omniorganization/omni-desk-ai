@@ -14,6 +14,8 @@ class LearningEvent:
       - experience_reused
       - memory_review
       - drift_detected
+      - replay_evaluation
+      - skill_promotion
       - safety_event
       - rollback_event
       - test_coverage
@@ -37,6 +39,12 @@ class LearningEvent:
     high_risk_misexecution: bool = False
     rollback_success: Optional[bool] = None
     test_coverage: Optional[float] = None
+    memory_precision_score: Optional[float] = None
+    retrieval_relevance_score: Optional[float] = None
+    experience_generalization_score: Optional[float] = None
+    learning_regression_score: Optional[float] = None
+    policy_improvement_score: Optional[float] = None
+    skill_promotion_success: Optional[bool] = None
     created_at: float = field(default_factory=time.time)
     metadata: dict[str, Any] = field(default_factory=dict)
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from omnidesk_agent.config import PermissionConfig
+from omnidesk_agent.config import PermissionConfig, SandboxConfig
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
@@ -26,9 +26,11 @@ class ShellTool:
         ["git", "ls-tree"],
     ]
 
-    def __init__(self, cwd: Path, cfg: PermissionConfig):
+    def __init__(self, cwd: Path, cfg: PermissionConfig, sandbox_cfg: Optional[SandboxConfig] = None):
         self.cwd = cwd.expanduser().resolve()
         self.cfg = cfg
+        self.sandbox_cfg = sandbox_cfg
+        self.backend = getattr(sandbox_cfg, "backend", getattr(cfg, 'shell_backend', 'argv'))
         self.allowed_prefixes = list(getattr(cfg, "shell_allowed_commands", None) or self.DEFAULT_ALLOWED_PREFIXES)
         if getattr(cfg, "shell_upgrade_enabled", False):
             self.allowed_prefixes.extend([
@@ -61,6 +63,24 @@ class ShellTool:
                 return True
         return False
 
+    def _docker_argv(self, argv: list[str]) -> list[str]:
+        image = getattr(self.sandbox_cfg, "docker_image", getattr(self.cfg, "shell_docker_image", "python:3.11-slim"))
+        network = getattr(self.sandbox_cfg, "docker_network", getattr(self.cfg, "shell_docker_network", "none"))
+        memory = getattr(self.sandbox_cfg, "memory_limit", getattr(self.cfg, "shell_docker_memory", "512m"))
+        cpus = getattr(self.sandbox_cfg, "cpus", getattr(self.cfg, "shell_docker_cpus", "1.0"))
+        return [
+            "docker", "run", "--rm",
+            "--network", str(network),
+            "--memory", str(memory),
+            "--cpus", str(cpus),
+            "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "-v", f"{self.cwd}:/workspace:rw",
+            "-w", "/workspace",
+            str(image),
+            *argv,
+        ]
+
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "run":
             raise ValueError(f"Unsupported shell action: {action}")
@@ -76,9 +96,10 @@ class ShellTool:
             "critical", "执行 allowlisted shell 命令", ctx,
         ))
 
-        timeout = int(args.get("timeout", getattr(self.cfg, "max_shell_seconds", 30)))
+        timeout = int(args.get("timeout", getattr(self.sandbox_cfg, "timeout_seconds", getattr(self.cfg, "max_shell_seconds", 30))))
+        exec_argv = self._docker_argv(argv) if self.backend == 'docker' else argv
         proc = await asyncio.create_subprocess_exec(
-            *argv,
+            *exec_argv,
             cwd=str(self.cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -93,6 +114,8 @@ class ShellTool:
         stderr = stderr_b.decode("utf-8", errors="replace")
         data = {
             "argv": argv,
+            "exec_argv": exec_argv,
+            "backend": self.backend,
             "exit_code": proc.returncode,
             "stdout": stdout[:8000],
             "stderr": stderr[:8000],
