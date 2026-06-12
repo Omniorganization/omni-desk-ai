@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from omnidesk_agent.models.schema_retry import validate_json_text
-from omnidesk_agent.sandbox.runner_server import RunnerConfig, _workspace_from_payload, _verify_signature
+from omnidesk_agent.sandbox.runner_server import RunnerConfig, _allowed, _workspace_from_payload, _verify_signature
 from scripts import production_smoke_test
 from scripts.production_smoke_test import build_smoke_workspace_archive
 
@@ -21,6 +21,16 @@ def _tar_b64(files: dict[str, bytes]) -> str:
             info = tarfile.TarInfo(name)
             info.size = len(content)
             tf.addfile(info, io.BytesIO(content))
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _tar_b64_symlink(name: str, linkname: str) -> str:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name)
+        info.type = tarfile.SYMTYPE
+        info.linkname = linkname
+        tf.addfile(info)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
@@ -42,6 +52,23 @@ def test_runner_extracts_workspace_archive_and_blocks_traversal(tmp_path):
         tmp.cleanup()
     with pytest.raises(ValueError, match="unsafe path"):
         _workspace_from_payload({"workspace_archive_base64": _tar_b64({"../escape.py": b"bad"})}, cfg)
+
+
+def test_runner_rejects_symlink_and_oversized_archive_entries():
+    cfg = RunnerConfig(allow_workspace_paths=False)
+    with pytest.raises(ValueError, match="links"):
+        _workspace_from_payload({"workspace_archive_base64": _tar_b64_symlink("escape", "/etc/passwd")}, cfg)
+    with pytest.raises(ValueError, match="file exceeds maximum size"):
+        _workspace_from_payload(
+            {"workspace_archive_base64": _tar_b64({"large.py": b"print('too large')\n"})},
+            RunnerConfig(allow_workspace_paths=False, max_archive_file_bytes=1),
+        )
+
+
+def test_runner_command_allowlist_blocks_shell_escape():
+    assert _allowed(["python", "-m", "compileall", "."])
+    assert not _allowed(["bash", "-c", "python -m compileall ."])
+    assert not _allowed(["python", "-c", "import os; os.system('id')"])
 
 
 def test_runner_path_mode_is_disabled_by_default(tmp_path):
@@ -79,3 +106,11 @@ def test_docker_runtime_uses_runtime_lock_and_builder_uses_dev_lock():
     assert "requirements.dev.lock" in dockerfile
     assert "--require-hashes -r /tmp/requirements.runtime.lock" in dockerfile
     assert "--no-deps /tmp/*.whl" in dockerfile
+
+
+def test_sandbox_runner_compose_defaults_to_archive_workspace_protocol():
+    compose = Path("deploy/sandbox-runner/docker-compose.yml").read_text()
+    assert 'OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS: "0"' in compose
+    assert "OMNIDESK_SANDBOX_NONCE_DB" in compose
+    assert "omnidesk-sandbox-workspaces:" not in compose
+    assert ":/srv/omnidesk-sandbox-workspaces" not in compose

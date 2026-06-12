@@ -21,6 +21,7 @@ trap 'rm -rf "$venv_dir"' EXIT
 "$venv_dir/bin/python" -m pip install --upgrade pip >/dev/null
 python scripts/check_lock_hashes.py requirements.runtime.lock
 python scripts/check_lock_hashes.py requirements.dev.lock
+python scripts/check_lock_hashes.py requirements.security.lock
 "$venv_dir/bin/python" -m pip install --require-hashes -r requirements.runtime.lock >/dev/null
 "$venv_dir/bin/python" -m pip install --no-deps dist/*.whl >/dev/null
 "$venv_dir/bin/omnidesk" --help >/dev/null

@@ -54,6 +54,25 @@ def test_runner_hmac_rejects_replayed_nonce(monkeypatch):
     assert "replayed" in reason
 
 
+def test_runner_hmac_replay_store_can_persist_to_sqlite(monkeypatch, tmp_path):
+    body = json.dumps({"argv": ["pytest"]}).encode()
+    ts = str(time.time())
+    nonce = "nonce-sqlite-replay-test"
+    secret = "s" * 40
+    sig = "sha256=" + hmac.new(secret.encode(), ts.encode() + b"." + nonce.encode() + b"." + body, hashlib.sha256).hexdigest()
+    headers = {"x-omnidesk-sandbox-timestamp": ts, "x-omnidesk-sandbox-nonce": nonce, "x-omnidesk-sandbox-signature": sig}
+    monkeypatch.setenv("OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET", secret)
+    cfg = RunnerConfig(nonce_db_path=tmp_path / "nonces.sqlite3")
+
+    ok, reason = _verify_signature(headers, body, cfg)
+    assert ok is True
+    assert cfg.nonce_db_path is not None and cfg.nonce_db_path.exists()
+
+    ok, reason = _verify_signature(headers, body, cfg)
+    assert ok is False
+    assert "replayed" in reason
+
+
 def test_runner_workspace_must_be_under_allowed_root(tmp_path):
     root = tmp_path / "allowed"
     root.mkdir()

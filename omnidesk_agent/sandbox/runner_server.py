@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import tarfile
@@ -51,6 +52,7 @@ class RunnerConfig:
     max_archive_files: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILES", "512"))
     max_archive_file_bytes: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILE_BYTES", str(1024 * 1024)))
     default_image: str = os.getenv("OMNIDESK_SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE)
+    nonce_db_path: Path | None = Path(os.getenv("OMNIDESK_SANDBOX_NONCE_DB")).expanduser().resolve() if os.getenv("OMNIDESK_SANDBOX_NONCE_DB") else None
 
 
 def _allowed(argv: list[str]) -> bool:
@@ -75,6 +77,42 @@ def _prune_nonces(now: float, ttl: int) -> None:
         _NONCES.pop(nonce, None)
 
 
+def _init_nonce_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path, timeout=5) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS sandbox_nonces (nonce TEXT PRIMARY KEY, seen_at REAL NOT NULL)")
+
+
+def _consume_nonce(nonce: str, now: float, cfg: RunnerConfig) -> bool:
+    if cfg.nonce_db_path is not None:
+        with _NONCE_LOCK:
+            _init_nonce_db(cfg.nonce_db_path)
+            with sqlite3.connect(cfg.nonce_db_path, timeout=5) as conn:
+                conn.execute("DELETE FROM sandbox_nonces WHERE ? - seen_at > ?", (now, cfg.nonce_ttl_seconds))
+                try:
+                    conn.execute("INSERT INTO sandbox_nonces (nonce, seen_at) VALUES (?, ?)", (nonce, now))
+                except sqlite3.IntegrityError:
+                    return False
+        return True
+    with _NONCE_LOCK:
+        _prune_nonces(now, cfg.nonce_ttl_seconds)
+        if nonce in _NONCES:
+            return False
+        _NONCES[nonce] = now
+    return True
+
+
+def _forget_nonce(nonce: str, cfg: RunnerConfig) -> None:
+    if cfg.nonce_db_path is not None:
+        with _NONCE_LOCK:
+            _init_nonce_db(cfg.nonce_db_path)
+            with sqlite3.connect(cfg.nonce_db_path, timeout=5) as conn:
+                conn.execute("DELETE FROM sandbox_nonces WHERE nonce = ?", (nonce,))
+        return
+    with _NONCE_LOCK:
+        _NONCES.pop(nonce, None)
+
+
 def _verify_signature(headers: dict[str, str], body: bytes, cfg: RunnerConfig) -> tuple[bool, str]:
     secret = os.getenv(cfg.hmac_secret_env, "")
     if not secret:
@@ -90,17 +128,13 @@ def _verify_signature(headers: dict[str, str], body: bytes, cfg: RunnerConfig) -
             return False, "stale signature timestamp"
     except ValueError:
         return False, "invalid signature timestamp"
-    with _NONCE_LOCK:
-        _prune_nonces(now, cfg.nonce_ttl_seconds)
-        if nonce in _NONCES:
-            return False, "replayed signature nonce"
-        _NONCES[nonce] = now
+    if not _consume_nonce(nonce, now, cfg):
+        return False, "replayed signature nonce"
     msg = ts.encode() + b"." + nonce.encode() + b"." + body
     expected = "sha256=" + hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, sig):
         # Do not keep nonce on bad signature; otherwise a malformed request can burn valid nonces.
-        with _NONCE_LOCK:
-            _NONCES.pop(nonce, None)
+        _forget_nonce(nonce, cfg)
         return False, "invalid signature"
     return True, "ok"
 

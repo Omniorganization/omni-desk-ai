@@ -16,6 +16,7 @@ jobs:
       - run: |
           python scripts/check_lock_hashes.py requirements.runtime.lock
           python scripts/check_lock_hashes.py requirements.dev.lock
+          python scripts/check_lock_hashes.py requirements.security.lock
       - run: scripts/build_release.sh
         env:
           OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}

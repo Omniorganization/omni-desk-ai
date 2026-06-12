@@ -34,3 +34,4 @@ screenshots/
 *.pyc
 .coverage
 coverage.xml
+coverage.json

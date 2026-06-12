@@ -9,15 +9,19 @@ Run the sandbox runner outside the main OmniDesk application container. The app 
 - `OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET` set and shared only with the app.
 - `OMNIDESK_SANDBOX_IMAGE` and `OMNIDESK_SANDBOX_IMAGE_ALLOWLIST` set to digest-pinned images.
 - `OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS=0` unless the runner and workspace volume are on a dedicated isolated node.
+- `OMNIDESK_SANDBOX_NONCE_DB=/var/lib/omnidesk-sandbox/nonces.sqlite3` so HMAC replay protection survives process restarts.
 - Network access to the runner restricted to the OmniDesk app identity.
+
+The default production protocol is workspace artifact upload: the app sends a bounded `workspace_archive_base64` tar.gz payload, and the runner extracts it only after rejecting path traversal, links, unsupported entries, file-count overflow, and oversized files. Do not expose arbitrary client filesystem paths across the runner RPC boundary. Shared volumes are an explicit isolated-node exception, not the default deployment model.
 
 ## Systemd Deployment
 
 1. Install the application under `/opt/omnidesk`.
 2. Create an unprivileged `omnidesk-sandbox` user.
-3. Copy `deploy/sandbox-runner.env.example` to `/etc/omnidesk/sandbox-runner.env` and replace all secrets.
-4. Copy `deploy/sandbox-runner.service` to `/etc/systemd/system/omnidesk-sandbox-runner.service`.
-5. Start with:
+3. Create `/var/lib/omnidesk-sandbox` owned by `omnidesk-sandbox`.
+4. Copy `deploy/sandbox-runner.env.example` to `/etc/omnidesk/sandbox-runner.env` and replace all secrets.
+5. Copy `deploy/sandbox-runner.service` to `/etc/systemd/system/omnidesk-sandbox-runner.service`.
+6. Start with:
 
 ```bash
 systemctl daemon-reload

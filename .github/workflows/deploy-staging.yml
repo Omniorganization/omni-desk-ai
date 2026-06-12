@@ -17,6 +17,7 @@ jobs:
       - run: |
           python scripts/check_lock_hashes.py requirements.runtime.lock
           python scripts/check_lock_hashes.py requirements.dev.lock
+          python scripts/check_lock_hashes.py requirements.security.lock
       - run: python scripts/production_smoke_test.py --help
       - name: Sandbox runner /ready smoke
         if: ${{ vars.OMNIDESK_STAGING_SANDBOX_URL != '' }}
