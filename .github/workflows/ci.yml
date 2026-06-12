@@ -18,11 +18,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev,test]"
+      - run: python scripts/check_lock_hashes.py requirements.lock
       - run: python -m compileall omnidesk_agent
+      - run: find . -type d -name "__pycache__" -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+      - run: python scripts/check_release_hygiene.py .
       - run: ruff check omnidesk_agent tests
       - run: pyright omnidesk_agent/core omnidesk_agent/security omnidesk_agent/tools omnidesk_agent/self_upgrade omnidesk_agent/server.py omnidesk_agent/daemon.py
-      - run: pytest -W error::ResourceWarning -q
-      - run: pytest --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json --cov-fail-under=75 -q
+      - run: pytest -q -W error --timeout=60 --timeout-method=thread
+      - run: pytest --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json --cov-fail-under=80 -q --timeout=60 --timeout-method=thread
       - run: python scripts/check_coverage_gates.py coverage.json
       - uses: actions/upload-artifact@v4
         with:

@@ -85,7 +85,7 @@ Before promotion:
 
 ```bash
 python -m compileall omnidesk_agent
-pytest --cov=omnidesk_agent --cov-report=json --cov-fail-under=75 -q
+pytest --cov=omnidesk_agent --cov-report=json --cov-fail-under=80 -q
 python scripts/check_coverage_gates.py coverage.json
 OMNIDESK_RELEASE_SIGNING_KEY="$KEY" scripts/build_release.sh
 scripts/docker_scan.sh omnidesk-agent:local
@@ -106,3 +106,25 @@ Required artifacts:
 2. Restore the previous signed wheel/container image.
 3. Restore SQLite files from the latest verified backup if schema migration caused corruption.
 4. Re-enable traffic and run `scripts/production_smoke_test.py`.
+
+## 9. Docker socket boundary
+
+Never mount `/var/run/docker.sock` into the OmniDesk application container in a public or shared production environment. Docker socket access is equivalent to high-privilege host control. If Docker sandbox execution is required from inside a container, run OmniDesk on a dedicated isolated runner node or use a separate rootless Docker/Podman sandbox service with a narrow RPC API.
+
+Minimum production expectation:
+
+```text
+OmniDesk app container: no docker.sock, no host mounts except /data
+Sandbox runner node: no user data, no secrets beyond runner credential, rootless when possible
+```
+
+If `/var/run/docker.sock` is detected in a deployment review, treat the deployment as unsafe unless it is a single-purpose isolated runner host.
+
+## 10. Release signing verification
+
+`OMNIDESK_RELEASE_SIGNING_KEY` is mandatory for production release artifacts. `scripts/build_release.sh` now signs artifacts and immediately verifies signatures. `OMNIDESK_ALLOW_UNSIGNED_RELEASE=1` is reserved only for local development smoke checks and must not be used for production releases.
+
+
+## Digest-pinned images
+
+For production releases, build with `--build-arg PYTHON_BASE_IMAGE=python:3.11-slim@sha256:<digest>` and set `sandbox.docker_image` to a digest-pinned image. Tag-only images are rejected by production validation.

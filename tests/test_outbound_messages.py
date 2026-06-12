@@ -5,6 +5,7 @@ from pathlib import Path
 
 from omnidesk_agent.core.outbound_dispatcher import OutboundDispatcher
 from omnidesk_agent.core.outbound_messages import OutboundMessageStore
+from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.security.permissions import PermissionDecision
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.channel_send import ChannelSendTool
@@ -102,7 +103,7 @@ def test_outbound_dispatcher_retries_then_dead_letters(tmp_path: Path):
         assert first["retry_count"] == 1
 
         # Force retry to be due immediately.
-        with __import__("sqlite3").connect(str(store.db_path)) as con:
+        with connect_sqlite(store.db_path) as con:
             con.execute("UPDATE outbound_messages SET next_retry_at=0 WHERE id=?", (outbound_id,))
 
         assert await dispatcher.run_once() is True
@@ -119,7 +120,7 @@ def test_outbound_stale_running_recovery(tmp_path: Path):
     outbound_id = store.create(channel="telegram", recipient="u1", payload={"type": "text", "text": "hello"})
     assert store.claim_next()["id"] == outbound_id
 
-    with __import__("sqlite3").connect(str(store.db_path)) as con:
+    with connect_sqlite(store.db_path) as con:
         con.execute("UPDATE outbound_messages SET locked_at=1 WHERE id=?", (outbound_id,))
 
     assert store.recover_stale_running(lease_seconds=300) == 1

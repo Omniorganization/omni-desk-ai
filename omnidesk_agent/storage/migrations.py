@@ -59,9 +59,6 @@ class SQLiteMigrationRunner:
         self.migrations = sorted(migrations, key=lambda m: m.version)
 
     def run(self) -> list[int]:
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        try:
-            with conn:
-                return apply_migrations(conn, self.migrations)
-        finally:
-            conn.close()
+        from omnidesk_agent.storage.sqlite import connect_sqlite
+        with connect_sqlite(self.db_path) as conn:
+            return apply_migrations(conn, self.migrations)

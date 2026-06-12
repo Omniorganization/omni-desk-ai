@@ -55,8 +55,16 @@ class ModelRouteConfig(BaseModel):
     circuit_breaker: ModelCircuitBreakerConfig = Field(default_factory=ModelCircuitBreakerConfig)
 
 
+class ModelBudgetConfig(BaseModel):
+    daily_usd_limit: Optional[float] = None
+    monthly_usd_limit: Optional[float] = None
+    per_actor_daily_usd_limit: Optional[float] = None
+    on_exceed: Literal["require_approval", "fallback_local", "block"] = "require_approval"
+
+
 class ModelsConfig(BaseModel):
     default: str = "fast"
+    budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
     max_output_tokens: int = 1200
     profiles: dict[str, ModelProfileConfig] = Field(default_factory=lambda: {
         "fast": ModelProfileConfig(provider="openai", model="gpt-5.1-mini", api_key_env="OPENAI_API_KEY", max_output_tokens=800),
@@ -104,7 +112,7 @@ class PermissionConfig(BaseModel):
     approval_ttl_seconds: int = 600
     shell_profile: Literal["safe_ci", "upgrade"] = "safe_ci"
     shell_upgrade_enabled: bool = False
-    shell_backend: Literal["argv", "docker"] = "argv"
+    shell_backend: Literal["argv", "docker", "remote_docker"] = "argv"
     shell_docker_image: str = "python:3.11-slim"
     shell_docker_network: str = "none"
     shell_docker_memory: str = "512m"
@@ -116,14 +124,6 @@ class WorkspaceConfig(BaseModel):
     plugins_dirs: list[Path] = Field(default_factory=lambda: [Path("~/.omnidesk/plugins").expanduser()])
     memory_db: Path = Path("~/.omnidesk/memory.sqlite3").expanduser()
 
-
-class GitHubConfig(BaseModel):
-    enabled: bool = True
-    repo_root: Optional[Path] = None
-    remote_name: str = "origin"
-    host: str = "github.com"
-    require_write_access: bool = True
-
 class PluginConfig(BaseModel):
     enabled: bool = True
     trusted_only: bool = True
@@ -131,6 +131,7 @@ class PluginConfig(BaseModel):
     allow_in_process: bool = False
     default_sandbox: Literal["docker", "subprocess"] = "docker"
     plugin_timeout_seconds: int = 30
+    production_forbid_subprocess: bool = True
 
 class TelegramConfig(BaseModel):
     enabled: bool = False
@@ -280,12 +281,24 @@ class MemoryPrivacyConfig(BaseModel):
 
 
 class SandboxConfig(BaseModel):
-    backend: Literal["argv", "docker"] = "docker"
+    backend: Literal["argv", "docker", "remote_docker"] = "docker"
     docker_image: str = "python:3.11-slim"
+    require_pinned_image: bool = False
+    runner_url: Optional[str] = None
+    runner_token_env: str = "OMNIDESK_SANDBOX_RUNNER_TOKEN"
+    forbid_local_docker_in_container: bool = True
     docker_network: Literal["none", "bridge"] = "none"
     timeout_seconds: int = 120
     memory_limit: str = "512m"
     cpus: str = "1.0"
+    user: str = "65534:65534"
+    pids_limit: int = 128
+    cap_drop: list[str] = Field(default_factory=lambda: ["ALL"])
+    security_opt: list[str] = Field(default_factory=lambda: ["no-new-privileges"])
+    tmpfs: str = "/tmp:rw,noexec,nosuid,size=64m"
+    init: bool = True
+    log_driver: str = "none"
+    pull_policy: Literal["never", "missing", "always"] = "never"
 
 
 class LearningConfig(BaseModel):
@@ -301,7 +314,6 @@ class AppConfig(BaseModel):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
-    github: GitHubConfig = Field(default_factory=GitHubConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)

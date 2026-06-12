@@ -10,6 +10,8 @@ from omnidesk_agent.core.token_budget import TokenBudgetManager
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
 from omnidesk_agent.models.providers import PROVIDER_CLASSES, ProviderSettings
 from omnidesk_agent.models.cost_ledger import ModelCostLedger
+from omnidesk_agent.models.cost_store import ModelCostStore
+from omnidesk_agent.models.budget_policy import ModelBudgetEnforcer, ModelBudgetPolicy
 from omnidesk_agent.models.provider_errors import classify_provider_error
 from omnidesk_agent.models.schema_retry import StructuredOutputError, build_repair_prompt, validate_json_text
 
@@ -23,13 +25,41 @@ class RoutePlan:
 
 
 class ModelRouter:
-    def __init__(self, cfg: ModelsConfig, token_budget: TokenBudgetManager):
+    def __init__(self, cfg: ModelsConfig, token_budget: TokenBudgetManager, cost_store: ModelCostStore | None = None):
         self.cfg = cfg
         self.token_budget = token_budget
         self.providers = {name: self._build_provider(name, p) for name, p in cfg.profiles.items() if p.enabled}
         self._circuit: dict[str, dict[str, float]] = {}
-        self.cost_ledger = ModelCostLedger()
+        self.cost_ledger = ModelCostLedger(store=cost_store)
+        self.budget_enforcer = self._build_budget_enforcer(cost_store)
         self.error_counts: dict[str, int] = {}
+
+
+    def _build_budget_enforcer(self, cost_store: ModelCostStore | None) -> ModelBudgetEnforcer | None:
+        budget_cfg = getattr(self.cfg, "budget", None)
+        if cost_store is None or budget_cfg is None:
+            return None
+        policy = ModelBudgetPolicy(
+            daily_usd_limit=getattr(budget_cfg, "daily_usd_limit", None),
+            monthly_usd_limit=getattr(budget_cfg, "monthly_usd_limit", None),
+            per_actor_daily_usd_limit=getattr(budget_cfg, "per_actor_daily_usd_limit", None),
+            on_exceed=getattr(budget_cfg, "on_exceed", "require_approval"),
+        )
+        if policy.daily_usd_limit is None and policy.monthly_usd_limit is None and policy.per_actor_daily_usd_limit is None:
+            return None
+        return ModelBudgetEnforcer(cost_store, policy)
+
+    def _check_budget(self, request: ModelRequest, *, profile: str) -> str | None:
+        if self.budget_enforcer is None:
+            return None
+        projected = float(request.metadata.get("projected_cost_usd") or request.metadata.get("estimated_cost_usd") or 0.0)
+        actor = request.metadata.get("actor")
+        decision = self.budget_enforcer.check(actor=str(actor) if actor else None, projected_cost_usd=projected)
+        if decision.ok:
+            return None
+        if decision.action == "fallback_local" and profile != "local" and "local" in self.providers:
+            return "fallback_local"
+        raise RuntimeError(f"model budget exceeded: {decision.reason}; action={decision.action}; observed={decision.observed_cost_usd:.6f}; limit={decision.limit_usd}")
 
     def _build_provider(self, name: str, p: ModelProfileConfig):
         cls = PROVIDER_CLASSES.get(p.provider)
@@ -90,6 +120,14 @@ class ModelRouter:
             if self._circuit_open(profile, plan):
                 last_error = RuntimeError(f"Model profile circuit open: {profile}")
                 continue
+
+            budget_action = self._check_budget(request, profile=profile)
+            if budget_action == "fallback_local":
+                provider = self.providers.get("local")
+                profile = "local"
+                if not provider:
+                    last_error = RuntimeError("model budget exceeded and local fallback is unavailable")
+                    continue
 
             for attempt in range(plan.max_retries + 1):
                 attempted.append(profile)
@@ -205,6 +243,11 @@ class ModelRouter:
     def _record_success(self, profile: str) -> None:
         self._circuit.pop(profile, None)
 
+    def close(self) -> None:
+        close = getattr(self.cost_ledger, "close", None)
+        if callable(close):
+            close()
+
     def status(self) -> dict[str, Any]:
         return {
             "default": self.cfg.default,
@@ -217,5 +260,5 @@ class ModelRouter:
         }
 
 
-def build_model_router(cfg: ModelsConfig, token_budget: TokenBudgetManager) -> ModelRouter:
-    return ModelRouter(cfg, token_budget)
+def build_model_router(cfg: ModelsConfig, token_budget: TokenBudgetManager, cost_store: ModelCostStore | None = None) -> ModelRouter:
+    return ModelRouter(cfg, token_budget, cost_store)

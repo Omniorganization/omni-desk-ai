@@ -57,23 +57,29 @@ def test_permission_manager_no_tty_and_interactive_paths(monkeypatch, tmp_path):
         pm.verify(proposal)
 
     pm = PermissionManager(PermissionConfig(no_tty_mode="dry_run", audit_log=tmp_path / "notty.jsonl"))
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    assert pm.verify(proposal).mode == "dry_run"
+    with monkeypatch.context() as m:
+        m.setattr("sys.stdin.isatty", lambda: False)
+        assert pm.verify(proposal).mode == "dry_run"
 
     pm = PermissionManager(PermissionConfig(audit_log=tmp_path / "interactive.jsonl"))
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda prompt: "s")
-    assert pm.verify(proposal).mode == "allow"
-    assert pm.verify(proposal).mode == "allow"
+    with monkeypatch.context() as m:
+        m.setattr("sys.stdin.isatty", lambda: True)
+        m.setattr("builtins.input", lambda prompt: "s")
+        assert pm.verify(proposal).mode == "allow"
+        assert pm.verify(proposal).mode == "allow"
 
     pm = PermissionManager(PermissionConfig(audit_log=tmp_path / "interactive_dry.jsonl"))
-    monkeypatch.setattr("builtins.input", lambda prompt: "d")
-    assert pm.verify(proposal).mode == "dry_run"
+    with monkeypatch.context() as m:
+        m.setattr("sys.stdin.isatty", lambda: True)
+        m.setattr("builtins.input", lambda prompt: "d")
+        assert pm.verify(proposal).mode == "dry_run"
 
     pm = PermissionManager(PermissionConfig(audit_log=tmp_path / "interactive_deny.jsonl"))
-    monkeypatch.setattr("builtins.input", lambda prompt: "n")
-    with pytest.raises(PermissionError, match="Denied by user"):
-        pm.verify(proposal)
+    with monkeypatch.context() as m:
+        m.setattr("sys.stdin.isatty", lambda: True)
+        m.setattr("builtins.input", lambda prompt: "n")
+        with pytest.raises(PermissionError, match="Denied by user"):
+            pm.verify(proposal)
 
 
 def test_admin_auth_ambiguous_and_legacy_paths(monkeypatch, tmp_path):

@@ -48,6 +48,7 @@ class OutboundMessageStore:
                   locked_at REAL,
                   delivery_deadline_at REAL,
                   last_error TEXT,
+                  error_category TEXT,
                   created_at REAL NOT NULL,
                   updated_at REAL NOT NULL
                 )
@@ -57,6 +58,7 @@ class OutboundMessageStore:
             self._ensure_column(con, "next_retry_at", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(con, "locked_at", "REAL")
             self._ensure_column(con, "delivery_deadline_at", "REAL")
+            self._ensure_column(con, "error_category", "TEXT")
             con.execute("CREATE INDEX IF NOT EXISTS idx_outbound_status_retry ON outbound_messages(status, next_retry_at, created_at)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_outbound_channel_recipient ON outbound_messages(channel, recipient, created_at)")
             apply_migrations(con, [Migration(1, "outbound_messages_schema_baseline", lambda _con: None)])
@@ -110,7 +112,7 @@ class OutboundMessageStore:
                     """
                     SELECT id, channel, recipient, payload_json, status, provider_message_id,
                            provider_request_id, retry_count, max_retries, next_retry_at, locked_at,
-                           delivery_deadline_at, last_error, created_at, updated_at
+                           delivery_deadline_at, last_error, error_category, created_at, updated_at
                     FROM outbound_messages
                     WHERE status IN ('pending', 'retry') AND next_retry_at <= ?
                       AND (delivery_deadline_at IS NULL OR delivery_deadline_at >= ?)
@@ -190,7 +192,7 @@ class OutboundMessageStore:
             )
         self._metric("omnidesk_outbound_messages_total", status="sent")
 
-    def mark_failed(self, message_id: str, error: str, *, dead_letter: bool = False) -> dict[str, Any]:
+    def mark_failed(self, message_id: str, error: str, *, dead_letter: bool = False, category: str = "unknown") -> dict[str, Any]:
         now = time.time()
         error_text = str(error)[:4000]
         with connect_sqlite(self.db_path) as con:
@@ -208,12 +210,12 @@ class OutboundMessageStore:
             con.execute(
                 """
                 UPDATE outbound_messages
-                SET status=?, retry_count=?, next_retry_at=?, locked_at=NULL, last_error=?, updated_at=?
+                SET status=?, retry_count=?, next_retry_at=?, locked_at=NULL, last_error=?, error_category=?, updated_at=?
                 WHERE id=?
                 """,
-                (status, retry_count, next_retry_at, error_text, now, message_id),
+                (status, retry_count, next_retry_at, error_text, category, now, message_id),
             )
-        self._metric("omnidesk_outbound_messages_total", status=status)
+        self._metric("omnidesk_outbound_messages_total", status=status, category=category)
         return {"id": message_id, "status": status, "retry_count": retry_count, "next_retry_at": next_retry_at}
 
     def requeue(self, message_id: str) -> dict[str, Any]:
@@ -227,7 +229,7 @@ class OutboundMessageStore:
             con.execute(
                 """
                 UPDATE outbound_messages
-                SET status='pending', retry_count=0, next_retry_at=0, locked_at=NULL, last_error=NULL, updated_at=?
+                SET status='pending', retry_count=0, next_retry_at=0, locked_at=NULL, last_error=NULL, error_category=NULL, updated_at=?
                 WHERE id=?
                 """,
                 (now, message_id),
@@ -246,7 +248,7 @@ class OutboundMessageStore:
             con.execute(
                 """
                 UPDATE outbound_messages
-                SET status='cancelled', locked_at=NULL, updated_at=?, last_error=NULL
+                SET status='cancelled', locked_at=NULL, updated_at=?, last_error=NULL, error_category=NULL
                 WHERE id=?
                 """,
                 (now, message_id),
@@ -281,7 +283,7 @@ class OutboundMessageStore:
         return """
             SELECT id, channel, recipient, payload_json, status, provider_message_id,
                    provider_request_id, retry_count, max_retries, next_retry_at, locked_at,
-                   delivery_deadline_at, last_error, created_at, updated_at
+                   delivery_deadline_at, last_error, error_category, created_at, updated_at
             FROM outbound_messages
         """
 
@@ -290,7 +292,7 @@ class OutboundMessageStore:
         keys = [
             "id", "channel", "recipient", "payload_json", "status", "provider_message_id",
             "provider_request_id", "retry_count", "max_retries", "next_retry_at", "locked_at",
-            "delivery_deadline_at", "last_error", "created_at", "updated_at",
+            "delivery_deadline_at", "last_error", "error_category", "created_at", "updated_at",
         ]
         return dict(zip(keys, row))
 

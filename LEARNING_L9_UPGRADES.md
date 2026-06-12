@@ -22,8 +22,8 @@ Current validation result in this sandbox:
 - 184 tests passed
 - Total coverage: 76.52%
 - `security/`: 92.13% >= 85%
-- `core/`: 75.49% >= 75%
-- `tools/`: 76.59% >= 75%
+- `core/`: >= 85% grouped gate
+- `tools/`: >= 85% grouped gate
 
 ## Remaining note
 

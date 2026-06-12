@@ -15,3 +15,7 @@ def test_shell_tool_uses_sandbox_config_for_docker_backend(tmp_path):
     assert "python:3.12-slim" in argv
     assert "768m" in argv
     assert "1.5" in argv
+    assert "--cap-drop" in argv and "ALL" in argv
+    assert "--security-opt" in argv and "no-new-privileges" in argv
+    assert "--pids-limit" in argv and "128" in argv
+    assert "--user" in argv and "65534:65534" in argv

@@ -9,6 +9,7 @@ from omnidesk_agent.config import PermissionConfig, SandboxConfig
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 
 
 class ShellTool:
@@ -63,23 +64,48 @@ class ShellTool:
                 return True
         return False
 
+    def _is_readonly_command(self, argv: list[str]) -> bool:
+        readonly_prefixes = [
+            ["python3", "-m", "compileall"], ["python", "-m", "compileall"],
+            ["pytest"], ["ruff", "check"], ["git", "status"], ["git", "diff"],
+            ["git", "branch"], ["git", "log"], ["git", "ls-tree"],
+        ]
+        return any(len(argv) >= len(prefix) and argv[:len(prefix)] == prefix for prefix in readonly_prefixes)
+
     def _docker_argv(self, argv: list[str]) -> list[str]:
         image = getattr(self.sandbox_cfg, "docker_image", getattr(self.cfg, "shell_docker_image", "python:3.11-slim"))
         network = getattr(self.sandbox_cfg, "docker_network", getattr(self.cfg, "shell_docker_network", "none"))
         memory = getattr(self.sandbox_cfg, "memory_limit", getattr(self.cfg, "shell_docker_memory", "512m"))
         cpus = getattr(self.sandbox_cfg, "cpus", getattr(self.cfg, "shell_docker_cpus", "1.0"))
-        return [
+        docker_args = [
             "docker", "run", "--rm",
+        ]
+        if bool(getattr(self.sandbox_cfg, "init", True)):
+            docker_args.append("--init")
+        docker_args.extend([
+            "--pull", str(getattr(self.sandbox_cfg, "pull_policy", "never")),
+            "--log-driver", str(getattr(self.sandbox_cfg, "log_driver", "none")),
+            "--oom-kill-disable=false",
             "--network", str(network),
             "--memory", str(memory),
             "--cpus", str(cpus),
+            "--pids-limit", str(getattr(self.sandbox_cfg, "pids_limit", 128)),
+            "--user", str(getattr(self.sandbox_cfg, "user", "65534:65534")),
             "--read-only",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-            "-v", f"{self.cwd}:/workspace:rw",
+            "--tmpfs", str(getattr(self.sandbox_cfg, "tmpfs", "/tmp:rw,noexec,nosuid,size=64m")),
+        ])
+        for cap in getattr(self.sandbox_cfg, "cap_drop", ["ALL"]):
+            docker_args.extend(["--cap-drop", str(cap)])
+        for opt in getattr(self.sandbox_cfg, "security_opt", ["no-new-privileges"]):
+            docker_args.extend(["--security-opt", str(opt)])
+        mount_mode = "ro" if self._is_readonly_command(argv) else "rw"
+        docker_args.extend([
+            "--mount", f"type=bind,src={self.cwd},dst=/workspace,{'readonly' if mount_mode == 'ro' else 'rw'}",
             "-w", "/workspace",
             str(image),
             *argv,
-        ]
+        ])
+        return docker_args
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "run":
@@ -97,6 +123,33 @@ class ShellTool:
         ))
 
         timeout = int(args.get("timeout", getattr(self.sandbox_cfg, "timeout_seconds", getattr(self.cfg, "max_shell_seconds", 30))))
+        if self.backend == "remote_docker":
+            if self.sandbox_cfg is None or not self.sandbox_cfg.runner_url:
+                return ToolResult(False, error="remote sandbox runner_url is not configured", summary="shell remote sandbox not configured")
+            client = RemoteSandboxClient(self.sandbox_cfg.runner_url, token_env=self.sandbox_cfg.runner_token_env)
+            try:
+                remote = await client.run_command(
+                    argv=argv,
+                    workspace=self.cwd,
+                    timeout_seconds=timeout,
+                    readonly=self._is_readonly_command(argv),
+                )
+            except Exception as exc:
+                return ToolResult(False, error=str(exc), summary="shell remote sandbox failed")
+            stdout = remote.stdout
+            stderr = remote.stderr
+            data = {
+                "argv": argv,
+                "exec_argv": ["remote_docker", *(argv or [])],
+                "backend": self.backend,
+                "exit_code": remote.exit_code,
+                "stdout": stdout[:8000],
+                "stderr": stderr[:8000],
+                "stdout_truncated": len(stdout) > 8000,
+                "stderr_truncated": len(stderr) > 8000,
+            }
+            return ToolResult(remote.ok, data=data, summary=f"shell remote exit {remote.exit_code}", error=None if remote.ok else stderr[:2000])
+
         exec_argv = self._docker_argv(argv) if self.backend == 'docker' else argv
         proc = await asyncio.create_subprocess_exec(
             *exec_argv,

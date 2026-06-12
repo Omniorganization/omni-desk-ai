@@ -44,6 +44,7 @@ def test_production_config_accepts_hardened_minimal_runtime():
     cfg.plugins.enabled = False
     cfg.channels.chrome.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True
+    cfg.sandbox.docker_image = "python:3.11-slim@sha256:" + '66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5'
 
     result = validate_production_config(
         cfg,
@@ -110,7 +111,7 @@ def test_production_config_rejects_unsafe_sandbox_metrics_memory_and_http():
     )
 
     assert "gateway.public_base_url must use https in production" in result["issues"]
-    assert "sandbox.backend must be docker in production" in result["issues"]
+    assert "sandbox.backend must be docker or remote_docker in production" in result["issues"]
     assert "sandbox.docker_network must be none in production" in result["issues"]
     assert "observability.expose_public_metrics must be false in production; use /admin/metrics" in result["issues"]
     assert "memory_privacy.redact_pii must be true in production" in result["issues"]

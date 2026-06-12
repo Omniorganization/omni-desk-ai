@@ -32,7 +32,6 @@ def main() -> None:
     sub.add_parser("doctor")
     sub.add_parser("validate-connectors")
     sub.add_parser("validate-extensions")
-    gh_p = sub.add_parser("validate-github"); gh_p.add_argument("--head", default=None)
     sub.add_parser("validate-models")
     sub.add_parser("validate-models-live")
     sub.add_parser("validate-webhook-signatures")
@@ -67,12 +66,6 @@ def main() -> None:
         from omnidesk_agent.validation.extensions import validate_extensions
         with runtime_context(cfg) as rt:
             print(json.dumps(validate_extensions(rt), ensure_ascii=False, indent=2))
-        return
-
-    if args.cmd == "validate-github":
-        from omnidesk_agent.validation.github import validate_github
-        with runtime_context(cfg) as rt:
-            print(json.dumps(validate_github(rt, head=args.head), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "validate-models":

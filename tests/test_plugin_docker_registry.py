@@ -56,6 +56,10 @@ def test_plugin_registry_loads_docker_sandbox(tmp_path, monkeypatch):
     assert "--read-only" in cmd
     assert "--memory" in cmd
     assert "--cpus" in cmd
+    assert "--cap-drop" in cmd and "ALL" in cmd
+    assert "--security-opt" in cmd and "no-new-privileges" in cmd
+    assert "--pids-limit" in cmd and "128" in cmd
+    assert "--user" in cmd and "65534:65534" in cmd
 
 
 def test_plugin_registry_keeps_subprocess_sandbox(tmp_path, monkeypatch):

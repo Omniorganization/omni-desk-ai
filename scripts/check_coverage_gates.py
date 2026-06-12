@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 GATES = {
-    "omnidesk_agent/security/": 85.0,
-    "omnidesk_agent/core/": 75.0,
-    "omnidesk_agent/tools/": 75.0,
+    "omnidesk_agent/security/": 90.0,
+    "omnidesk_agent/core/": 85.0,
+    "omnidesk_agent/tools/": 85.0,
 }
 
 

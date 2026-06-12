@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.config import SandboxConfig
 from omnidesk_agent.self_upgrade.generation.code_patch_generator import CodePatchGenerator
 from omnidesk_agent.self_upgrade.generation.prompt_patch_generator import PromptPatchGenerator
 from omnidesk_agent.self_upgrade.generation.workflow_patch_generator import WorkflowPatchGenerator
@@ -26,15 +27,16 @@ class GovernedSelfImprovement:
     release. It never auto-merges.
     """
 
-    def __init__(self, workspace_root: Path, repo_root: Path):
+    def __init__(self, workspace_root: Path, repo_root: Path, sandbox_cfg: SandboxConfig | None = None):
         self.workspace_root = workspace_root.expanduser()
         self.repo_root = repo_root.resolve()
         self.proposal_store = UpgradeProposalStore(self.workspace_root / "upgrade_proposals")
         self.proposal_generator = UpgradeProposalGenerator()
         self.risk_classifier = UpgradeRiskClassifier()
         self.permission_diff = PermissionDiffChecker()
-        self.regression_runner = RegressionRunner(self.repo_root)
-        self.security_runner = SecurityTestRunner(self.repo_root)
+        self.sandbox_cfg = sandbox_cfg
+        self.regression_runner = RegressionRunner(self.repo_root, sandbox_cfg=sandbox_cfg)
+        self.security_runner = SecurityTestRunner(self.repo_root, sandbox_cfg=sandbox_cfg)
         self.shadow = ShadowModeEvaluator()
         self.canary = CanaryReleaseManager(self.workspace_root / "canary_state.json")
         self.memory = UpgradeMemory(self.workspace_root / "upgrade_memory.sqlite3")
@@ -136,6 +138,14 @@ class GovernedSelfImprovement:
         elif not risk.get("can_auto_canary"):
             canary_result["reason"] = "risk_classifier_disallows_auto_canary"
 
+        checks = {
+            "permission_diff": perm_diff.to_dict(),
+            "risk_classification": risk,
+            "regression": regression,
+            "security": security,
+            "shadow": shadow_result,
+            "canary": canary_result,
+        }
         evidence = {
             "permission_diff": perm_diff.to_dict(),
             "risk_classification": risk,
@@ -143,10 +153,15 @@ class GovernedSelfImprovement:
             "security_result": security,
             "shadow_result": shadow_result,
             "canary_result": canary_result,
+            "checks": checks,
         }
 
         proposal.metadata["governance_evaluation"] = evidence
-        proposal.metadata["state"] = "CANARY" if canary_result.get("enabled") else ("BLOCKED" if not checks_ok else "HUMAN_REVIEW")
+        proposal.metadata["checks"] = checks
+        target_state = "CANARY" if canary_result.get("enabled") else ("BLOCKED" if not checks_ok else "HUMAN_REVIEW")
+        proposal.metadata = self.state_machine.transition_metadata(proposal.to_dict(), target_state, reason="governance_evaluation")
+        proposal.metadata["governance_evaluation"] = evidence
+        proposal.metadata["checks"] = checks
         self.proposal_store.save(proposal)
 
         verdict = "effective" if canary_result.get("enabled") else "pending_review"
@@ -169,8 +184,14 @@ class GovernedSelfImprovement:
     def record_human_feedback(self, proposal_id: str, decision: str, reason: str) -> dict:
         if decision == "approved":
             proposal = self.proposal_store.approve(proposal_id, reason)
+            proposal.metadata.setdefault("checks", {})["human_review"] = {"decision": "approved", "reason": reason}
+            proposal.metadata["human_review"] = {"decision": "approved", "reason": reason}
+            self.proposal_store.save(proposal)
         elif decision == "rejected":
             proposal = self.proposal_store.reject(proposal_id, reason)
+            proposal.metadata.setdefault("checks", {})["human_review"] = {"decision": "rejected", "reason": reason}
+            proposal.metadata["human_review"] = {"decision": "rejected", "reason": reason}
+            self.proposal_store.save(proposal)
         else:
             raise ValueError("decision must be approved or rejected")
         self.memory.record({

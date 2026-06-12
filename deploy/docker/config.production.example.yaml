@@ -11,7 +11,7 @@ permissions:
   default_mode: ask
   no_tty_mode: deny
   audit_log: /data/audit.log
-  shell_backend: docker
+  shell_backend: remote_docker
 
 gateway:
   host: 0.0.0.0
@@ -22,8 +22,10 @@ gateway:
   admin_allowed_ips: []
 
 sandbox:
-  backend: docker
-  docker_image: python:3.11-slim
+  backend: remote_docker
+  runner_url: http://sandbox-runner:18890
+  runner_token_env: OMNIDESK_SANDBOX_RUNNER_TOKEN
+  docker_image: python:3.11-slim@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   docker_network: none
   timeout_seconds: 120
   memory_limit: 512m

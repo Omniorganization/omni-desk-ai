@@ -62,6 +62,21 @@ class IndustrialSLOEvaluator:
             SLOTarget("industrial_readiness_score", ">=", 80.0, "error", "Industrial readiness score should be at least 80"),
         ]
 
+
+    @staticmethod
+    def runtime_targets() -> list[SLOTarget]:
+        return [
+            SLOTarget("webhook_enqueue_success_rate", ">=", 0.999, "error", "Webhook enqueue success rate should be at least 99.9%"),
+            SLOTarget("job_dead_letter_rate", "<=", 0.001, "error", "Job dead-letter rate should stay below 0.1%"),
+            SLOTarget("approval_resume_success_rate", ">=", 0.99, "error", "Approval resume success rate should be at least 99%"),
+            SLOTarget("planner_fallback_rate", "<=", 0.05, "warning", "Planner fallback rate should stay below 5%"),
+            SLOTarget("tool_error_rate", "<=", 0.02, "warning", "Tool error rate should stay below 2%"),
+            SLOTarget("outbound_duplicate_rate", "==", 0.0, "critical", "Outbound send duplicate rate must be zero"),
+            SLOTarget("plugin_timeout_rate", "<=", 0.01, "warning", "Plugin timeout rate should stay below 1%"),
+            SLOTarget("daily_model_cost_usd", "<=", 500.0, "warning", "Daily model spend should stay within the default operating budget"),
+            SLOTarget("cost_per_successful_task", "<=", 5.0, "warning", "Model cost per completed job should stay within default bounds"),
+        ]
+
     def evaluate(self, metrics: dict[str, Any]) -> dict[str, Any]:
         checks = [target.evaluate(metrics.get(target.metric)) for target in self.targets]
         violations = [c for c in checks if not c["ok"]]

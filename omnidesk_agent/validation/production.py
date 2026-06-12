@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Mapping, Optional
 
 from omnidesk_agent.config import AppConfig
@@ -12,6 +13,8 @@ STRONG_SECRET_MIN_LENGTH = 32
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 PRODUCTION_ENV_VALUES = {"prod", "production"}
 PLUGIN_SIGNING_SECRET_ENV = "OMNIDESK_PLUGIN_SIGNING_SECRET"
+DIGEST_PIN_RE = re.compile(r"^[\w./:+=,@-]+@sha256:[a-f0-9]{64}$")
+BAD_DIGESTS = {"0" * 64, "f" * 64, "a" * 64, "0123456789abcdef" * 4}
 
 
 class ProductionConfigError(ValueError):
@@ -66,10 +69,22 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
     if cfg.channels.gmail.enabled and cfg.channels.gmail.encrypt_token_at_rest:
         _require_env(env, cfg.channels.gmail.token_encryption_key_env, "gmail token encryption key", issues, min_length=STRONG_SECRET_MIN_LENGTH)
 
-    if cfg.sandbox.backend != "docker":
-        issues.append("sandbox.backend must be docker in production")
+    if cfg.sandbox.backend not in {"docker", "remote_docker"}:
+        issues.append("sandbox.backend must be docker or remote_docker in production")
+    if cfg.sandbox.backend == "docker" and str(env.get("OMNIDESK_RUNNING_IN_CONTAINER", "")).lower() in {"1", "true", "yes"}:
+        issues.append("sandbox.backend=docker is not allowed inside the app container; use remote_docker runner instead")
+    if cfg.sandbox.backend == "remote_docker":
+        if not cfg.sandbox.runner_url:
+            issues.append("sandbox.runner_url must be configured when sandbox.backend=remote_docker")
+        _require_env(env, cfg.sandbox.runner_token_env, "sandbox runner token", issues, min_length=STRONG_SECRET_MIN_LENGTH)
     if cfg.sandbox.docker_network != "none":
         issues.append("sandbox.docker_network must be none in production")
+    if not _is_valid_digest_pinned_image(str(cfg.sandbox.docker_image)):
+        issues.append("sandbox.docker_image must use a real sha256 digest in production")
+    if getattr(cfg.permissions, "shell_backend", cfg.sandbox.backend) not in {"argv", "docker", "remote_docker"}:
+        issues.append("permissions.shell_backend uses an unsupported backend")
+    if getattr(cfg.permissions, "shell_backend", cfg.sandbox.backend) != "argv" and getattr(cfg.permissions, "shell_backend", cfg.sandbox.backend) != cfg.sandbox.backend:
+        issues.append("permissions.shell_backend must match sandbox.backend when both are configured")
 
     if cfg.observability.expose_public_metrics:
         issues.append("observability.expose_public_metrics must be false in production; use /admin/metrics")
@@ -93,6 +108,10 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
             issues.append("plugins.trusted_only must be true in production")
         if cfg.plugins.allow_in_process:
             issues.append("plugins.allow_in_process must be false in production")
+        if cfg.plugins.default_sandbox != "docker":
+            issues.append("plugins.default_sandbox must be docker in production")
+        if not cfg.plugins.production_forbid_subprocess:
+            issues.append("plugins.production_forbid_subprocess must be true in production")
 
     _validate_enabled_channel_envs(cfg, env, issues)
     _validate_high_risk_approval_policy(cfg, issues)
@@ -139,3 +158,14 @@ def _require_env(env: Mapping[str, str], env_name: str, label: str, issues: list
 
 def _is_placeholder(value: str) -> bool:
     return value.strip().lower() in PLACEHOLDER_VALUES
+
+
+def _is_valid_digest_pinned_image(image: str) -> bool:
+    if not DIGEST_PIN_RE.match(image):
+        return False
+    digest = image.rsplit("@sha256:", 1)[1]
+    if digest in BAD_DIGESTS:
+        return False
+    if len(set(digest)) == 1:
+        return False
+    return True

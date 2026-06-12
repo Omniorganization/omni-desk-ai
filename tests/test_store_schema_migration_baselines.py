@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+from omnidesk_agent.storage.sqlite import connect_sqlite
 
 from omnidesk_agent.core.job_queue import JobQueue
 from omnidesk_agent.core.run_store import RunStore
@@ -11,7 +11,7 @@ from omnidesk_agent.security.approval_store import ApprovalStore
 
 
 def _migration_names(db_path):
-    with sqlite3.connect(db_path) as con:
+    with connect_sqlite(db_path) as con:
         return {row[0] for row in con.execute("SELECT name FROM schema_migrations")}
 
 

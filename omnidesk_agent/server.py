@@ -1,22 +1,39 @@
 from __future__ import annotations
-from typing import Optional
+
 from contextlib import asynccontextmanager
 
-import hashlib
-import hmac
-import json
-import os
+import time
 import weakref
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
-from omnidesk_agent.config import AppConfig
-from omnidesk_agent.core.models import ChannelMessage
-from omnidesk_agent.daemon import OmniDeskRuntime
-from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
-from omnidesk_agent.validation.production import assert_production_config_safe
 from omnidesk_agent import __version__
-from omnidesk_agent.observability import JsonEventLogger, MetricsRegistry, new_request_id, public_runtime_status, initialize_runtime_metrics
-from omnidesk_agent.self_learning.observability.dashboard import LearningDashboard
+from omnidesk_agent.config import AppConfig
+from omnidesk_agent.daemon import OmniDeskRuntime
+from omnidesk_agent.observability import (
+    JsonEventLogger,
+    MetricsRegistry,
+    initialize_runtime_metrics,
+    new_request_id,
+    public_runtime_status,
+)
+from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
+from omnidesk_agent.server_routes.admin_routes import register_admin_routes
+from omnidesk_agent.server_routes.agent_routes import register_agent_routes
+from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
+from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
+from omnidesk_agent.validation.production import assert_production_config_safe
+
+
+def _wire_runtime_metrics(rt: OmniDeskRuntime, metrics: MetricsRegistry) -> None:
+    initialize_runtime_metrics(metrics)
+    rt.metrics = metrics
+    rt.job_queue.metrics = metrics
+    rt.outbound_messages.metrics = metrics
+    rt.orchestrator.metrics = metrics
+    rt.permissions.metrics = metrics
+    rt.tools.metrics = metrics
+    if getattr(rt, "learning_loop", None) is not None:
+        rt.learning_loop.metrics = metrics
 
 
 def create_app(cfg: AppConfig) -> FastAPI:
@@ -38,21 +55,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
     event_logger = JsonEventLogger()
     app.state.metrics = metrics
     app.state.runtime = rt
-    initialize_runtime_metrics(metrics)
-    rt.metrics = metrics
-    rt.job_queue.metrics = metrics
-    rt.outbound_messages.metrics = metrics
-    rt.orchestrator.metrics = metrics
-    rt.permissions.metrics = metrics
-    rt.tools.metrics = metrics
-    if getattr(rt, "learning_loop", None) is not None:
-        rt.learning_loop.metrics = metrics
+    _wire_runtime_metrics(rt, metrics)
 
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next):
         request_id = request.headers.get(cfg.observability.request_id_header) or new_request_id()
         request.state.request_id = request_id
-        started = __import__("time").time()
+        started = time.time()
         try:
             response = await call_next(request)
             metrics.inc("omnidesk_http_requests_total", method=request.method, path=request.url.path, status=getattr(response, "status_code", 0))
@@ -61,145 +70,14 @@ def create_app(cfg: AppConfig) -> FastAPI:
             metrics.inc("omnidesk_http_errors_total", method=request.method, path=request.url.path)
             raise
         finally:
-            elapsed = __import__("time").time() - started
+            elapsed = time.time() - started
             metrics.set("omnidesk_http_last_latency_seconds", elapsed, path=request.url.path)
             event_logger.event("http_request", request_id=request_id, method=request.method, path=request.url.path, elapsed=elapsed)
-
 
     async def _admin(request: Request, role: str = "viewer") -> None:
         decision = await rt.admin_auth.verify_request(request, required_role=role)
         if not decision.ok:
             raise HTTPException(status_code=403, detail=decision.reason)
-
-    def _json(body: bytes) -> dict:
-        if not body:
-            return {}
-        return json.loads(body.decode("utf-8"))
-
-
-    def _channel_cfg(channel: str):
-        return {
-            "telegram": cfg.channels.telegram,
-            "whatsapp": cfg.channels.whatsapp_cloud,
-            "meta": cfg.channels.meta_graph,
-            "wechat": cfg.channels.wechat_official,
-            "dingtalk": cfg.channels.dingtalk,
-            "lark": cfg.channels.lark,
-            "feishu": cfg.channels.feishu,
-            "line": cfg.channels.line,
-            "x": cfg.channels.x,
-        }.get(channel)
-
-    def _env(name: str) -> str:
-        return os.getenv(name, "")
-
-    def _require_secret(env_name: str, channel: str) -> str:
-        secret = _env(env_name)
-        if not secret:
-            raise PermissionError(f"{channel} webhook signature secret is not configured: {env_name}")
-        return secret
-
-    def _verify_hmac_header(body: bytes, secret: str, signature: str, *, prefix: str = "sha256=") -> None:
-        if not signature:
-            raise PermissionError("missing webhook signature header")
-        digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        candidate = signature[len(prefix):] if prefix and signature.startswith(prefix) else signature
-        if not hmac.compare_digest(candidate, digest):
-            raise PermissionError("invalid webhook signature")
-
-    def _verify_required_webhook_signature(channel: str, adapter, request: Request, body: bytes, payload) -> None:
-        channel_cfg = _channel_cfg(channel)
-        if not getattr(cfg.gateway, "require_webhook_signatures", True):
-            return
-        if channel_cfg is None or not bool(getattr(channel_cfg, "enabled", False)):
-            return
-
-        adapter_verify = getattr(adapter, "verify_request", None)
-        if callable(adapter_verify):
-            adapter_verify(dict(request.headers), body, dict(request.query_params), payload)
-            return
-
-        headers = request.headers
-
-        if channel == "telegram":
-            secret = _require_secret(channel_cfg.webhook_secret_env, channel)
-            provided = headers.get("x-telegram-bot-api-secret-token", "")
-            if not hmac.compare_digest(provided, secret):
-                raise PermissionError("invalid Telegram webhook secret token")
-            return
-
-        if channel == "whatsapp":
-            secret = _require_secret(channel_cfg.app_secret_env, channel)
-            _verify_hmac_header(body, secret, headers.get("x-hub-signature-256", ""), prefix="sha256=")
-            return
-
-        if channel == "meta":
-            secret = _require_secret(channel_cfg.app_secret_env, channel)
-            _verify_hmac_header(body, secret, headers.get("x-hub-signature-256", ""), prefix="sha256=")
-            return
-
-        if channel == "line":
-            signature = headers.get("x-line-signature", "")
-            if not adapter.verify_signature(body, signature):
-                raise PermissionError("invalid LINE webhook signature")
-            return
-
-        if channel == "wechat":
-            q = request.query_params
-            if not adapter.verify_signature(q.get("signature", ""), q.get("timestamp", ""), q.get("nonce", "")):
-                raise PermissionError("invalid WeChat webhook signature")
-            return
-
-        if channel in {"lark", "feishu"}:
-            token = getattr(adapter, "verification_token", "") or _require_secret(channel_cfg.verification_token_env, channel)
-            if not isinstance(payload, dict) or payload.get("token") != token:
-                raise PermissionError(f"invalid {channel} verification token")
-            secret_env = getattr(channel_cfg, "webhook_secret_env", "")
-            secret = _env(secret_env) if secret_env else ""
-            signature = headers.get("x-omnidesk-webhook-signature-256", "")
-            if secret or signature:
-                _verify_hmac_header(body, secret or _require_secret(secret_env, channel), signature, prefix="sha256=")
-            return
-
-        secret_env = getattr(channel_cfg, "webhook_secret_env", "")
-        secret = _require_secret(secret_env, channel)
-        _verify_hmac_header(body, secret, headers.get("x-omnidesk-webhook-signature-256", ""), prefix="sha256=")
-
-
-    def _envelope(adapter, payload):
-        if hasattr(adapter, "extract_envelope"):
-            return adapter.extract_envelope(payload)
-        from omnidesk_agent.channels.base import WebhookEnvelope
-        return WebhookEnvelope(raw=payload if isinstance(payload, dict) else {})
-
-    async def _guard_webhook(channel: str, adapter, request: Request, payload=None) -> tuple[bytes, object]:
-        body = await request.body()
-        try:
-            actual_payload = payload if payload is not None else _json(body)
-            _verify_required_webhook_signature(channel, adapter, request, body, actual_payload)
-            envelope = _envelope(adapter, actual_payload)
-            if hasattr(rt, "webhook_security"):
-                rt.webhook_security.guard(
-                    channel=channel,
-                    body=body,
-                    source_key=getattr(envelope, "source_key", None) or "unknown",
-                    message_id=getattr(envelope, "message_id", None),
-                    timestamp=getattr(envelope, "timestamp", None),
-                )
-            return body, envelope
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    def _enqueue_webhook_message(message: Optional[ChannelMessage]) -> dict:
-        if message is None:
-            return {"ok": True, "ignored": True}
-        source_key = message.thread_id or message.sender_id or "unknown"
-        job = rt.job_queue.enqueue(message, source_key=source_key)
-        return {"ok": True, "queued": True, "job_id": job["job_id"], "created": job["created"]}
-
-    def _enqueue_webhook_messages(messages: list[ChannelMessage]) -> dict:
-        jobs = [_enqueue_webhook_message(message) for message in messages]
-        return {"ok": True, "queued": True, "count": len(messages), "jobs": jobs}
 
     dashboard_router = create_dashboard_router(rt, admin_auth=rt.admin_auth)
     if dashboard_router is not None:
@@ -209,271 +87,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
     async def health():
         return public_runtime_status(__version__)
 
-    @app.get("/admin/status")
-    async def admin_status(request: Request):
-        await _admin(request, "viewer")
-        return {"ok": True, "version": __version__, "runtime": rt.status()}
-
-    @app.get("/admin/metrics")
-    async def admin_metrics(request: Request):
-        await _admin(request, "viewer")
-        return Response(content=metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
-
-    @app.get("/admin/jobs")
-    async def admin_jobs(request: Request, status: Optional[str] = None, limit: int = 50):
-        await _admin(request, "operator")
-        return {"ok": True, "stats": rt.job_queue.stats(), "jobs": rt.job_queue.list(status=status, limit=limit)}
-
-    @app.get("/admin/outbound-messages")
-    async def admin_outbound_messages(request: Request, status: Optional[str] = None, limit: int = 50):
-        await _admin(request, "operator")
-        return {"ok": True, "stats": rt.outbound_messages.stats(), "messages": rt.outbound_messages.list(status=status, limit=limit)}
-
-    @app.get("/admin/outbound")
-    async def admin_outbound_alias(request: Request, status: Optional[str] = None, limit: int = 50):
-        await _admin(request, "operator")
-        return {"ok": True, "stats": rt.outbound_messages.stats(), "messages": rt.outbound_messages.list(status=status, limit=limit)}
-
-    @app.post("/admin/outbound/{message_id}/retry")
-    async def admin_retry_outbound(message_id: str, request: Request):
-        await _admin(request, "operator")
-        try:
-            return {"ok": True, **rt.outbound_messages.requeue(message_id)}
-        except KeyError as exc:
-            raise HTTPException(404, "outbound message not found") from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    @app.post("/admin/outbound/{message_id}/cancel")
-    async def admin_cancel_outbound(message_id: str, request: Request):
-        await _admin(request, "operator")
-        try:
-            return {"ok": True, **rt.outbound_messages.cancel(message_id)}
-        except KeyError as exc:
-            raise HTTPException(404, "outbound message not found") from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    @app.get("/admin/jobs/dead-letter")
-    async def admin_dead_letter_jobs(request: Request, limit: int = 50):
-        await _admin(request, "operator")
-        return {"ok": True, "jobs": rt.job_queue.list_dead_letters(limit=limit)}
-
-    @app.post("/admin/jobs/dead-letter/{job_id}/requeue")
-    async def admin_requeue_dead_letter_job(job_id: str, request: Request):
-        await _admin(request, "operator")
-        try:
-            return {"ok": True, **rt.job_queue.requeue_dead_letter(job_id)}
-        except KeyError as exc:
-            raise HTTPException(404, "job not found") from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    @app.delete("/admin/jobs/dead-letter/{job_id}")
-    async def admin_purge_dead_letter_job(job_id: str, request: Request):
-        await _admin(request, "owner")
-        try:
-            return {"ok": True, **rt.job_queue.purge_dead_letter(job_id)}
-        except KeyError as exc:
-            raise HTTPException(404, "job not found") from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    def _learning_dashboard() -> LearningDashboard:
-        path = cfg.workspace.root / "learning_audit.jsonl"
-        return LearningDashboard.from_audit_path(path)
-
-    @app.get("/admin/learning/report")
-    async def admin_learning_report(request: Request, days: int = 7):
-        await _admin(request, "viewer")
-        return _learning_dashboard().summary(days=days)
-
-    @app.get("/admin/learning/dashboard")
-    async def admin_learning_dashboard(request: Request, days: int = 7):
-        await _admin(request, "viewer")
-        return Response(content=_learning_dashboard().render_html(days=days), media_type="text/html")
-
-    @app.post("/agent/run")
-    async def run_agent(request: Request, body: dict):
-        await _admin(request, "operator")
-        # Legacy body secret remains accepted for older local integrations.
-        secret = os.getenv(cfg.gateway.shared_secret_env, "")
-        provided = body.get("secret", "")
-        if secret and provided and not hmac.compare_digest(secret, provided):
-            raise HTTPException(401, "bad secret")
-        msg = ChannelMessage(channel="local-api", sender_id=str(body.get("actor", "owner")), text=str(body["message"]))
-        return await rt.orchestrator.handle_message(msg)
-
-    @app.post("/agent/resume/{run_id}")
-    async def resume_agent(run_id: str, request: Request, body: Optional[dict] = None):
-        await _admin(request, "owner")
-        body = body or {}
-        return await rt.orchestrator.resume(run_id, resume_token=body.get("resume_token"))
-
-    @app.post("/webhooks/telegram")
-    async def telegram_webhook(request: Request):
-        adapter = rt.adapters["telegram"]
-        body, _ = await _guard_webhook("telegram", adapter, request)
-        msg = adapter.parse_update(_json(body))
-        return _enqueue_webhook_message(msg)
-
-    @app.get("/webhooks/whatsapp")
-    async def whatsapp_verify(request: Request):
-        params = dict(request.query_params)
-        verify_token = os.getenv(cfg.channels.whatsapp_cloud.verify_token_env, "")
-        if params.get("hub.mode") == "subscribe" and hmac.compare_digest(params.get("hub.verify_token", ""), verify_token):
-            return Response(content=params.get("hub.challenge", ""), media_type="text/plain")
-        raise HTTPException(403, "verification failed")
-
-    @app.post("/webhooks/whatsapp")
-    async def whatsapp_webhook(request: Request):
-        adapter = rt.adapters["whatsapp_cloud"]
-        body, _ = await _guard_webhook("whatsapp", adapter, request)
-        messages = adapter.parse_webhook(_json(body))
-        return _enqueue_webhook_messages(messages)
-
-    @app.get("/webhooks/meta")
-    async def meta_verify(request: Request):
-        params = dict(request.query_params)
-        verify_token = os.getenv(cfg.channels.meta_graph.verify_token_env, "")
-        if params.get("hub.mode") == "subscribe" and hmac.compare_digest(params.get("hub.verify_token", ""), verify_token):
-            return Response(content=params.get("hub.challenge", ""), media_type="text/plain")
-        raise HTTPException(403, "verification failed")
-
-    @app.post("/webhooks/meta")
-    async def meta_webhook(request: Request):
-        adapter = rt.adapters["meta_graph"]
-        body, _ = await _guard_webhook("meta", adapter, request)
-        messages = adapter.parse_webhook(_json(body))
-        return _enqueue_webhook_messages(messages)
-
-    @app.get("/webhooks/wechat")
-    async def wechat_verify(request: Request):
-        q = request.query_params
-        if rt.adapters["wechat_official"].verify_signature(q.get("signature", ""), q.get("timestamp", ""), q.get("nonce", "")):
-            return Response(content=q.get("echostr", ""), media_type="text/plain")
-        raise HTTPException(403, "verification failed")
-
-    @app.post("/webhooks/wechat")
-    async def wechat_webhook(request: Request):
-        adapter = rt.adapters["wechat_official"]
-        body, _ = await _guard_webhook("wechat", adapter, request, payload=await request.body())
-        msg = adapter.parse_xml(body)
-        if not msg:
-            return Response(content="success", media_type="text/plain")
-        _enqueue_webhook_message(msg)
-        text = "已收到，消息已进入异步处理队列。需要执行发消息/点击/写文件等动作时会请求授权。"
-        return Response(content=adapter.passive_text_reply(msg, text), media_type="application/xml")
-
-    @app.post("/webhooks/dingtalk")
-    async def dingtalk_webhook(request: Request):
-        adapter = rt.adapters["dingtalk"]
-        body, _ = await _guard_webhook("dingtalk", adapter, request)
-        msg = adapter.parse_webhook(_json(body))
-        return _enqueue_webhook_message(msg)
-
-    @app.post("/webhooks/lark")
-    async def lark_webhook(request: Request):
-        adapter = rt.adapters["lark"]
-        body, _ = await _guard_webhook("lark", adapter, request)
-        parsed = adapter.parse_webhook(_json(body))
-        if isinstance(parsed, dict) and "challenge" in parsed:
-            return parsed
-        if isinstance(parsed, ChannelMessage):
-            return _enqueue_webhook_message(parsed)
-        return {"ok": True, "ignored": True}
-
-    @app.post("/webhooks/feishu")
-    async def feishu_webhook(request: Request):
-        adapter = rt.adapters["feishu"]
-        body, _ = await _guard_webhook("feishu", adapter, request)
-        parsed = adapter.parse_webhook(_json(body))
-        if isinstance(parsed, dict) and "challenge" in parsed:
-            return parsed
-        if isinstance(parsed, ChannelMessage):
-            return _enqueue_webhook_message(parsed)
-        return {"ok": True, "ignored": True}
-
-    @app.post("/webhooks/line")
-    async def line_webhook(request: Request):
-        adapter = rt.adapters["line"]
-        body, _ = await _guard_webhook("line", adapter, request)
-        payload = _json(body)
-        messages = adapter.parse_webhook(payload)
-        return _enqueue_webhook_messages(messages)
-
-
-    @app.get("/webhooks/x")
-    async def x_crc(request: Request):
-        return rt.adapters["x"].crc_response(request.query_params.get("crc_token", ""))
-
-    @app.post("/webhooks/x")
-    async def x_webhook(request: Request):
-        adapter = rt.adapters["x"]
-        body, _ = await _guard_webhook("x", adapter, request)
-        messages = adapter.parse_webhook(_json(body))
-        return _enqueue_webhook_messages(messages)
-
-
-    @app.post("/self-upgrade/proposals/{proposal_id}/evaluate")
-    async def evaluate_upgrade_proposal(proposal_id: str, request: Request, body: Optional[dict] = None):
-        body = body or {}
-        allow_canary = bool(body.get("allow_canary", False))
-        await _admin(request, "owner" if allow_canary else "operator")
-        return await rt.governance.evaluate_proposal(
-            proposal_id,
-            old_permissions=body.get("old_permissions"),
-            new_permissions=body.get("new_permissions"),
-            stable_plan=body.get("stable_plan"),
-            shadow_plan=body.get("shadow_plan"),
-            allow_canary=allow_canary,
-        )
-
-    @app.get("/validate/connectors")
-    async def validate_connectors_route(request: Request):
-        await _admin(request, "operator")
-        from omnidesk_agent.validation.connectors import validate_connectors
-        return validate_connectors(rt)
-
-    @app.get("/validate/extensions")
-    async def validate_extensions_route(request: Request):
-        await _admin(request, "operator")
-        from omnidesk_agent.validation.extensions import validate_extensions
-        return validate_extensions(rt)
-
-    @app.get("/oauth/gmail/start")
-    async def gmail_oauth_start(request: Request, redirect_uri: str, state: Optional[str] = None):
-        await _admin(request, "owner")
-        return rt.adapters["gmail"].oauth.build_authorization_url(redirect_uri=redirect_uri, state=None)
-
-    @app.get("/oauth/gmail/callback")
-    async def gmail_oauth_callback(request: Request, code: str, redirect_uri: str, state: Optional[str] = None):
-        await _admin(request, "owner")
-        try:
-            token = rt.adapters["gmail"].oauth.exchange_code(code=code, redirect_uri=redirect_uri, state=state)
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-        return {"ok": True, "token_saved": True, "keys": sorted(token.keys())}
-
-    @app.post("/approvals")
-    async def create_approval(request: Request, body: dict):
-        await _admin(request, "operator")
-        approval_id = approvals.create(body)
-        return {"ok": True, "id": approval_id}
-
-    @app.get("/approvals")
-    async def list_approvals(request: Request, status: Optional[str] = None):
-        await _admin(request, "viewer")
-        return {"ok": True, "approvals": approvals.list(status)}
-
-    @app.post("/approvals/{approval_id}/approve")
-    async def approve_request(approval_id: str, request: Request, body: Optional[dict] = None):
-        await _admin(request, "owner")
-        return {"ok": True, "approval": approvals.decide(approval_id, "approved", body or {})}
-
-    @app.post("/approvals/{approval_id}/deny")
-    async def deny_request(approval_id: str, request: Request, body: Optional[dict] = None):
-        await _admin(request, "owner")
-        return {"ok": True, "approval": approvals.decide(approval_id, "denied", body or {})}
-
+    register_admin_routes(app, cfg, rt, metrics, __version__, _admin)
+    register_agent_routes(app, cfg, rt, approvals, _admin)
+    register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
     return app

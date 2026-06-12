@@ -1,4 +1,18 @@
+## 0.7.11-industrial-rc6
+
+- Ensure release source archives include `.github/workflows` so CI/CD contract tests run green from clean packages.
+- Install hash-locked dependencies in Docker image builds before installing the OmniDesk wheel with `--no-deps`.
+- Add first-class `--help` handling to `scripts/production_smoke_test.py` for release smoke workflows.
+
 # Changelog
+
+## 0.7.11-industrial-rc6
+
+- Removed placeholder base-image digests; Docker builds now require explicit digest-pinned `PYTHON_BASE_IMAGE_DIGEST`.
+- Added sandbox-runner readiness, HMAC nonce replay protection, and allowed workspace root checks.
+- Extended production smoke tests to verify remote sandbox health/readiness/execution.
+- Wired model budget enforcement into `ModelRouter` before provider execution.
+- Updated deployment docs and CI Docker scan to require digest-pinned base images.
 
 ## 0.7.1-preproduction-hardening
 
@@ -26,6 +40,6 @@ This version adds role-aware AdminAuth, IP allowlist, admin audit, one-time resu
 
 ---
 
-## 0.7.0-industrial-final
+## 0.7.0-industrial-rc-history
 
-This release fixes all known test failures and adds final industrial hardening: governed memory writes, plugin runtime permission validation, Docker plugin isolation, PR promotion gates, SQLite migrations, release SBOM workflow, initialized runtime metrics and a 65% CI coverage gate.
+This release fixes all known test failures and adds final industrial hardening: governed memory writes, plugin runtime permission validation, Docker plugin isolation, PR promotion gates, SQLite migrations, release SBOM workflow, initialized runtime metrics and an 80% CI coverage gate with security/core/tools grouped gates.

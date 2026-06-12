@@ -10,6 +10,10 @@ class UIBridgeTool:
     def __init__(self, cfg: UIBridgeConfig, tools: ToolRegistry):
         self.cfg = cfg
         self.tools = tools
+    def _require_enabled(self) -> None:
+        if not self.cfg.enabled:
+            raise PermissionError("UI bridge is disabled by configuration")
+
     def _check_app(self, app: str) -> None:
         if self.cfg.allowed_apps and app not in self.cfg.allowed_apps:
             raise ValueError(f"App is not allowed for UI bridge: {app}")
@@ -31,6 +35,7 @@ class UIBridgeTool:
 
 
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self._require_enabled()
         app = str(args.get("app", ""))
         if app:
             self._check_app(app)

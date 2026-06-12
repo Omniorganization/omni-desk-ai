@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import atexit
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
+
+_OPEN_CONNECTIONS: set["ClosingConnection"] = set()
+_OPEN_CONNECTIONS_LOCK = threading.Lock()
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -10,7 +15,9 @@ class ClosingConnection(sqlite3.Connection):
 
     The stdlib sqlite3.Connection context manager does not close the database;
     it only manages transactions. This subclass preserves transaction semantics
-    while making `with connect_sqlite(...) as con:` resource-safe.
+    while making `with connect_sqlite(...) as con:` resource-safe. A small
+    registry lets tests and runtime shutdown close any accidental escapees
+    before Python 3.13 emits unraisable sqlite ResourceWarning entries.
     """
 
     def __exit__(self, exc_type, exc, tb):  # type: ignore[override]
@@ -23,14 +30,26 @@ class ClosingConnection(sqlite3.Connection):
             self.close()
         return False
 
-    def __del__(self) -> None:  # pragma: no cover - interpreter-level safety net
+    def close(self) -> None:  # type: ignore[override]
+        with _OPEN_CONNECTIONS_LOCK:
+            _OPEN_CONNECTIONS.discard(self)
+        super().close()
+
+
+def close_all_open_connections() -> None:
+    with _OPEN_CONNECTIONS_LOCK:
+        conns = list(_OPEN_CONNECTIONS)
+    for con in conns:
         try:
-            self.close()
+            con.close()
         except Exception:
             pass
 
 
-def connect_sqlite(db_path: Path, *, timeout: float = 30.0, isolation_level: Optional[str] = None) -> sqlite3.Connection:
+atexit.register(close_all_open_connections)
+
+
+def connect_sqlite(db_path: Path, *, timeout: float = 30.0, isolation_level: Optional[str] = None) -> ClosingConnection:
     """Open a SQLite connection with production-safe defaults for local agents.
 
     Defaults:
@@ -48,6 +67,8 @@ def connect_sqlite(db_path: Path, *, timeout: float = 30.0, isolation_level: Opt
         check_same_thread=False,
         factory=ClosingConnection,
     )
+    with _OPEN_CONNECTIONS_LOCK:
+        _OPEN_CONNECTIONS.add(con)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
     con.execute("PRAGMA busy_timeout = 30000")

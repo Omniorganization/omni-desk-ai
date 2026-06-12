@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from omnidesk_agent.config import ChromeConfig
@@ -56,47 +54,43 @@ class GmailAdapter:
         return {"sent": True, "to": to, "subject": subject, "body": body}
 
 
-def test_channel_send_text_and_email_branches():
-    async def run_case():
-        adapter = SendAdapter()
-        gmail = GmailAdapter()
-        tool = ChannelSendTool({"telegram": adapter, "gmail": gmail})
+@pytest.mark.asyncio
+async def test_channel_send_text_and_email_branches():
+    adapter = SendAdapter()
+    gmail = GmailAdapter()
+    tool = ChannelSendTool({"telegram": adapter, "gmail": gmail})
 
-        sent = await tool.call("send_text", {"channel": "telegram", "recipient": "u1", "text": "hello", "options": {"silent": True}}, _ctx())
-        assert sent.ok is True
-        assert adapter.sent == [("u1", "hello", {"silent": True})]
+    sent = await tool.call("send_text", {"channel": "telegram", "recipient": "u1", "text": "hello", "options": {"silent": True}}, _ctx())
+    assert sent.ok is True
+    assert adapter.sent == [("u1", "hello", {"silent": True})]
 
-        dry = await tool.call("send_text", {"channel": "telegram", "recipient": "u1", "text": "hello"}, _ctx("dry_run"))
-        assert dry.ok is False
-        assert "dry-run" in dry.summary
+    dry = await tool.call("send_text", {"channel": "telegram", "recipient": "u1", "text": "hello"}, _ctx("dry_run"))
+    assert dry.ok is False
+    assert "dry-run" in dry.summary
 
-        missing = await tool.call("send_text", {"channel": "missing", "recipient": "u1", "text": "hello"}, _ctx())
-        assert missing.ok is False
-        assert "Unknown channel" in missing.error
+    missing = await tool.call("send_text", {"channel": "missing", "recipient": "u1", "text": "hello"}, _ctx())
+    assert missing.ok is False
+    assert "Unknown channel" in missing.error
 
-        email = await tool.call("send_email", {"to": "a@example.com", "subject": "Hi", "body": "Body"}, _ctx())
-        assert email.ok is True
-        assert email.data["raw"] == "a@example.com|Hi|Body"
+    email = await tool.call("send_email", {"to": "a@example.com", "subject": "Hi", "body": "Body"}, _ctx())
+    assert email.ok is True
+    assert email.data["raw"] == "a@example.com|Hi|Body"
 
-        with pytest.raises(ValueError, match="Unsupported channels action"):
-            await tool.call("unknown", {}, _ctx())
-
-    asyncio.run(run_case())
+    with pytest.raises(ValueError, match="Unsupported channels action"):
+        await tool.call("unknown", {}, _ctx())
 
 
-def test_gmail_tool_oauth_and_email_branches():
-    async def run_case():
-        tool = GmailTool(GmailAdapter())
-        assert (await tool.call("configured", {}, _ctx())).data == {"configured": True, "authenticated": False}
-        assert (await tool.call("auth_local", {"port": 9999}, _ctx())).data["keys"] == ["access_token"]
-        assert (await tool.call("auth_url", {"redirect_uri": "http://localhost/cb"}, _ctx())).data["state"] == "omnidesk-gmail"
-        assert (await tool.call("auth_callback", {"code": "c", "redirect_uri": "http://localhost/cb", "state": "s"}, _ctx())).data["keys"] == ["code", "state"]
-        assert (await tool.call("build_raw_email", {"to": "a@example.com", "subject": "S", "body": "B"}, _ctx())).data["raw"] == "a@example.com|S|B"
-        assert (await tool.call("send_email", {"to": "a@example.com", "subject": "S", "body": "B"}, _ctx())).data["sent"] is True
-        with pytest.raises(ValueError, match="Unsupported gmail action"):
-            await tool.call("unknown", {}, _ctx())
-
-    asyncio.run(run_case())
+@pytest.mark.asyncio
+async def test_gmail_tool_oauth_and_email_branches():
+    tool = GmailTool(GmailAdapter())
+    assert (await tool.call("configured", {}, _ctx())).data == {"configured": True, "authenticated": False}
+    assert (await tool.call("auth_local", {"port": 9999}, _ctx())).data["keys"] == ["access_token"]
+    assert (await tool.call("auth_url", {"redirect_uri": "http://localhost/cb"}, _ctx())).data["state"] == "omnidesk-gmail"
+    assert (await tool.call("auth_callback", {"code": "c", "redirect_uri": "http://localhost/cb", "state": "s"}, _ctx())).data["keys"] == ["code", "state"]
+    assert (await tool.call("build_raw_email", {"to": "a@example.com", "subject": "S", "body": "B"}, _ctx())).data["raw"] == "a@example.com|S|B"
+    assert (await tool.call("send_email", {"to": "a@example.com", "subject": "S", "body": "B"}, _ctx())).data["sent"] is True
+    with pytest.raises(ValueError, match="Unsupported gmail action"):
+        await tool.call("unknown", {}, _ctx())
 
 
 class FakeBrowserTool(BrowserTool):
@@ -104,6 +98,14 @@ class FakeBrowserTool(BrowserTool):
         return [{"id": "t1", "title": "Title", "url": "https://allowed.test/page"}]
 
     async def _cdp(self, method, params=None, target_id=None):
+        if method == "DOM.getDocument":
+            return {"root": {"nodeId": 1}}
+        if method == "DOM.querySelector":
+            return {"nodeId": 2}
+        if method == "DOM.getOuterHTML":
+            return {"outerHTML": "<html><body>visible text</body></html>"}
+        if method == "DOM.getBoxModel":
+            return {"model": {"content": [10, 10, 30, 10, 30, 30, 10, 30]}}
         if method == "Runtime.evaluate" and "innerText" in str((params or {}).get("expression")):
             return {"result": {"value": "visible text"}}
         if method == "Page.captureScreenshot":
@@ -111,46 +113,42 @@ class FakeBrowserTool(BrowserTool):
         return {"method": method, "params": params or {}, "target_id": target_id}
 
 
-def test_browser_tool_validation_and_action_branches():
-    async def run_case():
-        cfg = ChromeConfig(allowed_origins=["https://allowed.test"], allow_evaluate=True)
-        tool = FakeBrowserTool(cfg)
+@pytest.mark.asyncio
+async def test_browser_tool_validation_and_action_branches():
+    cfg = ChromeConfig(allowed_origins=["https://allowed.test"], allow_evaluate=True)
+    tool = FakeBrowserTool(cfg)
 
-        assert len((await tool.call("list_tabs", {}, _ctx())).data) == 1
-        assert (await tool.call("navigate", {"url": "https://allowed.test/next"}, _ctx())).data["method"] == "Page.navigate"
-        assert (await tool.call("get_dom_text", {}, _ctx())).data["text"] == "visible text"
-        assert (await tool.call("click_selector", {"selector": "#go"}, _ctx())).ok is True
-        assert (await tool.call("type_selector", {"selector": "#name", "text": "Ada"}, _ctx())).ok is True
-        assert (await tool.call("evaluate", {"expression": "1 + 1"}, _ctx())).data["method"] == "Runtime.evaluate"
-        assert (await tool.call("screenshot", {}, _ctx())).data["png_base64"] == "png-data"
+    assert len((await tool.call("list_tabs", {}, _ctx())).data) == 1
+    assert (await tool.call("navigate", {"url": "https://allowed.test/next"}, _ctx())).data["method"] == "Page.navigate"
+    assert (await tool.call("get_dom_text", {}, _ctx())).data["text"] == "visible text"
+    assert (await tool.call("click_selector", {"selector": "#go"}, _ctx())).ok is True
+    assert (await tool.call("type_selector", {"selector": "#name", "text": "Ada"}, _ctx())).ok is True
+    assert (await tool.call("evaluate", {"expression": "1 + 1"}, _ctx())).data["method"] == "Runtime.evaluate"
+    assert (await tool.call("screenshot", {}, _ctx())).data["png_base64"] == "png-data"
 
-        with pytest.raises(ValueError, match="Browser origin not allowed"):
-            tool._check_url("https://blocked.test")
-        with pytest.raises(ValueError, match="allowlist is empty"):
-            BrowserTool(ChromeConfig())._check_url("https://allowed.test")
-        with pytest.raises(PermissionError, match="disabled"):
-            BrowserTool(ChromeConfig(allowed_origins=["https://allowed.test"]))._check_js("1 + 1")
-        with pytest.raises(PermissionError, match="document.cookie"):
-            tool._check_js("document.cookie")
-        with pytest.raises(ValueError, match="Unsupported browser action"):
-            await tool.call("unknown", {}, _ctx())
-
-    asyncio.run(run_case())
+    with pytest.raises(ValueError, match="Browser origin not allowed"):
+        tool._check_url("https://blocked.test")
+    with pytest.raises(ValueError, match="allowlist is empty"):
+        BrowserTool(ChromeConfig())._check_url("https://allowed.test")
+    with pytest.raises(PermissionError, match="disabled"):
+        BrowserTool(ChromeConfig(allowed_origins=["https://allowed.test"]))._check_js("1 + 1")
+    with pytest.raises(PermissionError, match="document.cookie"):
+        tool._check_js("document.cookie")
+    with pytest.raises(ValueError, match="Unsupported browser action"):
+        await tool.call("unknown", {}, _ctx())
 
 
-def test_computer_tool_dry_run_branches(tmp_path):
-    async def run_case():
-        tool = ComputerTool(tmp_path / "screens")
-        assert (await tool.call("screenshot", {"expected_result": "inspect"}, _ctx("dry_run"))).ok is False
-        assert (await tool.call("click", {"x": 1, "y": 2, "expected_result": "open"}, _ctx("dry_run"))).ok is False
-        assert (await tool.call("move", {"x": 1, "y": 2, "expected_result": "hover"}, _ctx("dry_run"))).ok is False
-        assert (await tool.call("type_text", {"text": "abc", "expected_result": "fill"}, _ctx("dry_run"))).ok is False
-        assert (await tool.call("hotkey", {"keys": ["cmd", "l"], "expected_result": "focus"}, _ctx("dry_run"))).ok is False
-        with pytest.raises(ValueError, match="requires expected_result"):
-            await tool.call("click", {"x": 1, "y": 2}, _ctx("dry_run"))
-        with pytest.raises(ValueError, match="hotkey requires keys"):
-            await tool.call("hotkey", {"keys": [], "expected_result": "focus"}, _ctx("dry_run"))
-        with pytest.raises(ValueError, match="Unsupported computer action"):
-            await tool.call("unknown", {}, _ctx("dry_run"))
-
-    asyncio.run(run_case())
+@pytest.mark.asyncio
+async def test_computer_tool_dry_run_branches(tmp_path):
+    tool = ComputerTool(tmp_path / "screens")
+    assert (await tool.call("screenshot", {"expected_result": "inspect"}, _ctx("dry_run"))).ok is False
+    assert (await tool.call("click", {"x": 1, "y": 2, "expected_result": "open"}, _ctx("dry_run"))).ok is False
+    assert (await tool.call("move", {"x": 1, "y": 2, "expected_result": "hover"}, _ctx("dry_run"))).ok is False
+    assert (await tool.call("type_text", {"text": "abc", "expected_result": "fill"}, _ctx("dry_run"))).ok is False
+    assert (await tool.call("hotkey", {"keys": ["cmd", "l"], "expected_result": "focus"}, _ctx("dry_run"))).ok is False
+    with pytest.raises(ValueError, match="requires expected_result"):
+        await tool.call("click", {"x": 1, "y": 2}, _ctx("dry_run"))
+    with pytest.raises(ValueError, match="hotkey requires keys"):
+        await tool.call("hotkey", {"keys": [], "expected_result": "focus"}, _ctx("dry_run"))
+    with pytest.raises(ValueError, match="Unsupported computer action"):
+        await tool.call("unknown", {}, _ctx("dry_run"))

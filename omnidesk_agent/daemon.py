@@ -27,6 +27,7 @@ from omnidesk_agent.core.worker import WebhookWorker
 from omnidesk_agent.learning.daily_job import DailySelfLearningJob
 from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.models.router import build_model_router
+from omnidesk_agent.models.cost_store import ModelCostStore
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.security.admin_auth import AdminAuth
 from omnidesk_agent.security.approval_store import ApprovalStore
@@ -89,8 +90,8 @@ class OmniDeskRuntime:
         self.plugins = PluginRegistry(cfg.workspace.plugins_dirs, cfg.plugins)
         self.tools = ToolRegistry()
         self.adapters = self._build_channel_adapters()
-        self.model_router = build_model_router(cfg.models, self.token_budget)
-        self.repo_root = self._resolve_repo_root()
+        self.model_cost_store = ModelCostStore(cfg.workspace.root / "model_costs.sqlite3")
+        self.model_router = build_model_router(cfg.models, self.token_budget, self.model_cost_store)
         self._register_builtin_tools()
         self.skills.load()
         self.plugins.load_into(self.tools, cfg)
@@ -101,20 +102,8 @@ class OmniDeskRuntime:
         self.webhook_worker: Optional[WebhookWorker] = WebhookWorker(self.job_queue, self.orchestrator)
         self.outbound_dispatcher: Optional[OutboundDispatcher] = OutboundDispatcher(self.outbound_messages, self.adapters)
         self.learning_job = DailySelfLearningJob(self.memory, cfg.workspace.root)
-        self.governance = GovernedSelfImprovement(cfg.workspace.root, self.repo_root)
+        self.governance = GovernedSelfImprovement(cfg.workspace.root, Path.cwd(), sandbox_cfg=cfg.sandbox)
         self.proposal_store = self.governance.proposal_store
-
-    def _resolve_repo_root(self) -> Path:
-        configured = self.cfg.github.repo_root
-        if configured is not None:
-            return configured.expanduser().resolve()
-
-        candidates = [Path.cwd(), Path(__file__).resolve().parents[1]]
-        for candidate in candidates:
-            resolved = candidate.resolve()
-            if (resolved / ".git").exists():
-                return resolved
-        return Path.cwd().resolve()
 
     def _build_channel_adapters(self) -> dict:
         return {
@@ -131,22 +120,31 @@ class OmniDeskRuntime:
         }
 
     def _register_builtin_tools(self) -> None:
-        self.tools.register(ComputerTool(self.cfg.workspace.root / "screenshots"))
-        self.tools.register(ShellTool(self.cfg.workspace.root, self.cfg.permissions, self.cfg.sandbox))
+        # Register the smallest runtime capability surface. Tools still keep
+        # their own internal gates; this layer prevents disabled capabilities
+        # from being visible to planners in the first place.
         self.tools.register(FilesTool(self.cfg.workspace.root))
-        self.tools.register(GitTool(self.repo_root))
-        self.tools.register(TestTool(self.repo_root))
-        self.tools.register(ChannelSendTool(self.adapters, self.outbound_messages))
-        self.tools.register(UIBridgeTool(self.cfg.channels.ui_bridge, self.tools))
-        self.tools.register(BrowserTool(self.cfg.channels.chrome))
-        self.tools.register(GmailTool(self.adapters["gmail"]))
+        self.tools.register(GitTool(Path.cwd()))
+        self.tools.register(TestTool(Path.cwd()))
+        self.tools.register(ShellTool(self.cfg.workspace.root, self.cfg.permissions, self.cfg.sandbox))
+        self.tools.register(ComputerTool(self.cfg.workspace.root / "screenshots"))
         self.tools.register(VisionGroundingTool(self.model_router))
-        self.tools.register(PullRequestTool(
-            self.repo_root,
-            remote_name=self.cfg.github.remote_name,
-            host=self.cfg.github.host,
-            require_write_access=self.cfg.github.require_write_access,
-        ))
+        self.tools.register(PullRequestTool(Path.cwd()))
+
+        if self._any_outbound_channel_enabled():
+            self.tools.register(ChannelSendTool(self.adapters, self.outbound_messages))
+        if self.cfg.channels.ui_bridge.enabled:
+            self.tools.register(UIBridgeTool(self.cfg.channels.ui_bridge, self.tools))
+        if self.cfg.channels.chrome.enabled:
+            self.tools.register(BrowserTool(self.cfg.channels.chrome))
+        if self.cfg.channels.gmail.enabled:
+            self.tools.register(GmailTool(self.adapters["gmail"]))
+
+    def _any_outbound_channel_enabled(self) -> bool:
+        for name in ("telegram", "whatsapp_cloud", "wechat_official", "meta_graph", "dingtalk", "lark", "feishu", "line", "x"):
+            if bool(getattr(getattr(self.cfg.channels, name), "enabled", False)):
+                return True
+        return bool(self.cfg.channels.gmail.enabled and (self.cfg.channels.gmail.allow_send or self.cfg.channels.gmail.allow_compose))
 
     async def start(self) -> None:
         if self.webhook_worker is not None:
@@ -168,6 +166,7 @@ class OmniDeskRuntime:
             self.learning_loop,
             self.learning_experiments,
             self.model_router,
+            self.model_cost_store,
             self.skills,
             self.plugins,
             self.webhook_worker,
@@ -182,6 +181,8 @@ class OmniDeskRuntime:
             close = getattr(resource, "close", None)
             if callable(close):
                 close()
+        from omnidesk_agent.storage.sqlite import close_all_open_connections
+        close_all_open_connections()
 
     def __del__(self) -> None:  # pragma: no cover - best-effort resource cleanup
         try:
@@ -197,7 +198,6 @@ class OmniDeskRuntime:
             "plugins": sorted(getattr(self.plugins, "loaded", {})),
             "channels": sorted(self.adapters),
             "audit_log": str(self.cfg.permissions.audit_log),
-            "repo_root": str(self.repo_root),
             "learning_enabled": self.cfg.learning.enabled,
             "jobs": self.job_queue.stats(),
             "outbound_messages": self.outbound_messages.stats(),

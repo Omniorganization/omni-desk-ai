@@ -5,6 +5,7 @@ import json
 from typing import Any, Optional
 
 from omnidesk_agent.core.outbound_messages import OutboundMessageStore
+from omnidesk_agent.channels.provider_errors import classify_channel_error
 
 
 class OutboundDispatcher:
@@ -73,7 +74,16 @@ class OutboundDispatcher:
         try:
             await self._deliver(message)
         except Exception as exc:
-            self.store.mark_failed(message_id, str(exc), dead_letter=False)
+            info = classify_channel_error(exc)
+            self.store.mark_failed(message_id, str(exc), dead_letter=info.dead_letter_now or not info.retryable, category=info.category)
+            metrics = getattr(self.store, "metrics", None)
+            inc = getattr(metrics, "inc", None)
+            if callable(inc):
+                inc("omnidesk_outbound_failures_total", channel=str(message.get("channel", "unknown")), category=info.category)
+                if info.dead_letter_now or not info.retryable:
+                    inc("omnidesk_outbound_dead_letter_total", channel=str(message.get("channel", "unknown")), category=info.category)
+                else:
+                    inc("omnidesk_outbound_retry_total", channel=str(message.get("channel", "unknown")), category=info.category)
         return True
 
     async def _deliver(self, message: dict[str, Any]) -> None:

@@ -9,6 +9,7 @@ from typing import Any, Optional
 from omnidesk_agent.plugins.manifest import PluginManifest
 from omnidesk_agent.plugins.docker_runner import DockerPluginTool
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
+from omnidesk_agent.validation.production import is_production_mode
 
 
 class PluginRegistry:
@@ -32,6 +33,8 @@ class PluginRegistry:
         self.signing_secret = os.getenv(signing_secret_env or "") if signing_secret_env else None
         self.allow_in_process = bool(getattr(config, "allow_in_process", False)) if config is not None and not isinstance(config, bool) else False
         self.plugin_timeout_seconds = int(getattr(config, "plugin_timeout_seconds", 30)) if config is not None and not isinstance(config, bool) else 30
+        self.default_sandbox = str(getattr(config, "default_sandbox", "docker")) if config is not None and not isinstance(config, bool) else "docker"
+        self.production_forbid_subprocess = bool(getattr(config, "production_forbid_subprocess", True)) if config is not None and not isinstance(config, bool) else True
         self.loaded: dict[str, PluginManifest] = {}
 
     @property
@@ -56,6 +59,9 @@ class PluginRegistry:
                     continue
                 self._check_manifest_name(manifest.name)
                 manifest.verify(plugin_dir, self.signing_secret)
+                production = bool(app_config is not None and is_production_mode(app_config))
+                if production and self.production_forbid_subprocess and manifest.sandbox != "docker":
+                    raise PermissionError(f"production plugins must use docker sandbox: {manifest.name}")
 
                 entrypoint = (plugin_dir / manifest.entrypoint).resolve()
                 if not entrypoint.is_file() or plugin_dir.resolve() not in entrypoint.parents:

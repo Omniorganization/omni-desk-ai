@@ -54,21 +54,48 @@ class UpgradeProposalStore:
         proposal_id: str,
         *,
         artifact_hash: Optional[str] = None,
+        artifact_sha256: Optional[str] = None,
+        branch_name: Optional[str] = None,
         test_report_path: Optional[str] = None,
+        regression_report_path: Optional[str] = None,
+        security_report_path: Optional[str] = None,
         pr_url: Optional[str] = None,
+        pr_number: Optional[int] = None,
         merge_sha: Optional[str] = None,
+        merge_commit_sha: Optional[str] = None,
+        approved_by: Optional[str] = None,
+        approved_at: Optional[float] = None,
+        rollback_artifact_path: Optional[str] = None,
     ) -> UpgradeProposal:
         proposal = self.get(proposal_id)
         if proposal is None:
             raise KeyError(proposal_id)
         if artifact_hash is not None:
             proposal.artifact_hash = artifact_hash
+        if artifact_sha256 is not None:
+            proposal.artifact_sha256 = artifact_sha256
+        if branch_name is not None:
+            proposal.branch_name = branch_name
         if test_report_path is not None:
             proposal.test_report_path = test_report_path
+        if regression_report_path is not None:
+            proposal.regression_report_path = regression_report_path
+        if security_report_path is not None:
+            proposal.security_report_path = security_report_path
         if pr_url is not None:
             proposal.pr_url = pr_url
+        if pr_number is not None:
+            proposal.pr_number = pr_number
         if merge_sha is not None:
             proposal.merge_sha = merge_sha
+        if merge_commit_sha is not None:
+            proposal.merge_commit_sha = merge_commit_sha
+        if approved_by is not None:
+            proposal.approved_by = approved_by
+        if approved_at is not None:
+            proposal.approved_at = approved_at
+        if rollback_artifact_path is not None:
+            proposal.rollback_artifact_path = rollback_artifact_path
         self.save(proposal)
         self._metric("omnidesk_self_upgrade_artifacts_total", status=proposal.status)
         return proposal

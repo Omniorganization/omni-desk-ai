@@ -9,6 +9,12 @@ class ChannelSendTool:
         self.adapters = adapters
         self.outbound_store = outbound_store
 
+    @staticmethod
+    def _require_channel_enabled(adapter: Any, channel: str) -> None:
+        cfg = getattr(adapter, "cfg", None)
+        if cfg is not None and not bool(getattr(cfg, "enabled", False)):
+            raise PermissionError(f"Channel {channel} is disabled by configuration")
+
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "send_text":
             channel = str(args["channel"])
@@ -23,6 +29,7 @@ class ChannelSendTool:
                 return ToolResult(False, error=f"Unknown channel adapter: {channel}")
             if not hasattr(adapter, "send_text"):
                 return ToolResult(False, error=f"Channel {channel} does not support send_text")
+            self._require_channel_enabled(adapter, channel)
             if self.outbound_store:
                 outbound_id = self.outbound_store.create(channel=channel, recipient=recipient, payload={"type": "text", "text": text, "options": args.get("options", {})})
                 return ToolResult(True, data={"outbound_id": outbound_id, "status": "pending"}, summary=f"queued text via {channel} to {recipient}")
@@ -32,6 +39,10 @@ class ChannelSendTool:
             adapter = self.adapters.get("gmail")
             if not adapter:
                 return ToolResult(False, error="Gmail adapter not configured")
+            self._require_channel_enabled(adapter, "gmail")
+            cfg = getattr(adapter, "cfg", None)
+            if cfg is not None and (getattr(cfg, "readonly", True) or not getattr(cfg, "allow_send", False)):
+                raise PermissionError("Gmail send is disabled by configuration")
             to = str(args["to"]); subject = str(args.get("subject", "")); body = str(args.get("body", ""))
             decision = ctx.permissions.verify(proposal("channels", "send_email", {"to": to, "subject": subject, "body_preview": body[:200], "length": len(body)}, "high", "发送邮件前必须确认", ctx))
             if decision.mode == "dry_run":

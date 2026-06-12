@@ -39,6 +39,7 @@ def _endpoint(app, path: str):
 
 
 def test_self_upgrade_evaluate_requires_operator_role(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     fastapi = pytest.importorskip("fastapi")
     monkeypatch.delenv("OMNIDESK_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "view")
@@ -56,6 +57,7 @@ def test_self_upgrade_evaluate_requires_operator_role(tmp_path, monkeypatch):
 
 
 def test_self_upgrade_canary_evaluate_requires_owner_role(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     fastapi = pytest.importorskip("fastapi")
     monkeypatch.delenv("OMNIDESK_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "op")

@@ -26,9 +26,18 @@ class UpgradeProposal:
     score: float = 0.0
     status: str = "pending"
     artifact_hash: Optional[str] = None
+    artifact_sha256: Optional[str] = None
+    branch_name: Optional[str] = None
     test_report_path: Optional[str] = None
+    regression_report_path: Optional[str] = None
+    security_report_path: Optional[str] = None
     pr_url: Optional[str] = None
+    pr_number: Optional[int] = None
     merge_sha: Optional[str] = None
+    merge_commit_sha: Optional[str] = None
+    approved_by: Optional[str] = None
+    approved_at: Optional[float] = None
+    rollback_artifact_path: Optional[str] = None
     proposal_id: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)

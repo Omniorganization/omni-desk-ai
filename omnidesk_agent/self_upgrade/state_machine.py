@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 INDUSTRIAL_UPGRADE_STATES = [
     "PROPOSED",
@@ -20,11 +20,11 @@ INDUSTRIAL_UPGRADE_STATES = [
 ]
 
 ALLOWED_TRANSITIONS = {
-    "PROPOSED": {"RISK_CLASSIFIED", "BLOCKED"},
+    "PROPOSED": {"RISK_CLASSIFIED", "ARTIFACT_GENERATED", "HUMAN_REVIEW", "CANARY", "BLOCKED"},
     "RISK_CLASSIFIED": {"ARTIFACT_GENERATED", "HUMAN_REVIEW", "BLOCKED"},
-    "ARTIFACT_GENERATED": {"REGRESSION_TESTED", "BLOCKED"},
-    "REGRESSION_TESTED": {"SECURITY_TESTED", "BLOCKED"},
-    "SECURITY_TESTED": {"HUMAN_REVIEW", "SHADOW_MODE", "BLOCKED"},
+    "ARTIFACT_GENERATED": {"REGRESSION_TESTED", "HUMAN_REVIEW", "CANARY", "BLOCKED"},
+    "REGRESSION_TESTED": {"SECURITY_TESTED", "HUMAN_REVIEW", "CANARY", "BLOCKED"},
+    "SECURITY_TESTED": {"HUMAN_REVIEW", "SHADOW_MODE", "CANARY", "BLOCKED"},
     "HUMAN_REVIEW": {"SHADOW_MODE", "APPROVED_FOR_PR", "BLOCKED"},
     "SHADOW_MODE": {"CANARY", "HUMAN_REVIEW", "BLOCKED"},
     "CANARY": {"APPROVED_FOR_PR", "ROLLED_BACK", "BLOCKED"},
@@ -34,6 +34,26 @@ ALLOWED_TRANSITIONS = {
     "BLOCKED": set(),
     "COMPLETED": set(),
 }
+
+
+def normalize_upgrade_checks(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return canonical upgrade gate evidence.
+
+    New governance code writes all gate evidence under metadata["checks"].
+    Older proposals may still carry top-level regression_result/security_result
+    fields, so this helper normalizes both shapes without treating missing data
+    as success.
+    """
+    raw_checks = metadata.get("checks")
+    checks: dict[str, Any] = raw_checks if isinstance(raw_checks, dict) else {}
+    return {
+        "regression": checks.get("regression") or metadata.get("regression_result") or {},
+        "security": checks.get("security") or metadata.get("security_result") or {},
+        "permission_diff": checks.get("permission_diff") or metadata.get("permission_diff") or {},
+        "human_review": checks.get("human_review") or metadata.get("human_review") or {},
+        "shadow": checks.get("shadow") or metadata.get("shadow_result") or {},
+        "canary": checks.get("canary") or metadata.get("canary_result") or {},
+    }
 
 
 @dataclass
@@ -62,10 +82,19 @@ class UpgradeStateMachine:
         state = metadata.get("state")
         if state != "CANARY":
             raise PermissionError(f"proposal must be in CANARY before PR approval; current={state}")
-        for key in ("regression_result", "security_result"):
-            result = metadata.get(key) or {}
+        checks = normalize_upgrade_checks(metadata)
+        for key in ("regression", "security"):
+            result = checks.get(key) or {}
             if not result.get("ok"):
-                raise PermissionError(f"proposal cannot be promoted: {key} is not ok")
-        human = metadata.get("human_review") or {}
+                raise PermissionError(f"proposal cannot be promoted: checks.{key} is not ok")
+        human = checks.get("human_review") or {}
         if human.get("decision") not in {"approved", "approve"}:
             raise PermissionError("proposal requires explicit human approval before PR")
+
+    def transition_metadata(self, proposal: dict, new_state: str, reason: str = "") -> dict[str, Any]:
+        metadata = dict(proposal.get("metadata", {}) if isinstance(proposal, dict) else getattr(proposal, "metadata", {}))
+        old_state = metadata.get("state") or "PROPOSED"
+        self.transition(str(proposal.get("proposal_id") if isinstance(proposal, dict) else getattr(proposal, "proposal_id", "")), old_state, new_state, reason)
+        metadata["state"] = new_state
+        metadata.setdefault("state_history", []).append({"from": old_state, "to": new_state, "reason": reason})
+        return metadata

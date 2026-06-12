@@ -5,7 +5,7 @@ This package closes the industrial review gaps that remained after the runtime h
 ## Completed gates
 
 - Test suite is green.
-- CI global coverage gate is 75%; security/core/tools grouped gates are enabled; next target is 80%.
+- CI global coverage gate is 80%; security/core/tools grouped gates are set to 90%/85%/85%; next target is targeted file-level hard gates.
 - AdminAuth semantics are explicit: default class has no IP restriction, production runtime passes `gateway.admin_allowed_ips`.
 - Learning dashboard renders recent audit events with HTML escaping.
 - Memory writes have a governed writer for namespace, retention, redaction, credential-like blocking and audit.

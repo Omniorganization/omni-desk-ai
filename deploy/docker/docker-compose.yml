@@ -1,6 +1,9 @@
 services:
   omnidesk:
-    build: ../..
+    build:
+      context: ../..
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE_DIGEST:?set real digest-pinned base image}
     image: omnidesk-agent:local
     command: ["omnidesk", "--config", "/data/config.yaml", "serve", "--host", "0.0.0.0"]
     ports:
@@ -11,6 +14,8 @@ services:
       OMNIDESK_GATEWAY_SECRET: "${OMNIDESK_GATEWAY_SECRET:?set OMNIDESK_GATEWAY_SECRET}"
       OMNIDESK_PLUGIN_SIGNING_SECRET: "${OMNIDESK_PLUGIN_SIGNING_SECRET:?set OMNIDESK_PLUGIN_SIGNING_SECRET}"
       OMNIDESK_MEMORY_ENCRYPTION_KEY: "${OMNIDESK_MEMORY_ENCRYPTION_KEY:?set OMNIDESK_MEMORY_ENCRYPTION_KEY}"
+      OMNIDESK_SANDBOX_RUNNER_TOKEN: "${OMNIDESK_SANDBOX_RUNNER_TOKEN:?set OMNIDESK_SANDBOX_RUNNER_TOKEN}"
+      OMNIDESK_RUNNING_IN_CONTAINER: "1"
     volumes:
       - omnidesk-data:/data
       - ./config.production.yaml:/data/config.yaml:ro
@@ -21,5 +26,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+# The sandbox runner should run on a separate isolated node/service with rootless Docker/Podman.
+# Do not mount /var/run/docker.sock into the omnidesk app container.
 volumes:
   omnidesk-data:
+
+# Run deploy/sandbox-runner/docker-compose.yml on an isolated runner node.
+# Do not mount /var/run/docker.sock into the omnidesk app container.

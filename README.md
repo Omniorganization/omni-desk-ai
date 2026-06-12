@@ -229,6 +229,11 @@ This version adds role-aware AdminAuth, IP allowlist, admin audit, one-time resu
 
 ---
 
-## 0.7.0-industrial-final
+## 0.7.11-industrial-rc6
 
-This release fixes all known test failures and adds final industrial hardening: governed memory writes, plugin runtime permission validation, Docker plugin isolation, PR promotion gates, SQLite migrations, release SBOM workflow, initialized runtime metrics and a 65% CI coverage gate.
+This release adds industrial RC3 hardening: governed memory writes, plugin runtime permission validation, rootless Docker sandbox isolation, PR/artifact promotion metadata, SQLite migration/close governance, release SBOM/signing workflow, initialized runtime metrics, and an 80% global CI coverage gate with security/core/tools grouped gates at 90%/85%/85%.
+
+
+### 0.7.11 RC6 deployment note
+
+Production Docker deployments should not mount `/var/run/docker.sock` into the OmniDesk app container. Use `sandbox.backend: remote_docker` with an isolated rootless Docker/Podman runner. Production configs must pin sandbox images by digest and keep unsigned release artifacts disabled.

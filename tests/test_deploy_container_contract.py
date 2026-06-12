@@ -10,8 +10,8 @@ def test_docker_compose_mounts_production_config_and_binds_all_interfaces():
     assert "OMNIDESK_MEMORY_ENCRYPTION_KEY" in compose
 
 
-def test_container_production_config_writes_only_under_data():
-    cfg = Path("deploy/docker/config.production.yaml").read_text(encoding="utf-8")
+def test_container_production_example_config_writes_only_under_data():
+    cfg = Path("deploy/docker/config.production.example.yaml").read_text(encoding="utf-8")
     assert "root: /data/workspace" in cfg
     assert "memory_db: /data/memory.sqlite3" in cfg
     assert "audit_log: /data/audit.log" in cfg

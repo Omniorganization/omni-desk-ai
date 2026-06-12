@@ -43,6 +43,29 @@ class MetricsRegistry:
         with self._lock:
             self.gauges[key] = value
 
+    def snapshot(self) -> dict[str, dict[str, float]]:
+        with self._lock:
+            return {"counters": dict(self.counters), "gauges": dict(self.gauges)}
+
+    def counter_value(self, name: str, **labels: Any) -> float:
+        key = self._key(name, labels)
+        with self._lock:
+            return float(self.counters.get(key, 0.0))
+
+    def counter_sum(self, name: str, **required_labels: Any) -> float:
+        prefix = name + "{"
+        total = 0.0
+        with self._lock:
+            for key, value in self.counters.items():
+                if key == name and not required_labels:
+                    total += value
+                    continue
+                if not key.startswith(prefix):
+                    continue
+                if all(f'{label}="{str(val).replace(chr(34), chr(92)+chr(34))}"' in key for label, val in required_labels.items()):
+                    total += value
+        return total
+
     def render_prometheus(self) -> str:
         lines: list[str] = []
         with self._lock:
@@ -116,7 +139,13 @@ DEFAULT_RUNTIME_METRICS = [
     "omnidesk_causal_root_cause_reports_total",
     "omnidesk_learning_roi_evaluations_total",
     "omnidesk_world_model_observations_total",
+    "omnidesk_webhook_enqueue_attempts_total",
+    "omnidesk_webhook_enqueue_failures_total",
+    "omnidesk_resume_attempts_total",
+    "omnidesk_resume_success_total",
+    "omnidesk_outbound_duplicate_total",
 ]
+
 
 
 def initialize_runtime_metrics(metrics: MetricsRegistry) -> None:
