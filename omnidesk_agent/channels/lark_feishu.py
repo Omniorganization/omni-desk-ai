@@ -1,18 +1,9 @@
 from __future__ import annotations
 import os
 from typing import Any, Optional, Union
-try:
-    import httpx
-except ModuleNotFoundError:
-    httpx = None
 from omnidesk_agent.config import LarkConfig, FeishuConfig
 from omnidesk_agent.core.models import ChannelMessage
-
-
-def _require_httpx():
-    if httpx is None:
-        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
-    return httpx
+from omnidesk_agent.channels.http_client import ChannelHttpClient
 
 class _BaseLarkFeishuChannel:
     name = "lark"
@@ -32,6 +23,7 @@ class _BaseLarkFeishuChannel:
         self.app_id = os.getenv(cfg.app_id_env, "")
         self.app_secret = os.getenv(cfg.app_secret_env, "")
         self.verification_token = os.getenv(cfg.verification_token_env, "")
+        self.http = ChannelHttpClient()
 
 
     def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
@@ -64,10 +56,8 @@ class _BaseLarkFeishuChannel:
     async def _tenant_access_token(self) -> str:
         if not self.app_id or not self.app_secret:
             raise RuntimeError(f"{self.name} app id/secret missing")
-        async with _require_httpx().AsyncClient(timeout=20) as client:
-            r = await client.post(f"{self.api_base}/auth/v3/tenant_access_token/internal", json={"app_id": self.app_id, "app_secret": self.app_secret})
-            r.raise_for_status()
-            data = r.json()
+        result = await self.http.post(f"{self.api_base}/auth/v3/tenant_access_token/internal", json={"app_id": self.app_id, "app_secret": self.app_secret})
+        data = result.data or {}
         token = data.get("tenant_access_token")
         if not token:
             raise RuntimeError(f"{self.name} tenant_access_token missing from response")
@@ -77,9 +67,7 @@ class _BaseLarkFeishuChannel:
         token = await self._tenant_access_token()
         receive_id_type = kwargs.get("receive_id_type", "open_id")
         body = {"receive_id": recipient, "msg_type": "text", "content": {"text": text}}
-        async with _require_httpx().AsyncClient(timeout=20) as client:
-            r = await client.post(f"{self.api_base}/im/v1/messages?receive_id_type={receive_id_type}", headers={"Authorization": f"Bearer {token}"}, json=body)
-            r.raise_for_status()
+        return await self.http.post(f"{self.api_base}/im/v1/messages?receive_id_type={receive_id_type}", headers={"Authorization": f"Bearer {token}"}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
 
 class LarkChannel(_BaseLarkFeishuChannel):
     name = "lark"

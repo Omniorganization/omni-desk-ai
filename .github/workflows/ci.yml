@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: |
+          python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.dev.lock
+          python scripts/check_lock_hashes.py requirements.security.lock
+      - run: python scripts/check_github_workflows.py .github/workflows
+      - run: python scripts/check_github_actions_pinned.py .github/workflows
+      - run: python scripts/check_version_consistency.py .
+      - run: python scripts/check_observability_contract.py .
+      - run: python scripts/check_deployment_readiness.py --compose-file deploy/docker/docker-compose.full.yml
+      - run: python scripts/check_supply_chain_standard.py .
+      - run: python scripts/check_enterprise_readiness.py .
+      - run: python scripts/check_kubernetes_contract.py .
+      - run: python scripts/production_closure_drill.py --root . --contract-only
+      - run: python scripts/check_script_executability.py .
+      - name: Install workflow semantic linters
+        run: |
+          python -m pip install yamllint
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - run: yamllint .github/workflows
+      - run: |
+          "$HOME/go/bin/actionlint" .github/workflows/*.yml
+      - run: python -m compileall omnidesk_agent
+      - run: find . -type d -name "__pycache__" -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+      - run: python scripts/check_release_hygiene.py . --allow-vcs
+      - run: ruff check omnidesk_agent tests
+      - run: pyright omnidesk_agent/core omnidesk_agent/security omnidesk_agent/tools omnidesk_agent/self_upgrade omnidesk_agent/server.py omnidesk_agent/daemon.py
+      - run: pytest -q -W error --timeout=60 --timeout-method=thread
+      - run: pytest --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json --cov-fail-under=80 -q --timeout=60 --timeout-method=thread
+      - run: python scripts/check_coverage_gates.py coverage.json
+      - run: python scripts/check_optional_connector_coverage.py coverage.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: coverage-xml-${{ matrix.python-version }}
+          path: coverage.xml

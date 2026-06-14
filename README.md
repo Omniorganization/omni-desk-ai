@@ -196,7 +196,7 @@ This repository now includes an industrialization baseline:
 - Channel adapters expose `verify_request()` and `extract_envelope()` contracts.
 - Self-upgrade is PR-only and cannot patch `main` directly.
 - Upgrade sandbox supports Docker no-network read-only execution.
-- CI includes Python 3.9-3.12 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.
+- CI includes Python 3.10-3.13 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.
 
 
 ---
@@ -218,3 +218,22 @@ GET /admin/learning/dashboard?days=7
 ```
 
 Tracked metrics include task success rate, experience reuse rate, bad memory rate, stale memory rate, contradiction rate, permission bypass rate, rollback success rate, test coverage, learning quality score, and industrial readiness score.
+
+
+---
+
+## Industrial Runtime Hardening
+
+This version adds role-aware AdminAuth, IP allowlist, admin audit, one-time resume token consumption, Docker-capable shell backend, subprocess plugin output limits, self-upgrade state-machine evidence, and runtime memory governance.
+
+
+---
+
+## 0.7.12-industrial-rc7
+
+This release adds industrial RC7 hardening: governed memory writes, default-off high-risk capability gates, plugin runtime permission validation, rootless Docker sandbox isolation, PR/artifact promotion metadata, SQLite migration/close governance, strict sandbox smoke probes, SHA-pinned GitHub Actions, release SBOM/signing workflow, initialized runtime metrics, and an 80% global CI coverage gate with security/core/tools grouped gates at 90%/85%/85%.
+
+
+### 0.7.11 RC6 deployment note
+
+Production Docker deployments should not mount `/var/run/docker.sock` into the OmniDesk app container. Use `sandbox.backend: remote_docker` with an isolated rootless Docker/Podman runner. Production configs must pin sandbox images by digest and keep unsigned release artifacts disabled.

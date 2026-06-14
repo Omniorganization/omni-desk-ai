@@ -1,18 +1,14 @@
 from __future__ import annotations
-import base64, hashlib, hmac, os, time, urllib.parse
+import base64
+import hashlib
+import hmac
+import os
+import time
+import urllib.parse
 from typing import Any, Optional
-try:
-    import httpx
-except ModuleNotFoundError:
-    httpx = None
 from omnidesk_agent.config import DingTalkConfig
 from omnidesk_agent.core.models import ChannelMessage
-
-
-def _require_httpx():
-    if httpx is None:
-        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
-    return httpx
+from omnidesk_agent.channels.http_client import ChannelHttpClient
 
 class DingTalkChannel:
     name = "dingtalk"
@@ -26,6 +22,7 @@ class DingTalkChannel:
         self.cfg = cfg
         self.robot_token = os.getenv(cfg.robot_access_token_env, "")
         self.robot_secret = os.getenv(cfg.robot_secret_env, "")
+        self.http = ChannelHttpClient()
 
 
     def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
@@ -57,6 +54,4 @@ class DingTalkChannel:
 
     async def send_text(self, recipient: str, text: str, **kwargs) -> None:
         body = {"msgtype": "text", "text": {"content": text}}
-        async with _require_httpx().AsyncClient(timeout=20) as client:
-            r = await client.post(self._signed_webhook_url(), json=body)
-            r.raise_for_status()
+        return await self.http.post(self._signed_webhook_url(), json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)

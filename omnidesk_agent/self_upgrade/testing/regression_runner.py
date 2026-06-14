@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from omnidesk_agent.config import SandboxConfig
 from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
 
 
@@ -9,9 +10,9 @@ class RegressionRunner:
         "tests/regression/test_self_upgrade_governance.py",
     ]
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, sandbox_cfg: SandboxConfig | None = None):
         self.repo_root = repo_root.resolve()
-        self.runner = SandboxRunner(self.repo_root)
+        self.runner = SandboxRunner(self.repo_root, sandbox_cfg=sandbox_cfg)
 
     async def run(self, target: str = "tests/regression") -> dict:
         missing = [p for p in self.REQUIRED if not (self.repo_root / p).exists()]

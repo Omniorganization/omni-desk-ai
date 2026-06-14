@@ -1,0 +1,33 @@
+services:
+  sandbox-runner:
+    build:
+      context: ../..
+      dockerfile: deploy/sandbox-runner/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE_DIGEST:-python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457}
+    environment:
+      OMNIDESK_CONTAINER_RUNTIME: ${OMNIDESK_CONTAINER_RUNTIME:-docker}
+      DOCKER_HOST: ${OMNIDESK_CONTAINER_SOCKET:-unix:///run/podman/podman.sock}
+      OMNIDESK_SANDBOX_RUNNER_TOKEN: ${OMNIDESK_SANDBOX_RUNNER_TOKEN:?required}
+      OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET: ${OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET:?required}
+      OMNIDESK_SANDBOX_IMAGE: ${OMNIDESK_SANDBOX_IMAGE:-python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457}
+      OMNIDESK_SANDBOX_IMAGE_ALLOWLIST: ${OMNIDESK_SANDBOX_IMAGE_ALLOWLIST:-python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457}
+      OMNIDESK_SANDBOX_ALLOWED_WORKSPACE_ROOT: /srv/omnidesk-sandbox-workspaces
+      OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS: "0"
+      OMNIDESK_SANDBOX_NONCE_DB: /var/lib/omnidesk-sandbox/nonces.sqlite3
+      OMNIDESK_SANDBOX_READY_SMOKE: ${OMNIDESK_SANDBOX_READY_SMOKE:-0}
+    volumes:
+      # Dedicated isolated runner node only. Prefer a rootless Podman/Docker API socket.
+      - ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock:ro
+      - omnidesk-sandbox-state:/var/lib/omnidesk-sandbox:rw
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:18890:18890"
+volumes:
+  omnidesk-sandbox-state:

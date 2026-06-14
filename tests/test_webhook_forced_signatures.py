@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -35,20 +34,26 @@ class Adapter:
         return WebhookEnvelope(source_key="u", sender_id="u", message_id="m", raw=payload)
 
 
-def test_enabled_telegram_webhook_requires_secret_header(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_enabled_telegram_webhook_requires_secret_header(monkeypatch, tmp_path):
     fastapi = pytest.importorskip("fastapi", reason="FastAPI is required for server webhook integration tests")
     from omnidesk_agent.server import create_app
 
-    async def run_case():
-        cfg = AppConfig()
-        cfg.workspace.root = tmp_path
-        cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
-        cfg.permissions.audit_log = tmp_path / "audit.log"
-        cfg.channels.telegram.enabled = True
-        cfg.gateway.allow_local_admin_without_token = True
-        cfg.ensure_dirs()
-        monkeypatch.setenv(cfg.channels.telegram.webhook_secret_env, "s3cret")
-        app = create_app(cfg)
+    cfg = AppConfig()
+    cfg.workspace.root = tmp_path
+    cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+    cfg.workspace.skills_dirs = [tmp_path / "skills"]
+    cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
+    cfg.permissions.audit_log = tmp_path / "audit.log"
+    cfg.channels.gmail.credentials_file = tmp_path / "google" / "credentials.json"
+    cfg.channels.gmail.token_file = tmp_path / "google" / "token.json"
+    cfg.learning.growth_plan_file = tmp_path / "growth_plan.json"
+    cfg.channels.telegram.enabled = True
+    cfg.gateway.allow_local_admin_without_token = True
+    cfg.ensure_dirs()
+    monkeypatch.setenv(cfg.channels.telegram.webhook_secret_env, "s3cret")
+    app = create_app(cfg)
+    try:
         guard = _find_guard(app)
 
         body1 = json.dumps({"message": {"message_id": 1, "from": {"id": 2}, "text": "hi"}}).encode()
@@ -58,5 +63,5 @@ def test_enabled_telegram_webhook_requires_secret_header(monkeypatch, tmp_path):
 
         body2 = json.dumps({"message": {"message_id": 2, "from": {"id": 2}, "text": "hi"}}).encode()
         await guard("telegram", Adapter(), DummyRequest(body2, headers={"x-telegram-bot-api-secret-token": "s3cret"}))
-
-    asyncio.run(run_case())
+    finally:
+        app.state.runtime.close()

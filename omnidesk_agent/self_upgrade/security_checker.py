@@ -20,9 +20,15 @@ class UpgradeSecurityChecker:
     ]
 
     def check_files(self, repo_root: Path, files: list[str]) -> dict:
+        repo_root = repo_root.resolve()
         issues = []
         for rel in files:
             path = (repo_root / rel).resolve()
+            try:
+                path.relative_to(repo_root)
+            except ValueError:
+                issues.append({"file": rel, "issue": "path outside repository"})
+                continue
             if not path.exists() or not path.is_file():
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")

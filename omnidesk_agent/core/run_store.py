@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import secrets
 import sqlite3
@@ -7,10 +8,22 @@ import time
 import uuid
 from pathlib import Path
 from omnidesk_agent.storage.sqlite import connect_sqlite
+from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from typing import Any, Optional
 
 
 class RunStore:
+    UPDATE_FIELDS = {
+        "approval_proposal_json",
+        "current_step_index",
+        "plan_json",
+        "results_json",
+        "resume_token",
+        "status",
+        "updated_at",
+        "waiting_approval_id",
+    }
+
     def __init__(self, db_path: Path):
         self.db_path = db_path.expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,6 +46,7 @@ class RunStore:
                 """
             )
             self._migrate(con)
+            apply_migrations(con, [Migration(1, "run_store_schema_baseline", lambda _con: None)])
 
     def _migrate(self, con: sqlite3.Connection) -> None:
         cols = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
@@ -64,7 +78,7 @@ class RunStore:
         if run.get("status") == "waiting_approval":
             if not expected:
                 raise PermissionError("missing stored resume_token")
-            if resume_token != expected:
+            if not hmac.compare_digest(str(resume_token or ""), str(expected)):
                 raise PermissionError("invalid resume_token")
             return
         # Non-waiting runs have no active resume token. Accept only the absence of a token.
@@ -94,6 +108,54 @@ class RunStore:
         })
         return token
 
+    def consume_resume_token(self, run_id: str, resume_token: Optional[str]) -> None:
+        if resume_token is None:
+            raise PermissionError("invalid resume_token")
+        now = time.time()
+        with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute("SELECT id, status, resume_token FROM runs WHERE id=?", (run_id,)).fetchone()
+            if not row:
+                raise KeyError(run_id)
+            if row[1] != "waiting_approval":
+                raise PermissionError("run is not waiting for approval")
+            if not row[2] or not hmac.compare_digest(str(resume_token or ""), str(row[2])):
+                raise PermissionError("invalid resume_token")
+            cur = con.execute(
+                """
+                UPDATE runs
+                SET status='resuming', resume_token=NULL, updated_at=?
+                WHERE id=? AND status='waiting_approval' AND resume_token=?
+                """,
+                (now, run_id, resume_token),
+            )
+            if cur.rowcount != 1:
+                raise PermissionError("resume_token already consumed")
+
+    def mark_resume_failed(self, run_id: str, error: str) -> None:
+        run = self.get(run_id)
+        results = list((run or {}).get("results") or [])
+        results.append({"ok": False, "status": "resume_failed", "error": str(error)})
+        self.update(run_id, {
+            "status": "resume_failed",
+            "results_json": json.dumps(results, ensure_ascii=False),
+            "resume_token": None,
+        })
+
+    def list_resuming(self, *, older_than_seconds: float = 0, limit: int = 100) -> list[dict[str, Any]]:
+        cutoff = time.time() - max(0.0, float(older_than_seconds))
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id FROM runs
+                WHERE status='resuming' AND updated_at <= ?
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (cutoff, int(limit)),
+            ).fetchall()
+        return [run for row in rows if (run := self.get(row[0])) is not None]
+
     def complete(self, run_id: str, status: str, results: list[dict[str, Any]]) -> None:
         self.update(run_id, {
             "status": status,
@@ -105,11 +167,15 @@ class RunStore:
 
     def update(self, run_id: str, fields: dict[str, Any]) -> None:
         fields = dict(fields)
+        unknown = set(fields) - self.UPDATE_FIELDS
+        if unknown:
+            raise ValueError(f"unsupported run update field(s): {', '.join(sorted(unknown))}")
         fields["updated_at"] = time.time()
         assignments = ", ".join([f"{k}=?" for k in fields])
         values = list(fields.values()) + [run_id]
         with connect_sqlite(self.db_path) as con:
-            con.execute(f"UPDATE runs SET {assignments} WHERE id = ?", values)
+            # Column names are restricted by UPDATE_FIELDS before this statement is built.
+            con.execute(f"UPDATE runs SET {assignments} WHERE id = ?", values)  # nosec B608
 
     def get(self, run_id: str) -> Optional[dict[str, Any]]:
         with connect_sqlite(self.db_path) as con:

@@ -32,3 +32,6 @@ dist/
 screenshots/
 .pytest_cache/
 *.pyc
+.coverage
+coverage.xml
+coverage.json

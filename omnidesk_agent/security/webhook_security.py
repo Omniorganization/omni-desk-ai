@@ -84,14 +84,18 @@ class WebhookSecurity:
         bucket = int(time.time() // self.cfg.rate_limit_window_seconds)
         key = f"{channel}:{source_key}"
         with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute(
+                """
+                INSERT INTO webhook_rate (key, bucket, count) VALUES (?, ?, 1)
+                ON CONFLICT(key, bucket) DO UPDATE SET count = count + 1
+                """,
+                (key, bucket),
+            )
             row = con.execute("SELECT count FROM webhook_rate WHERE key=? AND bucket=?", (key, bucket)).fetchone()
             count = int(row[0]) if row else 0
-            if count >= self.cfg.rate_limit_max_requests:
+            if count > self.cfg.rate_limit_max_requests:
                 raise PermissionError(f"webhook rate limit exceeded for {key}")
-            if row:
-                con.execute("UPDATE webhook_rate SET count=? WHERE key=? AND bucket=?", (count + 1, key, bucket))
-            else:
-                con.execute("INSERT INTO webhook_rate (key,bucket,count) VALUES (?,?,?)", (key, bucket, 1))
 
     def _mark_seen(self, channel: str, digest: str) -> bool:
         cutoff = time.time() - self.cfg.replay_ttl_seconds

@@ -19,4 +19,4 @@ def test_learning_audit_log_and_dashboard_escape_html(tmp_path):
     html = dashboard.render_html(days=7)
     assert "metrics" in summary
     assert "<script>alert(1)</script>" not in html
-    assert "OmniDesk Learning Observability" in html
+    assert "&lt;script&gt;" in html

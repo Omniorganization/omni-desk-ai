@@ -14,5 +14,6 @@ Install option:
 
 ```bash
 python3 -m pip install httpx
-python3 -m pip install -e ".[dev,test]"
+python3 -m pip install --require-hashes -r requirements.dev.lock
+python3 -m pip install -e . --no-deps --no-build-isolation
 ```

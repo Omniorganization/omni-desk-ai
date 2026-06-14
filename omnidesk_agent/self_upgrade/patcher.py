@@ -17,8 +17,10 @@ class UpgradePatcher:
 
     def _safe_repo_path(self, relative: str) -> Path:
         path = (self.repo_root / relative).resolve()
-        if not str(path).startswith(str(self.repo_root)):
-            raise ValueError(f"Path outside repository: {path}")
+        try:
+            path.relative_to(self.repo_root)
+        except ValueError as exc:
+            raise ValueError(f"Path outside repository: {path}") from exc
         return path
 
     async def write_plan_artifacts(self, plan: UpgradePlan, output_dir: str = ".omnidesk/upgrades") -> PatchResult:

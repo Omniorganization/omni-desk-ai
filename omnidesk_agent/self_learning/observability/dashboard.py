@@ -38,6 +38,11 @@ class LearningDashboard:
             for v in violations
         ) or "<li>No SLO violations.</li>"
         recommendations = "\n".join(f"<li>{html.escape(r)}</li>" for r in summary.get("recommendations", []))
+        recent_events = self.audit_log.read_days(days)[-10:]
+        recent_event_items = "\n".join(
+            "<li><pre>" + html.escape(json.dumps(e.to_dict(), ensure_ascii=False, sort_keys=True, default=str)) + "</pre></li>"
+            for e in recent_events
+        ) or "<li>No recent learning events.</li>"
         payload = html.escape(json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2))
         return f"""<!doctype html>
 <html>
@@ -61,6 +66,8 @@ class LearningDashboard:
   <ul>{violation_items}</ul>
   <h2>Recommendations</h2>
   <ul>{recommendations}</ul>
+  <h2>Recent Learning Events</h2>
+  <ul>{recent_event_items}</ul>
   <h2>Raw Report</h2>
   <pre>{payload}</pre>
 </body>

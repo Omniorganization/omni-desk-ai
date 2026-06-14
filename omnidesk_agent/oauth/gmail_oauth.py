@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from typing import Any, Optional
 
 from omnidesk_agent.config import GmailConfig
 from omnidesk_agent.oauth.state_store import OAuthStateStore
+from omnidesk_agent.privacy.encryption import EncryptionProvider
 
 
 class GmailOAuthManager:
     def __init__(self, cfg: GmailConfig):
         self.cfg = cfg
         self.state_store = OAuthStateStore(cfg.token_file.parent / "gmail_oauth_states.sqlite3", cfg.oauth_state_ttl_seconds)
+        self.encryption = (
+            EncryptionProvider.from_env(cfg.token_encryption_key_env, required=True, key_id="gmail-token")
+            if getattr(cfg, "encrypt_token_at_rest", False)
+            else EncryptionProvider.disabled()
+        )
 
     @property
     def scopes(self) -> list[str]:
@@ -39,11 +45,37 @@ class GmailOAuthManager:
     def load_token_json(self) -> Optional[dict[str, Any]]:
         if not self.cfg.token_file.exists():
             return None
-        return json.loads(self.cfg.token_file.read_text(encoding="utf-8"))
+        self._ensure_private_token_permissions()
+        raw = self.cfg.token_file.read_text(encoding="utf-8")
+        if raw.startswith(EncryptionProvider.PREFIX):
+            raw = self.encryption.decrypt_text(raw) or "{}"
+        return json.loads(raw)
 
     def save_token_json(self, token: dict[str, Any]) -> None:
         self.cfg.token_file.parent.mkdir(parents=True, exist_ok=True)
-        self.cfg.token_file.write_text(json.dumps(token, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = self.cfg.token_file.with_suffix(self.cfg.token_file.suffix + ".tmp")
+        serialized = json.dumps(token, ensure_ascii=False, indent=2)
+        if self.encryption.enabled:
+            serialized = self.encryption.encrypt_text(serialized) or ""
+        tmp.write_text(serialized, encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        tmp.replace(self.cfg.token_file)
+        self._ensure_private_token_permissions()
+
+    def _ensure_private_token_permissions(self) -> None:
+        if not self.cfg.token_file.exists():
+            return
+        try:
+            mode = self.cfg.token_file.stat().st_mode & 0o777
+            if mode & 0o077:
+                os.chmod(self.cfg.token_file, 0o600)
+        except OSError:
+            # Windows and some mounted filesystems may reject chmod. Loading still
+            # works, but production validation should flag host-level controls.
+            return
 
     def run_local_flow(self, port: int = 0) -> dict[str, Any]:
         if not self.credentials_available():
@@ -105,5 +137,8 @@ class GmailOAuthManager:
         except ImportError as exc:
             raise RuntimeError("Install google-auth and google-api-python-client") from exc
 
-        creds = Credentials.from_authorized_user_file(str(self.cfg.token_file), self.scopes)
+        token = self.load_token_json()
+        if token is None:
+            raise RuntimeError("Gmail OAuth token is missing. Run gmail-auth first.")
+        creds = Credentials.from_authorized_user_info(token, self.scopes)
         return build("gmail", "v1", credentials=creds)

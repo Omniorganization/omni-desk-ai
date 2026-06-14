@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from omnidesk_agent.plugins.manifest import PluginManifest
+from omnidesk_agent.plugins.docker_runner import DockerPluginTool, RemoteDockerPluginTool
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
+from omnidesk_agent.validation.production import is_production_mode
 
 
 class PluginRegistry:
@@ -31,7 +33,13 @@ class PluginRegistry:
         self.signing_secret = os.getenv(signing_secret_env or "") if signing_secret_env else None
         self.allow_in_process = bool(getattr(config, "allow_in_process", False)) if config is not None and not isinstance(config, bool) else False
         self.plugin_timeout_seconds = int(getattr(config, "plugin_timeout_seconds", 30)) if config is not None and not isinstance(config, bool) else 30
+        self.default_sandbox = str(getattr(config, "default_sandbox", "docker")) if config is not None and not isinstance(config, bool) else "docker"
+        self.production_forbid_subprocess = bool(getattr(config, "production_forbid_subprocess", True)) if config is not None and not isinstance(config, bool) else True
         self.loaded: dict[str, PluginManifest] = {}
+
+    @property
+    def plugins(self) -> dict[str, PluginManifest]:
+        return dict(self.loaded)
 
     def load_into(self, tool_registry, app_config: Optional[Any] = None) -> dict[str, list[str]]:
         results: dict[str, list[str]] = {}
@@ -51,12 +59,34 @@ class PluginRegistry:
                     continue
                 self._check_manifest_name(manifest.name)
                 manifest.verify(plugin_dir, self.signing_secret)
+                production = bool(app_config is not None and is_production_mode(app_config))
+                if production and self.production_forbid_subprocess and manifest.sandbox != "docker":
+                    raise PermissionError(f"production plugins must use docker sandbox: {manifest.name}")
 
                 entrypoint = (plugin_dir / manifest.entrypoint).resolve()
                 if not entrypoint.is_file() or plugin_dir.resolve() not in entrypoint.parents:
                     raise PermissionError(f"plugin entrypoint escapes plugin directory: {manifest.name}")
                 if manifest.sandbox == "subprocess":
                     tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds))
+                    self.loaded[manifest.name] = manifest
+                    results[manifest.name] = [manifest.name]
+                elif manifest.sandbox == "docker":
+                    sandbox_cfg = getattr(app_config, "sandbox", None)
+                    if sandbox_cfg is not None and getattr(sandbox_cfg, "backend", "docker") == "remote_docker":
+                        if not getattr(sandbox_cfg, "runner_url", None):
+                            raise PermissionError(f"remote_docker plugin sandbox requires sandbox.runner_url: {manifest.name}")
+                        tool_registry.register(RemoteDockerPluginTool(
+                            manifest.name,
+                            entrypoint,
+                            manifest.permissions,
+                            runner_url=str(sandbox_cfg.runner_url),
+                            runner_token_env=str(getattr(sandbox_cfg, "runner_token_env", "OMNIDESK_SANDBOX_RUNNER_TOKEN")),
+                            runner_hmac_secret_env=str(getattr(sandbox_cfg, "runner_hmac_secret_env", "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET")),
+                            timeout_seconds=self.plugin_timeout_seconds,
+                            image=str(getattr(sandbox_cfg, "docker_image", "python:3.11-slim")),
+                        ))
+                    else:
+                        tool_registry.register(DockerPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds))
                     self.loaded[manifest.name] = manifest
                     results[manifest.name] = [manifest.name]
                 elif manifest.sandbox == "in_process":

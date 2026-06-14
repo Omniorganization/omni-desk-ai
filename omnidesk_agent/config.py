@@ -14,6 +14,7 @@ except ModuleNotFoundError as exc:
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 PermissionMode = Literal["ask", "allow", "deny", "dry_run"]
+DEFAULT_SANDBOX_IMAGE = "python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457"
 
 class LLMConfig(BaseModel):
     provider: str = "openai"
@@ -43,8 +44,28 @@ class ModelProfileConfig(BaseModel):
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
+class ModelCircuitBreakerConfig(BaseModel):
+    failure_threshold: int = 5
+    reset_seconds: int = 60
+
+
+class ModelRouteConfig(BaseModel):
+    primary: str
+    fallback: list[str] = Field(default_factory=list)
+    max_retries: int = 1
+    circuit_breaker: ModelCircuitBreakerConfig = Field(default_factory=ModelCircuitBreakerConfig)
+
+
+class ModelBudgetConfig(BaseModel):
+    daily_usd_limit: Optional[float] = None
+    monthly_usd_limit: Optional[float] = None
+    per_actor_daily_usd_limit: Optional[float] = None
+    on_exceed: Literal["require_approval", "fallback_local", "block"] = "require_approval"
+
+
 class ModelsConfig(BaseModel):
     default: str = "fast"
+    budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
     max_output_tokens: int = 1200
     profiles: dict[str, ModelProfileConfig] = Field(default_factory=lambda: {
         "fast": ModelProfileConfig(provider="openai", model="gpt-5.1-mini", api_key_env="OPENAI_API_KEY", max_output_tokens=800),
@@ -53,8 +74,15 @@ class ModelsConfig(BaseModel):
         "vision": ModelProfileConfig(provider="openai", model="gpt-5.1", api_key_env="OPENAI_API_KEY", max_output_tokens=1600),
         "local": ModelProfileConfig(provider="ollama", model="qwen2.5-coder:7b", api_key_env=None, base_url="http://127.0.0.1:11434"),
     })
-    routing: dict[str, str] = Field(default_factory=lambda: {
-        "planner": "planner", "tool_plan": "planner", "chat": "fast", "code": "code", "upgrade": "code", "vision": "vision", "private": "local", "summarize": "fast"
+    routing: dict[str, Any] = Field(default_factory=lambda: {
+        "planner": {"primary": "planner", "fallback": ["fast", "local"], "max_retries": 1},
+        "tool_plan": {"primary": "planner", "fallback": ["fast"], "max_retries": 1},
+        "chat": {"primary": "fast", "fallback": ["local"], "max_retries": 1},
+        "code": {"primary": "code", "fallback": ["planner"], "max_retries": 1},
+        "upgrade": {"primary": "code", "fallback": ["planner"], "max_retries": 1},
+        "vision": {"primary": "vision", "fallback": ["planner"], "max_retries": 1},
+        "private": {"primary": "local", "fallback": [], "max_retries": 1},
+        "summarize": {"primary": "fast", "fallback": ["local"], "max_retries": 1},
     })
 
 class GatewayConfig(BaseModel):
@@ -63,7 +91,11 @@ class GatewayConfig(BaseModel):
     public_base_url: Optional[str] = None
     shared_secret_env: str = "OMNIDESK_GATEWAY_SECRET"
     admin_token_env: str = "OMNIDESK_ADMIN_TOKEN"
+    viewer_token_env: str = "OMNIDESK_VIEWER_TOKEN"
+    operator_token_env: str = "OMNIDESK_OPERATOR_TOKEN"
+    owner_token_env: str = "OMNIDESK_OWNER_TOKEN"
     allow_local_admin_without_token: bool = False
+    admin_allowed_ips: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1", "localhost"])
     require_webhook_signatures: bool = True
 
 class PermissionConfig(BaseModel):
@@ -79,8 +111,16 @@ class PermissionConfig(BaseModel):
     ])
     max_shell_seconds: int = 30
     approval_ttl_seconds: int = 600
+    require_dual_approval_for_risks: list[str] = Field(default_factory=lambda: ["critical"])
+    break_glass_enabled: bool = False
+    audit_checkpoint_hmac_key_env: str = "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY"
     shell_profile: Literal["safe_ci", "upgrade"] = "safe_ci"
     shell_upgrade_enabled: bool = False
+    shell_backend: Literal["argv", "docker", "remote_docker"] = "argv"
+    shell_docker_image: str = DEFAULT_SANDBOX_IMAGE
+    shell_docker_network: str = "none"
+    shell_docker_memory: str = "512m"
+    shell_docker_cpus: str = "1.0"
 
 class WorkspaceConfig(BaseModel):
     root: Path = Path("~/.omnidesk/workspace").expanduser()
@@ -93,7 +133,34 @@ class PluginConfig(BaseModel):
     trusted_only: bool = True
     allowlist: list[str] = Field(default_factory=list)
     allow_in_process: bool = False
+    default_sandbox: Literal["docker", "subprocess"] = "docker"
     plugin_timeout_seconds: int = 30
+    production_forbid_subprocess: bool = True
+
+
+class CapabilityToggleConfig(BaseModel):
+    enabled: bool = False
+
+
+class FileCapabilityConfig(CapabilityToggleConfig):
+    enabled: bool = True
+    allow_write: bool = False
+
+
+class CapabilitiesConfig(BaseModel):
+    files: FileCapabilityConfig = Field(default_factory=FileCapabilityConfig)
+    test: CapabilityToggleConfig = Field(default_factory=lambda: CapabilityToggleConfig(enabled=True))
+    vision: CapabilityToggleConfig = Field(default_factory=lambda: CapabilityToggleConfig(enabled=True))
+    shell: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    computer: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    git: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    pull_request: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    browser: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    ui_bridge: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    gmail: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    channels: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+    plugins: CapabilityToggleConfig = Field(default_factory=CapabilityToggleConfig)
+
 
 class TelegramConfig(BaseModel):
     enabled: bool = False
@@ -183,12 +250,17 @@ class GmailConfig(BaseModel):
     allow_compose: bool = True
     oauth_redirect_allowlist: list[str] = Field(default_factory=list)
     oauth_state_ttl_seconds: int = 600
+    encrypt_token_at_rest: bool = False
+    token_encryption_key_env: str = "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY"
 
 class ChromeConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     devtools_host: str = "127.0.0.1"
     devtools_port: int = 9222
     allowed_origins: list[str] = Field(default_factory=list)
+    dedicated_profile_dir: Optional[Path] = None
+    forbid_default_profile: bool = True
+    launcher_secret_env: str = "OMNIDESK_CHROME_LAUNCHER_SECRET"
     allow_evaluate: bool = False
     deny_js_patterns: list[str] = Field(default_factory=lambda: [
         "document.cookie",
@@ -199,9 +271,20 @@ class ChromeConfig(BaseModel):
         "XMLHttpRequest",
         "navigator.sendBeacon",
     ])
+    high_risk_url_patterns: list[str] = Field(default_factory=lambda: [
+        "bank",
+        "billing",
+        "checkout",
+        "payment",
+        "payments",
+        "adsmanager",
+        "business.facebook.com",
+        "admin",
+        "console",
+    ])
 
 class UIBridgeConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     require_foreground_confirmation: bool = True
     allowed_apps: list[str] = Field(default_factory=lambda: [
         "WhatsApp", "WhatsApp Business", "WeChat", "DingTalk", "Lark", "Feishu",
@@ -228,6 +311,15 @@ class ObservabilityConfig(BaseModel):
     request_id_header: str = "x-request-id"
     expose_public_metrics: bool = False
     structured_json_logs: bool = True
+    otlp_endpoint_env: str = "OMNIDESK_OTLP_ENDPOINT"
+    otlp_timeout_seconds: float = 2.0
+    trace_http_requests: bool = True
+
+
+class StorageConfig(BaseModel):
+    backend: Literal["sqlite", "postgres"] = "sqlite"
+    postgres_dsn_env: str = "OMNIDESK_POSTGRES_DSN"
+    require_multi_instance_safe: bool = False
 
 
 class MemoryPrivacyConfig(BaseModel):
@@ -235,15 +327,31 @@ class MemoryPrivacyConfig(BaseModel):
     retention_days: int = 30
     isolate_by_actor: bool = True
     encrypt_at_rest: bool = False
+    encryption_backend: Literal["local_fernet"] = "local_fernet"
+    encryption_key_env: str = "OMNIDESK_MEMORY_ENCRYPTION_KEY"
+    encryption_key_id: str = "default"
 
 
 class SandboxConfig(BaseModel):
-    backend: Literal["argv", "docker"] = "argv"
-    docker_image: str = "python:3.11-slim"
+    backend: Literal["argv", "docker", "remote_docker"] = "docker"
+    docker_image: str = DEFAULT_SANDBOX_IMAGE
+    require_pinned_image: bool = False
+    runner_url: Optional[str] = None
+    runner_token_env: str = "OMNIDESK_SANDBOX_RUNNER_TOKEN"
+    runner_hmac_secret_env: str = "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET"
+    forbid_local_docker_in_container: bool = True
     docker_network: Literal["none", "bridge"] = "none"
     timeout_seconds: int = 120
     memory_limit: str = "512m"
     cpus: str = "1.0"
+    user: str = "65534:65534"
+    pids_limit: int = 128
+    cap_drop: list[str] = Field(default_factory=lambda: ["ALL"])
+    security_opt: list[str] = Field(default_factory=lambda: ["no-new-privileges"])
+    tmpfs: str = "/tmp:rw,noexec,nosuid,size=64m"  # nosec B108
+    init: bool = True
+    log_driver: str = "none"
+    pull_policy: Literal["never", "missing", "always"] = "never"
 
 
 class LearningConfig(BaseModel):
@@ -260,9 +368,11 @@ class AppConfig(BaseModel):
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
+    capabilities: CapabilitiesConfig = Field(default_factory=CapabilitiesConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     memory_privacy: MemoryPrivacyConfig = Field(default_factory=MemoryPrivacyConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 

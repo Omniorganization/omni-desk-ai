@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omnidesk-config
+  namespace: omnidesk
+data:
+  config.production.yaml: |
+    gateway:
+      host: 0.0.0.0
+      port: {{ .Values.service.port }}
+      public_base_url: {{ .Values.config.publicBaseUrl | quote }}
+      allow_local_admin_without_token: false
+      require_webhook_signatures: true
+      admin_allowed_ips: []
+    permissions:
+      approval_mode: remote_approval
+      default_mode: ask
+      no_tty_mode: deny
+      audit_log: /data/audit.log
+      shell_backend: remote_docker
+      require_dual_approval_for_risks:
+        - critical
+      break_glass_enabled: true
+      audit_checkpoint_hmac_key_env: OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY
+    sandbox:
+      backend: remote_docker
+      runner_url: {{ .Values.config.sandboxRunnerUrl | quote }}
+      docker_image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
+      docker_network: none
+    storage:
+      backend: postgres
+      postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+      require_multi_instance_safe: true
+    plugins:
+      enabled: true
+      trusted_only: true
+      allow_in_process: false
+      default_sandbox: docker
+      production_forbid_subprocess: true
+    capabilities:
+      plugins:
+        enabled: true
+      shell:
+        enabled: true
+    memory_privacy:
+      redact_pii: true
+      isolate_by_actor: true
+      encrypt_at_rest: true
+      retention_days: 30

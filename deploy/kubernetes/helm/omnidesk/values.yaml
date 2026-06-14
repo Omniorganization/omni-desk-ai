@@ -1,0 +1,45 @@
+image:
+  repository: ghcr.io/yinyufan0813-cmyk/omni-desk-ai
+  digest: sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+  pullPolicy: IfNotPresent
+replicaCount: 2
+service:
+  type: ClusterIP
+  port: 18789
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+pdb:
+  enabled: true
+  minAvailable: 1
+otel:
+  endpoint: http://otel-collector:4318/v1/traces
+storage:
+  backend: postgres
+  requireMultiInstanceSafe: true
+config:
+  publicBaseUrl: https://omnidesk.ai.internal
+  sandboxRunnerUrl: http://sandbox-runner:18890
+sandboxRunner:
+  image: ghcr.io/yinyufan0813-cmyk/omnidesk-sandbox-runner@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+persistence:
+  enabled: false
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  storageClassName: standard
+  scratchSizeLimit: 1Gi
+networkPolicy:
+  enabled: true
+  ingressNamespaceLabel:
+    kubernetes.io/metadata.name: ingress-nginx
+  ingressPodLabel:
+    app.kubernetes.io/name: ingress-nginx

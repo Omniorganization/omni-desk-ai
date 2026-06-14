@@ -6,6 +6,24 @@ from pathlib import Path
 from typing import Any
 
 
+
+ALLOWED_PLUGIN_PERMISSIONS = {
+    "files.read", "files.write",
+    "browser.read", "browser.write",
+    "network.read", "network.write",
+    "gmail.read", "gmail.compose",
+    "skills.read",
+    "memory.read", "memory.write",
+    "plugin.call",
+}
+
+
+def validate_plugin_permissions(permissions: list[str]) -> None:
+    invalid = [p for p in permissions if p not in ALLOWED_PLUGIN_PERMISSIONS]
+    if invalid:
+        raise PermissionError(f"unsupported plugin permissions: {invalid}")
+
+
 class SubprocessPluginTool:
     """Run plugin entrypoints in a child Python process via JSON stdin/stdout.
 
@@ -15,11 +33,13 @@ class SubprocessPluginTool:
     It must not import the main runtime directly.
     """
 
-    def __init__(self, name: str, entrypoint: Path, permissions: list[str], timeout_seconds: int = 30):
+    def __init__(self, name: str, entrypoint: Path, permissions: list[str], timeout_seconds: int = 30, max_output_bytes: int = 200000):
         self.name = name
         self.entrypoint = entrypoint
+        validate_plugin_permissions(permissions)
         self.permissions = permissions
         self.timeout_seconds = timeout_seconds
+        self.max_output_bytes = max_output_bytes
 
     def spec(self):
         from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, obj_schema
@@ -60,6 +80,7 @@ class SubprocessPluginTool:
         payload = {
             "action": args.get("plugin_action"),
             "args": args.get("plugin_args", {}),
+            "granted_permissions": self.permissions,
         }
         proc = await asyncio.create_subprocess_exec(
             "python3",
@@ -72,6 +93,8 @@ class SubprocessPluginTool:
             env={"PYTHONNOUSERSITE": "1", "PATH": "/usr/bin:/bin:/usr/local/bin"},
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps(payload).encode("utf-8")), timeout=self.timeout_seconds)
+        if len(stdout) > self.max_output_bytes or len(stderr) > self.max_output_bytes:
+            return ToolResult(False, error="plugin output exceeded limit", summary=f"plugin {self.name} output limit exceeded")
         if proc.returncode != 0:
             return ToolResult(False, error=stderr.decode("utf-8", errors="replace")[:4000], summary=f"plugin {self.name} failed")
         try:
