@@ -1,0 +1,189 @@
+{
+  "name": "Omni Tri-App Sync API",
+  "version": "1.11+openclaw-codex-aligned-enterprise-agent",
+  "auth": {
+    "type": "bearer",
+    "roles": [
+      "viewer",
+      "operator",
+      "owner"
+    ],
+    "headers": [
+      "Authorization: Bearer <token>",
+      "X-OmniDesk-Actor: <actor>",
+      "Idempotency-Key: <operation-key>",
+      "X-OmniDesk-Device-Id: <device-id>",
+      "X-OmniDesk-Timestamp: <unix-ms>",
+      "X-OmniDesk-Nonce: <random-nonce>",
+      "X-OmniDesk-Device-Signature: <base64-signature>"
+    ],
+    "device_signature": "For enrolled desktop/mobile/web_admin devices, production sensitive requests must sign: method, path, SHA-256 body hash, timestamp, and nonce. Nonces are one-use replay guards.",
+    "websocket": "Authorization header preferred; query token remains development-only compatibility mode"
+  },
+  "surfaces": [
+    "desktop",
+    "mobile",
+    "web_admin"
+  ],
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/app/bootstrap",
+      "role": "viewer"
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/register",
+      "role": "operator"
+    },
+    {
+      "method": "GET",
+      "path": "/app/conversations",
+      "role": "viewer"
+    },
+    {
+      "method": "POST",
+      "path": "/app/conversations",
+      "role": "operator"
+    },
+    {
+      "method": "POST",
+      "path": "/app/conversations/{conversation_id}/messages",
+      "role": "operator"
+    },
+    {
+      "method": "GET",
+      "path": "/app/tasks/{task_id}",
+      "role": "viewer"
+    },
+    {
+      "method": "POST",
+      "path": "/app/tasks/{task_id}/status",
+      "role": "operator",
+      "signed_device_required_in_production": [
+        "desktop"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/app/approvals",
+      "role": "viewer"
+    },
+    {
+      "method": "POST",
+      "path": "/app/approvals/{approval_id}/decide",
+      "role": "owner",
+      "signed_device_required_in_production": [
+        "mobile",
+        "web_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/app/notifications",
+      "role": "viewer"
+    },
+    {
+      "method": "POST",
+      "path": "/app/runtime/desktop/heartbeat",
+      "role": "operator",
+      "signed_device_required_in_production": [
+        "desktop"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/app/runtime/desktop/claim",
+      "role": "operator",
+      "signed_device_required_in_production": [
+        "desktop"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/app/sync",
+      "role": "viewer"
+    },
+    {
+      "method": "WS",
+      "path": "/app/ws",
+      "role": "gateway-protected"
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/{device_id}/push-token",
+      "role": "operator",
+      "signed_device_required_in_production": [
+        "desktop",
+        "mobile"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/enrollment/start",
+      "role": "owner"
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/enrollment/{enrollment_id}/complete",
+      "role": "operator"
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/enrollment/{enrollment_id}/challenge",
+      "description": "Issue a nonce challenge for device credential verification.",
+      "role": "operator"
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/enrollment/{enrollment_id}/verify",
+      "description": "Verify a signed device challenge and mint a device credential.",
+      "role": "operator"
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/{device_id}/rotate-token",
+      "description": "Rotate a device token hash after successful device authentication.",
+      "role": "operator",
+      "signed_device_required_in_production": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/app/devices/{device_id}/revoke",
+      "description": "Revoke a desktop/mobile/web_admin device credential.",
+      "role": "owner",
+      "signed_device_required_in_production": [
+        "mobile",
+        "web_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/app/push/dispatch",
+      "description": "Dispatch pending push outbox items through the configured provider.",
+      "role": "owner"
+    }
+  ],
+  "shared_objects": [
+    "Organization",
+    "UserProfile",
+    "DeviceRecord",
+    "ConversationRecord",
+    "MessageRecord",
+    "TaskRecord",
+    "ApprovalRecord",
+    "NotificationRecord",
+    "RuntimeStatusRecord",
+    "SyncEvent",
+    "IdempotencyRecord",
+    "TaskLease",
+    "DeviceEnrollmentRecord",
+    "PushRegistration",
+    "PostgresNormalizedSchema",
+    "DeviceCredentialChallenge"
+  ]
+}

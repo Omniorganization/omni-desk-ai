@@ -1,18 +1,12 @@
 from __future__ import annotations
-import base64, hashlib, hmac, os
+import base64
+import hashlib
+import hmac
+import os
 from typing import Any
-try:
-    import httpx
-except ModuleNotFoundError:
-    httpx = None
 from omnidesk_agent.config import XConfig
 from omnidesk_agent.core.models import ChannelMessage
-
-
-def _require_httpx():
-    if httpx is None:
-        raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
-    return httpx
+from omnidesk_agent.channels.http_client import ChannelHttpClient
 
 class XChannel:
     name = "x"
@@ -26,6 +20,7 @@ class XChannel:
         self.cfg = cfg
         self.bearer_token = os.getenv(cfg.bearer_token_env, "")
         self.crc_token = os.getenv(cfg.webhook_crc_token_env, "")
+        self.http = ChannelHttpClient()
 
     def crc_response(self, crc_token: str) -> dict[str, str]:
         if not self.crc_token:
@@ -49,9 +44,13 @@ class XChannel:
                 out.append(ChannelMessage(channel=self.name, sender_id=sender, thread_id=sender, message_id=str(event.get("id") or ""), text=text, raw=event))
         return out
 
-    async def post_text(self, text: str) -> None:
+    async def post_text(self, text: str, **kwargs) -> None:
         if not self.bearer_token:
             raise RuntimeError("X bearer token is missing")
-        async with _require_httpx().AsyncClient(timeout=20) as client:
-            r = await client.post("https://api.x.com/2/tweets", headers={"Authorization": f"Bearer {self.bearer_token}"}, json={"text": text})
-            r.raise_for_status()
+        return await self.http.post("https://api.x.com/2/tweets", headers={"Authorization": f"Bearer {self.bearer_token}"}, json={"text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+
+    async def send_text(self, recipient: str, text: str, **kwargs) -> None:
+        target = str(kwargs.get("target") or recipient).lower()
+        if target not in {"public", "timeline", "tweet"}:
+            raise NotImplementedError("X send_text only supports explicit public/timeline posting; direct messages are not implemented")
+        return await self.post_text(text, idempotency_key=kwargs.get("idempotency_key"))

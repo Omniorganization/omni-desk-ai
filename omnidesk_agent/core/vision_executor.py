@@ -45,12 +45,22 @@ class VisionActionExecutor:
         screen_x = int(cx / scale_ratio)
         screen_y = int(cy / scale_ratio)
 
+        evidence = self._evidence(
+            instruction=instruction,
+            target=target,
+            confidence=confidence,
+            threshold=self.min_click_confidence,
+            screenshot_metadata=screenshot_metadata,
+            click_x=screen_x,
+            click_y=screen_y,
+        )
         click_args = {
             "x": screen_x,
             "y": screen_y,
             "expected_result": f"Click grounded target for: {instruction}",
             "vision_confidence": confidence,
             "vision_threshold": self.min_click_confidence,
+            "vision_evidence": evidence,
         }
 
         if confidence < self.min_click_confidence:
@@ -73,6 +83,39 @@ class VisionActionExecutor:
             # If interactive approval allowed it, execute the click.
 
         return await self.tools.call("computer", "click", click_args, ctx)
+
+    @staticmethod
+    def _evidence(
+        *,
+        instruction: str,
+        target: dict[str, Any],
+        confidence: float,
+        threshold: float,
+        screenshot_metadata: Optional[dict[str, Any]],
+        click_x: int,
+        click_y: int,
+    ) -> dict[str, Any]:
+        bbox = {
+            "x": target.get("x"),
+            "y": target.get("y"),
+            "width": target.get("width", 0),
+            "height": target.get("height", 0),
+        }
+        screenshot_metadata = screenshot_metadata or {}
+        screenshot = {
+            key: screenshot_metadata.get(key)
+            for key in ("image_path", "screenshot_path", "path", "width", "height", "scale_ratio", "window_title")
+            if screenshot_metadata.get(key) is not None
+        }
+        return {
+            "instruction": instruction,
+            "confidence": confidence,
+            "threshold": threshold,
+            "bbox": bbox,
+            "target_bbox": bbox,
+            "click_point": {"x": click_x, "y": click_y},
+            "screenshot": screenshot,
+        }
 
     async def verify_with_retry(
         self,

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import time
-import xml.etree.ElementTree as ET
-from typing import Any, Optional
+from typing import Optional
 
-import httpx
+import defusedxml.ElementTree as ET
 
 from omnidesk_agent.config import WeChatOfficialConfig
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.channels.http_client import ChannelHttpClient
 
 
 class WeChatOfficialChannel:
@@ -23,7 +24,6 @@ class WeChatOfficialChannel:
     def extract_envelope(self, payload: bytes):
         from omnidesk_agent.channels.base import WebhookEnvelope
         try:
-            import xml.etree.ElementTree as ET
             root = ET.fromstring(payload)
             sender = str(root.findtext("FromUserName") or "unknown")
             mid = str(root.findtext("MsgId") or "")
@@ -38,11 +38,15 @@ class WeChatOfficialChannel:
         self.app_id = os.getenv(cfg.app_id_env, "")
         self.app_secret = os.getenv(cfg.app_secret_env, "")
         self._access_token: Optional[tuple[str, float]] = None
+        self.http = ChannelHttpClient()
 
     def verify_signature(self, signature: str, timestamp: str, nonce: str) -> bool:
         raw = "".join(sorted([self.token, timestamp, nonce]))
-        digest = hashlib.sha1(raw.encode()).hexdigest()
-        return digest == signature
+        # WeChat Official Account webhook verification mandates SHA-1 over
+        # token/timestamp/nonce. This is protocol compatibility, not a general
+        # cryptographic hash choice; compare in constant time.
+        digest = hashlib.sha1(raw.encode(), usedforsecurity=False).hexdigest()
+        return hmac.compare_digest(digest, signature)
 
 
     def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
@@ -75,21 +79,17 @@ class WeChatOfficialChannel:
     async def _get_access_token(self) -> str:
         if self._access_token and self._access_token[1] > time.time() + 60:
             return self._access_token[0]
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get("https://api.weixin.qq.com/cgi-bin/token", params={
-                "grant_type": "client_credential",
-                "appid": self.app_id,
-                "secret": self.app_secret,
-            })
-            r.raise_for_status()
-            data = r.json()
-            token = data["access_token"]
-            self._access_token = (token, time.time() + int(data.get("expires_in", 7200)))
-            return token
+        result = await self.http.get("https://api.weixin.qq.com/cgi-bin/token", params={
+            "grant_type": "client_credential",
+            "appid": self.app_id,
+            "secret": self.app_secret,
+        })
+        data = result.data or {}
+        token = data["access_token"]
+        self._access_token = (token, time.time() + int(data.get("expires_in", 7200)))
+        return token
 
     async def send_text(self, recipient_openid: str, text: str, **kwargs) -> None:
         token = await self._get_access_token()
         body = {"touser": recipient_openid, "msgtype": "text", "text": {"content": text}}
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.post("https://api.weixin.qq.com/cgi-bin/message/custom/send", params={"access_token": token}, json=body)
-            r.raise_for_status()
+        return await self.http.post("https://api.weixin.qq.com/cgi-bin/message/custom/send", params={"access_token": token}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)

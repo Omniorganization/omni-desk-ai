@@ -1,0 +1,77 @@
+groups:
+  - name: omnidesk-industrial-ga
+    rules:
+      - alert: OmniDeskApprovalResumeFailures
+        expr: increase(omnidesk_approval_resume_failures_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk approval resume failures detected
+          description: Approval/resume failures indicate possible stale approvals, invalid tokens, or workflow regressions.
+      - alert: OmniDeskOutboundAmbiguousSend
+        expr: increase(omnidesk_outbound_ambiguous_send_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: OmniDesk outbound send requires reconciliation
+          description: A best-effort provider send failed ambiguously; verify provider state before requeueing.
+      - alert: OmniDeskOutboundDeadLetterRate
+        expr: increase(omnidesk_outbound_dead_letter_total[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk outbound messages entered dead letter
+          description: Review outbound provider credentials, recipient validity, rate limits, and policy errors.
+      - alert: OmniDeskSandboxTimeouts
+        expr: increase(omnidesk_sandbox_timeout_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk sandbox timeout spike
+          description: Sandbox jobs are timing out; check runner CPU, memory, image pull status, and command policy.
+      - alert: OmniDeskSelfUpgradeInvalidTransition
+        expr: increase(omnidesk_self_upgrade_invalid_transition_total[30m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: OmniDesk self-upgrade state machine rejected a transition
+          description: Self-upgrade proposals must be reviewed; invalid transition means governance ordering drifted.
+      - alert: OmniDeskWebhookSignatureFailures
+        expr: increase(omnidesk_webhook_signature_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk webhook signature or replay guard failures detected
+          description: Webhook requests failed signature, verification-token, or replay-guard validation.
+      - alert: OmniDeskBackupVerifyFailure
+        expr: increase(omnidesk_backup_verify_failure_total[24h]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: OmniDesk backup verification failed
+          description: Backup integrity checks failed; validate RPO/RTO assumptions and restore readiness.
+
+      - alert: OmniDeskTraceSpanFailures
+        expr: increase(omnidesk_trace_span_failures_total[15m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk traced operation failures detected
+          description: Trace spans failed; inspect correlated run_id, job_id, approval_id, sandbox_request_id and outbound_id fields in JSON logs.
+
+      - alert: OmniDeskTraceExportFailures
+        expr: increase(omnidesk_trace_export_failures_total[15m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk OTLP trace export failures detected
+          description: OTLP collector/exporter path is failing; inspect OMNIDESK_OTLP_ENDPOINT, collector health, and network policy.

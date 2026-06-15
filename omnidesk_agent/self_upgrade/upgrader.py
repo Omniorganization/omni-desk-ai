@@ -4,6 +4,7 @@ from typing import Optional
 from datetime import datetime, timezone
 from pathlib import Path
 
+from omnidesk_agent.config import SandboxConfig
 from omnidesk_agent.self_upgrade.approval_gate import UpgradeApprovalGate
 from omnidesk_agent.self_upgrade.models import UpgradeRequest, UpgradeRun
 from omnidesk_agent.self_upgrade.patcher import UpgradePatcher
@@ -20,11 +21,11 @@ class SelfUpgrader:
     force-pushes, and never restarts the running daemon.
     """
 
-    def __init__(self, repo_root: Path, planner: Optional[UpgradePlanner] = None):
+    def __init__(self, repo_root: Path, planner: Optional[UpgradePlanner] = None, sandbox_cfg: SandboxConfig | None = None):
         self.repo_root = repo_root.resolve()
         self.planner = planner or UpgradePlanner()
         self.patcher = UpgradePatcher(self.repo_root)
-        self.tester = UpgradeTester(self.repo_root)
+        self.tester = UpgradeTester(self.repo_root, sandbox_cfg=sandbox_cfg)
         self.approval_gate = UpgradeApprovalGate()
         self.security_checker = UpgradeSecurityChecker()
         self.rollback = RollbackManager(self.repo_root)

@@ -1,0 +1,7 @@
+# This file is part of the 1.11 OpenClaw-Codex aligned enterprise agent source package.
+# Native release CI must regenerate and verify this lockfile with:
+#   flutter pub get && flutter pub deps --style=compact
+packages: {}
+sdks:
+  dart: ">=3.6.0 <4.0.0"
+  flutter: ">=3.24.0"

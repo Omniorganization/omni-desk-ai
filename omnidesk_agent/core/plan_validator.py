@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Any
+from typing import Optional
 
 from dataclasses import dataclass
 

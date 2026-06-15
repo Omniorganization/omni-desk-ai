@@ -1,0 +1,15 @@
+:root { color-scheme: dark; font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif; }
+body { margin: 0; background: #0f1115; color: #f8fafc; }
+main { padding: 32px; }
+.card { background: #171a21; border: 1px solid #2b303b; border-radius: 18px; padding: 20px; margin-bottom: 18px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+input { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 10px; border: 1px solid #3c4352; background: #0e1117; color: #fff; margin-top: 6px; }
+label { display: block; color: #cbd5e1; margin: 10px 0; }
+button { padding: 10px 14px; border-radius: 10px; border: 0; cursor: pointer; }
+pre { white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
+.error { color: #ff9494; }
+
+select, textarea { width: 100%; margin-top: 6px; padding: 10px; border-radius: 10px; border: 1px solid #d0d5dd; background: white; color: #111827; }
+textarea { min-height: 72px; resize: vertical; }
+.hint { color: #667085; font-size: 13px; }
+button:disabled { opacity: .45; cursor: not-allowed; }

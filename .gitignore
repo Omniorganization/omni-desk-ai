@@ -20,6 +20,10 @@ venv/
 # Build
 build/
 dist/
+.next/
+node_modules/
+.npm-cache/
+*.tsbuildinfo
 
 # Runtime/state files
 ~
@@ -32,3 +36,6 @@ dist/
 screenshots/
 .pytest_cache/
 *.pyc
+.coverage
+coverage.xml
+coverage.json

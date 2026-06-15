@@ -13,4 +13,6 @@ Changes:
 - Removes remaining direct `@dataclass(slots=True)` usage.
 - Keeps the governed self-improvement modules unchanged functionally.
 
-Recommended runtime is still Python 3.10+ or Python 3.11, but this package is safer for Python 3.9 environments.
+GA12 raises the supported runtime floor to Python 3.10 so audited FastAPI/Starlette
+security releases can be used. These compatibility fixes remain as historical
+hardening, but Python 3.9 is no longer a release target.

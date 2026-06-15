@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-from omnidesk_agent.channels.base import ChannelAdapter
 from omnidesk_agent.channels.telegram import TelegramChannel
 from omnidesk_agent.config import TelegramConfig
 

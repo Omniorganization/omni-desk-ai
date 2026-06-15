@@ -1,0 +1,12 @@
+# Security floors for packages with known advisories in dependency audits.
+#
+# Keep this file small and explicit: it is used by uv lock generation to
+# prevent dependency resolution from drifting back onto vulnerable releases.
+filelock>=3.20.3
+pillow>=12.2.0
+pip>=26.1.2
+pytest>=9.0.3
+requests>=2.33.0
+setuptools>=78.1.1
+starlette>=1.0.1
+urllib3>=2.7.0

@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Optional
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from omnidesk_agent.self_upgrade.models import UpgradeRequest
 

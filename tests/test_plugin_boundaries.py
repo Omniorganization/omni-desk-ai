@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from omnidesk_agent.plugins.registry import PluginRegistry
-from omnidesk_agent.plugins.manifest import PluginManifest
 
 
 def test_plugin_registry_rejects_bad_names(tmp_path):

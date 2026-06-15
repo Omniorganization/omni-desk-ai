@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from typing import Mapping, Optional
+from typing import Mapping
 
 
 def env_secret(env_name: str, *, channel: str) -> str:

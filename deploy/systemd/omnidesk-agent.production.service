@@ -1,0 +1,40 @@
+[Unit]
+Description=OmniDesk Agent Gateway (production)
+Documentation=file:/opt/omnidesk/docs/OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=omnidesk
+Group=omnidesk
+ExecStart=/opt/omnidesk/venv/bin/omnidesk --config /etc/omnidesk/config.yaml serve
+WorkingDirectory=/var/lib/omnidesk
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=OMNIDESK_ENV=production
+EnvironmentFile=-/etc/omnidesk/runtime.env
+StateDirectory=omnidesk
+LogsDirectory=omnidesk
+RuntimeDirectory=omnidesk
+ReadWritePaths=/var/lib/omnidesk /var/log/omnidesk /run/omnidesk
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service ~@privileged ~@resources
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

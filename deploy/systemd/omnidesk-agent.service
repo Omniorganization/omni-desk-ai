@@ -1,13 +1,25 @@
 [Unit]
 Description=OmniDesk Agent Gateway
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/omnidesk --config %h/.omnidesk/config.yaml serve
+WorkingDirectory=%h/.omnidesk
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.omnidesk/omnidesk.env
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.omnidesk
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=default.target

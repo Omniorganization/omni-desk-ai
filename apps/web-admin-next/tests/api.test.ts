@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict';
+import { afterEach, test } from 'node:test';
+import { OmniAdminApi } from '../lib/api';
+import { resolveGatewayBaseUrl } from '../lib/gateway';
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+test('registerAdminDevice uses the server-side proxy and a stable web_admin payload', async () => {
+  let requestUrl = '';
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = async (input, init) => {
+    requestUrl = input.toString();
+    requestInit = init;
+    return new Response(JSON.stringify({ ok: true, device: { device_type: 'web_admin' } }), { status: 200 });
+  };
+
+  const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'owner' });
+  const result = await api.registerAdminDevice();
+
+  assert.equal(requestUrl, '/api/omni/devices/register');
+  assert.equal(result.device.device_type, 'web_admin');
+  assert.equal((requestInit?.headers as Record<string, string>)['x-csrf-token'], 'csrf-token');
+  assert.equal((requestInit?.headers as Record<string, string>)['idempotency-key'], 'web-admin-device-registration');
+  assert.equal((requestInit?.headers as Record<string, string>).authorization, undefined);
+
+  const body = JSON.parse(requestInit?.body as string);
+  assert.equal(body.device_id, 'web-admin-console');
+  assert.equal(body.device_type, 'web_admin');
+  assert.deepEqual(body.capabilities, ['governance', 'channels', 'audit', 'approval', 'role:owner']);
+});
+
+test('decide posts the owner approval decision and surfaces gateway errors', async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: input.toString(), init });
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({ ok: true, approval: { status: 'approved' } }), { status: 200 });
+    }
+    return new Response('forbidden', { status: 403 });
+  };
+
+  const api = new OmniAdminApi({ csrfToken: 'csrf-token' });
+  await api.decide('appr-1', 'approved');
+
+  assert.equal(calls[0].url, '/api/omni/approvals/appr-1/decide');
+  assert.match((calls[0].init?.headers as Record<string, string>)['idempotency-key'], /^web-admin-appr-1-approved-/);
+  assert.deepEqual(JSON.parse(calls[0].init?.body as string), {
+    decision: 'approved',
+    reason: 'Web Admin decision',
+  });
+
+  await assert.rejects(() => api.bootstrap(), /403: forbidden/);
+});
+
+test('resolveGatewayBaseUrl rejects unlisted browser-supplied gateway URLs in production', () => {
+  const env = {
+    NODE_ENV: 'production',
+    OMNI_GATEWAY_URL: 'https://gateway.company.example/base',
+    OMNI_GATEWAY_URL_ALLOWLIST: 'https://gateway-backup.company.example',
+    OMNI_ALLOW_CLIENT_GATEWAY_URLS: 'true',
+  };
+
+  assert.equal(resolveGatewayBaseUrl('https://169.254.169.254/latest/meta-data', env), 'https://gateway.company.example/base');
+  assert.equal(resolveGatewayBaseUrl('https://gateway-backup.company.example/', env), 'https://gateway-backup.company.example');
+  assert.throws(() => resolveGatewayBaseUrl('file:///etc/passwd', env), /http or https/);
+});

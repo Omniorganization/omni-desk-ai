@@ -4,7 +4,7 @@ import json
 import time
 from pathlib import Path
 from threading import Lock
-from typing import Iterable, Optional, Union
+from typing import Optional, Union
 
 from omnidesk_agent.self_learning.observability.schema import LearningEvent
 

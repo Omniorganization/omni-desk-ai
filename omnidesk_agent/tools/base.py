@@ -5,7 +5,7 @@ from typing import Any, Optional, Protocol
 import hashlib
 import json
 
-from omnidesk_agent.core.models import ActionProposal, ToolResult
+from omnidesk_agent.core.models import ActionProposal, RiskLevel, ToolResult
 from omnidesk_agent.security.permissions import PermissionManager
 
 
@@ -42,7 +42,7 @@ def _scope_hash(tool: str, action: str, args: dict[str, Any], ctx: ToolContext) 
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
-def proposal(tool: str, action: str, args: dict[str, Any], risk: str, reason: str, ctx: ToolContext) -> ActionProposal:
+def proposal(tool: str, action: str, args: dict[str, Any], risk: RiskLevel, reason: str, ctx: ToolContext) -> ActionProposal:
     return ActionProposal(
         tool=tool,
         action=action,

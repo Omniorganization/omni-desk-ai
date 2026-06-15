@@ -1,0 +1,42 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omnidesk-agent
+  namespace: omnidesk
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: omnidesk-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.ingressNamespaceLabel | indent 14 }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.ingressPodLabel | indent 14 }}
+      ports:
+        - protocol: TCP
+          port: 18789
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: omnidesk
+      ports:
+        - protocol: TCP
+          port: 18890
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              omnidesk.io/network: data-plane
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 4318
+{{- end }}

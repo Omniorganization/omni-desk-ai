@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 try:
     import yaml
@@ -20,7 +20,7 @@ class PluginManifest(BaseModel):
     trusted: bool = False
     description: str = ""
     entrypoint: str = "plugin.py"
-    sandbox: str = "subprocess"
+    sandbox: str = "docker"
     permissions: list[str] = Field(default_factory=list)
     signature: Optional[str] = None
     sha256: Optional[str] = None

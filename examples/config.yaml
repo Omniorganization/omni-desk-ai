@@ -69,6 +69,14 @@ workspace:
     - ~/.omnidesk/plugins
   memory_db: ~/.omnidesk/memory.sqlite3
 
+app_sync:
+  backend: json  # use postgres for controlled staging / production
+  json_path: null
+  postgres_dsn_env: OMNIDESK_APPSYNC_POSTGRES_DSN
+  namespace: default
+  require_idempotency: true
+  task_lease_seconds: 60
+
 plugins:
   enabled: true
   trusted_only: true

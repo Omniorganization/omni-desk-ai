@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import time
 
 
 def line_signature_valid(body: bytes, channel_secret: str, signature: str) -> bool:
@@ -20,7 +19,9 @@ def dingtalk_signature(secret: str, timestamp_ms: str) -> str:
 
 def wechat_signature(token: str, timestamp: str, nonce: str) -> str:
     arr = sorted([token, timestamp, nonce])
-    return hashlib.sha1("".join(arr).encode("utf-8")).hexdigest()
+    # WeChat Official Account webhook verification requires SHA-1 for this
+    # protocol signature. It is not used as a password hash or general MAC.
+    return hashlib.sha1("".join(arr).encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def x_crc_response(crc_token: str, consumer_secret: str) -> str:

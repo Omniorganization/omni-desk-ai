@@ -13,9 +13,9 @@ def test_privacy_filter_redacts_common_secrets():
 
 
 def test_experience_store_redacts_before_persist(tmp_path):
-    store = ExperienceStore(tmp_path / "m.sqlite3")
-    store.add("reply to a@example.com", plan="token=abc123", outcome="ok")
-    rows = store.search("reply", limit=1)
-    assert rows
-    assert "a@example.com" not in rows[0]["task"]
-    assert "abc123" not in rows[0]["plan"]
+    with ExperienceStore(tmp_path / "m.sqlite3") as store:
+        store.add("reply to a@example.com", plan="token=abc123", outcome="ok")
+        rows = store.search("reply", limit=1)
+        assert rows
+        assert "a@example.com" not in rows[0]["task"]
+        assert "abc123" not in rows[0]["plan"]
