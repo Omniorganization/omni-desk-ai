@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from omnidesk_agent.appsync.store import AppSyncStore, _device_signing_message
+from omnidesk_agent.appsync.store import AppSyncStore
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_workflow_expression_hygiene_script_passes() -> None:
-    import subprocess, sys
+    import subprocess
+    import sys
+
     subprocess.run([sys.executable, "scripts/check_workflow_expressions.py", "."], cwd=ROOT, check=True)
 
 

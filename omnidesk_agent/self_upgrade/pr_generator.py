@@ -34,7 +34,7 @@ class PRGenerator:
         policy = evaluate_repair_policy(change_types, has_tests=bool(bundle.tests), has_rollback=bool(bundle.rollback_plan))
         body = "\n".join(
             [
-                f"## Incident",
+                "## Incident",
                 incident_id,
                 "",
                 "## Summary",
