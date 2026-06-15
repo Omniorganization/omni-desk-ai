@@ -70,10 +70,16 @@ jobs:
           find current previous -maxdepth 1 -type f -print0 | sort -z | while IFS= read -r -d '' artifact; do
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
           done
-          echo "CURRENT_SHA=$(sha256sum current/*.whl | awk '{print $1}' | head -n1)" >> "$GITHUB_ENV"
-          echo "PREVIOUS_SHA=$(sha256sum previous/*.whl | awk '{print $1}' | head -n1)" >> "$GITHUB_ENV"
-          echo "CURRENT_IMAGE_DIGEST=$(python scripts/read_release_metadata.py current image.digest)" >> "$GITHUB_ENV"
-          echo "PREVIOUS_IMAGE_DIGEST=$(python scripts/read_release_metadata.py previous image.digest)" >> "$GITHUB_ENV"
+          current_wheel="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          previous_wheel="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$current_wheel"
+          test -n "$previous_wheel"
+          {
+            echo "CURRENT_SHA=$(sha256sum "$current_wheel" | awk '{print $1}')"
+            echo "PREVIOUS_SHA=$(sha256sum "$previous_wheel" | awk '{print $1}')"
+            echo "CURRENT_IMAGE_DIGEST=$(python scripts/read_release_metadata.py current image.digest)"
+            echo "PREVIOUS_IMAGE_DIGEST=$(python scripts/read_release_metadata.py previous image.digest)"
+          } >> "$GITHUB_ENV"
       - name: Deploy current artifact to staging
         env:
           OMNIDESK_DEPLOY_MODE: ${{ inputs.deploy_mode }}
@@ -90,7 +96,10 @@ jobs:
           OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
           OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
           OMNIDESK_IMAGE_DIGEST: ${{ env.CURRENT_IMAGE_DIGEST }}
-        run: bash scripts/deploy_artifact.sh --artifact "$(ls current/*.whl | head -n1)" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.current_version }}" --artifact-sha256 "$CURRENT_SHA" --image-digest "${{ env.CURRENT_IMAGE_DIGEST }}"
+        run: |
+          artifact="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$artifact"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.current_version }}" --artifact-sha256 "$CURRENT_SHA" --image-digest "${{ env.CURRENT_IMAGE_DIGEST }}"
       - name: Current staging smoke
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
@@ -112,7 +121,10 @@ jobs:
           OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
           OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
           OMNIDESK_IMAGE_DIGEST: ${{ env.PREVIOUS_IMAGE_DIGEST }}
-        run: bash scripts/deploy_artifact.sh --artifact "$(ls previous/*.whl | head -n1)" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.previous_version }}" --artifact-sha256 "$PREVIOUS_SHA" --image-digest "${{ env.PREVIOUS_IMAGE_DIGEST }}"
+        run: |
+          artifact="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$artifact"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.previous_version }}" --artifact-sha256 "$PREVIOUS_SHA" --image-digest "${{ env.PREVIOUS_IMAGE_DIGEST }}"
       - name: Rollback staging smoke
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}

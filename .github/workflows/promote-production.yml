@@ -67,9 +67,13 @@ jobs:
         run: |
           python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata
           python scripts/verify_release_signatures.py dist
-          echo "OMNIDESK_ARTIFACT_SHA256=$(sha256sum dist/*.whl | awk '{print $1}' | head -n1)" >> "$GITHUB_ENV"
-          echo "OMNIDESK_IMAGE_DIGEST=$(python scripts/read_release_metadata.py dist image.digest)" >> "$GITHUB_ENV"
-          echo "OMNIDESK_IMAGE_REF=$(python scripts/read_release_metadata.py dist image.ref)" >> "$GITHUB_ENV"
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          {
+            echo "OMNIDESK_ARTIFACT_SHA256=$(sha256sum "$wheel" | awk '{print $1}')"
+            echo "OMNIDESK_IMAGE_DIGEST=$(python scripts/read_release_metadata.py dist image.digest)"
+            echo "OMNIDESK_IMAGE_REF=$(python scripts/read_release_metadata.py dist image.ref)"
+          } >> "$GITHUB_ENV"
 
       - name: Install Cosign
         run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
@@ -87,11 +91,13 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
           python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
             test -f "$artifact"
             cosign verify-blob "$artifact" --certificate "$artifact.cosign.pem" --signature "$artifact.cosign.sig" --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           done
-          cosign verify-attestation "$(ls dist/*.whl | head -n1)" --type slsaprovenance --certificate dist/slsa.intoto.pem --signature dist/slsa.intoto.sig --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify-attestation "$wheel" --type slsaprovenance --certificate dist/slsa.intoto.pem --signature dist/slsa.intoto.sig --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
       - name: Verify artifact attestation
         env:
@@ -120,7 +126,10 @@ jobs:
           OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_PRODUCTION_HOST }}
           OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_PRODUCTION_USER }}
           OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_PRODUCTION_REMOTE_DEPLOY_SCRIPT }}
-        run: bash scripts/deploy_artifact.sh --artifact "$(ls dist/*.whl | head -n1)" --environment production --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$EXPECTED_VERSION" --artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256" --image-digest "$OMNIDESK_IMAGE_DIGEST"
+        run: |
+          artifact="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$artifact"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment production --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$EXPECTED_VERSION" --artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Production smoke
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_PRODUCTION_BASE_URL }}

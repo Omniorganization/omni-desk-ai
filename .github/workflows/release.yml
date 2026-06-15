@@ -182,8 +182,10 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
-          cosign attest-blob --yes --predicate dist/sbom.json --type spdx "$(ls dist/*.whl | head -n1)" --output-signature dist/sbom.intoto.sig --output-certificate dist/sbom.intoto.pem
-          cosign attest-blob --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$(ls dist/*.whl | head -n1)" --output-signature dist/slsa.intoto.sig --output-certificate dist/slsa.intoto.pem
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          cosign attest-blob --yes --predicate dist/sbom.json --type spdx "$wheel" --output-signature dist/sbom.intoto.sig --output-certificate dist/sbom.intoto.pem
+          cosign attest-blob --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$wheel" --output-signature dist/slsa.intoto.sig --output-certificate dist/slsa.intoto.pem
 
       - name: Generate artifact attestations
         env:

@@ -56,10 +56,12 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
           python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
             test -f "$artifact"
             cosign verify-blob "$artifact" --certificate "$artifact.cosign.pem" --signature "$artifact.cosign.sig" --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           done
           test -f dist/slsa-provenance.json
-          cosign verify-attestation "$(ls dist/*.whl | head -n1)" --type slsaprovenance --certificate dist/slsa.intoto.pem --signature dist/slsa.intoto.sig --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify-attestation "$wheel" --type slsaprovenance --certificate dist/slsa.intoto.pem --signature dist/slsa.intoto.sig --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
       - run: python scripts/check_supply_chain_standard.py .
