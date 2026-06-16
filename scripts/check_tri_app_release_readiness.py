@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root).resolve(); apps = root / "apps"
     failures: list[str] = []; warnings: list[str] = []; ok: list[str] = []
     _check(sys.version_info >= (3, 10), f"Python runtime is >=3.10 ({sys.version.split()[0]})", failures, ok)
-    required_files = [apps/"shared"/"omni-app-api.contract.json", apps/"web-admin-next"/"package.json", apps/"web-admin-next"/"lib"/"gateway.ts", apps/"desktop-tauri"/"package.json", apps/"desktop-tauri"/"src-tauri"/"tauri.conf.json", apps/"mobile-flutter"/"pubspec.yaml"]
+    required_files = [apps/"shared"/"omni-app-api.contract.json", apps/"web-admin-next"/"package.json", apps/"web-admin-next"/"lib"/"gateway.ts", apps/"desktop-tauri"/"package.json", apps/"desktop-tauri"/"src-tauri"/"tauri.conf.json", apps/"desktop-tauri"/"src-tauri"/"build.rs", apps/"mobile-flutter"/"pubspec.yaml"]
     for path in required_files: _check(path.exists(), f"Required tri-app file exists: {path.relative_to(root)}", failures, ok)
     for command in _toolchain_required(args.mode):
         if shutil.which(command): ok.append(f"{command} available: {_version(command)}")
@@ -81,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     declares_dirs_crate = bool(re.search(r'^\s*dirs\s*=', desktop_cargo, re.MULTILINE))
     _check((not uses_dirs_crate) or declares_dirs_crate, "Desktop Rust has no undeclared dirs crate usage", failures, ok)
     _check("home_directory()" in desktop_main and "std::env::var_os" in desktop_main, "Desktop workspace resolver is stdlib-only and release-checkable", failures, ok)
+    desktop_build = _read(apps/"desktop-tauri"/"src-tauri"/"build.rs")
+    _check("tauri_build::build()" in desktop_build, "Desktop Tauri build script generates macro context", failures, ok)
     mobile_pubspec = (apps/"mobile-flutter"/"pubspec.yaml").read_text(encoding="utf-8")
     _check("flutter_secure_storage" in mobile_pubspec and "local_auth" in mobile_pubspec, "Mobile secure storage and biometric/PIN dependencies are declared", failures, ok)
     _check("firebase_messaging" in mobile_pubspec, "Mobile push dependency is declared", failures, ok)
