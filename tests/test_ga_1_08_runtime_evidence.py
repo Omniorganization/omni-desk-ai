@@ -34,6 +34,13 @@ def test_ios_registrant_matches_app_delegate_shape() -> None:
     assert "static func register(with registry: FlutterPluginRegistry)" in registrant
 
 
+def test_ios_podfile_prefers_ci_flutter_root() -> None:
+    podfile = Path("apps/mobile-flutter/ios/Podfile").read_text(encoding="utf-8")
+    assert "env_flutter_root = ENV['FLUTTER_ROOT']" in podfile
+    assert "File.join(env_flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper')" in podfile
+    assert "Generated.xcconfig" in podfile
+
+
 def test_tri_app_release_gates_force_native_builds() -> None:
     makefile = Path("Makefile").read_text(encoding="utf-8")
     workflow = Path(".github/workflows/tri-app-quality.yml").read_text(encoding="utf-8")

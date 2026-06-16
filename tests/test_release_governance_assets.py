@@ -56,6 +56,13 @@ def test_script_executability_contract_passes_current_tree():
     assert result.returncode == 0, result.stderr
 
 
+def test_drill_workflows_install_locked_python_dependencies() -> None:
+    for workflow_name in ["backup-restore-drill.yml", "production-closure-drill.yml"]:
+        workflow = Path(".github/workflows", workflow_name).read_text(encoding="utf-8")
+        assert "python -m pip install --require-hashes -r requirements.dev.lock" in workflow
+        assert "python -m pip install -e . --no-deps --no-build-isolation" in workflow
+
+
 def test_observability_and_full_compose_assets_exist():
     assert Path("deploy/observability/prometheus-rules.yml").exists()
     assert Path("deploy/observability/grafana-dashboard.json").exists()
