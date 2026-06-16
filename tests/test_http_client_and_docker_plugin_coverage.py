@@ -102,6 +102,27 @@ def test_channel_http_client_success_retry_error_and_no_httpx(monkeypatch):
     asyncio.run(run_case())
 
 
+def test_channel_http_client_redacts_sensitive_error_material(monkeypatch):
+    async def run_case():
+        module = FakeHttpxModule([FakeResponse(400, "access_token=tok123 Authorization: Bearer sk-live refresh_token=ref789")])
+        monkeypatch.setattr(http_client, "httpx", module)
+        with pytest.raises(ChannelHttpError) as exc:
+            await ChannelHttpClient(max_retries=0).get("https://provider.test")
+        assert "tok123" not in exc.value.response_text
+        assert "sk-live" not in exc.value.response_text
+        assert "ref789" not in exc.value.response_text
+        assert "[REDACTED_SECRET]" in exc.value.response_text
+
+        module = FakeHttpxModule([FakeNetwork("https://provider.test/callback?access_token=tok123 Authorization: Bearer sk-live")])
+        monkeypatch.setattr(http_client, "httpx", module)
+        with pytest.raises(ChannelHttpError) as net_exc:
+            await ChannelHttpClient(max_retries=0).get("https://provider.test")
+        assert "tok123" not in str(net_exc.value)
+        assert "sk-live" not in str(net_exc.value)
+
+    asyncio.run(run_case())
+
+
 class Metrics:
     def __init__(self):
         self.events = []

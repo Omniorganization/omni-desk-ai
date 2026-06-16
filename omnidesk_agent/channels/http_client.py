@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from omnidesk_agent.channels.idempotency import idempotency_headers
+from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter
 
 try:
     import httpx
@@ -14,6 +15,7 @@ except ModuleNotFoundError:  # allow channel parsing without outbound HTTP deps
 
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+_REDACTOR = MemoryPrivacyFilter()
 
 
 @dataclass
@@ -37,6 +39,10 @@ def _require_httpx():
     if httpx is None:
         raise RuntimeError("httpx is required for outbound channel HTTP calls. Install with: python3 -m pip install httpx")
     return httpx
+
+
+def _redact_error_text(value: Any) -> str:
+    return _REDACTOR.redact_text(str(value))
 
 
 class ChannelHttpClient:
@@ -103,7 +109,7 @@ class ChannelHttpClient:
                         f"channel provider HTTP {response.status_code}",
                         status_code=response.status_code,
                         request_id=request_id,
-                        response_text=response.text[:2000],
+                        response_text=_redact_error_text(response.text)[:2000],
                     )
                 except ChannelHttpError:
                     raise
@@ -112,8 +118,8 @@ class ChannelHttpClient:
                     if attempt < self.max_retries:
                         await asyncio.sleep(self._delay(attempt, {}))
                         continue
-                    raise ChannelHttpError(f"channel provider network error: {exc}") from exc
-        raise ChannelHttpError(f"channel provider request failed: {last_error}")
+                    raise ChannelHttpError(f"channel provider network error: {_redact_error_text(exc)}") from exc
+        raise ChannelHttpError(f"channel provider request failed: {_redact_error_text(last_error)}")
 
     def _delay(self, attempt: int, headers: Any) -> float:
         retry_after = None
