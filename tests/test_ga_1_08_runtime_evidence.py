@@ -39,6 +39,8 @@ def test_ios_podfile_prefers_ci_flutter_root() -> None:
     assert "env_flutter_root = ENV['FLUTTER_ROOT']" in podfile
     assert "return env_flutter_root" in podfile
     assert "Generated.xcconfig" in podfile
+    assert "post_install do |installer|" in podfile
+    assert "flutter_additional_ios_build_settings(target)" in podfile
 
 
 def test_ios_release_jobs_generate_standard_flutter_project() -> None:
