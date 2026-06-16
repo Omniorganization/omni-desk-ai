@@ -45,8 +45,8 @@ def test_ios_release_jobs_generate_standard_flutter_project() -> None:
     tri_app = Path(".github/workflows/tri-app-quality.yml").read_text(encoding="utf-8")
     release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
     for workflow in [tri_app, release]:
-        assert "flutter create . --platforms=ios --project-name omnidesk_mobile --org com.omnidesk --overwrite" in workflow
-        assert "git checkout -- ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist" in workflow
+        assert "flutter create . --platforms=ios --project-name omnidesk_mobile --org com.omnidesk --overwrite --no-pub" in workflow
+        assert "git checkout -- pubspec.yaml pubspec.lock README.md lib test ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist" in workflow
 
 
 def test_tri_app_release_gates_force_native_builds() -> None:
