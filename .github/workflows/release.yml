@@ -115,6 +115,21 @@ jobs:
           git checkout -- pubspec.yaml pubspec.lock README.md lib test ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist
       - run: flutter pub get
       - run: cd ios && pod install
+      - name: Link CocoaPods build settings
+        run: |
+          set -euo pipefail
+          for config in Debug Release Profile; do
+            config_lc="$(printf '%s' "$config" | tr '[:upper:]' '[:lower:]')"
+            xcconfig="ios/Flutter/$config.xcconfig"
+            pods_config="ios/Pods/Target Support Files/Pods-Runner/Pods-Runner.$config_lc.xcconfig"
+            include_path="../Pods/Target Support Files/Pods-Runner/Pods-Runner.$config_lc.xcconfig"
+            if [ -f "$xcconfig" ] && [ -f "$pods_config" ] && ! grep -q "Pods-Runner.$config_lc.xcconfig" "$xcconfig"; then
+              tmp="$RUNNER_TEMP/$config.xcconfig"
+              printf '#include "%s"\n' "$include_path" > "$tmp"
+              cat "$xcconfig" >> "$tmp"
+              mv "$tmp" "$xcconfig"
+            fi
+          done
       - name: Restore iOS release signing assets
         env:
           OMNI_IOS_CERTIFICATE_P12_BASE64: ${{ secrets.OMNI_IOS_CERTIFICATE_P12_BASE64 }}
