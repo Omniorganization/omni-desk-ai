@@ -35,7 +35,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.image_digest:
         subjects.append({"name": args.image_ref or "oci-image", "digest": {"sha256": args.image_digest.removeprefix("sha256:")}})
     lockfiles = []
-    for rel in ("requirements.lock", "requirements.runtime.lock", "requirements.dev.lock", "requirements.security.lock"):
+    for rel in (
+        "requirements.lock",
+        "requirements.bootstrap.lock",
+        "requirements.runtime.lock",
+        "requirements.dev.lock",
+        "requirements.security.lock",
+        "requirements.enterprise.lock",
+    ):
         path = Path(rel)
         if path.exists():
             lockfiles.append({"name": rel, "digest": {"sha256": _sha256(path)}})

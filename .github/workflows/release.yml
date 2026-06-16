@@ -48,9 +48,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
       - run: npm run build
 
@@ -68,6 +70,32 @@ jobs:
       - run: flutter pub get
       - run: dart analyze
       - run: flutter test
+      - name: Restore Android release signing key
+        env:
+          OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}
+          OMNI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.OMNI_ANDROID_KEYSTORE_PASSWORD }}
+          OMNI_ANDROID_KEY_ALIAS: ${{ secrets.OMNI_ANDROID_KEY_ALIAS }}
+          OMNI_ANDROID_KEY_PASSWORD: ${{ secrets.OMNI_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$OMNI_ANDROID_KEYSTORE_BASE64"
+          test -n "$OMNI_ANDROID_KEYSTORE_PASSWORD"
+          test -n "$OMNI_ANDROID_KEY_ALIAS"
+          test -n "$OMNI_ANDROID_KEY_PASSWORD"
+          printf '%s' "$OMNI_ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/omnidesk-release.keystore"
+          {
+            echo "OMNI_ANDROID_KEYSTORE=$RUNNER_TEMP/omnidesk-release.keystore"
+            echo "OMNI_ANDROID_KEYSTORE_PASSWORD=$OMNI_ANDROID_KEYSTORE_PASSWORD"
+            echo "OMNI_ANDROID_KEY_ALIAS=$OMNI_ANDROID_KEY_ALIAS"
+            echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+      - name: Restore Android Firebase config
+        env:
+          OMNI_ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.OMNI_ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$OMNI_ANDROID_GOOGLE_SERVICES_JSON"
+          printf '%s' "$OMNI_ANDROID_GOOGLE_SERVICES_JSON" > android/app/google-services.json
       - run: flutter build appbundle --release
 
   mobile-ios-release:
@@ -103,6 +131,7 @@ jobs:
       - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
       - run: |
           python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python scripts/check_ga_release_gate.py .

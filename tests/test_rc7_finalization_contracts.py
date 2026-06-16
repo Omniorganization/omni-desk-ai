@@ -165,6 +165,7 @@ def test_makefile_exposes_industrial_test_targets():
 
 def test_docker_runtime_uses_runtime_lock_and_builder_uses_dev_lock():
     dockerfile = Path("Dockerfile").read_text()
+    assert "requirements.bootstrap.lock" in dockerfile
     assert "requirements.runtime.lock" in dockerfile
     assert "requirements.dev.lock" in dockerfile
     assert "--require-hashes -r /tmp/requirements.runtime.lock" in dockerfile

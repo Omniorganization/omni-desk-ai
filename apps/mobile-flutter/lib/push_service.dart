@@ -7,16 +7,20 @@ class OmniPushService {
   final String deviceId;
   OmniPushService(this.client, this.deviceId);
   Future<String?> register() async {
-    await Firebase.initializeApp();
-    final messaging = FirebaseMessaging.instance;
-    await messaging.requestPermission(alert: true, badge: true, sound: true);
-    final token = await messaging.getToken();
-    if (token != null && token.isNotEmpty) {
-      await client.registerPushToken(deviceId, token, platform: 'mobile');
+    try {
+      await Firebase.initializeApp();
+      final messaging = FirebaseMessaging.instance;
+      await messaging.requestPermission(alert: true, badge: true, sound: true);
+      final token = await messaging.getToken();
+      if (token != null && token.isNotEmpty) {
+        await client.registerPushToken(deviceId, token, platform: 'mobile');
+      }
+      messaging.onTokenRefresh.listen((newToken) {
+        client.registerPushToken(deviceId, newToken, platform: 'mobile');
+      });
+      return token;
+    } catch (_) {
+      return null;
     }
-    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
-      client.registerPushToken(deviceId, newToken, platform: 'mobile');
-    });
-    return token;
   }
 }

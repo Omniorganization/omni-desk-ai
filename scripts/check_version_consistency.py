@@ -79,16 +79,16 @@ def main(argv: list[str] | None = None) -> int:
         app_sources[f"apps/{package}/package-lock.json root"] = package_lock.get("version", "")
         app_sources[f"apps/{package}/package-lock.json package"] = package_lock.get("packages", {}).get("", {}).get("version", "")
 
-    app_sources["apps/desktop-tauri/src-tauri/tauri.conf.json"] = _json(root / "apps" / "desktop-tauri" / "src-tauri" / "tauri.conf.json").get("version", "")
-    app_sources["apps/desktop-tauri/src-tauri/Cargo.toml"] = _regex(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.toml", r'^version\s*=\s*"([^"]+)"', "desktop Cargo version")
     app_sources["apps/desktop-tauri/src/App.tsx"] = _regex(root / "apps" / "desktop-tauri" / "src" / "App.tsx", r"^const VERSION = '([^']+)'", "desktop app version")
-    app_sources["apps/mobile-flutter/pubspec.yaml"] = _regex(root / "apps" / "mobile-flutter" / "pubspec.yaml", r'^version:\s*([0-9.]+)\+\d+', "mobile pubspec version")
-    app_sources["apps/mobile-flutter/android/app/build.gradle"] = _regex(root / "apps" / "mobile-flutter" / "android" / "app" / "build.gradle", r'versionName\s+"([^"]+)"', "Android versionName")
-    app_sources["apps/mobile-flutter/ios/Flutter/Generated.xcconfig"] = _regex(root / "apps" / "mobile-flutter" / "ios" / "Flutter" / "Generated.xcconfig", r'^FLUTTER_BUILD_NAME=([^\s]+)', "iOS Flutter build name")
-    app_sources["apps/mobile-flutter/ios/Runner/Info.plist"] = _regex(root / "apps" / "mobile-flutter" / "ios" / "Runner" / "Info.plist", r'CFBundleShortVersionString</key><string>([^<]+)</string>', "iOS bundle short version")
 
     chart_sources["Helm chart version"] = _regex(root / "deploy" / "kubernetes" / "helm" / "omnidesk" / "Chart.yaml", r'^version:\s*([^\s]+)', "Helm chart version")
+    chart_sources["apps/desktop-tauri/src-tauri/tauri.conf.json"] = _json(root / "apps" / "desktop-tauri" / "src-tauri" / "tauri.conf.json").get("version", "")
+    chart_sources["apps/desktop-tauri/src-tauri/Cargo.toml"] = _regex(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.toml", r'^version\s*=\s*"([^"]+)"', "desktop Cargo version")
     chart_sources["apps/desktop-tauri/src-tauri/Cargo.lock package"] = _regex(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.lock", r'^version\s*=\s*"([^"]+)"', "desktop Cargo.lock package version")
+    chart_sources["apps/mobile-flutter/pubspec.yaml"] = _regex(root / "apps" / "mobile-flutter" / "pubspec.yaml", r'^version:\s*([0-9.]+)\+\d+', "mobile pubspec version")
+    chart_sources["apps/mobile-flutter/android/app/build.gradle"] = _regex(root / "apps" / "mobile-flutter" / "android" / "app" / "build.gradle", r'versionName\s+"([^"]+)"', "Android versionName")
+    chart_sources["apps/mobile-flutter/ios/Flutter/Generated.xcconfig"] = _regex(root / "apps" / "mobile-flutter" / "ios" / "Flutter" / "Generated.xcconfig", r'^FLUTTER_BUILD_NAME=([^\s]+)', "iOS Flutter build name")
+    chart_sources["apps/mobile-flutter/ios/Runner/Info.plist"] = _regex(root / "apps" / "mobile-flutter" / "ios" / "Runner" / "Info.plist", r'CFBundleShortVersionString</key><string>([^<]+)</string>', "iOS bundle short version")
 
     failures: list[str] = []
     for label, value in sorted(full_sources.items()):

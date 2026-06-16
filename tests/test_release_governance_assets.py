@@ -11,6 +11,7 @@ from scripts.verify_release_artifact import main as verify_release_artifact_main
 
 def test_release_governance_assets_exist():
     assert Path("requirements.lock").exists()
+    assert Path("requirements.bootstrap.lock").exists()
     assert Path("requirements.runtime.lock").exists()
     assert Path("requirements.dev.lock").exists()
     assert Path("requirements.security.lock").exists()
@@ -28,6 +29,7 @@ def test_ci_coverage_gate_is_80_and_has_group_gate():
     assert "--cov-fail-under=80" in ci
     assert "scripts/check_coverage_gates.py" in ci
     assert "requirements.security.lock" in ci
+    assert "requirements.bootstrap.lock" in ci
     gates = Path("scripts/check_coverage_gates.py").read_text(encoding="utf-8")
     assert "omnidesk_agent/sandbox/runner_server.py" in gates
     assert "omnidesk_agent/sandbox/remote_runner.py" in gates

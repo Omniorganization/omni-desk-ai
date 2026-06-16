@@ -16,6 +16,10 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+.serena/
+.uv-cache/
+.gh-cache/
+.pycache_check/
 
 # Build
 build/

@@ -16,9 +16,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: python scripts/check_lock_hashes.py requirements.bootstrap.lock
       - run: PYTHONPATH=. python -m pytest -q tests/test_tri_app_foundation.py
       - run: python scripts/check_tri_app_release_readiness.py . --mode source
+      - run: find . -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
       - run: python scripts/check_ga_release_gate.py .
 
   web-admin:
@@ -53,9 +56,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode desktop-release
 
@@ -73,8 +78,33 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      - name: Generate non-production Android signing key
+        env:
+          OMNI_ANDROID_KEYSTORE_PASSWORD: omnidesk-ci-store-password
+          OMNI_ANDROID_KEY_ALIAS: omnidesk-ci
+          OMNI_ANDROID_KEY_PASSWORD: omnidesk-ci-store-password
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/omnidesk-ci-release.keystore"
+          keytool -genkeypair -v \
+            -storetype PKCS12 \
+            -keystore "$keystore" \
+            -storepass "$OMNI_ANDROID_KEYSTORE_PASSWORD" \
+            -keypass "$OMNI_ANDROID_KEY_PASSWORD" \
+            -alias "$OMNI_ANDROID_KEY_ALIAS" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 1 \
+            -dname "CN=OmniDesk CI,O=OmniDesk,L=CI,C=US" \
+            -noprompt
+          {
+            echo "OMNI_ANDROID_KEYSTORE=$keystore"
+            echo "OMNI_ANDROID_KEYSTORE_PASSWORD=$OMNI_ANDROID_KEYSTORE_PASSWORD"
+            echo "OMNI_ANDROID_KEY_ALIAS=$OMNI_ANDROID_KEY_ALIAS"
+            echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
       - run: flutter build appbundle --release
-      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-release
+      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-android-release
 
   mobile-ios-release:
     runs-on: macos-latest
@@ -91,4 +121,4 @@ jobs:
       - run: flutter pub get
       - run: cd ios && pod install
       - run: flutter build ipa --release
-      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-release
+      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-release

@@ -37,18 +37,18 @@ def _check(condition: bool, message: str, failures: list[str], ok: list[str]) ->
 def _toolchain_required(mode: str) -> list[str]:
     if mode == "source": return ["node", "npm"]
     if mode == "desktop-release": return ["node", "npm", "cargo", "rustc"]
-    if mode == "mobile-release": return ["flutter"]
+    if mode in {"mobile-release", "mobile-android-release", "mobile-ios-release"}: return ["flutter"]
     return ["node", "npm", "flutter", "cargo", "rustc"]
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check OmniDesk tri-app readiness.")
     parser.add_argument("root", nargs="?", default=".")
-    parser.add_argument("--mode", choices=["source", "release", "desktop-release", "mobile-release"], default="release")
+    parser.add_argument("--mode", choices=["source", "release", "desktop-release", "mobile-release", "mobile-android-release", "mobile-ios-release"], default="release")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve(); apps = root / "apps"
     failures: list[str] = []; warnings: list[str] = []; ok: list[str] = []
     _check(sys.version_info >= (3, 10), f"Python runtime is >=3.10 ({sys.version.split()[0]})", failures, ok)
-    required_files = [apps/"shared"/"omni-app-api.contract.json", apps/"web-admin-next"/"package.json", apps/"web-admin-next"/"lib"/"gateway.ts", apps/"desktop-tauri"/"package.json", apps/"desktop-tauri"/"src-tauri"/"tauri.conf.json", apps/"mobile-flutter"/"pubspec.yaml"]
+    required_files = [apps/"shared"/"omni-app-api.contract.json", apps/"web-admin-next"/"package.json", apps/"web-admin-next"/"lib"/"gateway.ts", apps/"desktop-tauri"/"package.json", apps/"desktop-tauri"/"src-tauri"/"tauri.conf.json", apps/"desktop-tauri"/"src-tauri"/"build.rs", apps/"desktop-tauri"/"src-tauri"/"icons"/"icon.png", apps/"mobile-flutter"/"pubspec.yaml"]
     for path in required_files: _check(path.exists(), f"Required tri-app file exists: {path.relative_to(root)}", failures, ok)
     for command in _toolchain_required(args.mode):
         if shutil.which(command): ok.append(f"{command} available: {_version(command)}")
@@ -81,17 +81,26 @@ def main(argv: list[str] | None = None) -> int:
     declares_dirs_crate = bool(re.search(r'^\s*dirs\s*=', desktop_cargo, re.MULTILINE))
     _check((not uses_dirs_crate) or declares_dirs_crate, "Desktop Rust has no undeclared dirs crate usage", failures, ok)
     _check("home_directory()" in desktop_main and "std::env::var_os" in desktop_main, "Desktop workspace resolver is stdlib-only and release-checkable", failures, ok)
+    desktop_build = _read(apps/"desktop-tauri"/"src-tauri"/"build.rs")
+    _check("tauri_build::build()" in desktop_build, "Desktop Tauri build script generates macro context", failures, ok)
     mobile_pubspec = (apps/"mobile-flutter"/"pubspec.yaml").read_text(encoding="utf-8")
     _check("flutter_secure_storage" in mobile_pubspec and "local_auth" in mobile_pubspec, "Mobile secure storage and biometric/PIN dependencies are declared", failures, ok)
     _check("firebase_messaging" in mobile_pubspec, "Mobile push dependency is declared", failures, ok)
     mobile_push = _read(apps/"mobile-flutter"/"lib"/"push_service.dart")
     _check("platform: 'mobile'" in mobile_push, "Mobile push token registration passes platform as a named argument", failures, ok)
     _check("registerPushToken(deviceId, token, 'mobile')" not in mobile_push and "registerPushToken(deviceId, newToken, 'mobile')" not in mobile_push, "Mobile push service has no stale positional platform calls", failures, ok)
-    for rel in ["android/app/build.gradle", "android/app/src/main/AndroidManifest.xml", "ios/Runner/AppDelegate.swift", "ios/Runner/Info.plist", "ios/Runner.xcodeproj/project.pbxproj", "ios/Flutter/Generated.xcconfig"]:
+    _check("catch (_)" in mobile_push and "return null" in mobile_push, "Mobile push service degrades when platform Firebase config is unavailable", failures, ok)
+    mobile_gradle = _read(apps/"mobile-flutter"/"android/app/build.gradle")
+    _check("compileSdk 36" in mobile_gradle or "compileSdk = 36" in mobile_gradle, "Android release build compiles against SDK 36", failures, ok)
+    _check('ndkVersion "27.0.12077973"' in mobile_gradle or 'ndkVersion = "27.0.12077973"' in mobile_gradle, "Android release build pins NDK 27 for native plugins", failures, ok)
+    _check("minSdk 24" in mobile_gradle or "minSdkVersion 24" in mobile_gradle, "Android release build minSdk satisfies local_auth_android", failures, ok)
+    _check("sourceCompatibility JavaVersion.VERSION_17" in mobile_gradle and "targetCompatibility JavaVersion.VERSION_17" in mobile_gradle and 'jvmTarget = "17"' in mobile_gradle, "Android release Java and Kotlin JVM targets are aligned to 17", failures, ok)
+    _check("com.google.gms.google-services\" apply false" in mobile_gradle and "hasGoogleServicesConfig" in mobile_gradle, "Android Google Services plugin is conditional on Firebase config", failures, ok)
+    for rel in ["android/app/build.gradle", "android/app/src/main/AndroidManifest.xml", "android/app/src/main/res/drawable/ic_launcher.xml", "android/app/src/main/res/drawable/launch_background.xml", "android/app/src/main/res/values/styles.xml", "ios/Runner/AppDelegate.swift", "ios/Runner/Info.plist", "ios/Runner.xcodeproj/project.pbxproj", "ios/Flutter/Generated.xcconfig"]:
         _check((apps/"mobile-flutter"/rel).exists(), f"Mobile native scaffold exists: apps/mobile-flutter/{rel}", failures, ok)
     registrant = _read(apps/"mobile-flutter"/"ios"/"Runner"/"GeneratedPluginRegistrant.swift")
     _check("final class GeneratedPluginRegistrant" in registrant and "static func register(with registry: FlutterPluginRegistry)" in registrant, "iOS GeneratedPluginRegistrant matches AppDelegate call shape", failures, ok)
-    if args.mode in {"release", "mobile-release"}:
+    if args.mode in {"release", "mobile-ios-release"}:
         _check("Source-package placeholder" not in registrant, "iOS plugin registrant has been regenerated by Flutter release CI", failures, ok)
     _check((apps/"mobile-flutter"/"android/app/src/main/kotlin/com/omnidesk/mobile/MainActivity.kt").exists(), "Android MainActivity matches com.omnidesk.mobile namespace", failures, ok)
     _check(not (apps/"mobile-flutter"/"android/app/src/main/kotlin/ai/omnidesk/mobile/MainActivity.kt").exists(), "Android legacy ai.omnidesk.mobile MainActivity is absent", failures, ok)
@@ -100,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     _check("tri-app-release-builds" in makefile and "tri-app-release-web" in makefile and "tri-app-release-desktop" in makefile and "tri-app-release-mobile" in makefile, "Makefile declares strict tri-app release build targets", failures, ok)
     _check("cargo check --locked" in release_contract, "Desktop release gate uses cargo check --locked", failures, ok)
     _check("flutter build appbundle --release" in release_contract, "Mobile release gate requires Android appbundle build", failures, ok)
+    _check("OMNI_ANDROID_KEYSTORE" in release_contract, "Mobile Android release gate provisions signing credentials", failures, ok)
     _check("flutter build ipa --release" in release_contract, "Mobile release gate requires iOS release build", failures, ok)
     _check("dart analyze" in release_contract, "Mobile release gate runs Dart analyzer", failures, ok)
     _check("npm ci" in release_contract, "Web/Desktop release gate uses npm ci", failures, ok)
