@@ -37,7 +37,7 @@ def test_ios_registrant_matches_app_delegate_shape() -> None:
 def test_ios_podfile_prefers_ci_flutter_root() -> None:
     podfile = Path("apps/mobile-flutter/ios/Podfile").read_text(encoding="utf-8")
     assert "env_flutter_root = ENV['FLUTTER_ROOT']" in podfile
-    assert "File.join(env_flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper')" in podfile
+    assert "return env_flutter_root" in podfile
     assert "Generated.xcconfig" in podfile
 
 
