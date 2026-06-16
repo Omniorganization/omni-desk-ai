@@ -66,6 +66,7 @@ tri-app-test-flutter:
 	cd apps/mobile-flutter && flutter test
 
 tri-app-rust-check:
+	cd apps/desktop-tauri/src-tauri && cargo generate-lockfile
 	cd apps/desktop-tauri/src-tauri && cargo check --locked
 
 tri-app-quality: tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop
@@ -83,6 +84,7 @@ tri-app-release-desktop:
 	cd apps/desktop-tauri && npm run typecheck
 	cd apps/desktop-tauri && npm test
 	cd apps/desktop-tauri && npm run build
+	cd apps/desktop-tauri/src-tauri && cargo generate-lockfile
 	cd apps/desktop-tauri/src-tauri && cargo check --locked
 
 tri-app-release-mobile:
