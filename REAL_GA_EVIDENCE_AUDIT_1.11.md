@@ -2,7 +2,7 @@
 
 ## Conclusion
 
-The 1.11 source tree has stronger onboarding, channel identity, sandbox approval, repair PR, skill signing, eval, and Control Hub scaffolding. It still does not contain real external customer-distribution GA evidence.
+The 1.11 source tree has stronger onboarding, channel identity, sandbox approval, repair PR, skill signing, eval, Control Hub scaffolding, and Web Admin container hardening. It still does not contain real external customer-distribution GA evidence.
 
 ## Evidence Status
 
@@ -10,6 +10,7 @@ The 1.11 source tree has stronger onboarding, channel identity, sandbox approval
 |---|---:|---|
 | True Flutter/Rust/Tauri native build | No | Blocked |
 | True Android/iOS/Desktop signed artifacts | No | Blocked |
+| True Web Admin signed OCI image | No | Blocked |
 | True APNS/FCM push delivery | No | Blocked |
 | True multi-instance Postgres soak | No | Blocked |
 | True rollback drill | No | Blocked |

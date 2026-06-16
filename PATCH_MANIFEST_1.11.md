@@ -11,15 +11,18 @@ Version: `1.11+openclaw-codex-aligned-enterprise-agent`
 5. Added Codex-style self-repair PR modules: branch runner, observe-only repair loop, review policy, evidence bundle, and PR generator.
 6. Added `agent-repair-pr.yml` for `ai/*` repair PR checks.
 7. Added Agent Eval Harness modules and a Desktop Control Hub status model.
+8. Hardened the Web Admin production container with a digest-pinned Node base image, Next standalone runtime, non-root UID/GID, healthcheck, and read-only-rootfs run guidance.
+9. Added standard `SHA256SUMS.txt` generation alongside the existing release checksum manifest and bound the Web Admin OCI digest into release metadata, SLSA provenance, Cosign signing, and promotion verification.
 
 ## Validation
 
 - `scripts/check_version_consistency.py`
 - `scripts/check_ga_release_gate.py`
 - `scripts/check_external_ga_evidence.py --audit-only`
+- `scripts/check_web_admin_container_hardening.py`
 - `tests/test_ga_1_11_openclaw_codex_alignment.py`
 - Existing backend, Web Admin, and Desktop source tests where local toolchains are available.
 
 ## External Evidence Boundary
 
-This package does not fabricate external evidence. Customer-distribution GA remains blocked until native build logs, signed Android/iOS/Desktop artifacts, APNS/FCM delivery receipts, multi-instance Postgres soak, rollback drill, backup/restore drill, and self-healing failure injection evidence are attached under `release/external-evidence`.
+This package does not fabricate external evidence. Customer-distribution GA remains blocked until native build logs, signed Android/iOS/Desktop artifacts, a signed Web Admin OCI image report, APNS/FCM delivery receipts, multi-instance Postgres soak, rollback drill, backup/restore drill, and self-healing failure injection evidence are attached under `release/external-evidence`.

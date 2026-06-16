@@ -14,6 +14,9 @@
       "signed-artifacts/desktop-macos-notarized.json",
       "signed-artifacts/desktop-windows-signed.json"
     ],
+    "web_admin_signed_oci_image": [
+      "signed-artifacts/web-admin-signed-oci.json"
+    ],
     "push_delivery": [
       "push/apns-live-delivery.json",
       "push/fcm-live-delivery.json"

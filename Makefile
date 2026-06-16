@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke web-admin-container-hardening tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
@@ -41,6 +41,9 @@ compose-smoke:
 strict-sandbox-smoke:
 	$(PYTHON) scripts/production_smoke_test.py --sandbox-only --strict-sandbox
 
+web-admin-container-hardening:
+	$(PYTHON) scripts/check_web_admin_container_hardening.py .
+
 production-closure:
 	python scripts/check_kubernetes_contract.py .
 	python scripts/production_closure_drill.py --root . --contract-only
@@ -74,6 +77,7 @@ tri-app-quality: tri-app-contract tri-app-test-web tri-app-build-web tri-app-tes
 	@if command -v cargo >/dev/null; then $(MAKE) tri-app-rust-check; else echo "cargo not found; skipping Tauri Rust check"; fi
 
 tri-app-release-web:
+	$(PYTHON) scripts/check_web_admin_container_hardening.py .
 	cd apps/web-admin-next && npm ci
 	cd apps/web-admin-next && npm run typecheck
 	cd apps/web-admin-next && npm test

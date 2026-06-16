@@ -6,7 +6,11 @@ from pathlib import Path
 def test_web_admin_docker_public_directory_is_committed() -> None:
     assert Path("apps/web-admin-next/public/.gitkeep").exists()
     dockerfile = Path("apps/web-admin-next/Dockerfile").read_text(encoding="utf-8")
+    next_config = Path("apps/web-admin-next/next.config.mjs").read_text(encoding="utf-8")
     assert "COPY --from=build /app/public ./public" in dockerfile
+    assert "COPY --from=build /app/.next/standalone ./" in dockerfile
+    assert "CMD [\"node\", \"server.js\"]" in dockerfile
+    assert "output: 'standalone'" in next_config
 
 
 def test_desktop_rust_has_no_undeclared_dirs_dependency() -> None:

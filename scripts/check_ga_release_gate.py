@@ -55,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         failures.append(str(exc))
 
+    try:
+        _run([sys.executable, "scripts/check_web_admin_container_hardening.py", "."], root)
+        ok.append("Web Admin container hardening gate passes")
+    except Exception as exc:
+        failures.append(str(exc))
+
     pyproject = _read(root / "pyproject.toml")
     version = _project_version(pyproject)
     chart_version = f"{version.split('+', 1)[0]}.0"
@@ -120,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
     _check((root / "apps/desktop-tauri/src-tauri/Cargo.lock").exists(), "Desktop Rust lockfile is present", failures, ok)
     _check((root / "apps/mobile-flutter/pubspec.lock").exists(), "Mobile Flutter lockfile is present", failures, ok)
     _check("python -m pytest" in release_workflow and "render_locked_helm_values.py" in release_workflow and "--locked-values" in release_workflow, "Release workflow uses stable pytest entrypoint and locked Helm digest rendering", failures, ok)
+    _check("NODE_BASE_IMAGE=node:22-bookworm-slim@sha256:" in web_docker and "FROM node:" not in web_docker and "USER 10001:10001" in web_docker and "HEALTHCHECK" in web_docker, "Web Admin Docker image is digest-pinned, non-root, and healthchecked", failures, ok)
+    _check("output: 'standalone'" in web_csp and "server.js" in web_docker, "Web Admin Docker runtime uses Next standalone output", failures, ok)
+    _check("OMNIDESK_WEB_ADMIN_IMAGE_DIGEST" in release_workflow and "web_admin_image.digest" in _read(root / ".github/workflows/promote-production.yml"), "Web Admin OCI digest is captured and verified in release/promotion workflows", failures, ok)
     _check(f'"version": "{version}"' in evidence_manifest and '"external_evidence_required"' in evidence_manifest, "Release evidence manifest is present and explicit about external evidence", failures, ok)
     _check((root / "apps/web-admin-next/public/.gitkeep").exists() and "COPY --from=build /app/public ./public" in web_docker, "Web Admin Docker runtime has a committed public asset directory", failures, ok)
     _check("dirs::home_dir" not in desktop_main and "std::env::var_os" in desktop_main, "Desktop Tauri Rust source has no undeclared dirs dependency", failures, ok)
@@ -133,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     _check("signRequest" in mobile_identity and "deviceIdentityStore" in mobile_api and "x-omnidesk-device-signature" in mobile_identity, "Mobile client signs sensitive device requests", failures, ok)
     _check("RuntimeSelfHealingController" in self_healing and "rollback_release" in self_healing and "create_upgrade_proposal" in self_healing, "Runtime self-healing policy is codified", failures, ok)
     _check("REQUIRED_EVIDENCE" in external_gate and "blocked_missing_external_evidence" in external_gate, "External real GA evidence checker exists and fails closed", failures, ok)
-    _check("native-build/flutter-android-release.json" in external_required and "drills/self-healing-failure-injection.json" in external_required, "External real GA evidence required-file contract is declared", failures, ok)
+    _check("native-build/flutter-android-release.json" in external_required and "signed-artifacts/web-admin-signed-oci.json" in external_required and "drills/self-healing-failure-injection.json" in external_required, "External real GA evidence required-file contract is declared", failures, ok)
     _check('"status": "blocked_missing_external_evidence"' in external_audit and '"self_healing_failure_injection"' in external_audit, "Current real GA evidence audit records missing external evidence", failures, ok)
     _check("external-ga-evidence-gate" in makefile and "distribution-ga-preflight" in makefile, "Distribution GA preflight includes external real evidence gate", failures, ok)
     _check("web-admin-release" in release_workflow and "desktop-release" in release_workflow and "mobile-android-release" in release_workflow and "mobile-ios-release" in release_workflow and "needs:" in release_workflow, "Main release workflow depends on tri-app release builds", failures, ok)

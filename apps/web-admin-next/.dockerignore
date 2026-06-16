@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.npm-cache/
+coverage/
+*.tsbuildinfo
+npm-debug.log
+yarn-error.log
+.env
+.env.*
+.DS_Store

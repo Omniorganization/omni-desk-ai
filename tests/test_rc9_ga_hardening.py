@@ -269,6 +269,7 @@ def test_release_and_promotion_attestation_gates_are_mandatory():
     assert "attestations: write" in release
     assert "docker buildx imagetools inspect" in release
     assert 'echo "OMNIDESK_IMAGE_DIGEST=$digest"' in release
+    assert 'echo "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST=$web_admin_digest"' in release
     assert "inputs.image_digest" not in release
     assert "--build-arg OMNIDESK_IMAGE_DIGEST" not in release
     assert "find dist -maxdepth 1 -type f" in release
@@ -277,6 +278,7 @@ def test_release_and_promotion_attestation_gates_are_mandatory():
     assert "cyclonedx-py environment -o sbom.json" not in release
     assert "gh attestation sign sbom.json" not in release
     assert 'gh attestation verify "$artifact"' in promote
+    assert "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST" in promote
     assert "find current previous -maxdepth 1 -type f" in rollback
     assert "release_metadata.json" in release
     assert "release_metadata.json" in promote
@@ -386,7 +388,9 @@ def test_verify_release_artifact_checks_release_metadata(tmp_path):
         "artifact": {"name": wheel.name, "sha256": digest},
         "image": {"digest": "sha256:" + "c" * 64},
     }), encoding="utf-8")
-    (dist / "checksums.txt").write_text(f"{digest}  {wheel.name}\n{__import__('hashlib').sha256((dist / 'release_metadata.json').read_bytes()).hexdigest()}  release_metadata.json\n", encoding="utf-8")
+    checksum_manifest = f"{digest}  {wheel.name}\n{__import__('hashlib').sha256((dist / 'release_metadata.json').read_bytes()).hexdigest()}  release_metadata.json\n"
+    (dist / "checksums.txt").write_text(checksum_manifest, encoding="utf-8")
+    (dist / "SHA256SUMS.txt").write_text(checksum_manifest, encoding="utf-8")
     ok = subprocess.run([
         "python3", "scripts/verify_release_artifact.py", str(dist),
         "--expected-version", "1.2.3",

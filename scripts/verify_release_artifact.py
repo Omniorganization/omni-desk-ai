@@ -10,6 +10,8 @@ from pathlib import Path
 
 
 CHECKSUM_MANIFEST_NAME = "checksums.txt"
+STANDARD_CHECKSUM_MANIFEST_NAME = "SHA256SUMS.txt"
+CHECKSUM_MANIFEST_NAMES = {CHECKSUM_MANIFEST_NAME, STANDARD_CHECKSUM_MANIFEST_NAME}
 SIGNATURE_MANIFEST_NAME = "release_signatures.json"
 
 
@@ -21,6 +23,11 @@ def _read_checksums(dist: Path) -> dict[str, str]:
     checksums = dist / CHECKSUM_MANIFEST_NAME
     if not checksums.exists():
         raise RuntimeError(f"{CHECKSUM_MANIFEST_NAME} is missing")
+    standard_checksums = dist / STANDARD_CHECKSUM_MANIFEST_NAME
+    if not standard_checksums.exists():
+        raise RuntimeError(f"{STANDARD_CHECKSUM_MANIFEST_NAME} is missing")
+    if standard_checksums.read_text(encoding="utf-8") != checksums.read_text(encoding="utf-8"):
+        raise RuntimeError(f"{STANDARD_CHECKSUM_MANIFEST_NAME} must match {CHECKSUM_MANIFEST_NAME}")
     result: dict[str, str] = {}
     for line in checksums.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -64,12 +71,13 @@ def _verify_signature_manifest_set(dist: Path, checksums: dict[str, str]) -> Non
     checksum_names = set(checksums)
     if signed != signable:
         raise RuntimeError(f"signature artifact set mismatch: signed={sorted(signed)} signable={sorted(signable)}")
-    if CHECKSUM_MANIFEST_NAME not in signed:
-        raise RuntimeError(f"{CHECKSUM_MANIFEST_NAME} must be signed")
+    for checksum_manifest in sorted(CHECKSUM_MANIFEST_NAMES):
+        if checksum_manifest not in signed:
+            raise RuntimeError(f"{checksum_manifest} must be signed")
     missing_sigs = sorted(name for name in signed if not (dist / f"{name}.sig").exists())
     if missing_sigs:
         raise RuntimeError(f"signature sidecar missing for artifacts: {missing_sigs}")
-    checksum_required = signable - {CHECKSUM_MANIFEST_NAME}
+    checksum_required = signable - CHECKSUM_MANIFEST_NAMES
     if checksum_names != checksum_required:
         raise RuntimeError(f"checksum artifact set mismatch: checksums={sorted(checksum_names)} required={sorted(checksum_required)}")
     for item in artifacts:
@@ -79,7 +87,7 @@ def _verify_signature_manifest_set(dist: Path, checksums: dict[str, str]) -> Non
         actual_sha = _sha256(artifact)
         if manifest_sha != actual_sha:
             raise RuntimeError(f"signature manifest sha256 mismatch for {name}")
-        if name != CHECKSUM_MANIFEST_NAME and manifest_sha != checksums.get(name):
+        if name not in CHECKSUM_MANIFEST_NAMES and manifest_sha != checksums.get(name):
             raise RuntimeError(f"signature/checksum sha256 mismatch for {name}")
 
 
@@ -91,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-metadata", action="store_true", help="Require release_metadata.json and verify it matches the wheel.")
     parser.add_argument("--expected-artifact-sha256")
     parser.add_argument("--expected-image-digest")
+    parser.add_argument("--expected-web-admin-image-digest")
     args = parser.parse_args(argv)
 
     dist = Path(args.dist_dir)
@@ -148,6 +157,9 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
             if args.expected_image_digest and metadata.get("image", {}).get("digest") != args.expected_image_digest:
                 print("release metadata image digest mismatch", file=sys.stderr)
+                return 1
+            if args.expected_web_admin_image_digest and metadata.get("web_admin_image", {}).get("digest") != args.expected_web_admin_image_digest:
+                print("release metadata web admin image digest mismatch", file=sys.stderr)
                 return 1
     except Exception as exc:
         print(str(exc), file=sys.stderr)

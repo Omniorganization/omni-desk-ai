@@ -16,6 +16,7 @@ REQUIRED_RELEASE_SNIPPETS = [
     "docker build",
     "docker push",
     "OMNIDESK_IMAGE_DIGEST",
+    "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST",
     "docker buildx imagetools inspect",
 ]
 
@@ -33,6 +34,8 @@ REQUIRED_PROMOTE_SNIPPETS = [
     "cosign verify-attestation",
     "gh attestation verify",
     "release_metadata.json",
+    "web_admin_image.digest",
+    "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST",
 ]
 
 REQUIRED_FILES = [
@@ -49,6 +52,7 @@ REQUIRED_FILES = [
     "scripts/maintenance_sqlite.py",
     "scripts/check_disk_guard.py",
     "scripts/check_alert_rules_fire.py",
+    "scripts/check_web_admin_container_hardening.py",
     "omnidesk_agent/observability_tracing.py",
     "omnidesk_agent/observability_otel.py",
     "deploy/observability/otel-collector.yaml",

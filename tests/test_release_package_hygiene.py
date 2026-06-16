@@ -21,6 +21,7 @@ def test_release_script_is_shell_valid_and_generates_metadata_contract():
     assert "python -m build" in text
     assert "sbom.json" in text
     assert "checksums.txt" in text
+    assert "SHA256SUMS.txt" in text
 
 
 def test_release_hygiene_blocks_frontend_native_and_runtime_artifacts(tmp_path):

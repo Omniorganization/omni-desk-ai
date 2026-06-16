@@ -26,6 +26,7 @@ def test_release_workflow_generates_image_digest_contract() -> None:
     assert "docker push" in text
     assert "docker buildx imagetools inspect" in text
     assert 'echo "OMNIDESK_IMAGE_DIGEST=$digest"' in text
+    assert 'echo "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST=$web_admin_digest"' in text
     assert "inputs.image_digest" not in text
     assert "--build-arg OMNIDESK_IMAGE_DIGEST" not in text
     assert "docker buildx imagetools inspect" in text
@@ -104,7 +105,7 @@ def test_observability_tracing_records_metrics() -> None:
 def test_slsa_provenance_contains_complete_artifact_subjects(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
-    for name in ["pkg-0.0.1-py3-none-any.whl", "pkg-0.0.1.tar.gz", "sbom.json", "release_metadata.json", "checksums.txt", "release_signatures.json"]:
+    for name in ["pkg-0.0.1-py3-none-any.whl", "pkg-0.0.1.tar.gz", "sbom.json", "release_metadata.json", "checksums.txt", "SHA256SUMS.txt", "release_signatures.json"]:
         (dist / name).write_text(name, encoding="utf-8")
     cp = run_py("scripts/write_slsa_provenance.py", str(dist), "--image-ref", "ghcr.io/acme/omnidesk:abc", "--image-digest", "sha256:" + "a" * 64)
     assert cp.returncode == 0
@@ -115,5 +116,6 @@ def test_slsa_provenance_contains_complete_artifact_subjects(tmp_path: Path) -> 
     assert "sbom.json" in names
     assert "release_metadata.json" in names
     assert "checksums.txt" in names
+    assert "SHA256SUMS.txt" in names
     assert "release_signatures.json" in names
     assert "ghcr.io/acme/omnidesk:abc" in names

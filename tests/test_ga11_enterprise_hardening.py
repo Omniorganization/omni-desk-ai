@@ -14,6 +14,7 @@ def test_release_workflow_uses_registry_digest_without_manual_input() -> None:
     assert '--build-arg OMNIDESK_IMAGE_DIGEST' not in text
     assert 'docker buildx imagetools inspect' in text
     assert 'echo "OMNIDESK_IMAGE_DIGEST=$digest"' in text
+    assert 'echo "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST=$web_admin_digest"' in text
     assert 'python scripts/write_slsa_provenance.py' in text
 
 
@@ -22,6 +23,7 @@ def test_cosign_payload_artifact_listing_excludes_cosign_sidecars(tmp_path: Path
         'pkg.whl',
         'pkg.tar.gz',
         'checksums.txt',
+        'SHA256SUMS.txt',
         'release_metadata.json',
         'release_signatures.json',
         'sbom.json',
@@ -36,6 +38,7 @@ def test_cosign_payload_artifact_listing_excludes_cosign_sidecars(tmp_path: Path
     names = {path.name for path in list_payload_artifacts(tmp_path)}
     assert 'pkg.whl' in names
     assert 'pkg.tar.gz' in names
+    assert 'SHA256SUMS.txt' in names
     assert 'release_signatures.json' in names
     assert 'slsa-provenance.json' in names
     assert 'pkg.whl.sig' in names

@@ -17,6 +17,7 @@ def test_external_ga_evidence_gate_blocks_missing_real_evidence(tmp_path: Path) 
     assert report["status"] == "blocked_missing_external_evidence"
     assert report["blocker_count"] == len(check_external_ga_evidence.REQUIRED_EVIDENCE)
     assert "native_build" in report["categories"]
+    assert "web_admin_signed_oci_image" in report["categories"]
     assert "self_healing_failure_injection" in report["categories"]
 
 

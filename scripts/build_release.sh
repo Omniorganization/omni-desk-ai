@@ -65,7 +65,16 @@ if [[ -z "${OMNIDESK_IMAGE_DIGEST:-}" ]]; then
   echo "OMNIDESK_IMAGE_DIGEST is required; release workflow must build/push the image and export the registry digest before metadata generation" >&2
   exit 3
 fi
-python scripts/write_release_metadata.py dist --build-sha "${GITHUB_SHA:-${OMNIDESK_BUILD_SHA:-unknown}}" --image-ref "${OMNIDESK_IMAGE_REF:-}" --image-digest "${OMNIDESK_IMAGE_DIGEST}"
+if [[ -z "${OMNIDESK_WEB_ADMIN_IMAGE_DIGEST:-}" ]]; then
+  echo "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST is required; release workflow must build/push the Web Admin image and export the registry digest before metadata generation" >&2
+  exit 3
+fi
+python scripts/write_release_metadata.py dist \
+  --build-sha "${GITHUB_SHA:-${OMNIDESK_BUILD_SHA:-unknown}}" \
+  --image-ref "${OMNIDESK_IMAGE_REF:-}" \
+  --image-digest "${OMNIDESK_IMAGE_DIGEST}" \
+  --web-admin-image-ref "${OMNIDESK_WEB_ADMIN_IMAGE_REF:-}" \
+  --web-admin-image-digest "${OMNIDESK_WEB_ADMIN_IMAGE_DIGEST}"
 
 python - <<'PY_RELEASE_CHECKSUMS'
 from __future__ import annotations
@@ -74,9 +83,11 @@ from pathlib import Path
 root = Path.cwd()
 checksums = []
 for artifact in sorted((root / "dist").iterdir()):
-    if artifact.is_file() and artifact.name != "checksums.txt":
+    if artifact.is_file() and artifact.name not in {"checksums.txt", "SHA256SUMS.txt"}:
         checksums.append(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}")
-(root / "dist" / "checksums.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+manifest = "\n".join(checksums) + "\n"
+(root / "dist" / "checksums.txt").write_text(manifest, encoding="utf-8")
+(root / "dist" / "SHA256SUMS.txt").write_text(manifest, encoding="utf-8")
 PY_RELEASE_CHECKSUMS
 
 if [[ "${OMNIDESK_RELEASE_SMOKE:-1}" == "1" ]]; then

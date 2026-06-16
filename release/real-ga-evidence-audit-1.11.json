@@ -1,5 +1,5 @@
 {
-  "blocker_count": 7,
+  "blocker_count": 8,
   "categories": {
     "backup_restore_drill": {
       "files": [
@@ -167,6 +167,22 @@
         "missing evidence file: signed-artifacts/desktop-windows-signed.json"
       ],
       "label": "true Android/iOS/Desktop signed artifacts",
+      "ok": false
+    },
+    "web_admin_signed_oci_image": {
+      "files": [
+        {
+          "issues": [
+            "missing evidence file: signed-artifacts/web-admin-signed-oci.json"
+          ],
+          "ok": false,
+          "path": "signed-artifacts/web-admin-signed-oci.json"
+        }
+      ],
+      "issues": [
+        "missing evidence file: signed-artifacts/web-admin-signed-oci.json"
+      ],
+      "label": "true Web Admin signed OCI image",
       "ok": false
     }
   },

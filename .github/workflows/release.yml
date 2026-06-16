@@ -137,13 +137,14 @@ jobs:
       - run: python scripts/check_ga_release_gate.py .
       - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report dist/external-ga-evidence-audit.json
 
-      - name: Build and push release image, then capture registry digest
+      - name: Build and push release images, then capture registry digests
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           repo_lc="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           image_ref="ghcr.io/${repo_lc}/omnidesk-agent:${GITHUB_SHA}"
+          web_admin_image_ref="ghcr.io/${repo_lc}/omnidesk-web-admin:${GITHUB_SHA}"
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker build \
             --build-arg OMNIDESK_VERSION="$EXPECTED_VERSION" \
@@ -157,15 +158,31 @@ jobs:
             echo "registry did not return a valid image digest for $image_ref: $digest" >&2
             exit 65
           fi
+          docker build \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -f apps/web-admin-next/Dockerfile \
+            -t "$web_admin_image_ref" \
+            apps/web-admin-next
+          docker push "$web_admin_image_ref"
+          web_admin_digest="$(docker buildx imagetools inspect "$web_admin_image_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          if [[ ! "$web_admin_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "registry did not return a valid image digest for $web_admin_image_ref: $web_admin_digest" >&2
+            exit 65
+          fi
           echo "OMNIDESK_IMAGE_REF=$image_ref" >> "$GITHUB_ENV"
           echo "OMNIDESK_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "OMNIDESK_WEB_ADMIN_IMAGE_REF=$web_admin_image_ref" >> "$GITHUB_ENV"
+          echo "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST=$web_admin_digest" >> "$GITHUB_ENV"
           echo "Release image: $image_ref@$digest"
+          echo "Web Admin image: $web_admin_image_ref@$web_admin_digest"
 
       - run: bash scripts/build_release.sh
         env:
           OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
           OMNIDESK_IMAGE_REF: ${{ env.OMNIDESK_IMAGE_REF }}
           OMNIDESK_IMAGE_DIGEST: ${{ env.OMNIDESK_IMAGE_DIGEST }}
+          OMNIDESK_WEB_ADMIN_IMAGE_REF: ${{ env.OMNIDESK_WEB_ADMIN_IMAGE_REF }}
+          OMNIDESK_WEB_ADMIN_IMAGE_DIGEST: ${{ env.OMNIDESK_WEB_ADMIN_IMAGE_DIGEST }}
 
       - name: Render locked Helm production values
         env:
@@ -182,10 +199,10 @@ jobs:
             --output dist/values.production.locked.yaml
           python scripts/check_kubernetes_contract.py . --locked-values dist/values.production.locked.yaml
 
-      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST" --expected-web-admin-image-digest "$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST"
 
       - name: Write SLSA provenance before external signing
-        run: python scripts/write_slsa_provenance.py dist --builder-id "$GITHUB_WORKFLOW@$GITHUB_RUN_ID" --source-ref "$GITHUB_REF" --image-ref "$OMNIDESK_IMAGE_REF" --image-digest "$OMNIDESK_IMAGE_DIGEST"
+        run: python scripts/write_slsa_provenance.py dist --builder-id "$GITHUB_WORKFLOW@$GITHUB_RUN_ID" --source-ref "$GITHUB_REF" --image-ref "$OMNIDESK_IMAGE_REF" --image-digest "$OMNIDESK_IMAGE_DIGEST" --web-admin-image-ref "$OMNIDESK_WEB_ADMIN_IMAGE_REF" --web-admin-image-digest "$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST"
 
       - name: Install Cosign
         run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
@@ -195,9 +212,14 @@ jobs:
         run: |
           test -n "$OMNIDESK_IMAGE_REF"
           test -n "$OMNIDESK_IMAGE_DIGEST"
+          test -n "$OMNIDESK_WEB_ADMIN_IMAGE_REF"
+          test -n "$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST"
           cosign sign --yes "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
           cosign attest --yes --predicate dist/sbom.json --type spdx "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
           cosign attest --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
+          cosign sign --yes "$OMNIDESK_WEB_ADMIN_IMAGE_REF@$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST"
+          cosign attest --yes --predicate dist/sbom.json --type spdx "$OMNIDESK_WEB_ADMIN_IMAGE_REF@$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST"
+          cosign attest --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$OMNIDESK_WEB_ADMIN_IMAGE_REF@$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST"
 
       - name: Cosign keyless sign complete release payload artifact set
         env:

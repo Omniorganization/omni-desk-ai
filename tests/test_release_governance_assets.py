@@ -74,18 +74,17 @@ def test_verify_release_artifact_accepts_build_release_signature_shape(tmp_path)
     sbom = dist / "sbom.json"
     sbom.write_text("{}", encoding="utf-8")
     checksums = dist / "checksums.txt"
-    checksums.write_text(
-        "\n".join(
-            [
-                f"{hashlib.sha256(wheel.read_bytes()).hexdigest()}  {wheel.name}",
-                f"{hashlib.sha256(sbom.read_bytes()).hexdigest()}  {sbom.name}",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    checksum_manifest = "\n".join(
+        [
+            f"{hashlib.sha256(wheel.read_bytes()).hexdigest()}  {wheel.name}",
+            f"{hashlib.sha256(sbom.read_bytes()).hexdigest()}  {sbom.name}",
+        ]
+    ) + "\n"
+    checksums.write_text(checksum_manifest, encoding="utf-8")
+    standard_checksums = dist / "SHA256SUMS.txt"
+    standard_checksums.write_text(checksum_manifest, encoding="utf-8")
     artifacts = []
-    for item in [checksums, sbom, wheel]:
+    for item in [checksums, standard_checksums, sbom, wheel]:
         artifacts.append({"name": item.name, "sha256": hashlib.sha256(item.read_bytes()).hexdigest()})
         (dist / f"{item.name}.sig").write_bytes(b"test-signature")
     (dist / "release_signatures.json").write_text(json.dumps({"artifacts": artifacts}), encoding="utf-8")
@@ -107,6 +106,7 @@ def test_verify_release_artifact_rejects_signature_set_mismatch(tmp_path):
         checksum_lines.append(f"{hashlib.sha256(item.read_bytes()).hexdigest()}  {item.name}")
     checksums = dist / "checksums.txt"
     checksums.write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
+    (dist / "SHA256SUMS.txt").write_text(checksums.read_text(encoding="utf-8"), encoding="utf-8")
     (dist / "release_signatures.json").write_text(json.dumps({"artifacts": [{"name": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}]}), encoding="utf-8")
 
     assert verify_release_artifact_main([str(dist), "--require-signatures"]) == 1

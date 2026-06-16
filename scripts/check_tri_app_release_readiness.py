@@ -61,6 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     for script in ["build", "typecheck", "test", "tauri:build"]: _check(script in desktop_package.get("scripts", {}), f"desktop-tauri has npm script: {script}", failures, ok)
     _check((apps/"web-admin-next"/"public").is_dir(), "Web Admin public directory exists for Docker runtime copy", failures, ok)
     _check("COPY --from=build /app/public ./public" in web_docker, "Web Admin Docker runtime copies public assets from build stage", failures, ok)
+    _check("NODE_BASE_IMAGE=node:22-bookworm-slim@sha256:" in web_docker and "FROM node:" not in web_docker, "Web Admin Docker base image is digest-pinned", failures, ok)
+    _check("USER 10001:10001" in web_docker and "HEALTHCHECK" in web_docker and 'VOLUME ["/tmp"]' in web_docker, "Web Admin Docker runtime is non-root, healthchecked, and read-only-rootfs ready", failures, ok)
+    _check("output: 'standalone'" in _read(apps/"web-admin-next"/"next.config.mjs"), "Web Admin Next standalone output is enabled", failures, ok)
     contract_methods = {(item["method"], item["path"]) for item in contract.get("endpoints", [])}
     expected_contract = {("GET", "/app/bootstrap"), ("POST", "/app/devices/register"), ("POST", "/app/approvals/{approval_id}/decide"), ("POST", "/app/runtime/desktop/claim"), ("POST", "/app/devices/enrollment/{enrollment_id}/challenge"), ("POST", "/app/devices/enrollment/{enrollment_id}/verify"), ("GET", "/app/sync"), ("WS", "/app/ws")}
     missing_contract = sorted(expected_contract - contract_methods); _check(not missing_contract, f"shared API contract includes release-critical endpoints: {missing_contract or 'all present'}", failures, ok)

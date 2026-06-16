@@ -16,6 +16,7 @@
     "runtime_self_healing_policy": "required",
     "tri_app_release_workflow_dependency": "required",
     "web_admin_npm_typecheck_test_build": "required",
+    "web_admin_container_hardening": "required",
     "desktop_npm_typecheck_test_build": "required",
     "external_evidence_audit": "required",
     "external_evidence_distribution_gate": "required",

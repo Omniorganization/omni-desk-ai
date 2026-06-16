@@ -74,6 +74,8 @@ jobs:
             echo "OMNIDESK_ARTIFACT_SHA256=$(sha256sum "$wheel" | awk '{print $1}')"
             echo "OMNIDESK_IMAGE_DIGEST=$(python scripts/read_release_metadata.py dist image.digest)"
             echo "OMNIDESK_IMAGE_REF=$(python scripts/read_release_metadata.py dist image.ref)"
+            echo "OMNIDESK_WEB_ADMIN_IMAGE_DIGEST=$(python scripts/read_release_metadata.py dist web_admin_image.digest)"
+            echo "OMNIDESK_WEB_ADMIN_IMAGE_REF=$(python scripts/read_release_metadata.py dist web_admin_image.ref)"
           } >> "$GITHUB_ENV"
 
       - name: Install Cosign
@@ -84,9 +86,14 @@ jobs:
         run: |
           test -n "$OMNIDESK_IMAGE_REF"
           test -n "$OMNIDESK_IMAGE_DIGEST"
+          test -n "$OMNIDESK_WEB_ADMIN_IMAGE_REF"
+          test -n "$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST"
           cosign verify "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST" --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           cosign verify-attestation "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST" --type spdx --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           cosign verify-attestation "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST" --type slsaprovenance --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify "$OMNIDESK_WEB_ADMIN_IMAGE_REF@$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST" --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify-attestation "$OMNIDESK_WEB_ADMIN_IMAGE_REF@$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST" --type spdx --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify-attestation "$OMNIDESK_WEB_ADMIN_IMAGE_REF@$OMNIDESK_WEB_ADMIN_IMAGE_DIGEST" --type slsaprovenance --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
       - name: Verify Cosign signatures and attestations
         env:

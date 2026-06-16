@@ -12,6 +12,7 @@ from typing import Any
 
 OK_STATUSES = {"ok", "passed", "success", "succeeded", "verified"}
 PLACEHOLDER_RE = re.compile(r"\b(todo|tbd|placeholder|example|mock|fake|sample)\b", re.IGNORECASE)
+OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 REQUIRED_EVIDENCE: dict[str, dict[str, Any]] = {
     "native_build": {
@@ -33,6 +34,10 @@ REQUIRED_EVIDENCE: dict[str, dict[str, Any]] = {
             "signed-artifacts/desktop-windows-signed.json",
         ],
         "requires_artifact": True,
+    },
+    "web_admin_signed_oci_image": {
+        "label": "true Web Admin signed OCI image",
+        "files": ["signed-artifacts/web-admin-signed-oci.json"],
     },
     "push_delivery": {
         "label": "true APNS/FCM push delivery",
@@ -166,6 +171,22 @@ def _category_specific(category: str, doc: dict[str, Any]) -> list[str]:
             issues.append("signature_verified must be true")
         if "macos" in str(doc.get("platform", "")).lower() and not _bool_true(doc.get("notarization_verified")):
             issues.append("macOS notarization must be verified")
+    elif category == "web_admin_signed_oci_image":
+        if not str(doc.get("image_ref") or "").strip():
+            issues.append("image_ref is required")
+        if not OCI_DIGEST_RE.match(str(doc.get("image_digest") or "")):
+            issues.append("image_digest must be sha256:<64 hex>")
+        for field in (
+            "base_image_digest_pinned",
+            "cosign_signature_verified",
+            "sbom_attestation_verified",
+            "slsa_attestation_verified",
+            "non_root_runtime_verified",
+            "healthcheck_verified",
+            "read_only_runtime_verified",
+        ):
+            if not _bool_true(doc.get(field)):
+                issues.append(f"{field} must be true")
     elif category == "push_delivery":
         if not _bool_true(doc.get("delivery_success")):
             issues.append("delivery_success must be true")

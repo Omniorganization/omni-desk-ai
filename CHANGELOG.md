@@ -5,7 +5,9 @@
 - Added Codex-style execution profiles, CIK Guard, signed skill registry, AGENTS rules, and an `ai/*` repair PR workflow.
 - Split self-healing into observe-only review, structured repair proposal, deterministic gate, and PR evidence bundle modules.
 - Added a minimal Agent Eval Harness and Desktop Control Hub status model for runtime/evidence visibility.
-- Kept customer-distribution GA blocked until real native build, signing, APNS/FCM, Postgres soak, rollback, backup/restore, and self-healing failure-injection evidence is attached.
+- Hardened the Web Admin production container with a digest-pinned Node base image, standalone runtime, non-root UID/GID, healthcheck, and read-only-rootfs deployment guidance.
+- Added `SHA256SUMS.txt` to the release artifact set and bound the Web Admin OCI digest into release metadata, SLSA provenance, Cosign signing, and production promotion verification.
+- Kept customer-distribution GA blocked until real native build, signing, signed Web Admin OCI, APNS/FCM, Postgres soak, rollback, backup/restore, and self-healing failure-injection evidence is attached.
 
 ## 1.10+production-ga-real-evidence-audit
 

@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--build-sha', default=os.getenv('GITHUB_SHA') or os.getenv('OMNIDESK_BUILD_SHA') or 'unknown')
     parser.add_argument('--image-digest', default=os.getenv('OMNIDESK_IMAGE_DIGEST') or '')
     parser.add_argument('--image-ref', default=os.getenv('OMNIDESK_IMAGE_REF') or '')
+    parser.add_argument('--web-admin-image-digest', default=os.getenv('OMNIDESK_WEB_ADMIN_IMAGE_DIGEST') or '')
+    parser.add_argument('--web-admin-image-ref', default=os.getenv('OMNIDESK_WEB_ADMIN_IMAGE_REF') or '')
     parser.add_argument('--output', default='release_metadata.json')
     args = parser.parse_args(argv)
 
@@ -60,10 +62,15 @@ def main(argv: list[str] | None = None) -> int:
             'ref': args.image_ref,
             'digest': args.image_digest,
         },
+        'web_admin_image': {
+            'ref': args.web_admin_image_ref,
+            'digest': args.web_admin_image_digest,
+        },
         'integrity': {
             'checksums_manifest': 'checksums.txt',
+            'standard_checksums_manifest': 'SHA256SUMS.txt',
             'signature_manifest': 'release_signatures.json',
-            'note': 'checksums.txt covers release_metadata.json; release_signatures.json signs checksums.txt and all release artifacts.',
+            'note': 'checksums.txt and SHA256SUMS.txt cover the same release payload set; release_signatures.json signs both checksum manifests and all release artifacts.',
         },
     }
     output = dist / args.output

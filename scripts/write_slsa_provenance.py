@@ -24,6 +24,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-ref", default=os.getenv("GITHUB_REF", "local"))
     parser.add_argument("--image-ref", default=os.getenv("OMNIDESK_IMAGE_REF", ""))
     parser.add_argument("--image-digest", default=os.getenv("OMNIDESK_IMAGE_DIGEST", ""))
+    parser.add_argument("--web-admin-image-ref", default=os.getenv("OMNIDESK_WEB_ADMIN_IMAGE_REF", ""))
+    parser.add_argument("--web-admin-image-digest", default=os.getenv("OMNIDESK_WEB_ADMIN_IMAGE_DIGEST", ""))
     args = parser.parse_args(argv)
     root = Path(args.dist_dir)
     if not root.exists():
@@ -34,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
             subjects.append(_subject_for(artifact))
     if args.image_digest:
         subjects.append({"name": args.image_ref or "oci-image", "digest": {"sha256": args.image_digest.removeprefix("sha256:")}})
+    if args.web_admin_image_digest:
+        subjects.append({"name": args.web_admin_image_ref or "web-admin-oci-image", "digest": {"sha256": args.web_admin_image_digest.removeprefix("sha256:")}})
     lockfiles = []
     for rel in (
         "requirements.lock",
@@ -57,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
                     "source_ref": args.source_ref,
                     "image_ref": args.image_ref,
                     "image_digest": args.image_digest,
+                    "web_admin_image_ref": args.web_admin_image_ref,
+                    "web_admin_image_digest": args.web_admin_image_digest,
                 },
                 "resolvedDependencies": lockfiles,
             },
