@@ -109,6 +109,10 @@ jobs:
         with:
           flutter-version: "3.35.x"
           cache: true
+      - name: Generate iOS project for native release build
+        run: |
+          flutter create . --platforms=ios --project-name omnidesk_mobile --org com.omnidesk --overwrite
+          git checkout -- ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist
       - run: flutter pub get
       - run: cd ios && pod install
       - run: flutter build ipa --release

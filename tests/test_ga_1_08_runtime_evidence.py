@@ -41,6 +41,14 @@ def test_ios_podfile_prefers_ci_flutter_root() -> None:
     assert "Generated.xcconfig" in podfile
 
 
+def test_ios_release_jobs_generate_standard_flutter_project() -> None:
+    tri_app = Path(".github/workflows/tri-app-quality.yml").read_text(encoding="utf-8")
+    release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    for workflow in [tri_app, release]:
+        assert "flutter create . --platforms=ios --project-name omnidesk_mobile --org com.omnidesk --overwrite" in workflow
+        assert "git checkout -- ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist" in workflow
+
+
 def test_tri_app_release_gates_force_native_builds() -> None:
     makefile = Path("Makefile").read_text(encoding="utf-8")
     workflow = Path(".github/workflows/tri-app-quality.yml").read_text(encoding="utf-8")
