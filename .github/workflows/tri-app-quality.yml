@@ -20,6 +20,7 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: PYTHONPATH=. python -m pytest -q tests/test_tri_app_foundation.py
       - run: python scripts/check_tri_app_release_readiness.py . --mode source
+      - run: find . -type d -name "__pycache__" -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
       - run: python scripts/check_ga_release_gate.py .
 
   web-admin:
@@ -54,6 +55,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
