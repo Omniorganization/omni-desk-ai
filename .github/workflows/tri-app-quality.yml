@@ -104,7 +104,7 @@ jobs:
             echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD"
           } >> "$GITHUB_ENV"
       - run: flutter build appbundle --release
-      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-release
+      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-android-release
 
   mobile-ios-release:
     runs-on: macos-latest
@@ -121,4 +121,4 @@ jobs:
       - run: flutter pub get
       - run: cd ios && pod install
       - run: flutter build ipa --release
-      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-release
+      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-release
