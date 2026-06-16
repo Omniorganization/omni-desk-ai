@@ -44,6 +44,22 @@ jobs:
     environment: staging
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Validate rollback GitHub configuration
+        env:
+          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
+          OMNIDESK_SMOKE_ADMIN_TOKEN: ${{ secrets.OMNIDESK_STAGING_ADMIN_TOKEN }}
+          OMNIDESK_DEPLOY_COMPOSE_FILE: ${{ vars.OMNIDESK_STAGING_COMPOSE_FILE }}
+          OMNIDESK_DEPLOY_SERVICE: ${{ vars.OMNIDESK_STAGING_SERVICE }}
+          OMNIDESK_DEPLOY_KUBE_CONTEXT: ${{ vars.OMNIDESK_STAGING_KUBE_CONTEXT }}
+          OMNIDESK_DEPLOY_NAMESPACE: ${{ vars.OMNIDESK_STAGING_NAMESPACE }}
+          OMNIDESK_DEPLOYMENT_NAME: ${{ vars.OMNIDESK_STAGING_DEPLOYMENT_NAME }}
+          OMNIDESK_CONTAINER_NAME: ${{ vars.OMNIDESK_STAGING_CONTAINER_NAME }}
+          OMNIDESK_IMAGE: ${{ vars.OMNIDESK_STAGING_IMAGE }}
+          OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_STAGING_HOST }}
+          OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
+          OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
+        run: python3 scripts/check_release_configuration.py --scope rollback --deploy-mode "${{ inputs.deploy_mode }}"
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"

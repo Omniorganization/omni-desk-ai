@@ -13,7 +13,28 @@ env:
   EXPECTED_VERSION: 1.11+openclaw-codex-aligned-enterprise-agent
 
 jobs:
+  release-config-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Validate release GitHub configuration
+        env:
+          OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}
+          OMNI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.OMNI_ANDROID_KEYSTORE_PASSWORD }}
+          OMNI_ANDROID_KEY_ALIAS: ${{ secrets.OMNI_ANDROID_KEY_ALIAS }}
+          OMNI_ANDROID_KEY_PASSWORD: ${{ secrets.OMNI_ANDROID_KEY_PASSWORD }}
+          OMNI_ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.OMNI_ANDROID_GOOGLE_SERVICES_JSON }}
+          OMNI_IOS_CERTIFICATE_P12_BASE64: ${{ secrets.OMNI_IOS_CERTIFICATE_P12_BASE64 }}
+          OMNI_IOS_CERTIFICATE_PASSWORD: ${{ secrets.OMNI_IOS_CERTIFICATE_PASSWORD }}
+          OMNI_IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.OMNI_IOS_PROVISIONING_PROFILE_BASE64 }}
+          OMNI_IOS_KEYCHAIN_PASSWORD: ${{ secrets.OMNI_IOS_KEYCHAIN_PASSWORD }}
+          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          OMNI_IOS_APPLE_TEAM_ID: ${{ vars.OMNI_IOS_APPLE_TEAM_ID }}
+          OMNIDESK_SANDBOX_RUNNER_DIGEST: ${{ vars.OMNIDESK_SANDBOX_RUNNER_DIGEST }}
+        run: python3 scripts/check_release_configuration.py --scope release
+
   web-admin-release:
+    needs: release-config-preflight
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -34,6 +55,7 @@ jobs:
         run: docker build -f apps/web-admin-next/Dockerfile -t omnidesk-web-admin:${{ github.sha }} apps/web-admin-next
 
   desktop-release:
+    needs: release-config-preflight
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -57,6 +79,7 @@ jobs:
       - run: npm run build
 
   mobile-android-release:
+    needs: release-config-preflight
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -99,6 +122,7 @@ jobs:
       - run: flutter build appbundle --release
 
   mobile-ios-release:
+    needs: release-config-preflight
     runs-on: macos-latest
     defaults:
       run:
@@ -210,6 +234,7 @@ jobs:
 
   build:
     needs:
+      - release-config-preflight
       - web-admin-release
       - desktop-release
       - mobile-android-release

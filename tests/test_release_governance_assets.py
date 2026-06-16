@@ -20,7 +20,9 @@ def test_release_governance_assets_exist():
     assert Path("scripts/production_smoke_test.py").exists()
     assert Path("scripts/release_smoke_locked.sh").exists()
     assert Path("scripts/check_script_executability.py").exists()
+    assert Path("scripts/check_release_configuration.py").exists()
     assert Path("docs/SRE_RUNBOOK.md").exists()
+    assert Path("docs/RELEASE_CONFIGURATION_PREFLIGHT.md").exists()
     assert Path(".github/workflows/promote-production.yml").exists()
 
 
@@ -61,6 +63,26 @@ def test_drill_workflows_install_locked_python_dependencies() -> None:
         workflow = Path(".github/workflows", workflow_name).read_text(encoding="utf-8")
         assert "python -m pip install --require-hashes -r requirements.dev.lock" in workflow
         assert "python -m pip install -e . --no-deps --no-build-isolation" in workflow
+
+
+def test_release_and_downstream_workflows_fail_fast_on_missing_github_config() -> None:
+    release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "release-config-preflight" in release
+    assert "python3 scripts/check_release_configuration.py --scope release" in release
+    assert "OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}" in release
+    assert "OMNIDESK_SANDBOX_RUNNER_DIGEST: ${{ vars.OMNIDESK_SANDBOX_RUNNER_DIGEST }}" in release
+    assert release.count("needs: release-config-preflight") >= 4
+
+    downstream = {
+        "deploy-staging.yml": "--scope staging",
+        "promote-production.yml": "--scope production",
+        "rollback-drill.yml": "--scope rollback",
+    }
+    for workflow_name, scope_arg in downstream.items():
+        workflow = Path(".github/workflows", workflow_name).read_text(encoding="utf-8")
+        assert "python3 scripts/check_release_configuration.py" in workflow
+        assert scope_arg in workflow
+        assert "OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}" in workflow
 
 
 def test_observability_and_full_compose_assets_exist():
