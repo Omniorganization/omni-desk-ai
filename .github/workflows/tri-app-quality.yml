@@ -16,6 +16,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: PYTHONPATH=. python -m pytest -q tests/test_tri_app_foundation.py
       - run: python scripts/check_tri_app_release_readiness.py . --mode source

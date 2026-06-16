@@ -18,6 +18,7 @@ venv/
 .vscode/
 .serena/
 .uv-cache/
+.gh-cache/
 .pycache_check/
 
 # Build
