@@ -32,6 +32,15 @@ def test_ios_registrant_matches_app_delegate_shape() -> None:
     registrant = Path("apps/mobile-flutter/ios/Runner/GeneratedPluginRegistrant.swift").read_text(encoding="utf-8")
     assert "final class GeneratedPluginRegistrant" in registrant
     assert "static func register(with registry: FlutterPluginRegistry)" in registrant
+    assert "Source-package placeholder" not in registrant
+    for plugin_class in [
+        "FLTFirebaseCorePlugin",
+        "FLTFirebaseMessagingPlugin",
+        "FlutterSecureStoragePlugin",
+        "LocalAuthPlugin",
+        "PathProviderPlugin",
+    ]:
+        assert f'{plugin_class}.register(with: registry.registrar(forPlugin: "{plugin_class}"))' in registrant
 
 
 def test_ios_podfile_prefers_ci_flutter_root() -> None:
