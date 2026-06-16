@@ -49,6 +49,7 @@ def test_ios_release_jobs_generate_standard_flutter_project() -> None:
         assert "git checkout -- pubspec.yaml pubspec.lock README.md lib test ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist" in workflow
         assert "Link CocoaPods build settings" in workflow
         assert "Pods-Runner.$config_lc.xcconfig" in workflow
+        assert "Pods-Runner.profile.xcconfig" in workflow
     assert "flutter build ios --release --no-codesign" in tri_app
     assert "OMNI_IOS_CERTIFICATE_P12_BASE64" in release
     assert "OMNI_IOS_PROVISIONING_PROFILE_BASE64" in release

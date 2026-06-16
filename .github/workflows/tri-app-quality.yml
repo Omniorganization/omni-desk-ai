@@ -139,5 +139,14 @@ jobs:
               mv "$tmp" "$xcconfig"
             fi
           done
+          release_xcconfig="ios/Flutter/Release.xcconfig"
+          profile_pods_config="ios/Pods/Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"
+          profile_include_path="../Pods/Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"
+          if [ -f "$release_xcconfig" ] && [ -f "$profile_pods_config" ] && ! grep -q "Pods-Runner.profile.xcconfig" "$release_xcconfig"; then
+            tmp="$RUNNER_TEMP/Release.profile.xcconfig"
+            printf '#include "%s"\n' "$profile_include_path" > "$tmp"
+            cat "$release_xcconfig" >> "$tmp"
+            mv "$tmp" "$release_xcconfig"
+          fi
       - run: flutter build ios --release --no-codesign
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-release
