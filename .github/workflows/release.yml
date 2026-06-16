@@ -70,6 +70,30 @@ jobs:
       - run: flutter pub get
       - run: dart analyze
       - run: flutter test
+      - name: Restore Android release signing key
+        env:
+          OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}
+          OMNI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.OMNI_ANDROID_KEYSTORE_PASSWORD }}
+          OMNI_ANDROID_KEY_ALIAS: ${{ secrets.OMNI_ANDROID_KEY_ALIAS }}
+          OMNI_ANDROID_KEY_PASSWORD: ${{ secrets.OMNI_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$OMNI_ANDROID_KEYSTORE_BASE64"
+          test -n "$OMNI_ANDROID_KEYSTORE_PASSWORD"
+          test -n "$OMNI_ANDROID_KEY_ALIAS"
+          test -n "$OMNI_ANDROID_KEY_PASSWORD"
+          printf '%s' "$OMNI_ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/omnidesk-release.keystore"
+          echo "OMNI_ANDROID_KEYSTORE=$RUNNER_TEMP/omnidesk-release.keystore" >> "$GITHUB_ENV"
+          echo "OMNI_ANDROID_KEYSTORE_PASSWORD=$OMNI_ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "OMNI_ANDROID_KEY_ALIAS=$OMNI_ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+      - name: Restore Android Firebase config
+        env:
+          OMNI_ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.OMNI_ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$OMNI_ANDROID_GOOGLE_SERVICES_JSON"
+          printf '%s' "$OMNI_ANDROID_GOOGLE_SERVICES_JSON" > android/app/google-services.json
       - run: flutter build appbundle --release
 
   mobile-ios-release:
