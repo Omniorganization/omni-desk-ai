@@ -83,10 +83,12 @@ jobs:
           test -n "$OMNI_ANDROID_KEY_ALIAS"
           test -n "$OMNI_ANDROID_KEY_PASSWORD"
           printf '%s' "$OMNI_ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/omnidesk-release.keystore"
-          echo "OMNI_ANDROID_KEYSTORE=$RUNNER_TEMP/omnidesk-release.keystore" >> "$GITHUB_ENV"
-          echo "OMNI_ANDROID_KEYSTORE_PASSWORD=$OMNI_ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-          echo "OMNI_ANDROID_KEY_ALIAS=$OMNI_ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
-          echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+          {
+            echo "OMNI_ANDROID_KEYSTORE=$RUNNER_TEMP/omnidesk-release.keystore"
+            echo "OMNI_ANDROID_KEYSTORE_PASSWORD=$OMNI_ANDROID_KEYSTORE_PASSWORD"
+            echo "OMNI_ANDROID_KEY_ALIAS=$OMNI_ANDROID_KEY_ALIAS"
+            echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
       - name: Restore Android Firebase config
         env:
           OMNI_ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.OMNI_ANDROID_GOOGLE_SERVICES_JSON }}
