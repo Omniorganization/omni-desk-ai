@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     _check('ndkVersion "27.0.12077973"' in mobile_gradle or 'ndkVersion = "27.0.12077973"' in mobile_gradle, "Android release build pins NDK 27 for native plugins", failures, ok)
     _check("minSdk 24" in mobile_gradle or "minSdkVersion 24" in mobile_gradle, "Android release build minSdk satisfies local_auth_android", failures, ok)
     _check("com.google.gms.google-services\" apply false" in mobile_gradle and "hasGoogleServicesConfig" in mobile_gradle, "Android Google Services plugin is conditional on Firebase config", failures, ok)
-    for rel in ["android/app/build.gradle", "android/app/src/main/AndroidManifest.xml", "ios/Runner/AppDelegate.swift", "ios/Runner/Info.plist", "ios/Runner.xcodeproj/project.pbxproj", "ios/Flutter/Generated.xcconfig"]:
+    for rel in ["android/app/build.gradle", "android/app/src/main/AndroidManifest.xml", "android/app/src/main/res/drawable/ic_launcher.xml", "android/app/src/main/res/drawable/launch_background.xml", "android/app/src/main/res/values/styles.xml", "ios/Runner/AppDelegate.swift", "ios/Runner/Info.plist", "ios/Runner.xcodeproj/project.pbxproj", "ios/Flutter/Generated.xcconfig"]:
         _check((apps/"mobile-flutter"/rel).exists(), f"Mobile native scaffold exists: apps/mobile-flutter/{rel}", failures, ok)
     registrant = _read(apps/"mobile-flutter"/"ios"/"Runner"/"GeneratedPluginRegistrant.swift")
     _check("final class GeneratedPluginRegistrant" in registrant and "static func register(with registry: FlutterPluginRegistry)" in registrant, "iOS GeneratedPluginRegistrant matches AppDelegate call shape", failures, ok)
