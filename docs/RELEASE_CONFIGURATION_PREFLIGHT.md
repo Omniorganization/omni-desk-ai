@@ -4,6 +4,8 @@ This repository now treats GitHub release configuration as a first-class release
 
 The script never prints secret values. It reports only missing or invalid variable names.
 
+Configured values are treated as missing when they are empty or only whitespace. Values with leading or trailing whitespace fail preflight because they usually fail later in signing, deploy, or smoke-test scripts.
+
 ## Release Build
 
 Set these repository secrets before running `Release Build`:
@@ -30,6 +32,8 @@ Optional iOS variables:
 - `OMNI_IOS_EXPORT_METHOD`
 
 `OMNIDESK_SANDBOX_RUNNER_DIGEST` must be a final OCI digest in the form `sha256:<64 lowercase hex chars>`.
+
+`OMNI_IOS_APPLE_TEAM_ID` must be the 10-character Apple team id used by the provisioning profile.
 
 ## Staging
 
@@ -58,11 +62,18 @@ For `kubectl` deploys, also set:
 - `OMNIDESK_STAGING_CONTAINER_NAME`
 - `OMNIDESK_STAGING_IMAGE`
 
+`OMNIDESK_STAGING_IMAGE` must be pinned as `image@sha256:<64 lowercase hex chars>` because staging deploys compare it with the release artifact metadata digest.
+
 For `systemd` deploys, also set:
 
 - `OMNIDESK_STAGING_HOST`
 - `OMNIDESK_STAGING_USER`
+
+Optional `systemd` variable:
+
 - `OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT`
+
+If omitted, the deploy script uses `/usr/local/bin/omnidesk-deploy-artifact`. If set, it must stay under `/usr/local/bin`.
 
 ## Production
 
@@ -91,13 +102,20 @@ For `kubectl` deploys, also set:
 - `OMNIDESK_PRODUCTION_CONTAINER_NAME`
 - `OMNIDESK_PRODUCTION_IMAGE`
 
+`OMNIDESK_PRODUCTION_IMAGE` must be pinned as `image@sha256:<64 lowercase hex chars>`.
+
 For `systemd` deploys, also set:
 
 - `OMNIDESK_PRODUCTION_HOST`
 - `OMNIDESK_PRODUCTION_USER`
+
+Optional `systemd` variable:
+
 - `OMNIDESK_PRODUCTION_REMOTE_DEPLOY_SCRIPT`
 
-Production promotion forbids `noop` deploy mode. Production `kubectl` images must be digest-pinned.
+If omitted, the deploy script uses `/usr/local/bin/omnidesk-deploy-artifact`. If set, it must stay under `/usr/local/bin`.
+
+Production promotion forbids `noop` deploy mode. All `kubectl` deployment images must be digest-pinned so the deploy target matches the signed release metadata.
 
 ## Local Check
 

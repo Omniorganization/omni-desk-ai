@@ -5,9 +5,12 @@ import argparse
 import os
 import re
 import sys
+from urllib.parse import urlparse
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-URL_RE = re.compile(r"^https?://")
+IMAGE_REF_WITH_DIGEST_RE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
+APPLE_TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
+SAFE_SYSTEMD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.@:/+=-]+$")
 
 RELEASE_SECRETS = [
     "OMNI_ANDROID_KEYSTORE_BASE64",
@@ -64,9 +67,12 @@ DEPLOY_MODE_VARS = {
     "systemd": [
         "OMNIDESK_DEPLOY_HOST",
         "OMNIDESK_DEPLOY_USER",
-        "OMNIDESK_REMOTE_DEPLOY_SCRIPT",
     ],
 }
+
+OPTIONAL_DEPLOY_VARS = [
+    "OMNIDESK_REMOTE_DEPLOY_SCRIPT",
+]
 
 ALL_KNOWN_NAMES = sorted(
     set(RELEASE_SECRETS)
@@ -77,38 +83,64 @@ ALL_KNOWN_NAMES = sorted(
     | set(SMOKE_VARS)
     | set(SANDBOX_SMOKE_VARS)
     | {name for names in DEPLOY_MODE_VARS.values() for name in names}
+    | set(OPTIONAL_DEPLOY_VARS)
 )
 
 
+def _value(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+
 def _is_missing(name: str) -> bool:
-    return os.getenv(name, "") == ""
+    return _value(name) == ""
 
 
 def _require(names: list[str], label: str, issues: list[str]) -> None:
     for name in names:
-        if _is_missing(name):
+        raw = os.getenv(name, "")
+        if raw.strip() == "":
             issues.append(f"missing {label}: {name}")
+        elif raw != raw.strip():
+            issues.append(f"invalid {label}: {name} must not have leading or trailing whitespace")
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _validate_release_shapes(issues: list[str]) -> None:
-    digest = os.getenv("OMNIDESK_SANDBOX_RUNNER_DIGEST", "")
+    digest = _value("OMNIDESK_SANDBOX_RUNNER_DIGEST")
     if digest and not DIGEST_RE.fullmatch(digest):
         issues.append("invalid var: OMNIDESK_SANDBOX_RUNNER_DIGEST must match sha256:<64 lowercase hex chars>")
+    team_id = _value("OMNI_IOS_APPLE_TEAM_ID")
+    if team_id and not APPLE_TEAM_ID_RE.fullmatch(team_id):
+        issues.append("invalid var: OMNI_IOS_APPLE_TEAM_ID must be a 10-character Apple team id")
 
 
 def _validate_smoke_shapes(issues: list[str], *, require_sandbox_smoke: bool) -> None:
     for name in SMOKE_VARS + (SANDBOX_SMOKE_VARS if require_sandbox_smoke else []):
-        value = os.getenv(name, "")
-        if value and not URL_RE.match(value):
-            issues.append(f"invalid var: {name} must be an http(s) URL")
+        value = _value(name)
+        if value and not _is_http_url(value):
+            issues.append(f"invalid var: {name} must be an http(s) URL with a host")
 
 
-def _validate_deploy_shapes(scope: str, deploy_mode: str, issues: list[str]) -> None:
-    image = os.getenv("OMNIDESK_IMAGE", "")
-    if scope == "production" and deploy_mode == "kubectl" and image and "@sha256:" not in image:
-        issues.append("invalid var: production kubectl OMNIDESK_IMAGE must be pinned by digest")
-    remote_script = os.getenv("OMNIDESK_REMOTE_DEPLOY_SCRIPT", "")
-    if deploy_mode == "systemd" and remote_script and not remote_script.startswith("/usr/local/bin/"):
+def _validate_deploy_shapes(_scope: str, deploy_mode: str, issues: list[str]) -> None:
+    image = _value("OMNIDESK_IMAGE")
+    if deploy_mode == "kubectl" and image and not IMAGE_REF_WITH_DIGEST_RE.fullmatch(image):
+        issues.append("invalid var: kubectl OMNIDESK_IMAGE must be pinned by digest")
+    if deploy_mode != "systemd":
+        return
+    systemd_values = {
+        "OMNIDESK_DEPLOY_HOST": _value("OMNIDESK_DEPLOY_HOST"),
+        "OMNIDESK_DEPLOY_USER": _value("OMNIDESK_DEPLOY_USER"),
+        "OMNIDESK_REMOTE_DEPLOY_SCRIPT": _value("OMNIDESK_REMOTE_DEPLOY_SCRIPT"),
+    }
+    for name, value in systemd_values.items():
+        if value and not SAFE_SYSTEMD_TOKEN_RE.fullmatch(value):
+            issues.append(f"invalid var: {name} contains unsupported characters")
+    remote_script = systemd_values["OMNIDESK_REMOTE_DEPLOY_SCRIPT"]
+    if remote_script and not remote_script.startswith("/usr/local/bin/"):
         issues.append("invalid var: OMNIDESK_REMOTE_DEPLOY_SCRIPT must be under /usr/local/bin")
 
 
