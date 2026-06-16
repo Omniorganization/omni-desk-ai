@@ -47,6 +47,10 @@ def test_ios_release_jobs_generate_standard_flutter_project() -> None:
     for workflow in [tri_app, release]:
         assert "flutter create . --platforms=ios --project-name omnidesk_mobile --org com.omnidesk --overwrite --no-pub" in workflow
         assert "git checkout -- pubspec.yaml pubspec.lock README.md lib test ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist" in workflow
+    assert "flutter build ios --release --no-codesign" in tri_app
+    assert "OMNI_IOS_CERTIFICATE_P12_BASE64" in release
+    assert "OMNI_IOS_PROVISIONING_PROFILE_BASE64" in release
+    assert "flutter build ipa --release --export-options-plist=ios/ExportOptions.plist" in release
 
 
 def test_tri_app_release_gates_force_native_builds() -> None:

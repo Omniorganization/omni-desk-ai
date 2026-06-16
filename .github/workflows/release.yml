@@ -115,7 +115,74 @@ jobs:
           git checkout -- pubspec.yaml pubspec.lock README.md lib test ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist
       - run: flutter pub get
       - run: cd ios && pod install
-      - run: flutter build ipa --release
+      - name: Restore iOS release signing assets
+        env:
+          OMNI_IOS_CERTIFICATE_P12_BASE64: ${{ secrets.OMNI_IOS_CERTIFICATE_P12_BASE64 }}
+          OMNI_IOS_CERTIFICATE_PASSWORD: ${{ secrets.OMNI_IOS_CERTIFICATE_PASSWORD }}
+          OMNI_IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.OMNI_IOS_PROVISIONING_PROFILE_BASE64 }}
+          OMNI_IOS_KEYCHAIN_PASSWORD: ${{ secrets.OMNI_IOS_KEYCHAIN_PASSWORD }}
+          OMNI_IOS_APPLE_TEAM_ID: ${{ vars.OMNI_IOS_APPLE_TEAM_ID }}
+          OMNI_IOS_BUNDLE_ID: ${{ vars.OMNI_IOS_BUNDLE_ID }}
+          OMNI_IOS_EXPORT_METHOD: ${{ vars.OMNI_IOS_EXPORT_METHOD }}
+        run: |
+          set -euo pipefail
+          test -n "$OMNI_IOS_CERTIFICATE_P12_BASE64"
+          test -n "$OMNI_IOS_CERTIFICATE_PASSWORD"
+          test -n "$OMNI_IOS_PROVISIONING_PROFILE_BASE64"
+          test -n "$OMNI_IOS_KEYCHAIN_PASSWORD"
+          test -n "$OMNI_IOS_APPLE_TEAM_ID"
+
+          certificate_path="$RUNNER_TEMP/omnidesk-ios-signing.p12"
+          profile_path="$RUNNER_TEMP/omnidesk-ios.mobileprovision"
+          profile_plist="$RUNNER_TEMP/omnidesk-ios-profile.plist"
+          keychain_path="$RUNNER_TEMP/omnidesk-ios-signing.keychain-db"
+          bundle_id="${OMNI_IOS_BUNDLE_ID:-com.omnidesk.mobile}"
+          export_method="${OMNI_IOS_EXPORT_METHOD:-app-store}"
+
+          printf '%s' "$OMNI_IOS_CERTIFICATE_P12_BASE64" | base64 -D > "$certificate_path"
+          printf '%s' "$OMNI_IOS_PROVISIONING_PROFILE_BASE64" | base64 -D > "$profile_path"
+
+          security create-keychain -p "$OMNI_IOS_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$OMNI_IOS_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" -P "$OMNI_IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security default-keychain -d user -s "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$OMNI_IOS_KEYCHAIN_PASSWORD" "$keychain_path"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          security cms -D -i "$profile_path" > "$profile_plist"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print UUID' "$profile_plist")"
+          profile_name="$(/usr/libexec/PlistBuddy -c 'Print Name' "$profile_plist")"
+          cp "$profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+
+          {
+            echo "DEVELOPMENT_TEAM=$OMNI_IOS_APPLE_TEAM_ID"
+            echo "PRODUCT_BUNDLE_IDENTIFIER=$bundle_id"
+            echo "CODE_SIGN_STYLE=Manual"
+            echo "PROVISIONING_PROFILE_SPECIFIER=$profile_name"
+          } >> ios/Flutter/Release.xcconfig
+
+          cat > ios/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>$export_method</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>$OMNI_IOS_APPLE_TEAM_ID</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>$bundle_id</key>
+              <string>$profile_name</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+      - run: flutter build ipa --release --export-options-plist=ios/ExportOptions.plist
 
   build:
     needs:

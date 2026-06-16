@@ -124,5 +124,5 @@ jobs:
           git checkout -- pubspec.yaml pubspec.lock README.md lib test ios/Podfile ios/Runner/AppDelegate.swift ios/Runner/Info.plist
       - run: flutter pub get
       - run: cd ios && pod install
-      - run: flutter build ipa --release
+      - run: flutter build ios --release --no-codesign
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-release
