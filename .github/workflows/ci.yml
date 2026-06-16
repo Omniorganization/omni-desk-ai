@@ -24,6 +24,7 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: |
           python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python scripts/check_github_workflows.py .github/workflows

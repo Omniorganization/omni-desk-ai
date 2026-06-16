@@ -18,6 +18,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: python scripts/check_lock_hashes.py requirements.bootstrap.lock
       - run: PYTHONPATH=. python -m pytest -q tests/test_tri_app_foundation.py
       - run: python scripts/check_tri_app_release_readiness.py . --mode source
       - run: find . -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete

@@ -20,11 +20,13 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: |
           python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: bandit -r omnidesk_agent -ll
       - run: pip-audit --disable-pip -r requirements.runtime.lock
+      - run: pip-audit --disable-pip -r requirements.bootstrap.lock
       - run: pip-audit --disable-pip -r requirements.dev.lock
       - run: pip-audit --disable-pip -r requirements.security.lock

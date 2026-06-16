@@ -6,9 +6,9 @@ ARG OMNIDESK_IMAGE_DIGEST=unknown
 FROM ${PYTHON_BASE_IMAGE} AS builder
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /build
-COPY requirements.runtime.lock requirements.dev.lock pyproject.toml README.md /build/
+COPY requirements.bootstrap.lock requirements.runtime.lock requirements.dev.lock pyproject.toml README.md /build/
 COPY omnidesk_agent /build/omnidesk_agent
-RUN python -m pip install --no-cache-dir --upgrade pip \
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.bootstrap.lock \
     && python -m pip install --no-cache-dir --require-hashes -r requirements.dev.lock \
     && python -m build --wheel --no-isolation
 
@@ -29,13 +29,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     OMNIDESK_ARTIFACT_SHA256=$OMNIDESK_ARTIFACT_SHA256 \
     OMNIDESK_IMAGE_DIGEST=$OMNIDESK_IMAGE_DIGEST
 WORKDIR /app
-COPY requirements.runtime.lock requirements.enterprise.lock /tmp/
+COPY requirements.bootstrap.lock requirements.runtime.lock requirements.enterprise.lock /tmp/
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN python -m pip install --no-cache-dir --upgrade pip \
+RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.bootstrap.lock \
     && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.runtime.lock \
     && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.enterprise.lock \
     && python -m pip install --no-cache-dir --no-deps /tmp/*.whl \
-    && rm -rf /tmp/*.whl /tmp/requirements.runtime.lock /tmp/requirements.enterprise.lock \
+    && rm -rf /tmp/*.whl /tmp/requirements.bootstrap.lock /tmp/requirements.runtime.lock /tmp/requirements.enterprise.lock \
     && useradd -r -u 10001 omnidesk \
     && mkdir -p /data \
     && chown -R omnidesk:omnidesk /data /app

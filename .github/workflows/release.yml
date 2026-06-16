@@ -105,6 +105,7 @@ jobs:
       - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
       - run: |
           python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python scripts/check_ga_release_gate.py .
