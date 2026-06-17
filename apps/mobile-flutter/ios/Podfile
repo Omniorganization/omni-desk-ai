@@ -1,20 +1,35 @@
 platform :ios, '14.0'
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 project 'Runner', { 'Debug' => :debug, 'Profile' => :release, 'Release' => :release }
+require 'json'
+require 'open3'
+
+def valid_flutter_root?(path)
+  path && !path.empty? && File.file?(File.join(path, 'packages', 'flutter_tools', 'bin', 'podhelper.rb'))
+end
+
 def flutter_root
   env_flutter_root = ENV['FLUTTER_ROOT']
-  if env_flutter_root && !env_flutter_root.empty?
+  if valid_flutter_root?(env_flutter_root)
     return env_flutter_root
   end
 
   generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
-  unless File.exist?(generated_xcode_build_settings_path)
-    raise "Run flutter pub get before pod install"
+  if File.exist?(generated_xcode_build_settings_path)
+    File.foreach(generated_xcode_build_settings_path) do |line|
+      match = line.match(/FLUTTER_ROOT\=(.*)/)
+      generated_flutter_root = match[1].strip if match
+      return generated_flutter_root if valid_flutter_root?(generated_flutter_root)
+    end
   end
-  File.foreach(generated_xcode_build_settings_path) do |line|
-    match = line.match(/FLUTTER_ROOT\=(.*)/)
-    return match[1].strip if match
+
+  flutter_version, status = Open3.capture2('flutter', '--version', '--machine')
+  if status.success?
+    detected_flutter_root = JSON.parse(flutter_version)['flutterRoot']
+    return detected_flutter_root if valid_flutter_root?(detected_flutter_root)
   end
+
+  raise "Unable to locate a valid Flutter SDK. Set FLUTTER_ROOT or run flutter pub get before pod install."
 end
 require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
 flutter_ios_podfile_setup

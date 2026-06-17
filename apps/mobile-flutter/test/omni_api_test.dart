@@ -12,14 +12,16 @@ void main() {
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/devices/register');
+        expect(request.url.toString(),
+            'https://gateway.example.test/app/devices/register');
         expect(request.headers['authorization'], 'Bearer operator-token');
         expect(request.headers['x-omnidesk-actor'], 'mobile-operator');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['device_id'], 'mobile-1');
         expect(body['device_type'], 'mobile');
         expect(body['push_token'], 'push-token');
-        expect(body['capabilities'], <String>['chat', 'approval', 'notification']);
+        expect(
+            body['capabilities'], <String>['chat', 'approval', 'notification']);
         return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
       }),
     );
@@ -34,7 +36,8 @@ void main() {
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/conversations/conv-1/messages');
+        expect(request.url.toString(),
+            'https://gateway.example.test/app/conversations/conv-1/messages');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['content'], 'Run desktop task');
         expect(body['requires_desktop_runtime'], isTrue);
@@ -43,7 +46,8 @@ void main() {
       }),
     );
 
-    await client.sendMessage('conv-1', 'Run desktop task', requiresDesktopRuntime: true, risk: 'high');
+    await client.sendMessage('conv-1', 'Run desktop task',
+        requiresDesktopRuntime: true, risk: 'high');
     client.close();
   });
 
@@ -69,7 +73,8 @@ void main() {
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/devices/mobile-1/push-token');
+        expect(request.url.toString(),
+            'https://gateway.example.test/app/devices/mobile-1/push-token');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['push_token'], 'push-token');
         return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
