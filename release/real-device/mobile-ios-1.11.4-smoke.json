@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0",
+  "evidence_type": "mobile_ios_real_device_development_profile_smoke",
+  "status": "verified_with_blockers",
+  "distribution_ga_status": "not_customer_distribution_ga_evidence",
+  "version": "1.11.4",
+  "build": "14",
+  "bundle_id": "com.omnidesk.mobile",
+  "app_name": "Omni Mobile",
+  "tested_source_commit": "c5e6cad27221f559e96dc6b7ea62e34e32083d60",
+  "produced_at": "2026-06-17T16:41:15+08:00",
+  "producer": "local Codex-controlled Xcode/devicectl real-device smoke",
+  "device": {
+    "name": "iPhone",
+    "serial": "00008030000C04583C87802E",
+    "core_device_identifier": "548F168F-D744-5CF6-B6E3-296F91546B93",
+    "model": "iPhone 11 (iPhone12,1)",
+    "state": "available (paired)"
+  },
+  "toolchain": {
+    "xcode": "26.5",
+    "xcode_build": "17F42",
+    "flutter": "3.44.2",
+    "cocoapods": "1.16.2"
+  },
+  "verified_data": {
+    "flutter_pub_get": "passed",
+    "flutter_test": {
+      "status": "passed",
+      "test_count": 9
+    },
+    "dart_analyze": "passed",
+    "pod_install": {
+      "status": "passed",
+      "podfile_dependencies": 5,
+      "total_pods": 14
+    },
+    "ios_profile_build": {
+      "status": "passed",
+      "artifact": "apps/mobile-flutter/build/ios/iphoneos/Runner.app",
+      "size": "27.6MB"
+    },
+    "device_install": {
+      "status": "passed",
+      "command": "xcrun devicectl device install app --device 548F168F-D744-5CF6-B6E3-296F91546B93 build/ios/iphoneos/Runner.app --timeout 120"
+    },
+    "installed_app_query": {
+      "status": "passed",
+      "name": "Omni Mobile",
+      "bundle_identifier": "com.omnidesk.mobile",
+      "version": "1.11.4",
+      "bundle_version": "14"
+    },
+    "console_launch_smoke": {
+      "status": "passed_for_startup",
+      "duration_seconds": 30,
+      "manual_interruption": true,
+      "startup_crash_observed": false
+    },
+    "foreground_launch": "passed"
+  },
+  "signing": {
+    "authority": "Apple Development: q44ijzgakn1@outlook.com (HNR65WVL8Q)",
+    "team_identifier": "VZH8W6APX7",
+    "cdhash": "f2f1929d11881dce02199b717604b1fcc63f5231",
+    "signed_time": "2026-06-17T16:39:06+08:00",
+    "entitlements": {
+      "application-identifier": "VZH8W6APX7.com.omnidesk.mobile",
+      "com.apple.developer.team-identifier": "VZH8W6APX7",
+      "get-task-allow": true,
+      "aps-environment": false
+    }
+  },
+  "artifact_hashes": {
+    "Runner": "2f2369c2b2c622eed8163ac912689dfe825b29569623f2d33249b8a48ec0bb64",
+    "Info.plist": "a340b2ef7fe33ab544f358e3f642cfe8e15f6ceac31ebc23d6b7aa3a5ee749c9",
+    "embedded.mobileprovision": "1919e1e316d7c141cea8438f7c45de37ae217f4727863a2855cf96ea39b92715"
+  },
+  "blocked_or_not_verified": {
+    "apns_push_delivery": {
+      "status": "blocked",
+      "reason": "signed Personal Team entitlements do not include aps-environment; console reported missing aps-environment"
+    },
+    "fcm_token_registration": {
+      "status": "blocked",
+      "reason": "GoogleService-Info.plist is absent in this local development/profile build"
+    },
+    "real_gateway_data_smoke": {
+      "status": "blocked",
+      "reason": "requires LAN/VPN-reachable Gateway URL and real operator token"
+    },
+    "customer_distribution_ipa": {
+      "status": "not_produced",
+      "reason": "this smoke used a local development/profile Runner.app, not a signed App Store/TestFlight IPA"
+    }
+  },
+  "source_evidence": "release/ios-mobile-device-smoke-2026-06-17-v1.11.4.md",
+  "policy": "This is real local physical-device smoke data. It must not be copied into release/external-evidence as passing customer-distribution GA evidence."
+}
