@@ -150,3 +150,58 @@ jobs:
           fi
       - run: flutter build ios --release --no-codesign
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-release
+
+  tri-app-chain-smoke:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    environment: staging
+    needs:
+      - backend-and-contract
+      - web-admin
+      - desktop-tauri
+      - mobile-flutter
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Validate tri-app chain smoke configuration
+        env:
+          OMNIDESK_WEB_ADMIN_ADMIN_TOKEN: ${{ secrets.OMNIDESK_WEB_ADMIN_ADMIN_TOKEN }}
+          OMNIDESK_DESKTOP_CLIENT_TOKEN: ${{ secrets.OMNIDESK_DESKTOP_CLIENT_TOKEN }}
+          OMNIDESK_MOBILE_CLIENT_TOKEN: ${{ secrets.OMNIDESK_MOBILE_CLIENT_TOKEN }}
+          OMNIDESK_WEB_ADMIN_BASE_URL: ${{ vars.OMNIDESK_WEB_ADMIN_BASE_URL }}
+          OMNIDESK_DESKTOP_API_BASE_URL: ${{ vars.OMNIDESK_DESKTOP_API_BASE_URL }}
+          OMNIDESK_MOBILE_API_BASE_URL: ${{ vars.OMNIDESK_MOBILE_API_BASE_URL }}
+          OMNIDESK_CHAIN_SESSION_PATH: ${{ vars.OMNIDESK_CHAIN_SESSION_PATH }}
+          OMNIDESK_CHAIN_APPROVAL_PATH: ${{ vars.OMNIDESK_CHAIN_APPROVAL_PATH }}
+          OMNIDESK_CHAIN_AUDIT_PATH: ${{ vars.OMNIDESK_CHAIN_AUDIT_PATH }}
+          OMNIDESK_CHAIN_NOTIFICATION_PATH: ${{ vars.OMNIDESK_CHAIN_NOTIFICATION_PATH }}
+        run: |
+          mkdir -p dist
+          python3 scripts/check_release_configuration.py \
+            --scope tri-app-smoke \
+            --format json \
+            --report-path dist/tri-app-chain-preflight.json
+      - name: Run tri-app approval audit notification session smoke
+        env:
+          EXPECTED_VERSION: 1.11+openclaw-codex-aligned-enterprise-agent
+          OMNIDESK_WEB_ADMIN_ADMIN_TOKEN: ${{ secrets.OMNIDESK_WEB_ADMIN_ADMIN_TOKEN }}
+          OMNIDESK_DESKTOP_CLIENT_TOKEN: ${{ secrets.OMNIDESK_DESKTOP_CLIENT_TOKEN }}
+          OMNIDESK_MOBILE_CLIENT_TOKEN: ${{ secrets.OMNIDESK_MOBILE_CLIENT_TOKEN }}
+          OMNIDESK_WEB_ADMIN_BASE_URL: ${{ vars.OMNIDESK_WEB_ADMIN_BASE_URL }}
+          OMNIDESK_DESKTOP_API_BASE_URL: ${{ vars.OMNIDESK_DESKTOP_API_BASE_URL }}
+          OMNIDESK_MOBILE_API_BASE_URL: ${{ vars.OMNIDESK_MOBILE_API_BASE_URL }}
+          OMNIDESK_CHAIN_SESSION_PATH: ${{ vars.OMNIDESK_CHAIN_SESSION_PATH }}
+          OMNIDESK_CHAIN_APPROVAL_PATH: ${{ vars.OMNIDESK_CHAIN_APPROVAL_PATH }}
+          OMNIDESK_CHAIN_AUDIT_PATH: ${{ vars.OMNIDESK_CHAIN_AUDIT_PATH }}
+          OMNIDESK_CHAIN_NOTIFICATION_PATH: ${{ vars.OMNIDESK_CHAIN_NOTIFICATION_PATH }}
+        run: |
+          python3 scripts/tri_app_chain_smoke_test.py \
+            --expected-version "$EXPECTED_VERSION" \
+            --require-correlation-echo \
+            --format json > dist/tri-app-chain-smoke.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tri-app-chain-smoke-evidence
+          path: dist/tri-app-chain-*.json

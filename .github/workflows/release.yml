@@ -33,8 +33,40 @@ jobs:
           OMNIDESK_SANDBOX_RUNNER_DIGEST: ${{ vars.OMNIDESK_SANDBOX_RUNNER_DIGEST }}
         run: python3 scripts/check_release_configuration.py --scope release
 
+  web-admin-config-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Validate Web Admin GitHub configuration
+        env:
+          OMNIDESK_WEB_ADMIN_ADMIN_TOKEN: ${{ secrets.OMNIDESK_WEB_ADMIN_ADMIN_TOKEN }}
+          OMNIDESK_WEB_ADMIN_BASE_URL: ${{ vars.OMNIDESK_WEB_ADMIN_BASE_URL }}
+          OMNIDESK_WEB_ADMIN_API_BASE_URL: ${{ vars.OMNIDESK_WEB_ADMIN_API_BASE_URL }}
+          OMNIDESK_WEB_ADMIN_SESSION_PATH: ${{ vars.OMNIDESK_WEB_ADMIN_SESSION_PATH }}
+          OMNIDESK_WEB_ADMIN_APPROVAL_PATH: ${{ vars.OMNIDESK_WEB_ADMIN_APPROVAL_PATH }}
+          OMNIDESK_WEB_ADMIN_AUDIT_PATH: ${{ vars.OMNIDESK_WEB_ADMIN_AUDIT_PATH }}
+          OMNIDESK_WEB_ADMIN_NOTIFICATION_PATH: ${{ vars.OMNIDESK_WEB_ADMIN_NOTIFICATION_PATH }}
+        run: python3 scripts/check_release_configuration.py --scope web-admin
+
+  desktop-config-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Validate Desktop GitHub configuration
+        env:
+          OMNIDESK_DESKTOP_CLIENT_TOKEN: ${{ secrets.OMNIDESK_DESKTOP_CLIENT_TOKEN }}
+          OMNIDESK_DESKTOP_API_BASE_URL: ${{ vars.OMNIDESK_DESKTOP_API_BASE_URL }}
+          OMNIDESK_DESKTOP_SESSION_PATH: ${{ vars.OMNIDESK_DESKTOP_SESSION_PATH }}
+          OMNIDESK_DESKTOP_APPROVAL_PATH: ${{ vars.OMNIDESK_DESKTOP_APPROVAL_PATH }}
+          OMNIDESK_DESKTOP_AUDIT_PATH: ${{ vars.OMNIDESK_DESKTOP_AUDIT_PATH }}
+          OMNIDESK_DESKTOP_NOTIFICATION_PATH: ${{ vars.OMNIDESK_DESKTOP_NOTIFICATION_PATH }}
+          OMNIDESK_DESKTOP_UPDATE_CHANNEL: ${{ vars.OMNIDESK_DESKTOP_UPDATE_CHANNEL }}
+        run: python3 scripts/check_release_configuration.py --scope desktop
+
   web-admin-release:
-    needs: release-config-preflight
+    needs:
+      - release-config-preflight
+      - web-admin-config-preflight
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -55,7 +87,9 @@ jobs:
         run: docker build -f apps/web-admin-next/Dockerfile -t omnidesk-web-admin:${{ github.sha }} apps/web-admin-next
 
   desktop-release:
-    needs: release-config-preflight
+    needs:
+      - release-config-preflight
+      - desktop-config-preflight
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -235,6 +269,8 @@ jobs:
   build:
     needs:
       - release-config-preflight
+      - web-admin-config-preflight
+      - desktop-config-preflight
       - web-admin-release
       - desktop-release
       - mobile-android-release

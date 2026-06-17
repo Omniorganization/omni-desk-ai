@@ -21,8 +21,10 @@ def test_release_governance_assets_exist():
     assert Path("scripts/release_smoke_locked.sh").exists()
     assert Path("scripts/check_script_executability.py").exists()
     assert Path("scripts/check_release_configuration.py").exists()
+    assert Path("scripts/tri_app_chain_smoke_test.py").exists()
     assert Path("docs/SRE_RUNBOOK.md").exists()
     assert Path("docs/RELEASE_CONFIGURATION_PREFLIGHT.md").exists()
+    assert Path("docs/CODE_REVIEW_OPTIMIZATION_1.11.4.md").exists()
     assert Path(".github/workflows/promote-production.yml").exists()
 
 
@@ -68,10 +70,17 @@ def test_drill_workflows_install_locked_python_dependencies() -> None:
 def test_release_and_downstream_workflows_fail_fast_on_missing_github_config() -> None:
     release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
     assert "release-config-preflight" in release
+    assert "web-admin-config-preflight" in release
+    assert "desktop-config-preflight" in release
     assert "python3 scripts/check_release_configuration.py --scope release" in release
+    assert "python3 scripts/check_release_configuration.py --scope web-admin" in release
+    assert "python3 scripts/check_release_configuration.py --scope desktop" in release
     assert "OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}" in release
     assert "OMNIDESK_SANDBOX_RUNNER_DIGEST: ${{ vars.OMNIDESK_SANDBOX_RUNNER_DIGEST }}" in release
-    assert release.count("needs: release-config-preflight") >= 4
+    assert "OMNIDESK_WEB_ADMIN_ADMIN_TOKEN: ${{ secrets.OMNIDESK_WEB_ADMIN_ADMIN_TOKEN }}" in release
+    assert "OMNIDESK_DESKTOP_CLIENT_TOKEN: ${{ secrets.OMNIDESK_DESKTOP_CLIENT_TOKEN }}" in release
+    assert release.count("needs: release-config-preflight") >= 2
+    assert release.count("- release-config-preflight") >= 3
 
     downstream = {
         "deploy-staging.yml": "--scope staging",
@@ -83,6 +92,18 @@ def test_release_and_downstream_workflows_fail_fast_on_missing_github_config() -
         assert "python3 scripts/check_release_configuration.py" in workflow
         assert scope_arg in workflow
         assert "OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}" in workflow
+
+
+def test_tri_app_quality_workflow_runs_manual_chain_smoke() -> None:
+    workflow = Path(".github/workflows/tri-app-quality.yml").read_text(encoding="utf-8")
+    assert "tri-app-chain-smoke" in workflow
+    assert "environment: staging" in workflow
+    assert "python3 scripts/check_release_configuration.py" in workflow
+    assert "--scope tri-app-smoke" in workflow
+    assert "python3 scripts/tri_app_chain_smoke_test.py" in workflow
+    assert "--require-correlation-echo" in workflow
+    assert "tri-app-chain-smoke-evidence" in workflow
+    assert "OMNIDESK_MOBILE_CLIENT_TOKEN: ${{ secrets.OMNIDESK_MOBILE_CLIENT_TOKEN }}" in workflow
 
 
 def test_observability_and_full_compose_assets_exist():
