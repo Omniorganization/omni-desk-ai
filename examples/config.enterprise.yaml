@@ -1,0 +1,82 @@
+gateway:
+  host: 0.0.0.0
+  port: 18789
+  public_base_url: https://omnidesk.enterprise.internal
+  allow_local_admin_without_token: false
+  require_webhook_signatures: true
+  admin_allowed_ips: []
+
+permissions:
+  approval_mode: remote_approval
+  default_mode: ask
+  no_tty_mode: deny
+  audit_log: /data/audit.log
+  shell_backend: remote_docker
+  require_dual_approval_for_risks: [high, critical]
+  break_glass_enabled: true
+  audit_checkpoint_hmac_key_env: OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY
+
+storage:
+  backend: postgres
+  postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+  require_multi_instance_safe: true
+
+app_sync:
+  backend: postgres
+  postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+  namespace: enterprise
+  require_idempotency: true
+  allow_websocket_query_auth: false
+  require_device_public_key_in_production: true
+  reject_predictable_device_ids_in_production: true
+  require_device_signed_requests_in_production: true
+  device_signature_max_skew_seconds: 300
+  device_request_nonce_ttl_seconds: 600
+
+sandbox:
+  backend: remote_docker
+  runner_url: http://sandbox-runner:18890
+  runner_token_env: OMNIDESK_SANDBOX_RUNNER_TOKEN
+  runner_hmac_secret_env: OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET
+  docker_image: python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+  docker_network: none
+  timeout_seconds: 120
+  memory_limit: 512m
+  cpus: "1.0"
+
+plugins:
+  enabled: true
+  trusted_only: true
+  allow_in_process: false
+  default_sandbox: docker
+  production_forbid_subprocess: true
+
+memory_privacy:
+  redact_pii: true
+  isolate_by_actor: true
+  encrypt_at_rest: true
+  encryption_backend: local_fernet
+  encryption_key_env: OMNIDESK_MEMORY_ENCRYPTION_KEY
+  encryption_key_id: enterprise
+  retention_days: 30
+
+capabilities:
+  plugins:
+    enabled: true
+  shell:
+    enabled: true
+  channels:
+    enabled: false
+  browser:
+    enabled: false
+  ui_bridge:
+    enabled: false
+  gmail:
+    enabled: false
+
+channels:
+  chrome:
+    enabled: false
+  ui_bridge:
+    enabled: false
+    require_foreground_confirmation: true

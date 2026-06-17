@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke web-admin-container-hardening tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke web-admin-container-hardening tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight config-profiles external-ga-evidence-doctor external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
@@ -23,6 +23,7 @@ readiness:
 	PYTHONPATH=. $(PYTHON) scripts/check_deployment_readiness.py --compose-file deploy/docker/docker-compose.full.yml
 	PYTHONPATH=. $(PYTHON) scripts/check_supply_chain_standard.py .
 	PYTHONPATH=. $(PYTHON) scripts/check_observability_contract.py .
+	PYTHONPATH=. $(PYTHON) scripts/check_config_profiles.py .
 
 test-ci:
 	$(PYTHON) -m pip install --require-hashes -r requirements.dev.lock
@@ -102,6 +103,12 @@ tri-app-release-builds: tri-app-release-web tri-app-release-desktop tri-app-rele
 
 tri-app-release-preflight:
 	$(PYTHON) scripts/check_tri_app_release_readiness.py . --mode release
+
+config-profiles:
+	PYTHONPATH=. $(PYTHON) scripts/check_config_profiles.py .
+
+external-ga-evidence-doctor:
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/external_ga_evidence_doctor.py .
 
 external-ga-evidence-audit:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.json

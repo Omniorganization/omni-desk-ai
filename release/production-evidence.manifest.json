@@ -19,6 +19,8 @@
     "web_admin_container_hardening": "required",
     "desktop_npm_typecheck_test_build": "required",
     "external_evidence_audit": "required",
+    "external_evidence_doctor": "required",
+    "config_profile_validation": "required",
     "external_evidence_distribution_gate": "required",
     "onboarding_doctor": "required",
     "channel_identity_firewall": "required",

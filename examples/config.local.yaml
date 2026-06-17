@@ -1,0 +1,47 @@
+llm:
+  provider: rule
+  model: gpt-5.1
+  api_key_env: OPENAI_API_KEY
+
+gateway:
+  host: 127.0.0.1
+  port: 18789
+  public_base_url: null
+  allow_local_admin_without_token: false
+  require_webhook_signatures: true
+
+permissions:
+  approval_mode: interactive_cli
+  default_mode: ask
+  no_tty_mode: deny
+  audit_log: ~/.omnidesk/audit.log
+  always_ask_tools: [computer, shell, channels, files, ui_bridge, browser, gmail]
+
+storage:
+  backend: sqlite
+  require_multi_instance_safe: false
+
+app_sync:
+  backend: json
+  require_idempotency: true
+
+sandbox:
+  backend: docker
+  docker_image: python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+  docker_network: none
+
+plugins:
+  enabled: true
+  trusted_only: true
+  allow_in_process: false
+  default_sandbox: docker
+
+channels:
+  chrome:
+    enabled: true
+    devtools_host: 127.0.0.1
+    devtools_port: 9222
+    forbid_default_profile: true
+  ui_bridge:
+    enabled: true
+    require_foreground_confirmation: true

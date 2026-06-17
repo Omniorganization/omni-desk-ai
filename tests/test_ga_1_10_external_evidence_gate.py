@@ -30,3 +30,5 @@ def test_external_ga_evidence_script_is_wired_to_makefile_and_ga_gate() -> None:
     assert "external-ga-evidence-gate" in makefile
     assert "check_external_ga_evidence.py" in ga_gate
     assert manifest["local_source_evidence"]["external_evidence_audit"] == "required"
+    assert manifest["local_source_evidence"]["external_evidence_doctor"] == "required"
+    assert manifest["local_source_evidence"]["config_profile_validation"] == "required"

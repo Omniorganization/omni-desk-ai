@@ -22,8 +22,11 @@ def test_release_governance_assets_exist():
     assert Path("scripts/check_script_executability.py").exists()
     assert Path("scripts/check_release_configuration.py").exists()
     assert Path("scripts/tri_app_chain_smoke_test.py").exists()
+    assert Path("scripts/external_ga_evidence_doctor.py").exists()
+    assert Path("scripts/check_config_profiles.py").exists()
     assert Path("docs/SRE_RUNBOOK.md").exists()
     assert Path("docs/RELEASE_CONFIGURATION_PREFLIGHT.md").exists()
+    assert Path("docs/EXTERNAL_GA_EVIDENCE_RUNBOOK.md").exists()
     assert Path("docs/CODE_REVIEW_OPTIMIZATION_1.11.4.md").exists()
     assert Path(".github/workflows/promote-production.yml").exists()
 
@@ -53,6 +56,14 @@ def test_ci_runs_version_consistency_check():
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "scripts/check_version_consistency.py" in ci
     assert "scripts/check_script_executability.py" in ci
+
+
+def test_makefile_wires_external_evidence_doctor_and_config_profiles() -> None:
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    assert "external-ga-evidence-doctor" in makefile
+    assert "scripts/external_ga_evidence_doctor.py" in makefile
+    assert "config-profiles" in makefile
+    assert "scripts/check_config_profiles.py" in makefile
 
 
 def test_script_executability_contract_passes_current_tree():
