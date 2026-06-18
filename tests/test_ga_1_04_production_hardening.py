@@ -12,6 +12,11 @@ from omnidesk_agent.validation.production import validate_production_config
 PINNED = "python:3.11-slim@sha256:" + "66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5"
 
 
+def _native_version(project_version: str) -> str:
+    base = project_version.split("+", 1)[0]
+    return base if len(base.split(".")) >= 3 else f"{base}.0"
+
+
 def _cfg(tmp_path: Path) -> AppConfig:
     cfg = AppConfig()
     cfg.workspace.root = tmp_path / "workspace"
@@ -44,7 +49,7 @@ def test_helm_chart_requires_pipeline_injected_app_digest() -> None:
     version_match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
     assert version_match
     version = version_match.group(1)
-    chart_version = f"{version.split('+', 1)[0]}.0"
+    chart_version = _native_version(version)
     chart = Path("deploy/kubernetes/helm/omnidesk/Chart.yaml").read_text(encoding="utf-8")
     values = Path("deploy/kubernetes/helm/omnidesk/values.yaml").read_text(encoding="utf-8")
     deployment = Path("deploy/kubernetes/helm/omnidesk/templates/deployment.yaml").read_text(encoding="utf-8")
