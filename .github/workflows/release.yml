@@ -58,6 +58,7 @@ jobs:
 
   mobile-android-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: apps/mobile-flutter
@@ -70,6 +71,12 @@ jobs:
       - run: flutter pub get
       - run: dart analyze
       - run: flutter test
+      - name: Prepare Android release SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
       - name: Restore Android release signing key
         env:
           OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}
@@ -97,6 +104,7 @@ jobs:
           test -n "$OMNI_ANDROID_GOOGLE_SERVICES_JSON"
           printf '%s' "$OMNI_ANDROID_GOOGLE_SERVICES_JSON" > android/app/google-services.json
       - run: flutter build appbundle --release
+        timeout-minutes: 20
 
   mobile-ios-release:
     runs-on: macos-latest

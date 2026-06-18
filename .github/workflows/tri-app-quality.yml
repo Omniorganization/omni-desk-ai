@@ -66,6 +66,7 @@ jobs:
 
   mobile-flutter:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: apps/mobile-flutter
@@ -78,6 +79,12 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      - name: Prepare Android release SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
       - name: Generate non-production Android signing key
         env:
           OMNI_ANDROID_KEYSTORE_PASSWORD: omnidesk-ci-store-password
@@ -104,6 +111,7 @@ jobs:
             echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD"
           } >> "$GITHUB_ENV"
       - run: flutter build appbundle --release
+        timeout-minutes: 20
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-android-release
 
   mobile-ios-release:
