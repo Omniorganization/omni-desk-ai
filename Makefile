@@ -1,10 +1,12 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
 PUBLIC_BASE_URL ?= https://omnidesk.company.example.invalid
 SANDBOX_IMAGE ?= python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 RUNNER_URL ?= http://sandbox-runner:18890
+IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
+IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.7+real-ga-evidence-semantic-hardening
 
 test:
 	PYTHONPATH=. $(PYTEST) -q
@@ -98,6 +100,22 @@ tri-app-release-builds: tri-app-release-web tri-app-release-desktop tri-app-rele
 
 tri-app-release-preflight:
 	$(PYTHON) scripts/check_tri_app_release_readiness.py . --mode release
+	$(PYTHON) scripts/check_release_configuration.py --scope web-admin --format json --report-path dist/web-admin-preflight.json
+	$(PYTHON) scripts/check_release_configuration.py --scope desktop --format json --report-path dist/desktop-preflight.json
+	$(PYTHON) scripts/check_release_configuration.py --scope mobile --format json --report-path dist/mobile-preflight.json
+	$(PYTHON) scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+
+ios-real-device-evidence-import:
+	IOS_EVIDENCE_RAW_DIR="$(IOS_EVIDENCE_RAW_DIR)" IOS_EVIDENCE_EXPECTED_VERSION="$(IOS_EVIDENCE_EXPECTED_VERSION)" $(PYTHON) scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
+	$(PYTHON) scripts/import_ios_real_device_evidence.py --raw-dir "$(IOS_EVIDENCE_RAW_DIR)" --expected-version "$(IOS_EVIDENCE_EXPECTED_VERSION)" --copy --write-report release/ios-real-device-evidence-import-report.json
+	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.7.json
+
+tri-app-live-smoke-preflight:
+	$(PYTHON) scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+	$(PYTHON) scripts/import_tri_app_live_smoke_evidence.py --report "$${TRI_APP_LIVE_SMOKE_REPORT_PATH}" --expected-org-id "$${TRI_APP_ORG_ID}" --expected-scenario-id "$${TRI_APP_LIVE_SMOKE_SCENARIO_ID}" --copy --write-report release/tri-app-live-smoke-evidence-import-report.json
+
+workflow-governance-preflight:
+	$(PYTHON) scripts/check_workflow_governance.py . --require-real-workflows
 
 external-ga-evidence-audit:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.json
@@ -105,4 +123,4 @@ external-ga-evidence-audit:
 external-ga-evidence-gate:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py .
 
-distribution-ga-preflight: tri-app-release-preflight external-ga-evidence-gate
+distribution-ga-preflight: tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight external-ga-evidence-gate

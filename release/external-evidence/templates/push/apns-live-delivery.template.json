@@ -1,0 +1,30 @@
+{
+  "status": "verified",
+  "produced_at": "2026-06-17T00:00:00+08:00",
+  "producer": "local-macos-xcode-real-device",
+  "provider": "apns-or-firebase-messaging-apns",
+  "platform": "ios",
+  "version": "1.11.7+real-ga-evidence-semantic-hardening",
+  "delivery_success": true,
+  "delivery_receipt_id": "REPLACE_WITH_REAL_PROVIDER_RECEIPT_ID_OR_MESSAGE_ID",
+  "device_id_sha256": "REPLACE_WITH_OMNIDESK_DEVICE_ID_HASH_ONLY",
+  "push_token_sha256": "REPLACE_WITH_PUSH_TOKEN_HASH_ONLY",
+  "bundle_id": "REPLACE_WITH_REAL_BUNDLE_ID",
+  "device_model": "REPLACE_WITH_REAL_DEVICE_MODEL",
+  "ios_version": "REPLACE_WITH_REAL_IOS_VERSION",
+  "latency_ms": 0,
+  "artifacts": [
+    {
+      "kind": "apns_provider_receipt",
+      "path": "artifacts/ios/apns-delivery-receipt.json",
+      "sha256": "REPLACE_WITH_REAL_SHA256"
+    }
+  ],
+  "smoke_cases": {
+    "permission_requested": true,
+    "token_registered_with_gateway": true,
+    "provider_accepted_message": true,
+    "device_received_notification": true,
+    "notification_opened_app": true
+  }
+}

@@ -128,6 +128,45 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Run tri-app release configuration preflight scopes
+        run: |
+          python scripts/check_release_configuration.py --scope web-admin --format json --report-path dist/web-admin-preflight.json
+          python scripts/check_release_configuration.py --scope desktop --format json --report-path dist/desktop-preflight.json
+          python scripts/check_release_configuration.py --scope mobile --format json --report-path dist/mobile-preflight.json
+          python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+      - name: Import iOS real-device evidence
+        env:
+          IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
+          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+real-ga-evidence-semantic-hardening
+        run: |
+          python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
+          python scripts/import_ios_real_device_evidence.py \
+            --raw-dir "$IOS_EVIDENCE_RAW_DIR" \
+            --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" \
+            --copy \
+            --write-report release/ios-real-device-evidence-import-report.json
+      - name: Import tri-app live smoke evidence
+        env:
+          TRI_APP_ADMIN_TOKEN: ${{ secrets.TRI_APP_ADMIN_TOKEN }}
+          TRI_APP_MOBILE_APPROVAL_TOKEN: ${{ secrets.TRI_APP_MOBILE_APPROVAL_TOKEN }}
+          TRI_APP_DESKTOP_AGENT_TOKEN: ${{ secrets.TRI_APP_DESKTOP_AGENT_TOKEN }}
+          TRI_APP_AUDIT_HMAC_SECRET: ${{ secrets.TRI_APP_AUDIT_HMAC_SECRET }}
+          TRI_APP_BACKEND_BASE_URL: ${{ vars.TRI_APP_BACKEND_BASE_URL }}
+          TRI_APP_WEB_ADMIN_BASE_URL: ${{ vars.TRI_APP_WEB_ADMIN_BASE_URL }}
+          TRI_APP_MOBILE_CALLBACK_URL: ${{ vars.TRI_APP_MOBILE_CALLBACK_URL }}
+          TRI_APP_DESKTOP_AGENT_URL: ${{ vars.TRI_APP_DESKTOP_AGENT_URL }}
+          TRI_APP_ORG_ID: ${{ vars.TRI_APP_ORG_ID }}
+          TRI_APP_LIVE_SMOKE_SCENARIO_ID: ${{ vars.TRI_APP_LIVE_SMOKE_SCENARIO_ID }}
+          TRI_APP_LIVE_SMOKE_REPORT_PATH: ${{ vars.TRI_APP_LIVE_SMOKE_REPORT_PATH }}
+        run: |
+          python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+          python scripts/import_tri_app_live_smoke_evidence.py \
+            --report "$TRI_APP_LIVE_SMOKE_REPORT_PATH" \
+            --expected-org-id "$TRI_APP_ORG_ID" \
+            --expected-scenario-id "$TRI_APP_LIVE_SMOKE_SCENARIO_ID" \
+            --copy \
+            --write-report release/tri-app-live-smoke-evidence-import-report.json
+      - run: python scripts/check_workflow_governance.py . --require-real-workflows
       - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
       - run: |
           python scripts/check_lock_hashes.py requirements.runtime.lock
@@ -135,7 +174,8 @@ jobs:
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python scripts/check_ga_release_gate.py .
-      - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report dist/external-ga-evidence-audit.json
+      - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.7.json
+      - run: cp release/real-ga-evidence-audit-1.11.7.json dist/external-ga-evidence-audit.json
 
       - name: Build and push release image, then capture registry digest
         env:
@@ -229,3 +269,12 @@ jobs:
         with:
           name: dist-and-sbom
           path: dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-ga-evidence-import-reports
+          path: |
+            release/real-ga-evidence-audit-1.11.7.json
+            release/ios-real-device-evidence-import-report.json
+            release/tri-app-live-smoke-evidence-import-report.json
+            dist/ios-evidence-preflight.json
+            dist/tri-app-live-smoke-preflight.json
