@@ -7,8 +7,8 @@ import { executeRuntimeTask } from './executor';
 import { createDesktopDeviceRequestSigner, loadOrCreateDesktopIdentity, DesktopDeviceIdentity } from './deviceIdentity';
 
 const DEFAULT_GATEWAY = 'http://127.0.0.1:18789';
-const VERSION = '1.11.7';
-const CAPABILITIES = ['local-runtime', 'browser', 'files', 'ui-bridge', 'sandbox'];
+const VERSION = '1.11.8';
+const CAPABILITIES = ['chat', 'local-runtime', 'browser', 'files', 'ui-bridge', 'sandbox'];
 
 async function keychainGet(key: string): Promise<string> {
   try { return await invoke<string>('secure_get', { key }); } catch { return ''; }
@@ -28,6 +28,10 @@ function App() {
   const [workerLog, setWorkerLog] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [deviceIdentity, setDeviceIdentity] = useState<DesktopDeviceIdentity | null>(null);
+  const [chatConversationId, setChatConversationId] = useState('');
+  const [chatInput, setChatInput] = useState('Summarize current OmniDesk runtime state.');
+  const [chatProfile, setChatProfile] = useState('fast');
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
   const controlHubPanels = useMemo(() => buildControlHubPanels(snapshot, null), [snapshot]);
   const client = useMemo(() => new OmniApiClient({
     baseUrl: gatewayUrl.replace(/\/$/, ''),
@@ -96,6 +100,26 @@ function App() {
     setSnapshot(await client.bootstrap());
   }
 
+  async function askAssistant() {
+    setError('');
+    try {
+      const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
+      setDeviceIdentity(identity);
+      let conversationId = chatConversationId;
+      if (!conversationId) {
+        const created = await client.createConversation('Desktop Ask Mode', identity.deviceId);
+        conversationId = created.conversation.conversation_id;
+        setChatConversationId(conversationId);
+      }
+      const result = await client.askConversation(conversationId, chatInput, chatProfile, identity.deviceId);
+      const messages = await client.listMessages(conversationId);
+      setChatMessages(messages.messages || [result.user_message, result.assistant_message]);
+      setSnapshot(await client.bootstrap());
+    } catch (e: any) {
+      setError(e.message || String(e));
+    }
+  }
+
   useEffect(() => {
     if (!token) return;
     const timer = window.setInterval(async () => {
@@ -135,6 +159,27 @@ function App() {
       </div>)}
     </section>
 
+    <section className="card">
+      <h2>Local Assistant</h2>
+      <label>Ask Mode
+        <select value={chatProfile} onChange={e => setChatProfile(e.target.value)}>
+          <option value="fast">fast</option>
+          <option value="planner">planner</option>
+          <option value="local">local</option>
+        </select>
+      </label>
+      <label>Message<textarea value={chatInput} onChange={e => setChatInput(e.target.value)} /></label>
+      <button onClick={askAssistant}>问一下 AI</button>
+      <pre>{JSON.stringify(chatMessages.map(message => ({
+        role: message.role,
+        content: message.content,
+        provider: message.model_provider,
+        model: message.model_name,
+        profile: message.model_profile,
+        audit_trace_id: message.trace_id
+      })), null, 2)}</pre>
+    </section>
+
     <section className="grid">
       <div className="card"><h2>Claimed Task</h2><pre>{JSON.stringify(claimedTask || {}, null, 2)}</pre><button disabled={!claimedTask} onClick={() => complete('completed')}>标记完成</button>{' '}<button disabled={!claimedTask} onClick={() => complete('failed')}>标记失败</button><h3>Worker log</h3><pre>{workerLog.join('\n')}</pre></div>
       <div className="card"><h2>Runtime</h2><pre>{JSON.stringify(snapshot?.runtime_status || [], null, 2)}</pre></div>
@@ -146,7 +191,8 @@ function App() {
       .shell { padding: 24px; }
       .card { background: #181a20; border: 1px solid #30323a; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
       label { display: block; margin: 12px 0; color: #c5c7ce; }
-      input { width: 100%; margin-top: 6px; padding: 10px; border-radius: 10px; border: 1px solid #3a3d46; background: #0f1115; color: white; }
+      input, textarea, select { width: 100%; margin-top: 6px; padding: 10px; border-radius: 10px; border: 1px solid #3a3d46; background: #0f1115; color: white; }
+      textarea { min-height: 92px; resize: vertical; }
       button { padding: 10px 14px; border-radius: 10px; border: 0; cursor: pointer; }
       button:disabled { opacity: .45; cursor: not-allowed; }
       .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }

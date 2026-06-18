@@ -1,10 +1,10 @@
-# OmniDesk v1.11.7 iOS Real-Device Evidence Semantic Closure
+# OmniDesk v1.11.8 iOS Real-Device Evidence Semantic Closure
 
 This directory is the import point for real iOS evidence produced from a physical iPhone, a real Apple signing identity, and a real provisioning profile.
 
 Do not commit private keys, raw device UDIDs, Apple certificates, provisioning profile contents, APNS tokens, Firebase tokens, bearer tokens, or screenshots that expose secrets.
 
-Required iOS evidence files for v1.11.7:
+Required iOS evidence files for v1.11.8:
 
 - `native-build/flutter-ios-release.json`
 - `signed-artifacts/ios-signed-ipa.json`
@@ -27,7 +27,7 @@ Minimum smoke scope:
 9. Register APNS/FCM push token and verify a real delivery receipt.
 
 
-In v1.11.7 every evidence document must declare the expected release version, use `platform: ios`, and reference at least one artifact file under the raw evidence directory with a matching SHA256. The native build evidence must have `exit_code: 0`.
+In v1.11.8 every evidence document must declare the expected release version, use `platform: ios`, and reference at least one artifact file under the raw evidence directory with a matching SHA256. The native build evidence must have `exit_code: 0`.
 
 APNS live delivery evidence must reference a provider receipt, device notification log, or Firebase delivery receipt. It must not use the `.ipa` itself as delivery evidence. Supported APNS artifact kinds are:
 

@@ -51,6 +51,28 @@ test('heartbeat, task status, and sync use the shared /app contract', async () =
   assert.equal(JSON.parse(calls[1].init?.body as string).status, 'completed');
 });
 
+test('askConversation uses the shared audited chat endpoint', async () => {
+  let requestUrl = '';
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = async (input, init) => {
+    requestUrl = input.toString();
+    requestInit = init;
+    return new Response(JSON.stringify({ ok: true, assistant_message: { content: 'answer' } }), { status: 200 });
+  };
+
+  const client = new OmniApiClient({ baseUrl: 'https://gateway.example.test/', token: 'operator-token', actor: 'desktop-operator' });
+  await client.askConversation('conv-1', 'hello desktop', 'fast', 'desktop-1');
+
+  assert.equal(requestUrl, 'https://gateway.example.test/app/conversations/conv-1/ask');
+  assert.match((requestInit?.headers as Record<string, string>)['idempotency-key'], /^desktop-ask-conv-1-13-/);
+  assert.deepEqual(JSON.parse(requestInit?.body as string), {
+    content: 'hello desktop',
+    model_profile: 'fast',
+    stream: false,
+    source_device_id: 'desktop-1',
+  });
+});
+
 test('gateway errors include the response body', async () => {
   globalThis.fetch = async () => new Response('bad token', { status: 401 });
 

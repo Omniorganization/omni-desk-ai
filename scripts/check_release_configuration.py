@@ -496,7 +496,7 @@ def _validate_ios_evidence_raw_dir(issues: list[Issue]) -> None:
                 name="IOS_EVIDENCE_RAW_DIR",
                 message=f"missing iOS real-device evidence file under IOS_EVIDENCE_RAW_DIR: {rel}",
             )
-    # 1.11.7 closure: ios-evidence preflight must validate semantic evidence, not only file presence.
+    # 1.11.8 closure: ios-evidence preflight must validate semantic evidence, not only file presence.
     try:
         from scripts.import_ios_real_device_evidence import validate_raw_dir
 

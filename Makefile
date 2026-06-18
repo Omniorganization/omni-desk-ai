@@ -6,7 +6,7 @@ PUBLIC_BASE_URL ?= https://omnidesk.company.example.invalid
 SANDBOX_IMAGE ?= python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 RUNNER_URL ?= http://sandbox-runner:18890
 IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
-IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.7+source-gated-ga-candidate
+IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.8+source-gated-enterprise-chat-candidate
 PACKAGE_DIR ?= dist/package
 
 test:
@@ -109,7 +109,7 @@ tri-app-release-preflight:
 ios-real-device-evidence-import:
 	IOS_EVIDENCE_RAW_DIR="$(IOS_EVIDENCE_RAW_DIR)" IOS_EVIDENCE_EXPECTED_VERSION="$(IOS_EVIDENCE_EXPECTED_VERSION)" $(PYTHON) scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
 	$(PYTHON) scripts/import_ios_real_device_evidence.py --raw-dir "$(IOS_EVIDENCE_RAW_DIR)" --expected-version "$(IOS_EVIDENCE_EXPECTED_VERSION)" --copy --write-report release/ios-real-device-evidence-import-report.json
-	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.7.json
+	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.8.json
 
 tri-app-live-smoke-preflight:
 	$(PYTHON) scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json

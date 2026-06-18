@@ -1,6 +1,6 @@
 {
   "name": "Omni Tri-App Sync API",
-  "version": "1.11.7+source-gated-ga-candidate",
+  "version": "1.11.8+source-gated-enterprise-chat-candidate",
   "auth": {
     "type": "bearer",
     "roles": [
@@ -49,6 +49,17 @@
     {
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/messages",
+      "role": "operator"
+    },
+    {
+      "method": "GET",
+      "path": "/app/conversations/{conversation_id}/messages",
+      "role": "viewer"
+    },
+    {
+      "method": "POST",
+      "path": "/app/conversations/{conversation_id}/ask",
+      "description": "Create a Gateway-audited chat turn, call the configured ModelRouter with task=chat, persist user and assistant messages, and return model metadata without exposing provider credentials to clients.",
       "role": "operator"
     },
     {

@@ -279,7 +279,7 @@ python scripts/check_release_configuration.py --scope tri-app-live-smoke --forma
 
 ---
 
-## 1.11.7 Real GA Evidence Semantic Closure Addendum
+## 1.11.8 Real GA Evidence Semantic Closure Addendum
 
 The following scopes now perform semantic evidence validation rather than configuration-only checks:
 

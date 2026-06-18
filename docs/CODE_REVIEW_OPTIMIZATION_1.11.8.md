@@ -1,4 +1,4 @@
-# Code Review Optimization 1.11.7
+# Code Review Optimization 1.11.8
 
 Date: 2026-06-18
 
@@ -19,7 +19,7 @@ Scope: semantic hardening for the 1.11.6 real GA evidence closure package.
 7. Tri-app live smoke evidence now validates non-placeholder trace ids, timestamp ordering, and latency consistency.
 8. Privacy linting now rejects broader raw secret/token/certificate/device identifiers while allowing hash/fingerprint fields.
 9. Workflow governance can run in `--require-real-workflows` mode and no longer accepts patch snippets as a substitute for `.github/workflows/release.yml`.
-10. Release workflow uploads 1.11.7 external-evidence audit reports and preflight artifacts.
+10. Release workflow uploads 1.11.8 external-evidence audit reports and preflight artifacts.
 11. Historical patches are archived with explicit warnings.
 12. Release package hygiene excludes `.pytest_cache`, `__pycache__`, `*.pyc`, and `*.pyo`.
 

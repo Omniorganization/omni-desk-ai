@@ -1,4 +1,4 @@
-# Archived historical patch. DO NOT APPLY FOR CURRENT RELEASES. Use the current v1.11.7 patch only after reviewing context.
+# Archived historical patch. DO NOT APPLY FOR CURRENT RELEASES. Use the current v1.11.8 patch only after reviewing context.
 
 diff --git a/pyproject.toml b/pyproject.toml
 --- a/pyproject.toml

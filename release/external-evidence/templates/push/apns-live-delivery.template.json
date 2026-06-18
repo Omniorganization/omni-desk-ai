@@ -4,7 +4,7 @@
   "producer": "local-macos-xcode-real-device",
   "provider": "apns-or-firebase-messaging-apns",
   "platform": "ios",
-  "version": "1.11.7+source-gated-ga-candidate",
+  "version": "1.11.8+source-gated-enterprise-chat-candidate",
   "delivery_success": true,
   "delivery_receipt_id": "REPLACE_WITH_REAL_PROVIDER_RECEIPT_ID_OR_MESSAGE_ID",
   "device_id_sha256": "REPLACE_WITH_OMNIDESK_DEVICE_ID_HASH_ONLY",

@@ -13,7 +13,7 @@ on:
       expected_version:
         description: Expected package version
         required: true
-        default: 1.11.7+source-gated-ga-candidate
+        default: 1.11.8+source-gated-enterprise-chat-candidate
       deploy_mode:
         description: "Fixed deploy adapter mode: docker-compose, kubectl, or systemd. noop is forbidden for production."
         required: true

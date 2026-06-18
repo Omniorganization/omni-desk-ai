@@ -18,9 +18,14 @@ export default function Page() {
   const [decisionReason, setDecisionReason] = useState('Reviewed in Web Admin controlled-staging console');
   const [snapshot, setSnapshot] = useState<any>(null);
   const [ecosystem, setEcosystem] = useState<any>(null);
+  const [chatConversationId, setChatConversationId] = useState('');
+  const [chatInput, setChatInput] = useState('帮我分析今天任务状态');
+  const [chatProfile, setChatProfile] = useState('fast');
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [error, setError] = useState('');
   const api = useMemo(() => new OmniAdminApi({ csrfToken, actor, role }), [csrfToken, actor, role]);
   const canApprove = role === 'owner';
+  const canAsk = role === 'operator' || role === 'owner';
 
   async function establishSession() {
     const response = await fetch('/api/session/login', {
@@ -37,10 +42,11 @@ export default function Page() {
   async function load() {
     setError('');
     try {
-      if (!csrfToken) await establishSession();
-      await api.registerAdminDevice();
-      setSnapshot(await api.bootstrap());
-      setEcosystem(await api.ecosystem());
+      const activeCsrf = csrfToken || await establishSession();
+      const activeApi = new OmniAdminApi({ csrfToken: activeCsrf, actor, role });
+      await activeApi.registerAdminDevice();
+      setSnapshot(await activeApi.bootstrap());
+      setEcosystem(await activeApi.ecosystem());
     } catch (e: any) {
       setError(e.message || String(e));
     }
@@ -54,6 +60,31 @@ export default function Page() {
     try {
       await api.decide(id, decision, decisionReason);
       setSnapshot(await api.bootstrap());
+    } catch (e: any) {
+      setError(e.message || String(e));
+    }
+  }
+
+  async function askAssistant() {
+    if (!canAsk) {
+      setError('当前角色不是 operator/owner，不能发起模型问答。');
+      return;
+    }
+    const content = chatInput.trim();
+    if (!content) return;
+    setError('');
+    try {
+      const activeCsrf = csrfToken || await establishSession();
+      const activeApi = new OmniAdminApi({ csrfToken: activeCsrf, actor, role });
+      let conversationId = chatConversationId;
+      if (!conversationId) {
+        const created = await activeApi.createConversation('Web Admin Chat');
+        conversationId = created.conversation.conversation_id;
+        setChatConversationId(conversationId);
+      }
+      const result = await activeApi.askConversation(conversationId, content, chatProfile);
+      setChatMessages((await activeApi.listMessages(conversationId)).messages || [result.user_message, result.assistant_message]);
+      setSnapshot(await activeApi.bootstrap());
     } catch (e: any) {
       setError(e.message || String(e));
     }
@@ -82,6 +113,26 @@ export default function Page() {
       <div className="card"><h2>设备</h2><pre>{JSON.stringify(snapshot?.devices || [], null, 2)}</pre></div>
       <div className="card"><h2>Runtime</h2><pre>{JSON.stringify(snapshot?.runtime_status || [], null, 2)}</pre></div>
       <div className="card"><h2>渠道生态</h2><pre>{JSON.stringify(ecosystem?.channels?.slice?.(0, 18) || [], null, 2)}</pre></div>
+    </section>
+    <section className="card">
+      <h2>Chat Console</h2>
+      <label>Model Profile
+        <select value={chatProfile} onChange={e => setChatProfile(e.target.value)}>
+          <option value="fast">fast</option>
+          <option value="planner">planner</option>
+          <option value="local">local</option>
+        </select>
+      </label>
+      <label>Message<textarea value={chatInput} onChange={e => setChatInput(e.target.value)} /></label>
+      <button disabled={!canAsk} onClick={askAssistant}>问一下 AI</button>
+      <pre>{JSON.stringify(chatMessages.map((message: any) => ({
+        role: message.role,
+        content: message.content,
+        provider: message.model_provider,
+        model: message.model_name,
+        profile: message.model_profile,
+        audit_trace_id: message.trace_id
+      })), null, 2)}</pre>
     </section>
     <section className="card">
       <h2>待审批</h2>

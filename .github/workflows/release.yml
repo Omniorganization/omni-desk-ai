@@ -10,7 +10,7 @@ permissions:
   attestations: write
 
 env:
-  EXPECTED_VERSION: 1.11.7+source-gated-ga-candidate
+  EXPECTED_VERSION: 1.11.8+source-gated-enterprise-chat-candidate
 
 jobs:
   web-admin-release:
@@ -149,7 +149,7 @@ jobs:
       - name: Import iOS real-device evidence
         env:
           IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
-          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+source-gated-ga-candidate
+          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.8+source-gated-enterprise-chat-candidate
         run: |
           python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
           python scripts/import_ios_real_device_evidence.py \
@@ -186,8 +186,8 @@ jobs:
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python scripts/check_ga_release_gate.py .
-      - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.7.json
-      - run: cp release/real-ga-evidence-audit-1.11.7.json dist/external-ga-evidence-audit.json
+      - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.8.json
+      - run: cp release/real-ga-evidence-audit-1.11.8.json dist/external-ga-evidence-audit.json
 
       - name: Build and push release image, then capture registry digest
         env:
@@ -285,7 +285,7 @@ jobs:
         with:
           name: real-ga-evidence-import-reports
           path: |
-            release/real-ga-evidence-audit-1.11.7.json
+            release/real-ga-evidence-audit-1.11.8.json
             release/ios-real-device-evidence-import-report.json
             release/tri-app-live-smoke-evidence-import-report.json
             dist/ios-evidence-preflight.json

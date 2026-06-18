@@ -81,9 +81,19 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_messages (
     actor TEXT NOT NULL,
     source_device_id TEXT,
     task_id TEXT,
+    model_provider TEXT,
+    model_name TEXT,
+    model_profile TEXT,
+    usage JSONB NOT NULL DEFAULT '{}'::jsonb,
+    trace_id TEXT,
     created_at DOUBLE PRECISION NOT NULL,
     PRIMARY KEY(namespace, message_id)
 );
+ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS model_provider TEXT;
+ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS model_name TEXT;
+ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS model_profile TEXT;
+ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS usage JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS trace_id TEXT;
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_tasks (
     namespace TEXT NOT NULL,
     task_id TEXT NOT NULL,
@@ -291,8 +301,8 @@ class PostgresAppSyncStore(AppSyncStore):
                 cur.execute("SELECT conversation_id, title, actor, source_device_id, created_at, updated_at FROM omnidesk_appsync_conversations WHERE namespace=%s", (ns,))
                 self.conversations = {r[0]: ConversationRecord(conversation_id=r[0], title=r[1], actor=r[2], source_device_id=r[3], created_at=float(r[4]), updated_at=float(r[5])) for r in cur.fetchall()}
 
-                cur.execute("SELECT message_id, conversation_id, role, content, actor, source_device_id, task_id, created_at FROM omnidesk_appsync_messages WHERE namespace=%s", (ns,))
-                self.messages = {r[0]: MessageRecord(message_id=r[0], conversation_id=r[1], role=r[2], content=r[3], actor=r[4], source_device_id=r[5], task_id=r[6], created_at=float(r[7])) for r in cur.fetchall()}
+                cur.execute("SELECT message_id, conversation_id, role, content, actor, source_device_id, task_id, model_provider, model_name, model_profile, usage, trace_id, created_at FROM omnidesk_appsync_messages WHERE namespace=%s", (ns,))
+                self.messages = {r[0]: MessageRecord(message_id=r[0], conversation_id=r[1], role=r[2], content=r[3], actor=r[4], source_device_id=r[5], task_id=r[6], model_provider=r[7], model_name=r[8], model_profile=r[9], usage=r[10] if isinstance(r[10], dict) else json.loads(r[10] or "{}"), trace_id=r[11], created_at=float(r[12])) for r in cur.fetchall()}
 
                 cur.execute("""
                     SELECT task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at
@@ -379,11 +389,11 @@ class PostgresAppSyncStore(AppSyncStore):
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_messages(namespace, message_id, conversation_id, role, content, actor, source_device_id, task_id, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                INSERT INTO omnidesk_appsync_messages(namespace, message_id, conversation_id, role, content, actor, source_device_id, task_id, model_provider, model_name, model_profile, usage, trace_id, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(namespace, message_id) DO NOTHING
                 """,
-                (ns, v["message_id"], v["conversation_id"], v["role"], v["content"], v["actor"], v.get("source_device_id"), v.get("task_id"), v["created_at"]),
+                (ns, v["message_id"], v["conversation_id"], v["role"], v["content"], v["actor"], v.get("source_device_id"), v.get("task_id"), v.get("model_provider"), v.get("model_name"), v.get("model_profile"), Jsonb(v.get("usage") or {}), v.get("trace_id"), v["created_at"]),
             )
         for item in self.tasks.values():
             v = asdict(item)

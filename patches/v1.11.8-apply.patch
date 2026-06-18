@@ -1,4 +1,4 @@
-# OmniDesk 1.11.7 semantic hardening patch.
+# OmniDesk 1.11.8 semantic hardening patch.
 # Review before applying. This patch is additive and must not be applied on top of an already-hardened tree.
 # Historical patches remain under patches/archive/ and must not be applied to current releases.
 
@@ -15,7 +15,7 @@ diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
 +      - name: Import iOS real-device evidence
 +        env:
 +          IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
-+          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+source-gated-ga-candidate
++          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.8+source-gated-enterprise-chat-candidate
 +        run: |
 +          python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
 +          python scripts/import_ios_real_device_evidence.py --raw-dir "$IOS_EVIDENCE_RAW_DIR" --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" --copy --write-report release/ios-real-device-evidence-import-report.json
@@ -24,13 +24,13 @@ diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
 +          python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
 +          python scripts/import_tri_app_live_smoke_evidence.py --report "$TRI_APP_LIVE_SMOKE_REPORT_PATH" --expected-org-id "$TRI_APP_ORG_ID" --expected-scenario-id "$TRI_APP_LIVE_SMOKE_SCENARIO_ID" --copy --write-report release/tri-app-live-smoke-evidence-import-report.json
 +      - run: python scripts/check_workflow_governance.py . --require-real-workflows
-+      - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.7.json
++      - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.8.json
 +      - uses: actions/upload-artifact
 +        with:
 +          name: real-ga-evidence-import-reports
 +          path: |
 +            dist/
-+            release/real-ga-evidence-audit-1.11.7.json
++            release/real-ga-evidence-audit-1.11.8.json
 +            release/ios-real-device-evidence-import-report.json
 +            release/tri-app-live-smoke-evidence-import-report.json
 
@@ -39,11 +39,11 @@ diff --git a/Makefile b/Makefile
 +++ b/Makefile
 @@
 +IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
-+IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.7+source-gated-ga-candidate
++IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.8+source-gated-enterprise-chat-candidate
 +ios-real-device-evidence-import:
 +	IOS_EVIDENCE_RAW_DIR="$(IOS_EVIDENCE_RAW_DIR)" IOS_EVIDENCE_EXPECTED_VERSION="$(IOS_EVIDENCE_EXPECTED_VERSION)" $(PYTHON) scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
 +	$(PYTHON) scripts/import_ios_real_device_evidence.py --raw-dir "$(IOS_EVIDENCE_RAW_DIR)" --expected-version "$(IOS_EVIDENCE_EXPECTED_VERSION)" --copy --write-report release/ios-real-device-evidence-import-report.json
-+	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.7.json
++	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.8.json
 +tri-app-live-smoke-preflight:
 +	$(PYTHON) scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
 +	$(PYTHON) scripts/import_tri_app_live_smoke_evidence.py --report "$${TRI_APP_LIVE_SMOKE_REPORT_PATH}" --expected-org-id "$${TRI_APP_ORG_ID}" --expected-scenario-id "$${TRI_APP_LIVE_SMOKE_SCENARIO_ID}" --copy --write-report release/tri-app-live-smoke-evidence-import-report.json
@@ -54,7 +54,7 @@ diff --git a/scripts/import_ios_real_device_evidence.py b/scripts/import_ios_rea
 --- a/scripts/import_ios_real_device_evidence.py
 +++ b/scripts/import_ios_real_device_evidence.py
 @@
-+VERSION = "1.11.7+source-gated-ga-candidate"
++VERSION = "1.11.8+source-gated-enterprise-chat-candidate"
 +APNS_ARTIFACT_KINDS = {"apns_provider_receipt", "device_notification_log", "firebase_delivery_receipt"}
 +# Validate native build exit_code, platform ios, explicit version, APNS artifact kind, no APNS .ipa proof, artifact SHA256, and source_native_artifact_sha256 consistency.
 
@@ -70,6 +70,6 @@ diff --git a/scripts/check_workflow_governance.py b/scripts/check_workflow_gover
 @@
 +# Require --scope web-admin, --scope desktop, --scope mobile, --scope tri-app, --scope ios-evidence,
 +# --scope tri-app-live-smoke, IOS_EVIDENCE_EXPECTED_VERSION, import_ios_real_device_evidence.py,
-+# import_tri_app_live_smoke_evidence.py, release/real-ga-evidence-audit-1.11.7.json,
++# import_tri_app_live_smoke_evidence.py, release/real-ga-evidence-audit-1.11.8.json,
 +# tri-app-live-smoke-evidence-import-report.json, upload-artifact, release_metadata,
 +# attestation, and write_slsa_provenance.py in real workflow mode.

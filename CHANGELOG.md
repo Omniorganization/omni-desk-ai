@@ -1,5 +1,9 @@
-## 1.11.7+source-gated-ga-candidate
+## 1.11.8+source-gated-enterprise-chat-candidate
 
+- Added `/app/conversations/{conversation_id}/ask` for Gateway-audited direct model Q&A through `ModelRouter(task="chat")`.
+- Persisted user and assistant chat messages with provider/model/profile/usage/trace metadata across JSON and PostgreSQL AppSync stores.
+- Added Web Admin, Desktop Tauri, and Mobile Flutter ask-mode clients/UI while keeping desktop task execution on the existing approval-gated `/messages` path.
+- Added chat smoke tests for backend routing, role enforcement, idempotent replay, shared API contract, and Web/Desktop/Mobile client endpoints.
 - Added structured `omnidesk doctor`, `omnidesk onboard`, `omnidesk evidence doctor`, `omnidesk channel onboard`, `omnidesk device pair`, and `omnidesk app connect` entrypoints.
 - Added Channel Capability Matrix and Channel Identity Firewall so unknown senders default to pairing, OAuth/device drift triggers reverification, and high-risk channel actions require owner approval.
 - Added Codex-style execution profiles, CIK Guard, signed skill registry, AGENTS rules, and an `ai/*` repair PR workflow.

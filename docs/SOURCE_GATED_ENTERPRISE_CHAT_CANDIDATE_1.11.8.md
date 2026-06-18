@@ -1,8 +1,8 @@
-# OmniDesk 1.11.7 Source-Gated GA Candidate
+# OmniDesk 1.11.8 Source-Gated Enterprise Chat Candidate
 
 Date: 2026-06-18
 
-This repository version is intentionally named `1.11.7+source-gated-ga-candidate`. It is a source-gated release candidate, not a customer-distribution Production GA release.
+This repository version is intentionally named `1.11.8+source-gated-enterprise-chat-candidate`. It is a source-gated release candidate, not a customer-distribution Production GA release.
 
 ## What Is Closed
 
@@ -11,6 +11,9 @@ This repository version is intentionally named `1.11.7+source-gated-ga-candidate
 - Package checksums are written as portable relative paths and can be verified after moving or extracting the package.
 - Real GA evidence checks remain fail-closed through `scripts/check_external_ga_evidence.py`.
 - Release workflow imports iOS evidence and tri-app live smoke evidence only when real configured paths and credentials exist.
+- Direct model Q&A is now a Gateway-governed chat turn through `POST /app/conversations/{conversation_id}/ask`.
+- Web Admin, Desktop Tauri, iOS, and Android share the same chat contract and distinguish Ask Mode from approval-gated desktop task execution.
+- Assistant messages persist provider, model, profile, usage, and audit trace metadata in both local JSON AppSync and PostgreSQL AppSync stores.
 
 ## What Is Still Blocked
 

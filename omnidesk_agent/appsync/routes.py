@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional, cast
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
 from omnidesk_agent.appsync.push import dispatch_pending_push
+from omnidesk_agent.models.base import ModelRequest
 
 
 def _actor(decision: Any) -> str:
@@ -124,6 +125,14 @@ def _websocket_headers(websocket: WebSocket, cfg: Any) -> dict[str, str]:
     return headers
 
 
+def _chat_system_prompt() -> str:
+    return (
+        "You are OmniDesk AI inside the enterprise Gateway. "
+        "Answer the operator directly, keep security and approval boundaries explicit, "
+        "and do not claim that desktop, mobile, push, signing, or external production evidence exists unless it was supplied in the request."
+    )
+
+
 def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin: Any) -> None:
     store = _store(rt)
 
@@ -202,6 +211,84 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
         metrics.inc("omnidesk_app_task_created_total") if metrics else None
+        return {"ok": True, **result}
+
+    @app.get("/app/conversations/{conversation_id}/messages")
+    async def app_list_messages(conversation_id: str, request: Request):
+        decision = await admin(request, "viewer")
+        try:
+            messages = store.list_messages(conversation_id, actor=_actor(decision))
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"ok": True, "messages": messages}
+
+    @app.post("/app/conversations/{conversation_id}/ask")
+    async def app_ask_conversation(conversation_id: str, request: Request):
+        decision = await admin(request, "operator")
+        payload = await request.json()
+        content = str(payload.get("content") or "").strip()
+        if not content:
+            raise HTTPException(422, "content is required")
+        if bool(payload.get("stream", False)):
+            raise HTTPException(422, "streaming chat is not enabled for this endpoint; use stream=false")
+        actor = _actor(decision)
+        idem_key = _require_idempotency(cfg, request, payload)
+        try:
+            cached = store.get_idempotency_response(actor=actor, endpoint="conversations.ask", key=idem_key, payload=payload)
+        except IdempotencyConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if cached is not None:
+            return {"ok": True, **cached}
+        source_device_id = payload.get("source_device_id")
+        try:
+            user_message = store.add_chat_user_message(actor=actor, conversation_id=conversation_id, content=content, source_device_id=source_device_id)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+        router = getattr(rt, "model_router", None)
+        complete = getattr(router, "complete", None)
+        if not callable(complete):
+            raise HTTPException(503, "model router is not configured")
+        model_complete = cast(Callable[[ModelRequest], Awaitable[Any]], complete)
+        model_profile = str(payload.get("model_profile") or payload.get("profile") or "").strip() or None
+        metadata = {
+            "actor": actor,
+            "conversation_id": conversation_id,
+            "source_device_id": source_device_id,
+        }
+        if model_profile:
+            metadata["profile"] = model_profile
+        try:
+            response = await model_complete(ModelRequest(
+                system=_chat_system_prompt(),
+                user=content,
+                task="chat",
+                task_id=f"chat-{conversation_id}-{user_message['message_id']}",
+                metadata=metadata,
+            ))
+        except Exception as exc:
+            metrics.inc("omnidesk_app_chat_model_errors_total") if metrics else None
+            raise HTTPException(502, f"model router failed: {exc}") from exc
+        try:
+            assistant_message = store.add_assistant_message(
+                actor=actor,
+                conversation_id=conversation_id,
+                content=response.text,
+                provider=response.provider,
+                model=response.model,
+                profile=response.profile,
+                usage=response.usage or {},
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        result = {
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+            "usage": response.usage or {},
+            "audit_trace_id": assistant_message.get("trace_id"),
+        }
+        store.put_idempotency_response(actor=actor, endpoint="conversations.ask", key=idem_key, payload=payload, response=result)
+        metrics.inc("omnidesk_app_chat_ask_total") if metrics else None
         return {"ok": True, **result}
 
     @app.get("/app/tasks/{task_id}")

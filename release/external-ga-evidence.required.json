@@ -1,5 +1,5 @@
 {
-  "version": "1.11.7+source-gated-ga-candidate",
+  "version": "1.11.8+source-gated-enterprise-chat-candidate",
   "evidence_dir": "release/external-evidence",
   "required_files": {
     "native_build": [

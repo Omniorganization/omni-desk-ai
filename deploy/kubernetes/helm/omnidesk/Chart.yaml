@@ -1,5 +1,5 @@
 apiVersion: v2
 name: omnidesk
-version: 1.11.7
-appVersion: 1.11.7+source-gated-ga-candidate
+version: 1.11.8
+appVersion: 1.11.8+source-gated-enterprise-chat-candidate
 description: OmniDesk enterprise runtime deployment chart

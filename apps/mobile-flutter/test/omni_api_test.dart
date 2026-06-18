@@ -12,14 +12,21 @@ void main() {
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/devices/register');
+        expect(
+          request.url.toString(),
+          'https://gateway.example.test/app/devices/register',
+        );
         expect(request.headers['authorization'], 'Bearer operator-token');
         expect(request.headers['x-omnidesk-actor'], 'mobile-operator');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['device_id'], 'mobile-1');
         expect(body['device_type'], 'mobile');
         expect(body['push_token'], 'push-token');
-        expect(body['capabilities'], <String>['chat', 'approval', 'notification']);
+        expect(body['capabilities'], <String>[
+          'chat',
+          'approval',
+          'notification',
+        ]);
         return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
       }),
     );
@@ -34,7 +41,10 @@ void main() {
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/conversations/conv-1/messages');
+        expect(
+          request.url.toString(),
+          'https://gateway.example.test/app/conversations/conv-1/messages',
+        );
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['content'], 'Run desktop task');
         expect(body['requires_desktop_runtime'], isTrue);
@@ -43,7 +53,43 @@ void main() {
       }),
     );
 
-    await client.sendMessage('conv-1', 'Run desktop task', requiresDesktopRuntime: true, risk: 'high');
+    await client.sendMessage(
+      'conv-1',
+      'Run desktop task',
+      requiresDesktopRuntime: true,
+      risk: 'high',
+    );
+    client.close();
+  });
+
+  test('askConversation uses the shared audited chat endpoint', () async {
+    final client = OmniApiClient(
+      baseUrl: 'https://gateway.example.test',
+      token: 'operator-token',
+      actor: 'mobile-operator',
+      httpClient: MockClient((http.Request request) async {
+        expect(
+          request.url.toString(),
+          'https://gateway.example.test/app/conversations/conv-1/ask',
+        );
+        expect(
+          request.headers['idempotency-key'],
+          startsWith('mobile-ask-conv-1-'),
+        );
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['content'], 'Ask AI');
+        expect(body['model_profile'], 'fast');
+        expect(body['stream'], isFalse);
+        expect(body['source_device_id'], 'mobile-1');
+        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+      }),
+    );
+
+    await client.askConversation(
+      'conv-1',
+      'Ask AI',
+      sourceDeviceId: 'mobile-1',
+    );
     client.close();
   });
 
@@ -57,9 +103,14 @@ void main() {
       }),
     );
 
-    expect(() => client.bootstrap(), throwsA(predicate((Object error) {
-      return error.toString().contains('401: bad token');
-    })));
+    expect(
+      () => client.bootstrap(),
+      throwsA(
+        predicate((Object error) {
+          return error.toString().contains('401: bad token');
+        }),
+      ),
+    );
     client.close();
   });
 
@@ -69,7 +120,10 @@ void main() {
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/devices/mobile-1/push-token');
+        expect(
+          request.url.toString(),
+          'https://gateway.example.test/app/devices/mobile-1/push-token',
+        );
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['push_token'], 'push-token');
         return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);

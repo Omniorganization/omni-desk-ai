@@ -39,6 +39,24 @@ export class OmniApiClient {
     return this.request<any>('/app/bootstrap');
   }
 
+  createConversation(title: string, sourceDeviceId?: string) {
+    return this.request<any>('/app/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ title, source_device_id: sourceDeviceId })
+    }, `desktop-conversation-${Date.now()}`);
+  }
+
+  listMessages(conversationId: string) {
+    return this.request<any>(`/app/conversations/${encodeURIComponent(conversationId)}/messages`);
+  }
+
+  askConversation(conversationId: string, content: string, modelProfile = 'fast', sourceDeviceId?: string) {
+    return this.request<any>(`/app/conversations/${encodeURIComponent(conversationId)}/ask`, {
+      method: 'POST',
+      body: JSON.stringify({ content, model_profile: modelProfile, stream: false, source_device_id: sourceDeviceId })
+    }, `desktop-ask-${conversationId}-${content.length}-${Date.now()}`);
+  }
+
   registerDesktop(deviceId: string, platform: string, capabilities: string[], publicKey?: string) {
     return this.request<any>('/app/devices/register', {
       method: 'POST',

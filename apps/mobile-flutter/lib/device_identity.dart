@@ -24,8 +24,16 @@ class DeviceIdentityStore {
     final existingId = await storage.read(key: _deviceIdKey);
     final existingPublicKey = await storage.read(key: _publicKeyKey);
     final existingPrivateKey = await storage.read(key: _privateKeyKey);
-    if (existingId != null && existingId.isNotEmpty && existingPublicKey != null && existingPublicKey.isNotEmpty && existingPrivateKey != null && existingPrivateKey.isNotEmpty) {
-      return OmniDeviceIdentity(deviceId: existingId, publicKey: existingPublicKey);
+    if (existingId != null &&
+        existingId.isNotEmpty &&
+        existingPublicKey != null &&
+        existingPublicKey.isNotEmpty &&
+        existingPrivateKey != null &&
+        existingPrivateKey.isNotEmpty) {
+      return OmniDeviceIdentity(
+        deviceId: existingId,
+        publicKey: existingPublicKey,
+      );
     }
 
     final algorithm = Ed25519();
@@ -40,19 +48,32 @@ class DeviceIdentityStore {
     return OmniDeviceIdentity(deviceId: deviceId, publicKey: publicKeyValue);
   }
 
-  Future<Map<String, String>> signRequest({required String method, required String path, String body = ''}) async {
+  Future<Map<String, String>> signRequest({
+    required String method,
+    required String path,
+    String body = '',
+  }) async {
     final deviceId = await storage.read(key: _deviceIdKey);
     final privateKeyEncoded = await storage.read(key: _privateKeyKey);
-    if (deviceId == null || deviceId.isEmpty || privateKeyEncoded == null || privateKeyEncoded.isEmpty) {
+    if (deviceId == null ||
+        deviceId.isEmpty ||
+        privateKeyEncoded == null ||
+        privateKeyEncoded.isEmpty) {
       throw StateError('mobile device private key is not initialized');
     }
     final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
     final nonce = _randomHex(24);
     final bodyHash = crypto.sha256.convert(utf8.encode(body)).toString();
-    final message = 'omnidesk-device-request:v1:${method.toUpperCase()}:$path:$bodyHash:$timestamp:$nonce';
+    final message =
+        'omnidesk-device-request:v1:${method.toUpperCase()}:$path:$bodyHash:$timestamp:$nonce';
     final algorithm = Ed25519();
-    final keyPair = await algorithm.newKeyPairFromSeed(base64Decode(privateKeyEncoded));
-    final signature = await algorithm.sign(utf8.encode(message), keyPair: keyPair);
+    final keyPair = await algorithm.newKeyPairFromSeed(
+      base64Decode(privateKeyEncoded),
+    );
+    final signature = await algorithm.sign(
+      utf8.encode(message),
+      keyPair: keyPair,
+    );
     return <String, String>{
       'x-omnidesk-device-id': deviceId,
       'x-omnidesk-timestamp': timestamp,
@@ -63,6 +84,9 @@ class DeviceIdentityStore {
 
   static String _randomHex(int bytes) {
     final random = Random.secure();
-    return List<int>.generate(bytes, (_) => random.nextInt(256)).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return List<int>.generate(
+      bytes,
+      (_) => random.nextInt(256),
+    ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 }

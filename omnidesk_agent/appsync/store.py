@@ -163,6 +163,11 @@ class MessageRecord:
     actor: str
     source_device_id: Optional[str] = None
     task_id: Optional[str] = None
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
+    model_profile: Optional[str] = None
+    usage: dict[str, Any] = field(default_factory=dict)
+    trace_id: Optional[str] = None
     created_at: float = field(default_factory=_now)
 
 
@@ -451,6 +456,54 @@ class AppSyncStore:
             self._idempotency_put(actor=actor, endpoint="conversations.create", key=idempotency_key, payload=idempotency_payload, response=result)
             self._persist()
             return result
+
+    def get_idempotency_response(self, *, actor: str, endpoint: str, key: Optional[str], payload: dict[str, Any] | None = None) -> Optional[Any]:
+        with self._lock:
+            return self._idempotency_get(actor=actor, endpoint=endpoint, key=key, payload=payload)
+
+    def put_idempotency_response(self, *, actor: str, endpoint: str, key: Optional[str], payload: dict[str, Any] | None, response: Any) -> None:
+        with self._lock:
+            self._idempotency_put(actor=actor, endpoint=endpoint, key=key, payload=payload, response=response)
+            self._persist()
+
+    def add_chat_user_message(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None) -> dict[str, Any]:
+        with self._lock:
+            if conversation_id not in self.conversations:
+                raise KeyError("conversation not found")
+            now = _now()
+            mid = _id("msg")
+            message = MessageRecord(message_id=mid, conversation_id=conversation_id, role="user", content=content, actor=actor, source_device_id=source_device_id)
+            self.messages[mid] = message
+            self.conversations[conversation_id].updated_at = now
+            self._event("conversation.ask.requested", actor, {"message_id": mid, "conversation_id": conversation_id})
+            self._persist()
+            return self._record(message)
+
+    def add_assistant_message(self, *, actor: str, conversation_id: str, content: str, provider: str, model: str, profile: str, usage: Optional[dict[str, Any]] = None, trace_id: Optional[str] = None) -> dict[str, Any]:
+        with self._lock:
+            if conversation_id not in self.conversations:
+                raise KeyError("conversation not found")
+            now = _now()
+            mid = _id("msg")
+            trace_id = trace_id or _id("trace")
+            message = MessageRecord(
+                message_id=mid,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=content,
+                actor=actor,
+                model_provider=provider,
+                model_name=model,
+                model_profile=profile,
+                usage=dict(usage or {}),
+                trace_id=trace_id,
+            )
+            self.messages[mid] = message
+            self.conversations[conversation_id].updated_at = now
+            self._event("conversation.ask.completed", actor, {"message_id": mid, "conversation_id": conversation_id, "provider": provider, "model": model, "profile": profile, "trace_id": trace_id})
+            self._notify_locked(audience="all", title="Omni assistant replied", body=content[:180], event_type="conversation.ask.completed", actor=actor, related_id=conversation_id)
+            self._persist()
+            return self._record(message)
 
     def add_message_and_task(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None, requires_desktop_runtime: bool = False, risk: str = "medium", idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:
@@ -828,6 +881,16 @@ class AppSyncStore:
             if actor:
                 values = [v for v in values if v.actor == actor]
             return [self._record(v) for v in sorted(values, key=lambda c: c.updated_at, reverse=True)]
+
+    def list_messages(self, conversation_id: str, actor: Optional[str] = None) -> list[dict[str, Any]]:
+        with self._lock:
+            conversation = self.conversations.get(conversation_id)
+            if not conversation:
+                raise KeyError("conversation not found")
+            if actor and conversation.actor != actor:
+                return []
+            values = [item for item in self.messages.values() if item.conversation_id == conversation_id]
+            return [self._record(v) for v in sorted(values, key=lambda m: m.created_at)]
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         with self._lock:

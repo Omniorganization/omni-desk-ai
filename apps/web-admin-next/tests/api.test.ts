@@ -56,6 +56,30 @@ test('decide posts the owner approval decision and surfaces gateway errors', asy
   await assert.rejects(() => api.bootstrap(), /403: forbidden/);
 });
 
+test('askConversation posts through the server-side chat proxy with csrf only', async () => {
+  let requestUrl = '';
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = async (input, init) => {
+    requestUrl = input.toString();
+    requestInit = init;
+    return new Response(JSON.stringify({ ok: true, assistant_message: { content: 'answer' } }), { status: 200 });
+  };
+
+  const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'operator' });
+  await api.askConversation('conv-1', 'hello', 'fast');
+
+  assert.equal(requestUrl, '/api/omni/conversations/conv-1/ask');
+  assert.equal((requestInit?.headers as Record<string, string>)['x-csrf-token'], 'csrf-token');
+  assert.match((requestInit?.headers as Record<string, string>)['idempotency-key'], /^web-admin-ask-conv-1-5-/);
+  assert.equal((requestInit?.headers as Record<string, string>).authorization, undefined);
+  assert.deepEqual(JSON.parse(requestInit?.body as string), {
+    content: 'hello',
+    model_profile: 'fast',
+    stream: false,
+    source_device_id: 'web-admin-console',
+  });
+});
+
 test('resolveGatewayBaseUrl rejects unlisted browser-supplied gateway URLs in production', () => {
   const env = {
     NODE_ENV: 'production',

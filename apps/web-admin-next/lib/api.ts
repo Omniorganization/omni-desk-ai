@@ -35,6 +35,22 @@ export class OmniAdminApi {
   ecosystem() { return this.request<any>('/api/omni/channels/ecosystem'); }
   approvals() { return this.request<any>('/api/omni/approvals?status=pending'); }
   notifications() { return this.request<any>('/api/omni/notifications?audience=web_admin'); }
+  conversations() { return this.request<any>('/api/omni/conversations'); }
+  createConversation(title: string) {
+    return this.request<any>('/api/omni/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ title })
+    }, `web-admin-conversation-${Date.now()}`);
+  }
+  listMessages(conversationId: string) {
+    return this.request<any>(`/api/omni/conversations/${encodeURIComponent(conversationId)}/messages`);
+  }
+  askConversation(conversationId: string, content: string, modelProfile = 'fast') {
+    return this.request<any>(`/api/omni/conversations/${encodeURIComponent(conversationId)}/ask`, {
+      method: 'POST',
+      body: JSON.stringify({ content, model_profile: modelProfile, stream: false, source_device_id: 'web-admin-console' })
+    }, `web-admin-ask-${conversationId}-${content.length}-${Date.now()}`);
+  }
   registerAdminDevice() {
     const session = this.session;
     return this.request<any>('/api/omni/devices/register', {

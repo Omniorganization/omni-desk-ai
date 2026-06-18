@@ -1,5 +1,7 @@
 llm:
-  provider: rule
+  # Use a real routed model profile for the tri-app chat endpoint; set to "rule"
+  # only for offline deterministic local tests.
+  provider: openai
   model: gpt-5.1
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
