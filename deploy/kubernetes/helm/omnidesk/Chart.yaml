@@ -1,5 +1,0 @@
-apiVersion: v2
-name: omnidesk
-version: 1.11.0
-appVersion: 1.11+openclaw-codex-aligned-enterprise-agent
-description: OmniDesk enterprise runtime deployment chart
