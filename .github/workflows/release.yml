@@ -10,7 +10,7 @@ permissions:
   attestations: write
 
 env:
-  EXPECTED_VERSION: 1.11+openclaw-codex-aligned-enterprise-agent
+  EXPECTED_VERSION: 1.11.7+source-gated-ga-candidate
 
 jobs:
   web-admin-release:
@@ -137,7 +137,7 @@ jobs:
       - name: Import iOS real-device evidence
         env:
           IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
-          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+real-ga-evidence-semantic-hardening
+          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+source-gated-ga-candidate
         run: |
           python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
           python scripts/import_ios_real_device_evidence.py \

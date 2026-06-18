@@ -13,7 +13,7 @@ python scripts/check_release_configuration.py --scope mobile
 python scripts/check_release_configuration.py --scope tri-app
 python scripts/check_release_configuration.py --scope ios-evidence
 python scripts/check_release_configuration.py --scope tri-app-live-smoke
-IOS_EVIDENCE_EXPECTED_VERSION=1.11.7+real-ga-evidence-semantic-hardening
+IOS_EVIDENCE_EXPECTED_VERSION=1.11.7+source-gated-ga-candidate
 python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.11.7.json
 python scripts/import_tri_app_live_smoke_evidence.py --write-report release/tri-app-live-smoke-evidence-import-report.json
 actions/upload-artifact
@@ -52,7 +52,7 @@ python scripts/check_release_configuration.py --scope mobile
 python scripts/check_release_configuration.py --scope tri-app
 python scripts/check_release_configuration.py --scope ios-evidence
 python scripts/check_release_configuration.py --scope tri-app-live-smoke
-IOS_EVIDENCE_EXPECTED_VERSION=1.11.7+real-ga-evidence-semantic-hardening
+IOS_EVIDENCE_EXPECTED_VERSION=1.11.7+source-gated-ga-candidate
 python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.11.7.json
 python scripts/import_tri_app_live_smoke_evidence.py --write-report release/tri-app-live-smoke-evidence-import-report.json
 """, encoding="utf-8")
@@ -72,7 +72,7 @@ steps:
   - run: python scripts/check_release_configuration.py --scope mobile
   - run: python scripts/check_release_configuration.py --scope tri-app
   - env:
-      IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+real-ga-evidence-semantic-hardening
+      IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+source-gated-ga-candidate
   - run: python scripts/check_release_configuration.py --scope ios-evidence
   - run: python scripts/check_release_configuration.py --scope tri-app-live-smoke
   - run: python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.11.7.json

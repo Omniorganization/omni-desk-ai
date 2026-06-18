@@ -34,6 +34,14 @@ def _check(condition: bool, message: str, failures: list[str], ok: list[str]) ->
     (ok if condition else failures).append(message)
 
 
+def _native_version(full_version: str) -> str:
+    app_version = full_version.split("+", 1)[0]
+    parts = app_version.split(".")
+    if len(parts) == 2:
+        return f"{app_version}.0"
+    return app_version
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="GA release gate for OmniDesk production GA closure source/release trees.")
     parser.add_argument("root", nargs="?", default=".")
@@ -57,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pyproject = _read(root / "pyproject.toml")
     version = _project_version(pyproject)
-    chart_version = f"{version.split('+', 1)[0]}.0"
+    chart_version = _native_version(version)
     init = _read(root / "omnidesk_agent" / "__init__.py")
     chart = _read(root / "deploy/kubernetes/helm/omnidesk/Chart.yaml")
     values = _read(root / "deploy/kubernetes/helm/omnidesk/values.yaml")

@@ -1,6 +1,6 @@
 {
   "name": "Omni Tri-App Sync API",
-  "version": "1.11+openclaw-codex-aligned-enterprise-agent",
+  "version": "1.11.7+source-gated-ga-candidate",
   "auth": {
     "type": "bearer",
     "roles": [

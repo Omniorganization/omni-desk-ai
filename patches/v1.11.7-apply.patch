@@ -15,7 +15,7 @@ diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
 +      - name: Import iOS real-device evidence
 +        env:
 +          IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
-+          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+real-ga-evidence-semantic-hardening
++          IOS_EVIDENCE_EXPECTED_VERSION: 1.11.7+source-gated-ga-candidate
 +        run: |
 +          python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
 +          python scripts/import_ios_real_device_evidence.py --raw-dir "$IOS_EVIDENCE_RAW_DIR" --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" --copy --write-report release/ios-real-device-evidence-import-report.json
@@ -39,7 +39,7 @@ diff --git a/Makefile b/Makefile
 +++ b/Makefile
 @@
 +IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
-+IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.7+real-ga-evidence-semantic-hardening
++IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.7+source-gated-ga-candidate
 +ios-real-device-evidence-import:
 +	IOS_EVIDENCE_RAW_DIR="$(IOS_EVIDENCE_RAW_DIR)" IOS_EVIDENCE_EXPECTED_VERSION="$(IOS_EVIDENCE_EXPECTED_VERSION)" $(PYTHON) scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
 +	$(PYTHON) scripts/import_ios_real_device_evidence.py --raw-dir "$(IOS_EVIDENCE_RAW_DIR)" --expected-version "$(IOS_EVIDENCE_EXPECTED_VERSION)" --copy --write-report release/ios-real-device-evidence-import-report.json
@@ -54,7 +54,7 @@ diff --git a/scripts/import_ios_real_device_evidence.py b/scripts/import_ios_rea
 --- a/scripts/import_ios_real_device_evidence.py
 +++ b/scripts/import_ios_real_device_evidence.py
 @@
-+VERSION = "1.11.7+real-ga-evidence-semantic-hardening"
++VERSION = "1.11.7+source-gated-ga-candidate"
 +APNS_ARTIFACT_KINDS = {"apns_provider_receipt", "device_notification_log", "firebase_delivery_receipt"}
 +# Validate native build exit_code, platform ios, explicit version, APNS artifact kind, no APNS .ipa proof, artifact SHA256, and source_native_artifact_sha256 consistency.
 

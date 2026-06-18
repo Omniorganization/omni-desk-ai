@@ -34,6 +34,13 @@ def _all_regex(path: Path, pattern: str, label: str) -> list[str]:
     return list(values)
 
 
+def _native_version(app_version: str) -> str:
+    parts = app_version.split(".")
+    if len(parts) == 2:
+        return f"{app_version}.0"
+    return app_version
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check OmniDesk package, workflow, Docker, and changelog version consistency.")
     parser.add_argument("root", nargs="?", default=".")
@@ -44,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     full_sources["pyproject.toml"] = _regex(root / "pyproject.toml", r'^version\s*=\s*"([^"]+)"', "project version")
     full_version = full_sources["pyproject.toml"]
     app_version = full_version.split("+", 1)[0]
-    chart_version = f"{app_version}.0"
+    native_version = _native_version(app_version)
     app_sources: dict[str, str] = {}
     chart_sources: dict[str, str] = {}
 
@@ -98,8 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         if value != app_version:
             failures.append(f"{label}: expected {app_version}, got {value}")
     for label, value in sorted(chart_sources.items()):
-        if value != chart_version:
-            failures.append(f"{label}: expected {chart_version}, got {value}")
+        if value != native_version:
+            failures.append(f"{label}: expected {native_version}, got {value}")
 
     if failures:
         print("version consistency check failed:", file=sys.stderr)

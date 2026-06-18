@@ -1,6 +1,6 @@
 {
   "productName": "Omni Desktop",
-  "version": "1.11.0",
+  "version": "1.11.7",
   "identifier": "ai.omnidesk.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",

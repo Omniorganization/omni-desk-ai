@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnidesk-agent"
-version = "1.11+openclaw-codex-aligned-enterprise-agent"
+version = "1.11.7+source-gated-ga-candidate"
 description = "Local-first multi-channel AI desktop assistant runtime"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight package-final-gate external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
@@ -6,7 +6,8 @@ PUBLIC_BASE_URL ?= https://omnidesk.company.example.invalid
 SANDBOX_IMAGE ?= python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 RUNNER_URL ?= http://sandbox-runner:18890
 IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
-IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.7+real-ga-evidence-semantic-hardening
+IOS_EVIDENCE_EXPECTED_VERSION ?= 1.11.7+source-gated-ga-candidate
+PACKAGE_DIR ?= dist/package
 
 test:
 	PYTHONPATH=. $(PYTEST) -q
@@ -116,6 +117,10 @@ tri-app-live-smoke-preflight:
 
 workflow-governance-preflight:
 	$(PYTHON) scripts/check_workflow_governance.py . --require-real-workflows
+
+package-final-gate:
+	$(PYTHON) scripts/check_release_hygiene.py "$(PACKAGE_DIR)"
+	$(PYTHON) scripts/write_portable_sha256s.py --base-dir "$(PACKAGE_DIR)" --output SHA256SUMS.txt --verify
 
 external-ga-evidence-audit:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.json

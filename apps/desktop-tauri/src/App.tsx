@@ -7,7 +7,7 @@ import { executeRuntimeTask } from './executor';
 import { createDesktopDeviceRequestSigner, loadOrCreateDesktopIdentity, DesktopDeviceIdentity } from './deviceIdentity';
 
 const DEFAULT_GATEWAY = 'http://127.0.0.1:18789';
-const VERSION = '1.11';
+const VERSION = '1.11.7';
 const CAPABILITIES = ['local-runtime', 'browser', 'files', 'ui-bridge', 'sandbox'];
 
 async function keychainGet(key: string): Promise<string> {

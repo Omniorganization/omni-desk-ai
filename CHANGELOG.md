@@ -1,4 +1,4 @@
-## 1.11+openclaw-codex-aligned-enterprise-agent
+## 1.11.7+source-gated-ga-candidate
 
 - Added structured `omnidesk doctor`, `omnidesk onboard`, `omnidesk evidence doctor`, `omnidesk channel onboard`, `omnidesk device pair`, and `omnidesk app connect` entrypoints.
 - Added Channel Capability Matrix and Channel Identity Firewall so unknown senders default to pairing, OAuth/device drift triggers reverification, and high-risk channel actions require owner approval.

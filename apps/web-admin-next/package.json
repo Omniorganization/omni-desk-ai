@@ -1,6 +1,6 @@
 {
   "name": "omnidesk-web-admin",
-  "version": "1.11",
+  "version": "1.11.7",
   "private": true,
   "scripts": {
     "dev": "next dev",
