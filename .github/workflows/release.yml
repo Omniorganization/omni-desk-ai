@@ -75,7 +75,11 @@ jobs:
         run: |
           set -euo pipefail
           sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
           yes | "$sdkmanager" --licenses >/dev/null
+          license_status=$?
+          set -o pipefail
+          test "$license_status" -eq 0
           "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
       - name: Restore Android release signing key
         env:
