@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from scripts.write_portable_sha256s import main
 
 
