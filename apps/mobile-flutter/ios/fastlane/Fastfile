@@ -1,3 +1,0 @@
-lane :testflight do
-  sh('flutter build ipa --release')
-end

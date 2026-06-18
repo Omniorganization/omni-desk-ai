@@ -1,0 +1,5 @@
+6cb3cd2f05a994cf6e475a79d4bcb9a52db4984db63a66453e3925619d745544  Omni-desk-AI-1.11.8-core-release.zip
+8350f581d64ce76511dfbe489d9ee3bcf9f63cbffd1045e65942d653c8de42d9  Omni-desk-AI-1.11.8-desktop.zip
+de420fbc3d890370f53bde8490ce43000559f69a15013e65d2f97e44e8acee60  Omni-desk-AI-1.11.8-mobile.zip
+42f78f6de49626c16defb1f83ca6431f4e8cab0f190d254989779b0c082a75e7  Omni-desk-AI-1.11.8-source-gated-enterprise-chat-candidate-full.zip
+546bb5518b83c063c549650b075d2c5a3aa2a1ca6e60f6b61ce15405326d3a72  Omni-desk-AI-1.11.8-web-admin.zip

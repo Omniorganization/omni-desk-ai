@@ -1,4 +1,0 @@
-name: echo
-enabled: true
-trusted: true
-description: Example trusted plugin that registers an echo tool.
