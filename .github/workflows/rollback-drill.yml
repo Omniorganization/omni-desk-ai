@@ -1,0 +1,132 @@
+name: Rollback Drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      current_artifact_run_id:
+        description: Release run id for the current artifact to deploy first
+        required: true
+      previous_artifact_run_id:
+        description: Release run id for the previous artifact to roll back to
+        required: true
+      artifact_name:
+        description: GitHub Actions artifact name
+        required: true
+        default: dist-and-sbom
+      current_version:
+        description: Expected current version
+        required: true
+      previous_version:
+        description: Expected rollback version
+        required: true
+      current_image_digest:
+        description: Expected current OCI image digest used by staging deploy
+        required: false
+        default: ""
+      previous_image_digest:
+        description: Expected previous OCI image digest used by rollback deploy
+        required: false
+        default: ""
+      deploy_mode:
+        description: Fixed staging deploy adapter mode
+        required: true
+        default: noop
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
+  id-token: write
+
+jobs:
+  rollback-drill:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: PYTHONPATH=. python -m pytest tests/test_shadow_canary_upgrade_memory.py tests/test_upgrade_state_machine.py -q
+      - name: Download current and previous signed artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p current previous
+          gh run download "${{ inputs.current_artifact_run_id }}" --name "${{ inputs.artifact_name }}" --dir current
+          gh run download "${{ inputs.previous_artifact_run_id }}" --name "${{ inputs.artifact_name }}" --dir previous
+      - name: Verify release artifacts and attestations
+        env:
+          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/verify_release_artifact.py current --expected-version "${{ inputs.current_version }}" --require-signatures --require-metadata
+          python scripts/verify_release_signatures.py current
+          python scripts/verify_release_artifact.py previous --expected-version "${{ inputs.previous_version }}" --require-signatures --require-metadata
+          python scripts/verify_release_signatures.py previous
+          find current previous -maxdepth 1 -type f -print0 | sort -z | while IFS= read -r -d '' artifact; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+          done
+          current_wheel="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          previous_wheel="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$current_wheel"
+          test -n "$previous_wheel"
+          {
+            echo "CURRENT_SHA=$(sha256sum "$current_wheel" | awk '{print $1}')"
+            echo "PREVIOUS_SHA=$(sha256sum "$previous_wheel" | awk '{print $1}')"
+            echo "CURRENT_IMAGE_DIGEST=$(python scripts/read_release_metadata.py current image.digest)"
+            echo "PREVIOUS_IMAGE_DIGEST=$(python scripts/read_release_metadata.py previous image.digest)"
+          } >> "$GITHUB_ENV"
+      - name: Deploy current artifact to staging
+        env:
+          OMNIDESK_DEPLOY_MODE: ${{ inputs.deploy_mode }}
+          OMNIDESK_EXPECTED_VERSION: ${{ inputs.current_version }}
+          OMNIDESK_ARTIFACT_SHA256: ${{ env.CURRENT_SHA }}
+          OMNIDESK_DEPLOY_COMPOSE_FILE: ${{ vars.OMNIDESK_STAGING_COMPOSE_FILE }}
+          OMNIDESK_DEPLOY_SERVICE: ${{ vars.OMNIDESK_STAGING_SERVICE }}
+          OMNIDESK_DEPLOY_KUBE_CONTEXT: ${{ vars.OMNIDESK_STAGING_KUBE_CONTEXT }}
+          OMNIDESK_DEPLOY_NAMESPACE: ${{ vars.OMNIDESK_STAGING_NAMESPACE }}
+          OMNIDESK_DEPLOYMENT_NAME: ${{ vars.OMNIDESK_STAGING_DEPLOYMENT_NAME }}
+          OMNIDESK_CONTAINER_NAME: ${{ vars.OMNIDESK_STAGING_CONTAINER_NAME }}
+          OMNIDESK_IMAGE: ${{ vars.OMNIDESK_STAGING_IMAGE }}
+          OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_STAGING_HOST }}
+          OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
+          OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
+          OMNIDESK_IMAGE_DIGEST: ${{ env.CURRENT_IMAGE_DIGEST }}
+        run: |
+          artifact="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$artifact"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.current_version }}" --artifact-sha256 "$CURRENT_SHA" --image-digest "${{ env.CURRENT_IMAGE_DIGEST }}"
+      - name: Current staging smoke
+        env:
+          OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
+          OMNIDESK_SMOKE_ADMIN_TOKEN: ${{ secrets.OMNIDESK_STAGING_ADMIN_TOKEN }}
+        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "${{ inputs.current_version }}" --expected-artifact-sha256 "$CURRENT_SHA"
+      - name: Roll back to previous artifact
+        env:
+          OMNIDESK_DEPLOY_MODE: ${{ inputs.deploy_mode }}
+          OMNIDESK_EXPECTED_VERSION: ${{ inputs.previous_version }}
+          OMNIDESK_ARTIFACT_SHA256: ${{ env.PREVIOUS_SHA }}
+          OMNIDESK_DEPLOY_COMPOSE_FILE: ${{ vars.OMNIDESK_STAGING_COMPOSE_FILE }}
+          OMNIDESK_DEPLOY_SERVICE: ${{ vars.OMNIDESK_STAGING_SERVICE }}
+          OMNIDESK_DEPLOY_KUBE_CONTEXT: ${{ vars.OMNIDESK_STAGING_KUBE_CONTEXT }}
+          OMNIDESK_DEPLOY_NAMESPACE: ${{ vars.OMNIDESK_STAGING_NAMESPACE }}
+          OMNIDESK_DEPLOYMENT_NAME: ${{ vars.OMNIDESK_STAGING_DEPLOYMENT_NAME }}
+          OMNIDESK_CONTAINER_NAME: ${{ vars.OMNIDESK_STAGING_CONTAINER_NAME }}
+          OMNIDESK_IMAGE: ${{ vars.OMNIDESK_STAGING_IMAGE }}
+          OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_STAGING_HOST }}
+          OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
+          OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
+          OMNIDESK_IMAGE_DIGEST: ${{ env.PREVIOUS_IMAGE_DIGEST }}
+        run: |
+          artifact="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$artifact"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.previous_version }}" --artifact-sha256 "$PREVIOUS_SHA" --image-digest "${{ env.PREVIOUS_IMAGE_DIGEST }}"
+      - name: Rollback staging smoke
+        env:
+          OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
+          OMNIDESK_SMOKE_ADMIN_TOKEN: ${{ secrets.OMNIDESK_STAGING_ADMIN_TOKEN }}
+        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "${{ inputs.previous_version }}" --expected-artifact-sha256 "$PREVIOUS_SHA"

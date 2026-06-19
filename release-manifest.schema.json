@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OmniDesk Distribution Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "version",
+    "native_version",
+    "package_slug",
+    "release_status",
+    "source_commit",
+    "artifacts",
+    "external_ga_evidence",
+    "policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "omnidesk-distribution-manifest/v1"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+\\+[-A-Za-z0-9_.]+$"
+    },
+    "native_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "package_slug": {
+      "type": "string",
+      "minLength": 1
+    },
+    "release_status": {
+      "enum": [
+        "source_gated_production_ga_candidate",
+        "customer_distribution_ga"
+      ]
+    },
+    "source_commit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["kind", "role", "path", "bytes", "sha256", "required"],
+        "properties": {
+          "kind": {
+            "enum": ["core_release", "web_admin", "desktop", "mobile", "full_source"]
+          },
+          "role": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "not": {
+              "pattern": "^/"
+            }
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "external_ga_evidence": {
+      "type": "object",
+      "required": ["status", "blocker_count", "blocking_categories", "policy"],
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "blocker_count": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "blocking_categories": {
+          "type": "array"
+        },
+        "policy": {
+          "type": "string"
+        }
+      }
+    },
+    "policy": {
+      "type": "string"
+    }
+  }
+}

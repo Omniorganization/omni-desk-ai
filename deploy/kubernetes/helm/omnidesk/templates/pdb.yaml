@@ -1,0 +1,12 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: omnidesk-agent
+  namespace: omnidesk
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: omnidesk-agent
+{{- end }}
