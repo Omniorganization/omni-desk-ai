@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate release-external-ga-evidence distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
@@ -11,6 +11,7 @@ PACKAGE_DIR ?= dist/package
 DISTRIBUTION_PACKAGE_VERSION ?= 1.12.1+root-monorepo-production-ga-candidate
 DISTRIBUTION_PACKAGE_SLUG ?= Omni-desk-AI-1.12.1-root-monorepo-production-ga-candidate
 DISTRIBUTION_SOURCE_COMMIT ?= unknown
+RELEASE_CHANNEL ?= candidate
 
 test:
 	PYTHONPATH=. $(PYTEST) -q
@@ -134,9 +135,18 @@ package-final-gate: distribution-package-manifest
 	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --verify --manifest release-manifest.json
 
 external-ga-evidence-audit:
-	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.11.json
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json
 
 external-ga-evidence-gate:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py .
+
+release-external-ga-evidence:
+	@if [ "$(RELEASE_CHANNEL)" = "real-ga" ]; then \
+		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.1.json; \
+	elif [ "$(RELEASE_CHANNEL)" = "candidate" ]; then \
+		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json; \
+	else \
+		echo "RELEASE_CHANNEL must be candidate or real-ga" >&2; exit 64; \
+	fi
 
 distribution-ga-preflight: tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight external-ga-evidence-gate

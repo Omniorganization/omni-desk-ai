@@ -2,6 +2,15 @@ name: Release Build
 
 on:
   workflow_dispatch:
+    inputs:
+      release_channel:
+        description: "candidate permits external-evidence audit; real-ga requires fail-closed evidence"
+        type: choice
+        required: true
+        default: candidate
+        options:
+          - candidate
+          - real-ga
 
 permissions:
   contents: write
@@ -11,6 +20,7 @@ permissions:
 
 env:
   EXPECTED_VERSION: 1.12.1+root-monorepo-production-ga-candidate
+  RELEASE_CHANNEL: ${{ inputs.release_channel || 'candidate' }}
 
 jobs:
   web-admin-release:
@@ -186,8 +196,18 @@ jobs:
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python scripts/check_ga_release_gate.py .
-      - run: python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json
-      - run: cp release/real-ga-evidence-audit-1.12.1.json dist/external-ga-evidence-audit.json
+      - name: Run external GA evidence gate
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" == "real-ga" ]]; then
+            python scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.1.json
+          elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
+            python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json
+          else
+            echo "release_channel must be candidate or real-ga" >&2
+            exit 64
+          fi
+          cp release/real-ga-evidence-audit-1.12.1.json dist/external-ga-evidence-audit.json
 
       - name: Build and push release image, then capture registry digest
         env:

@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     self_healing = _read(root / "omnidesk_agent/self_healing.py")
     external_gate = _read(root / "scripts/check_external_ga_evidence.py")
     external_required = _read(root / "release/external-ga-evidence.required.json")
-    external_audit = _read(root / "release/real-ga-evidence-audit-1.11.json")
+    external_audit = _read(root / "release/real-ga-evidence-audit-1.12.1.json")
     agents_root = _read(root / "AGENTS.md")
     onboarding = _read(root / "omnidesk_agent/onboarding.py")
     channel_capabilities = _read(root / "omnidesk_agent/channels/capability_matrix.py")
@@ -144,6 +144,16 @@ def main(argv: list[str] | None = None) -> int:
     _check("native-build/flutter-android-release.json" in external_required and "drills/self-healing-failure-injection.json" in external_required, "External real GA evidence required-file contract is declared", failures, ok)
     _check('"status": "blocked_missing_external_evidence"' in external_audit and '"self_healing_failure_injection"' in external_audit, "Current real GA evidence audit records missing external evidence", failures, ok)
     _check("external-ga-evidence-gate" in makefile and "distribution-ga-preflight" in makefile, "Distribution GA preflight includes external real evidence gate", failures, ok)
+    _check(
+        "RELEASE_CHANNEL" in release_workflow
+        and "real-ga" in release_workflow
+        and "candidate" in release_workflow
+        and "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.1.json" in release_workflow
+        and "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json" in release_workflow,
+        "Release workflow separates candidate audit from Real GA fail-closed evidence gate",
+        failures,
+        ok,
+    )
     _check("web-admin-release" in release_workflow and "desktop-release" in release_workflow and "mobile-android-release" in release_workflow and "mobile-ios-release" in release_workflow and "needs:" in release_workflow, "Main release workflow depends on tri-app release builds", failures, ok)
     _check("tri-app-release-builds" in makefile and "cargo check --locked" in (makefile + tri_app_workflow + release_workflow) and "flutter build ipa --release" in (makefile + tri_app_workflow + release_workflow), "Tri-app release gates force native locked builds", failures, ok)
     _check("Do not lower security policy" in agents_root and "Do not fabricate release evidence" in agents_root, "Repository AGENTS rules forbid safety downgrade and fake evidence", failures, ok)

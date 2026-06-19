@@ -75,6 +75,8 @@ python scripts/check_external_ga_evidence.py .
 
 该命令必须在无 `--audit-only` 情况下通过后，才能声称正式 GA。
 
+GitHub `main` 必须保持为源码主干；package-only zip 只能作为 Release/Actions artifact 或备份分支保留。详见 [INDUSTRIAL_SOURCE_MAIN_RESTORE.md](INDUSTRIAL_SOURCE_MAIN_RESTORE.md)。
+
 ## 权限模型
 
 每一个副作用动作都会生成 `ActionProposal`，内容包括：工具名、动作名、风险等级、目标、参数、原因、来源渠道。`PermissionManager.verify()` 会根据配置决定：

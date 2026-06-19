@@ -10,6 +10,7 @@ from scripts.verify_release_artifact import main as verify_release_artifact_main
 
 
 def test_release_governance_assets_exist():
+    assert Path("INDUSTRIAL_SOURCE_MAIN_RESTORE.md").exists()
     assert Path("requirements.lock").exists()
     assert Path("requirements.bootstrap.lock").exists()
     assert Path("requirements.runtime.lock").exists()
@@ -25,6 +26,32 @@ def test_release_governance_assets_exist():
     assert Path("scripts/check_script_executability.py").exists()
     assert Path("docs/SRE_RUNBOOK.md").exists()
     assert Path(".github/workflows/promote-production.yml").exists()
+
+
+def test_source_main_restore_contract_blocks_package_only_main():
+    contract = Path("INDUSTRIAL_SOURCE_MAIN_RESTORE.md").read_text(encoding="utf-8")
+    assert "`main` as the source trunk" in contract
+    assert "must not be the\n  only content on `main`" in contract
+    assert "backup/package-only-1.11.8" in contract
+    assert "Real GA releases must run `scripts/check_external_ga_evidence.py .` without\n  `--audit-only`" in contract
+
+
+def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "release_channel" in workflow
+    assert "RELEASE_CHANNEL" in workflow
+    assert '[[ "$RELEASE_CHANNEL" == "real-ga" ]]' in workflow
+    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.1.json" in workflow
+    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json" in workflow
+
+
+def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    assert "RELEASE_CHANNEL ?= candidate" in makefile
+    assert "release-external-ga-evidence:" in makefile
+    assert "external-ga-evidence-gate:" in makefile
+    assert "scripts/check_external_ga_evidence.py .\n" in makefile
+    assert "release/real-ga-evidence-audit-1.12.1.json" in makefile
 
 
 def test_ci_coverage_gate_is_80_and_has_group_gate():
