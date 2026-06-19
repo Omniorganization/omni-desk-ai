@@ -1,0 +1,79 @@
+{
+  "panels": [
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_approval_resume_failures_total[1h])"
+        }
+      ],
+      "title": "Approval resume failures",
+      "type": "stat"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_outbound_ambiguous_send_total[1h])"
+        }
+      ],
+      "title": "Outbound ambiguous sends",
+      "type": "stat"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_outbound_dead_letter_total[1h])"
+        }
+      ],
+      "title": "Outbound dead letters",
+      "type": "stat"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_sandbox_timeout_total[5m])"
+        }
+      ],
+      "title": "Sandbox timeouts",
+      "type": "timeseries"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_self_upgrade_invalid_transition_total[1h])"
+        }
+      ],
+      "title": "Self-upgrade invalid transitions",
+      "type": "stat"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_webhook_signature_failures_total[5m])"
+        }
+      ],
+      "title": "Webhook signature failures",
+      "type": "timeseries"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_backup_verify_failure_total[24h])"
+        }
+      ],
+      "title": "Backup verify failures",
+      "type": "stat"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_trace_span_failures_total OR omnidesk_trace_export_failures_total[5m])"
+        }
+      ],
+      "title": "Trace span failures",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 39,
+  "title": "OmniDesk Industrial Runtime",
+  "version": 1
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=Create encrypted OmniDesk SQLite backups
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=omnidesk
+Group=omnidesk
+EnvironmentFile=-/etc/omnidesk/backup.env
+ExecStart=/opt/omnidesk/venv/bin/python /opt/omnidesk/scripts/backup_sqlite.py --dest /var/backups/omnidesk --encrypt --retention-days 30 /var/lib/omnidesk/runs.sqlite3 /var/lib/omnidesk/approvals.sqlite3 /var/lib/omnidesk/outbound.sqlite3 /var/lib/omnidesk/memory.sqlite3
+ExecStartPost=/opt/omnidesk/venv/bin/python /opt/omnidesk/scripts/verify_backup.py --require-encryption /var/backups/omnidesk/backup_manifest.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/omnidesk

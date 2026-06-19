@@ -1,0 +1,28 @@
+{
+  "status": "verified",
+  "produced_at": "2026-06-17T00:00:00+08:00",
+  "producer": "local-macos-xcode-real-device",
+  "platform": "ios",
+  "version": "1.12.1+root-monorepo-production-ga-candidate",
+  "command": "flutter build ipa --release --export-options-plist=ios/ExportOptions.plist",
+  "exit_code": 0,
+  "flutter_version": "REPLACE_WITH_REAL_FLUTTER_VERSION",
+  "xcode_version": "REPLACE_WITH_REAL_XCODE_VERSION",
+  "cocoapods_version": "REPLACE_WITH_REAL_COCOAPODS_VERSION",
+  "ios_deployment_target": "REPLACE_WITH_REAL_TARGET",
+  "bundle_id": "REPLACE_WITH_REAL_BUNDLE_ID",
+  "git_commit": "REPLACE_WITH_TESTED_COMMIT_SHA",
+  "artifacts": [
+    {
+      "kind": "ios_unsigned_or_exported_ipa",
+      "path": "artifacts/ios/OmniDesk.ipa",
+      "sha256": "REPLACE_WITH_REAL_SHA256"
+    }
+  ],
+  "smoke_cases": {
+    "archive_created": true,
+    "ipa_exported": true,
+    "codesign_metadata_present": true,
+    "simulator_only": false
+  }
+}
