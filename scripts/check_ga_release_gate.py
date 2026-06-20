@@ -69,6 +69,18 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         failures.append(str(exc))
 
+    try:
+        _run([sys.executable, "scripts/check_ci_evidence_contract.py", "."], root)
+        ok.append("CI evidence contract gate passes")
+    except Exception as exc:
+        failures.append(str(exc))
+
+    try:
+        _run([sys.executable, "scripts/check_security_workflow_policy.py", "."], root)
+        ok.append("security workflow policy gate passes")
+    except Exception as exc:
+        failures.append(str(exc))
+
     pyproject = _read(root / "pyproject.toml")
     version = _project_version(pyproject)
     chart_version = _native_version(version)

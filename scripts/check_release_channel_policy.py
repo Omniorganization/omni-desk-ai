@@ -10,6 +10,7 @@ from typing import Any
 
 
 AUDIT_PATH_RE = re.compile(r"release/real-ga-evidence-audit-(\d+\.\d+\.\d+)\.json")
+CANDIDATE_MARKERS = ("candidate", "source-gated")
 
 
 def _read(path: Path) -> str:
@@ -71,7 +72,56 @@ def _check(condition: bool, message: str, failures: list[str], ok: list[str]) ->
     (ok if condition else failures).append(message)
 
 
-def check_policy(root: Path) -> tuple[list[str], list[str]]:
+def _has_candidate_marker(value: str) -> bool:
+    lower = value.lower()
+    return any(marker in lower for marker in CANDIDATE_MARKERS)
+
+
+def _check_channel_naming(
+    *,
+    release_channel: str,
+    package_version: str,
+    package_slug: str,
+    failures: list[str],
+    ok: list[str],
+) -> None:
+    if release_channel == "candidate":
+        _check(
+            _has_candidate_marker(package_version),
+            "Candidate package version carries candidate/source-gated status",
+            failures,
+            ok,
+        )
+        _check(
+            _has_candidate_marker(package_slug),
+            "Candidate package slug carries candidate/source-gated status",
+            failures,
+            ok,
+        )
+    elif release_channel == "real-ga":
+        _check(
+            not _has_candidate_marker(package_version),
+            "Real GA package version does not carry candidate/source-gated status",
+            failures,
+            ok,
+        )
+        _check(
+            not _has_candidate_marker(package_slug),
+            "Real GA package slug does not carry candidate/source-gated status",
+            failures,
+            ok,
+        )
+    else:
+        failures.append("release channel must be candidate or real-ga")
+
+
+def check_policy(
+    root: Path,
+    *,
+    release_channel: str = "candidate",
+    package_version_override: str | None = None,
+    package_slug_override: str | None = None,
+) -> tuple[list[str], list[str]]:
     failures: list[str] = []
     ok: list[str] = []
 
@@ -89,19 +139,25 @@ def check_policy(root: Path) -> tuple[list[str], list[str]]:
     active_audit = root / active_audit_rel
     real_ga_branch = _extract_real_ga_branch(workflow)
     candidate_branch = _extract_candidate_branch(workflow)
-    package_version = _makefile_value(makefile, "DISTRIBUTION_PACKAGE_VERSION")
-    package_slug = _makefile_value(makefile, "DISTRIBUTION_PACKAGE_SLUG")
+    package_version = package_version_override or _makefile_value(makefile, "DISTRIBUTION_PACKAGE_VERSION")
+    package_slug = package_slug_override or _makefile_value(makefile, "DISTRIBUTION_PACKAGE_SLUG")
 
     _check("release_channel" in workflow and "real-ga" in workflow and "candidate" in workflow, "Release workflow exposes candidate and real-ga channels", failures, ok)
     _check(bool(real_ga_branch), "Release workflow has an explicit real-ga branch", failures, ok)
     _check(bool(candidate_branch), "Release workflow has an explicit candidate branch", failures, ok)
     _check("--audit-only" not in real_ga_branch, "Real GA branch never uses --audit-only", failures, ok)
     _check("--audit-only" in candidate_branch, "Candidate branch uses audit-only external evidence reporting", failures, ok)
+    _check("--release-channel \"$RELEASE_CHANNEL\"" in workflow and "--package-version \"$EXPECTED_VERSION\"" in workflow, "Release workflow rechecks channel naming and evidence status after external evidence gate", failures, ok)
     _check(active_audit_rel in workflow and active_audit_rel in makefile, "Active release audit report is wired through workflow and Makefile", failures, ok)
     _check(native in audit_paths, "Active release audit path matches the project native version", failures, ok)
     _check(active_audit.exists(), "Active release audit report exists", failures, ok)
-    _check("candidate" in package_version or "source-gated" in package_version, "Distribution package version carries candidate/source-gated status", failures, ok)
-    _check("candidate" in package_slug or "source-gated" in package_slug, "Distribution package slug carries candidate/source-gated status", failures, ok)
+    _check_channel_naming(
+        release_channel=release_channel,
+        package_version=package_version,
+        package_slug=package_slug,
+        failures=failures,
+        ok=ok,
+    )
     _check(
         'return 0 if args.audit_only or report["status"] == "passed" else 1' in external_gate,
         "External GA evidence gate fails closed unless report status is passed",
@@ -122,6 +178,9 @@ def check_policy(root: Path) -> tuple[list[str], list[str]]:
         status = report.get("status")
         _check(blocker_count == 0 or status != "passed", "Blocked audit reports cannot claim passed status", failures, ok)
         _check(blocker_count != 0 or status == "passed", "Passed audit reports must have blocker_count zero", failures, ok)
+        if release_channel == "real-ga":
+            _check(blocker_count == 0, "Real GA evidence blocker_count is zero", failures, ok)
+            _check(status == "passed", "Real GA evidence status is passed", failures, ok)
 
     for owned in (".github/workflows/", "scripts/", "deploy/", "omnidesk_agent/security/", "release/"):
         _check(owned in codeowners, f"CODEOWNERS covers {owned}", failures, ok)
@@ -145,10 +204,18 @@ def check_policy(root: Path) -> tuple[list[str], list[str]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check OmniDesk release channel, branch-protection, and source-trunk package policy.")
     parser.add_argument("root", nargs="?", default=".")
+    parser.add_argument("--release-channel", choices=("candidate", "real-ga"), default="candidate")
+    parser.add_argument("--package-version")
+    parser.add_argument("--package-slug")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
     try:
-        failures, ok = check_policy(root)
+        failures, ok = check_policy(
+            root,
+            release_channel=args.release_channel,
+            package_version_override=args.package_version,
+            package_slug_override=args.package_slug,
+        )
     except (OSError, RuntimeError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -209,6 +209,13 @@ jobs:
           fi
           cp release/real-ga-evidence-audit-1.12.2.json dist/external-ga-evidence-audit.json
 
+      - name: Verify release channel policy after external evidence gate
+        run: |
+          python scripts/check_release_channel_policy.py . \
+            --release-channel "$RELEASE_CHANNEL" \
+            --package-version "$EXPECTED_VERSION" \
+            --package-slug "$EXPECTED_VERSION"
+
       - name: Build and push release image, then capture registry digest
         env:
           GHCR_TOKEN: ${{ github.token }}

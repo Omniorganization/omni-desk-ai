@@ -5,6 +5,9 @@ This version is intentionally named `1.12.2+root-monorepo-production-ga-candidat
 ## What changed
 
 - `scripts/check_release_channel_policy.py` now verifies that candidate releases stay audit-only, Real GA releases never use `--audit-only`, and generated package names keep an honest candidate/source-gated label.
+- Explicit `real-ga` checks now require non-candidate artifact naming plus external evidence audit `blocker_count == 0` and `status == passed`.
+- CI now writes a per-Python-matrix `ci-evidence.json` artifact with source commit, Actions run URL, coverage hashes, and captured ruff/pyright/pytest logs.
+- Security workflow coverage now includes CodeQL, gitleaks secret scanning, dependency review, license policy checks, bandit, pip-audit, and the existing Trivy Docker scan.
 - CI and the dedicated Release Policy workflow now run release-channel, workflow-governance, and external-GA evidence-contract checks before merge.
 - `.github/branch-protection.required.json`, `docs/BRANCH_PROTECTION.md`, and CODEOWNERS now cover `.github/`, `scripts/`, `deploy/`, `omnidesk_agent/security/`, and `release/`.
 - Source-root hygiene now rejects generated OmniDesk package directories and wrapper zips so old distribution outputs cannot drift back into the GitHub source trunk.

@@ -8,9 +8,12 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
+  security-events: write
 
 jobs:
   security:
+    name: Security
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -25,8 +28,35 @@ jobs:
           python scripts/check_lock_hashes.py requirements.security.lock
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Install gitleaks
+        run: go install github.com/gitleaks/gitleaks/v8@v8.28.0
+      - name: Run gitleaks secret scan
+        run: |
+          "$HOME/go/bin/gitleaks" detect --source . --no-git --redact --verbose --config .gitleaks.toml
       - run: bandit -r omnidesk_agent -ll
       - run: pip-audit --disable-pip -r requirements.runtime.lock
       - run: pip-audit --disable-pip -r requirements.bootstrap.lock
       - run: pip-audit --disable-pip -r requirements.dev.lock
       - run: pip-audit --disable-pip -r requirements.security.lock
+      - run: python scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json
+      - run: python scripts/check_security_workflow_policy.py .
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7
+        with:
+          languages: python
+      - uses: github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7
+        with:
+          category: "/language:python"
+
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294

@@ -1,5 +1,8 @@
 ## 1.12.2+root-monorepo-production-ga-candidate
 
+- Added per-matrix CI evidence manifests that bind commit SHA, GitHub Actions run metadata, coverage JSON/XML hashes, and captured ruff/pyright/pytest logs.
+- Added static CI evidence and security workflow policy gates so source-trunk evidence capture, CodeQL, gitleaks, dependency review, license policy, and Trivy coverage remain enforced.
+- Strengthened release-channel policy so explicit `real-ga` runs reject candidate/source-gated artifact naming and require external evidence audit `blocker_count == 0` with `status == passed`.
 - Added `scripts/check_release_channel_policy.py` and wired it into CI, GA release gate, Makefile, and a dedicated Release Policy workflow.
 - Added a source-controlled branch protection contract and expanded CODEOWNERS coverage for workflows, scripts, deploy assets, security code, and release evidence.
 - Hardened source-root hygiene and ignore rules so generated OmniDesk package directories and wrapper zips cannot remain in or re-enter the source trunk.
