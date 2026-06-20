@@ -67,7 +67,7 @@ deploy/launchd                 macOS 后台常驻
 
 ## Release Boundary
 
-当前版本是 `1.12.1+root-monorepo-production-ga-candidate`。仓库根目录已经暴露源码、应用、基础设施、测试、工作流和证据 gate；但 customer-distribution Production GA 仍要求真实外部证据：
+当前版本是 `1.12.2+root-monorepo-production-ga-candidate`。仓库根目录已经暴露源码、应用、基础设施、测试、工作流和证据 gate；但 customer-distribution Production GA 仍要求真实外部证据：
 
 ```bash
 python scripts/check_external_ga_evidence.py .

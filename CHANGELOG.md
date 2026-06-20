@@ -1,5 +1,8 @@
-## 1.12.1+root-monorepo-production-ga-candidate
+## 1.12.2+root-monorepo-production-ga-candidate
 
+- Added `scripts/check_release_channel_policy.py` and wired it into CI, GA release gate, Makefile, and a dedicated Release Policy workflow.
+- Added a source-controlled branch protection contract and expanded CODEOWNERS coverage for workflows, scripts, deploy assets, security code, and release evidence.
+- Hardened source-root hygiene and ignore rules so generated OmniDesk package directories and wrapper zips cannot remain in or re-enter the source trunk.
 - Reclassified the next package as a source-gated production GA candidate rather than a completed customer-distribution GA.
 - Promoted the repository from a package-only root toward a standard monorepo shape with root-level README, architecture, security, contribution, version, license, package-boundary, infra, test-layer, workflow, and release schema entrypoints.
 - Added `scripts/check_monorepo_layout.py` and regression coverage so the repository cannot silently regress to a package-only root.

@@ -3,8 +3,8 @@
 <plist version="1.0"><dict>
 <key>CFBundleDisplayName</key><string>Omni Mobile</string>
 <key>CFBundleIdentifier</key><string>com.omnidesk.mobile</string>
-<key>CFBundleShortVersionString</key><string>1.12.1</string>
-<key>CFBundleVersion</key><string>121</string>
+<key>CFBundleShortVersionString</key><string>1.12.2</string>
+<key>CFBundleVersion</key><string>122</string>
 <key>FirebaseAppDelegateProxyEnabled</key><true/>
 <key>NSFaceIDUsageDescription</key><string>Confirm high-risk Omni approval decisions.</string>
 <key>UIApplicationSupportsIndirectInputEvents</key><true/>

@@ -63,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         failures.append(str(exc))
 
+    try:
+        _run([sys.executable, "scripts/check_release_channel_policy.py", "."], root)
+        ok.append("release channel policy gate passes")
+    except Exception as exc:
+        failures.append(str(exc))
+
     pyproject = _read(root / "pyproject.toml")
     version = _project_version(pyproject)
     chart_version = _native_version(version)
@@ -96,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     self_healing = _read(root / "omnidesk_agent/self_healing.py")
     external_gate = _read(root / "scripts/check_external_ga_evidence.py")
     external_required = _read(root / "release/external-ga-evidence.required.json")
-    external_audit = _read(root / "release/real-ga-evidence-audit-1.12.1.json")
+    external_audit = _read(root / "release/real-ga-evidence-audit-1.12.2.json")
     agents_root = _read(root / "AGENTS.md")
     onboarding = _read(root / "omnidesk_agent/onboarding.py")
     channel_capabilities = _read(root / "omnidesk_agent/channels/capability_matrix.py")
@@ -148,8 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         "RELEASE_CHANNEL" in release_workflow
         and "real-ga" in release_workflow
         and "candidate" in release_workflow
-        and "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.1.json" in release_workflow
-        and "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json" in release_workflow,
+        and "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.2.json" in release_workflow
+        and "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.2.json" in release_workflow,
         "Release workflow separates candidate audit from Real GA fail-closed evidence gate",
         failures,
         ok,

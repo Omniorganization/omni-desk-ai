@@ -4,7 +4,7 @@
   "producer": "local-macos-xcode-real-device",
   "provider": "apns-or-firebase-messaging-apns",
   "platform": "ios",
-  "version": "1.12.1+root-monorepo-production-ga-candidate",
+  "version": "1.12.2+root-monorepo-production-ga-candidate",
   "delivery_success": true,
   "delivery_receipt_id": "REPLACE_WITH_REAL_PROVIDER_RECEIPT_ID_OR_MESSAGE_ID",
   "device_id_sha256": "REPLACE_WITH_OMNIDESK_DEVICE_ID_HASH_ONLY",

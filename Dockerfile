@@ -1,5 +1,5 @@
 ARG PYTHON_BASE_IMAGE=python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
-ARG OMNIDESK_VERSION=1.12.1+root-monorepo-production-ga-candidate
+ARG OMNIDESK_VERSION=1.12.2+root-monorepo-production-ga-candidate
 ARG OMNIDESK_BUILD_SHA=unknown
 ARG OMNIDESK_ARTIFACT_SHA256=unknown
 ARG OMNIDESK_IMAGE_DIGEST=unknown
@@ -13,7 +13,7 @@ RUN python -m pip install --no-cache-dir --require-hashes -r requirements.bootst
     && python -m build --wheel --no-isolation
 
 FROM ${PYTHON_BASE_IMAGE} AS runtime
-ARG OMNIDESK_VERSION=1.12.1+root-monorepo-production-ga-candidate
+ARG OMNIDESK_VERSION=1.12.2+root-monorepo-production-ga-candidate
 ARG OMNIDESK_BUILD_SHA=unknown
 ARG OMNIDESK_ARTIFACT_SHA256=unknown
 ARG OMNIDESK_IMAGE_DIGEST=unknown

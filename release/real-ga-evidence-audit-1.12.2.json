@@ -173,5 +173,5 @@
   "evidence_dir": "release/external-evidence",
   "policy": "Customer-distribution GA requires every category to be verified from real external systems; source scaffolds are not evidence.",
   "status": "blocked_missing_external_evidence",
-  "version": "1.12.1+root-monorepo-production-ga-candidate"
+  "version": "1.12.2+root-monorepo-production-ga-candidate"
 }

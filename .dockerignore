@@ -18,6 +18,9 @@ node_modules/
 target/
 build/
 dist/
+Omni-desk-AI-*/
+Omni-desk-AI-*.zip
+OmniDesk-AI-*/
 __MACOSX/
 .DS_Store
 .serena/
