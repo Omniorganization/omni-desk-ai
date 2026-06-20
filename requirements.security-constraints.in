@@ -3,6 +3,7 @@
 # Keep this file small and explicit: it is used by uv lock generation to
 # prevent dependency resolution from drifting back onto vulnerable releases.
 filelock>=3.20.3
+msgpack>=1.2.1
 pillow>=12.2.0
 pip>=26.1.2
 pytest>=9.0.3
