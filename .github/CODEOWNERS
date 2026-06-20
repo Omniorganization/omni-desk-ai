@@ -3,10 +3,12 @@
 
 # Security-sensitive runtime and release boundaries require explicit owner review.
 .github/workflows/ @yinyufan0813-cmyk
+scripts/ @yinyufan0813-cmyk
 omnidesk_agent/security/ @yinyufan0813-cmyk
 omnidesk_agent/sandbox/ @yinyufan0813-cmyk
 omnidesk_agent/plugins/ @yinyufan0813-cmyk
 omnidesk_agent/self_upgrade/ @yinyufan0813-cmyk
 deploy/ @yinyufan0813-cmyk
+release/ @yinyufan0813-cmyk
 scripts/deploy_artifact.sh @yinyufan0813-cmyk
 scripts/verify_release_artifact.py @yinyufan0813-cmyk

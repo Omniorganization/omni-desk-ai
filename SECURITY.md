@@ -2,7 +2,7 @@
 
 ## Supported Status
 
-Current status: `1.12.1+root-monorepo-production-ga-candidate`.
+Current status: `1.12.2+root-monorepo-production-ga-candidate`.
 
 This is a source-gated production GA candidate. It must not be represented as customer-distribution Production GA until external evidence gates pass against real systems.
 

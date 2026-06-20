@@ -30,6 +30,7 @@ jobs:
       - run: python scripts/check_github_workflows.py .github/workflows
       - run: python scripts/check_github_actions_pinned.py .github/workflows
       - run: python scripts/check_version_consistency.py .
+      - run: python scripts/check_release_channel_policy.py .
       - run: python scripts/check_observability_contract.py .
       - run: python scripts/check_deployment_readiness.py --compose-file deploy/docker/docker-compose.full.yml
       - run: python scripts/check_supply_chain_standard.py .

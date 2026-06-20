@@ -24,6 +24,9 @@ venv/
 # Build
 build/
 dist/
+Omni-desk-AI-*/
+Omni-desk-AI-*.zip
+OmniDesk-AI-*/
 Omni-desk-AI-*-source-gated-*
 .next/
 node_modules/

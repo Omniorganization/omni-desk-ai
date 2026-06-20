@@ -6,4 +6,4 @@ version = 4
 
 [[package]]
 name = "omnidesk_desktop"
-version = "1.12.1"
+version = "1.12.2"

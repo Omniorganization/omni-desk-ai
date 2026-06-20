@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate release-external-ga-evidence distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout release-channel-policy tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate release-external-ga-evidence distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
@@ -6,10 +6,10 @@ PUBLIC_BASE_URL ?= https://omnidesk.company.example.invalid
 SANDBOX_IMAGE ?= python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 RUNNER_URL ?= http://sandbox-runner:18890
 IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
-IOS_EVIDENCE_EXPECTED_VERSION ?= 1.12.1+root-monorepo-production-ga-candidate
+IOS_EVIDENCE_EXPECTED_VERSION ?= 1.12.2+root-monorepo-production-ga-candidate
 PACKAGE_DIR ?= dist/package
-DISTRIBUTION_PACKAGE_VERSION ?= 1.12.1+root-monorepo-production-ga-candidate
-DISTRIBUTION_PACKAGE_SLUG ?= Omni-desk-AI-1.12.1-root-monorepo-production-ga-candidate
+DISTRIBUTION_PACKAGE_VERSION ?= 1.12.2+root-monorepo-production-ga-candidate
+DISTRIBUTION_PACKAGE_SLUG ?= Omni-desk-AI-1.12.2-root-monorepo-production-ga-candidate
 DISTRIBUTION_SOURCE_COMMIT ?= unknown
 RELEASE_CHANNEL ?= candidate
 
@@ -50,6 +50,9 @@ strict-sandbox-smoke:
 
 monorepo-layout:
 	$(PYTHON) scripts/check_monorepo_layout.py .
+
+release-channel-policy:
+	$(PYTHON) scripts/check_release_channel_policy.py .
 
 production-closure:
 	python scripts/check_kubernetes_contract.py .
@@ -116,7 +119,7 @@ tri-app-release-preflight:
 ios-real-device-evidence-import:
 	IOS_EVIDENCE_RAW_DIR="$(IOS_EVIDENCE_RAW_DIR)" IOS_EVIDENCE_EXPECTED_VERSION="$(IOS_EVIDENCE_EXPECTED_VERSION)" $(PYTHON) scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
 	$(PYTHON) scripts/import_ios_real_device_evidence.py --raw-dir "$(IOS_EVIDENCE_RAW_DIR)" --expected-version "$(IOS_EVIDENCE_EXPECTED_VERSION)" --copy --write-report release/ios-real-device-evidence-import-report.json
-	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json
+	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.2.json
 
 tri-app-live-smoke-preflight:
 	$(PYTHON) scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
@@ -126,7 +129,7 @@ workflow-governance-preflight:
 	$(PYTHON) scripts/check_workflow_governance.py . --require-real-workflows
 
 distribution-package-manifest:
-	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --version "$(DISTRIBUTION_PACKAGE_VERSION)" --package-slug "$(DISTRIBUTION_PACKAGE_SLUG)" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)" --external-audit release/real-ga-evidence-audit-1.12.1.json --output release-manifest.json
+	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --version "$(DISTRIBUTION_PACKAGE_VERSION)" --package-slug "$(DISTRIBUTION_PACKAGE_SLUG)" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)" --external-audit release/real-ga-evidence-audit-1.12.2.json --output release-manifest.json
 	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --verify --manifest release-manifest.json
 
 package-final-gate: distribution-package-manifest
@@ -135,16 +138,16 @@ package-final-gate: distribution-package-manifest
 	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --verify --manifest release-manifest.json
 
 external-ga-evidence-audit:
-	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.2.json
 
 external-ga-evidence-gate:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py .
 
 release-external-ga-evidence:
 	@if [ "$(RELEASE_CHANNEL)" = "real-ga" ]; then \
-		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.1.json; \
+		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.2.json; \
 	elif [ "$(RELEASE_CHANNEL)" = "candidate" ]; then \
-		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.1.json; \
+		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.2.json; \
 	else \
 		echo "RELEASE_CHANNEL must be candidate or real-ga" >&2; exit 64; \
 	fi
