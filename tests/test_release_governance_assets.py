@@ -37,6 +37,14 @@ def test_release_governance_assets_exist():
     assert Path("release/license-policy.json").exists()
 
 
+def test_production_config_initializer_does_not_print_generated_secrets():
+    script = Path("scripts/init_production_config.py").read_text(encoding="utf-8")
+    assert "token_urlsafe" not in script
+    assert 'print(f"{name}=' not in script
+    assert 'print(f"- {issue}")' not in script
+    assert "details withheld to avoid logging sensitive config" in script
+
+
 def test_source_main_restore_contract_blocks_package_only_main():
     contract = Path("INDUSTRIAL_SOURCE_MAIN_RESTORE.md").read_text(encoding="utf-8")
     assert "`main` as the source trunk" in contract

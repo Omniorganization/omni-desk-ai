@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import secrets
 from pathlib import Path
 
 from omnidesk_agent.config import load_config
@@ -25,7 +24,7 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     print(f"wrote {out}")
-    print("generate strong secrets separately; examples:")
+    print("configure these required secrets in your secret manager; do not print generated values to logs:")
     for name in [
         "OMNIDESK_ADMIN_TOKEN",
         "OMNIDESK_GATEWAY_SECRET",
@@ -36,15 +35,14 @@ def main() -> int:
         "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY",
         "OMNIDESK_POSTGRES_DSN",
     ]:
-        print(f"{name}={secrets.token_urlsafe(32)}")
+        print(f"- {name}")
     if args.validate:
         env = dict(os.environ)
         env.setdefault("OMNIDESK_ENV", "production")
         result = validate_production_config(load_config(out), env)
         if not result["ok"]:
-            print("validation failed:")
-            for issue in result["issues"]:
-                print(f"- {issue}")
+            issue_count = len(result["issues"])
+            print(f"validation failed: {issue_count} issue(s); details withheld to avoid logging sensitive config")
             return 2
         print("production config validation passed")
     return 0
