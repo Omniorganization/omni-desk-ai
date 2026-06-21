@@ -1,6 +1,6 @@
 {
   "name": "omnidesk-desktop-app",
-  "version": "1.12.2",
+  "version": "1.12.3",
   "private": true,
   "type": "module",
   "scripts": {

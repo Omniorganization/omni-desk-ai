@@ -15,7 +15,7 @@ AdminVerifier = Callable[[Request, str], Awaitable[object]]
 def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier) -> None:
     @app.post("/agent/run")
     async def run_agent(request: Request, body: dict):
-        await admin(request, "operator")
+        decision = await admin(request, "operator")
         secret = os.getenv(cfg.gateway.shared_secret_env, "")
         provided = str(body.get("secret", ""))
         if secret and not provided:
@@ -24,7 +24,11 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
             raise HTTPException(401, "bad secret")
         if provided and not secret:
             raise HTTPException(400, "secret provided but gateway shared secret is not configured")
-        msg = ChannelMessage(channel="local-api", sender_id=str(body.get("actor", "owner")), text=str(body["message"]))
+        message = str(body.get("message") or "").strip()
+        if not message:
+            raise HTTPException(422, "message is required")
+        actor = str(getattr(decision, "actor", "") or "operator")
+        msg = ChannelMessage(channel="local-api", sender_id=actor, text=message)
         return await rt.orchestrator.handle_message(msg)
 
     @app.post("/agent/resume/{run_id}")

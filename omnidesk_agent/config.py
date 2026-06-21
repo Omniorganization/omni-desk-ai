@@ -26,7 +26,7 @@ class LLMConfig(BaseModel):
     max_output_tokens: int = 1200
     enable_cache: bool = True
     cache_ttl_seconds: int = 86400
-    per_task_max_llm_calls: Optional[int] = None
+    per_task_max_llm_calls: Optional[int] = 16
     require_approval_above_estimated_tokens: int = 20000
 
 
@@ -57,9 +57,9 @@ class ModelRouteConfig(BaseModel):
 
 
 class ModelBudgetConfig(BaseModel):
-    daily_usd_limit: Optional[float] = None
-    monthly_usd_limit: Optional[float] = None
-    per_actor_daily_usd_limit: Optional[float] = None
+    daily_usd_limit: Optional[float] = 500.0
+    monthly_usd_limit: Optional[float] = 5000.0
+    per_actor_daily_usd_limit: Optional[float] = 50.0
     on_exceed: Literal["require_approval", "fallback_local", "block"] = "require_approval"
 
 
@@ -417,6 +417,22 @@ class ObservabilityConfig(BaseModel):
     trace_http_requests: bool = True
 
 
+class ApiResourceGuardConfig(BaseModel):
+    enabled: bool = True
+    window_seconds: int = 60
+    max_body_bytes: int = 1_048_576
+    max_requests_per_ip: int = 300
+    max_requests_per_endpoint: int = 120
+    max_requests_per_actor: int = 120
+    max_requests_per_role: int = 600
+    max_requests_per_org_endpoint: int = 600
+    agent_run_max_requests_per_actor: int = 20
+    chat_max_requests_per_actor: int = 60
+    max_inflight_requests: int = 64
+    max_inflight_agent_runs: int = 4
+    max_inflight_chat_requests: int = 8
+
+
 class StorageConfig(BaseModel):
     backend: Literal["sqlite", "postgres"] = "sqlite"
     postgres_dsn_env: str = "OMNIDESK_POSTGRES_DSN"
@@ -474,6 +490,7 @@ class AppConfig(BaseModel):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    api_resource_guard: ApiResourceGuardConfig = Field(default_factory=ApiResourceGuardConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     memory_privacy: MemoryPrivacyConfig = Field(default_factory=MemoryPrivacyConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)

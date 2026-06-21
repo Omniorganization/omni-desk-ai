@@ -1,0 +1,14 @@
+{
+  "allow_unknown_license": true,
+  "allowed_packages": [],
+  "denied_license_terms": [
+    "AGPL",
+    "GPL",
+    "LGPL",
+    "SSPL",
+    "BUSL",
+    "Commons Clause"
+  ],
+  "policy": "OmniDesk release and security workflows fail when installed lockfile dependencies declare denied copyleft, source-available, or Commons Clause license terms. Unknown metadata is warned so missing package metadata remains visible without fabricating a legal conclusion.",
+  "schema_version": "omnidesk-license-policy/v1"
+}

@@ -14,6 +14,7 @@ Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=OMNIDESK_ENV=production
+Environment=OMNIDESK_REQUIRE_PRODUCTION_GUARDS=true
 EnvironmentFile=-/etc/omnidesk/runtime.env
 StateDirectory=omnidesk
 LogsDirectory=omnidesk

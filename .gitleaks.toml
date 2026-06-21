@@ -1,0 +1,9 @@
+title = "OmniDesk secret scanning policy"
+
+[allowlist]
+description = "Allow fake credentials in tests, docs, and evidence templates while scanning production source and workflows."
+paths = [
+  '''^docs/''',
+  '''^release/external-evidence/templates/''',
+  '''^tests/'''
+]

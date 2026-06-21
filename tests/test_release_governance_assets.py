@@ -21,6 +21,10 @@ def test_release_governance_assets_exist():
     assert Path("scripts/package_distribution_bundle.sh").exists()
     assert Path("scripts/write_distribution_manifest.py").exists()
     assert Path("scripts/check_release_channel_policy.py").exists()
+    assert Path("scripts/check_ci_evidence_contract.py").exists()
+    assert Path("scripts/write_ci_evidence_manifest.py").exists()
+    assert Path("scripts/check_security_workflow_policy.py").exists()
+    assert Path("scripts/check_license_policy.py").exists()
     assert Path("scripts/docker_scan.sh").exists()
     assert Path("scripts/production_smoke_test.py").exists()
     assert Path("scripts/release_smoke_locked.sh").exists()
@@ -29,6 +33,8 @@ def test_release_governance_assets_exist():
     assert Path(".github/workflows/promote-production.yml").exists()
     assert Path(".github/workflows/release-policy.yml").exists()
     assert Path(".github/branch-protection.required.json").exists()
+    assert Path(".gitleaks.toml").exists()
+    assert Path("release/license-policy.json").exists()
 
 
 def test_source_main_restore_contract_blocks_package_only_main():
@@ -44,14 +50,15 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "release_channel" in workflow
     assert "RELEASE_CHANNEL" in workflow
     assert '[[ "$RELEASE_CHANNEL" == "real-ga" ]]' in workflow
-    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.2.json" in workflow
-    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.2.json" in workflow
+    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.3.json" in workflow
+    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.3.json" in workflow
 
 
 def test_release_channel_policy_script_passes_current_tree():
     result = subprocess.run([sys.executable, "scripts/check_release_channel_policy.py", "."], text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     assert "Real GA branch never uses --audit-only" in result.stdout
+    assert "Release workflow rechecks channel naming and evidence status after external evidence gate" in result.stdout
 
 
 def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
@@ -60,7 +67,7 @@ def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
     assert "release-external-ga-evidence:" in makefile
     assert "external-ga-evidence-gate:" in makefile
     assert "scripts/check_external_ga_evidence.py .\n" in makefile
-    assert "release/real-ga-evidence-audit-1.12.2.json" in makefile
+    assert "release/real-ga-evidence-audit-1.12.3.json" in makefile
 
 
 def test_ci_coverage_gate_is_80_and_has_group_gate():
@@ -88,6 +95,10 @@ def test_ci_runs_version_consistency_check():
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "scripts/check_version_consistency.py" in ci
     assert "scripts/check_script_executability.py" in ci
+    assert "scripts/check_ci_evidence_contract.py" in ci
+    assert "scripts/check_security_workflow_policy.py" in ci
+    assert "scripts/write_ci_evidence_manifest.py" in ci
+    assert "ci-evidence-${{ matrix.python-version }}" in ci
 
 
 def test_script_executability_contract_passes_current_tree():

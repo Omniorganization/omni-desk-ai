@@ -12,6 +12,28 @@ data:
       allow_local_admin_without_token: false
       require_webhook_signatures: true
       admin_allowed_ips: []
+    llm:
+      per_task_max_llm_calls: 16
+    models:
+      budget:
+        daily_usd_limit: 500.0
+        monthly_usd_limit: 5000.0
+        per_actor_daily_usd_limit: 50.0
+        on_exceed: require_approval
+    api_resource_guard:
+      enabled: true
+      window_seconds: 60
+      max_body_bytes: 1048576
+      max_requests_per_ip: 300
+      max_requests_per_endpoint: 120
+      max_requests_per_actor: 120
+      max_requests_per_role: 600
+      max_requests_per_org_endpoint: 600
+      agent_run_max_requests_per_actor: 20
+      chat_max_requests_per_actor: 60
+      max_inflight_requests: 64
+      max_inflight_agent_runs: 4
+      max_inflight_chat_requests: 8
     permissions:
       approval_mode: remote_approval
       default_mode: ask

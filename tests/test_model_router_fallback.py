@@ -6,6 +6,7 @@ from pathlib import Path
 from omnidesk_agent.config import ModelProfileConfig, ModelsConfig
 from omnidesk_agent.core.token_budget import TokenBudgetManager
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
+from omnidesk_agent.models.cost_store import ModelCostStore
 from omnidesk_agent.models.router import ModelRouter
 
 
@@ -120,3 +121,23 @@ def test_model_router_repairs_invalid_json_and_records_cost(monkeypatch, tmp_pat
     assert response.text == '{"answer":"fixed"}'
     assert router.cost_ledger.summary(task_id="json-task")["calls"] == 1
     assert router.cost_ledger.summary(task_id="json-task")["estimated_cost"] == 0.01
+
+
+def test_model_router_records_request_actor_in_cost_store(monkeypatch, tmp_path: Path):
+    import omnidesk_agent.models.router as router_mod
+
+    monkeypatch.setitem(router_mod.PROVIDER_CLASSES, "passing", PassingProvider)
+    cfg = ModelsConfig(
+        default="chat",
+        profiles={"chat": ModelProfileConfig(provider="passing", model="good", api_key_env=None)},
+        routing={"chat": {"primary": "chat", "fallback": [], "max_retries": 0}},
+    )
+    token_budget = TokenBudgetManager(tmp_path / "tokens.sqlite3")
+    cost_store = ModelCostStore(tmp_path / "costs.sqlite3")
+    router = ModelRouter(cfg, token_budget, cost_store)
+
+    response = asyncio.run(router.complete(ModelRequest(system="s", user="u", task="chat", task_id="actor-task", metadata={"actor": "alice"})))
+
+    assert response.profile == "chat"
+    by_actor = cost_store.summary(days=1, group_by="actor")
+    assert by_actor["groups"]["alice"]["calls"] == 1

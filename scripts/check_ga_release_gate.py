@@ -69,6 +69,18 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         failures.append(str(exc))
 
+    try:
+        _run([sys.executable, "scripts/check_ci_evidence_contract.py", "."], root)
+        ok.append("CI evidence contract gate passes")
+    except Exception as exc:
+        failures.append(str(exc))
+
+    try:
+        _run([sys.executable, "scripts/check_security_workflow_policy.py", "."], root)
+        ok.append("security workflow policy gate passes")
+    except Exception as exc:
+        failures.append(str(exc))
+
     pyproject = _read(root / "pyproject.toml")
     version = _project_version(pyproject)
     chart_version = _native_version(version)
@@ -80,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     routes = _read(root / "omnidesk_agent/appsync/routes.py")
     config = _read(root / "omnidesk_agent/config.py")
     production_validator = _read(root / "omnidesk_agent/validation/production.py")
+    resource_guard = _read(root / "omnidesk_agent/security/resource_guard.py")
     desktop_app = _read(root / "apps/desktop-tauri/src/App.tsx")
     desktop_identity = _read(root / "apps/desktop-tauri/src/deviceIdentity.ts")
     mobile_main = _read(root / "apps/mobile-flutter/lib/main.dart")
@@ -102,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     self_healing = _read(root / "omnidesk_agent/self_healing.py")
     external_gate = _read(root / "scripts/check_external_ga_evidence.py")
     external_required = _read(root / "release/external-ga-evidence.required.json")
-    external_audit = _read(root / "release/real-ga-evidence-audit-1.12.2.json")
+    external_audit = _read(root / "release/real-ga-evidence-audit-1.12.3.json")
     agents_root = _read(root / "AGENTS.md")
     onboarding = _read(root / "omnidesk_agent/onboarding.py")
     channel_capabilities = _read(root / "omnidesk_agent/channels/capability_matrix.py")
@@ -122,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     _check("unsafe-eval" not in web_csp and "unsafe-inline" not in web_csp and "object-src 'none'" in web_csp, "Web Admin CSP forbids unsafe eval/inline and object embedding", failures, ok)
     _check("__Host-omni_session_token" in _read(root / "apps/web-admin-next/lib/session.ts"), "Web Admin uses __Host- prefixed session cookies", failures, ok)
     _check("allow_websocket_query_auth" in config and "must be false in production" in production_validator, "Production validator blocks WebSocket query-token auth", failures, ok)
+    _check("class ApiResourceGuard" in resource_guard and "request body too large" in resource_guard and "actor-chat" in resource_guard and "actor-agent" in resource_guard, "API resource guard enforces body, rate, and chat/agent limits", failures, ok)
+    _check("api_resource_guard.enabled must be true in production" in production_validator and "models.budget.{field_name} must be a positive hard limit in production" in production_validator, "Production validator requires API resource guards and model spend budgets", failures, ok)
+    _check("OMNIDESK_REQUIRE_PRODUCTION_GUARDS" in production_validator and "OMNIDESK_REQUIRE_PRODUCTION_GUARDS" in _read(root / "deploy/systemd/omnidesk-agent.production.service") and "OMNIDESK_REQUIRE_PRODUCTION_GUARDS" in _read(root / "deploy/docker/docker-compose.full.yml"), "Production profiles include explicit production guard enforcement switch", failures, ok)
+    _check("per_task_max_llm_calls: Optional[int] = 16" in config and "per-task model call limit exceeded" in _read(root / "omnidesk_agent/core/token_budget.py"), "Token budget enforces per-task model call hard limits", failures, ok)
     _check("token and \"authorization\" not in headers and allow_query_auth" in routes, "WebSocket query-token compatibility is gated outside production", failures, ok)
     _check("public_key is required for desktop/mobile device enrollment in production" in routes, "Production device registration requires a public key", failures, ok)
     _check("predictable device_id values are forbidden" in routes, "Production device registration rejects predictable IDs", failures, ok)
@@ -154,8 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         "RELEASE_CHANNEL" in release_workflow
         and "real-ga" in release_workflow
         and "candidate" in release_workflow
-        and "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.2.json" in release_workflow
-        and "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.2.json" in release_workflow,
+        and "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.3.json" in release_workflow
+        and "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.3.json" in release_workflow,
         "Release workflow separates candidate audit from Real GA fail-closed evidence gate",
         failures,
         ok,

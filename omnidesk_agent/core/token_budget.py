@@ -23,9 +23,9 @@ class TokenBudgetConfig:
     # If verified_required=True, this threshold is overridden and the call is allowed.
     require_approval_above_estimated_tokens: int = 20000
 
-    # Per-task hard budget has been removed by design.
-    # Kept only for backward config compatibility; it is not used as a hard limit.
-    per_task_max_llm_calls: Optional[int] = None
+    # Hard stop for runaway model loops. Verified-required calls may override the
+    # token warning threshold, but they must still respect this per-task call cap.
+    per_task_max_llm_calls: Optional[int] = 16
 
 
 @dataclass
@@ -154,6 +154,24 @@ class TokenBudgetManager:
         total_estimated = estimated_input + expected_output_tokens
         cache_key = self.make_cache_key(model, truncated_system, truncated_user)
 
+        if cfg.per_task_max_llm_calls is not None:
+            used_calls = self.count_calls(task_id)
+            if used_calls >= int(cfg.per_task_max_llm_calls):
+                return TokenDecision(
+                    allowed=False,
+                    reason=(
+                        "per-task model call limit exceeded; start a new audited task "
+                        "or request explicit owner approval before continuing"
+                    ),
+                    estimated_input_tokens=estimated_input,
+                    estimated_output_tokens=expected_output_tokens,
+                    cache_key=cache_key,
+                    truncated_system=truncated_system,
+                    truncated_user=truncated_user,
+                    budget_overridden=False,
+                    verified_required=verified_required,
+                )
+
         if (
             total_estimated > cfg.require_approval_above_estimated_tokens
             and not verified_required
@@ -193,6 +211,11 @@ class TokenBudgetManager:
             budget_overridden=budget_overridden,
             verified_required=verified_required,
         )
+
+    def count_calls(self, task_id: str) -> int:
+        with connect_sqlite(self.db_path) as con:
+            row = con.execute("SELECT COUNT(*) FROM llm_usage WHERE task_id = ?", (task_id,)).fetchone()
+        return int(row[0]) if row else 0
 
     def get_cached(self, cache_key: str) -> Optional[str]:
         if not self.config.enable_cache:

@@ -18,6 +18,25 @@ def test_local_config_is_not_strict_without_production_signal():
     assert result == {"ok": True, "production": False, "issues": []}
 
 
+def test_require_production_guards_env_is_production_signal():
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.memory_privacy.encrypt_at_rest = True
+
+    result = validate_production_config(
+        cfg,
+        {
+            "OMNIDESK_REQUIRE_PRODUCTION_GUARDS": "true",
+            "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+            "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+            "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+        },
+    )
+
+    assert result["production"] is True
+    assert result["ok"] is True
+
+
 def test_production_config_rejects_placeholder_secrets_and_local_bypass():
     cfg = AppConfig()
     cfg.gateway.public_base_url = "https://agent.example.com"
@@ -154,6 +173,34 @@ def test_production_config_rejects_unsafe_sandbox_metrics_memory_and_http():
     assert "memory_privacy.isolate_by_actor must be true in production" in result["issues"]
     assert "memory_privacy.encrypt_at_rest must be true in production" in result["issues"]
     assert "memory_privacy.retention_days must be between 1 and 90 in production" in result["issues"]
+
+
+def test_production_config_requires_resource_and_model_budget_guards():
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.channels.chrome.enabled = False
+    cfg.memory_privacy.encrypt_at_rest = True
+    cfg.api_resource_guard.enabled = False
+    cfg.models.budget.daily_usd_limit = None
+    cfg.models.budget.monthly_usd_limit = 0
+    cfg.models.budget.per_actor_daily_usd_limit = None
+    cfg.llm.per_task_max_llm_calls = None
+
+    result = validate_production_config(
+        cfg,
+        {
+            "OMNIDESK_ENV": "production",
+            "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+            "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+            "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+        },
+    )
+
+    assert "api_resource_guard.enabled must be true in production" in result["issues"]
+    assert "models.budget.daily_usd_limit must be a positive hard limit in production" in result["issues"]
+    assert "models.budget.monthly_usd_limit must be a positive hard limit in production" in result["issues"]
+    assert "models.budget.per_actor_daily_usd_limit must be a positive hard limit in production" in result["issues"]
+    assert "llm.per_task_max_llm_calls must be a positive hard limit in production" in result["issues"]
 
 
 def test_production_config_rejects_weak_secrets_and_placeholder_public_url():

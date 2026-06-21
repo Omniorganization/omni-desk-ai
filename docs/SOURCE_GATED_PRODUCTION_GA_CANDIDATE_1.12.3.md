@@ -1,6 +1,6 @@
-# OmniDesk 1.12.2 Root Monorepo Production GA Candidate
+# OmniDesk 1.12.3 Root Monorepo Production GA Candidate
 
-This version is intentionally named `1.12.2+root-monorepo-production-ga-candidate`. It upgrades the 1.11.8 enterprise chat candidate toward the requested production-GA-candidate shape without claiming customer-distribution GA.
+This version is intentionally named `1.12.3+root-monorepo-production-ga-candidate`. It upgrades the 1.11.8 enterprise chat candidate toward the requested production-GA-candidate shape without claiming customer-distribution GA.
 
 ## What changed
 
@@ -16,6 +16,10 @@ This version is intentionally named `1.12.2+root-monorepo-production-ga-candidat
 - `package-final-gate` now verifies the distribution manifest in addition to release hygiene and portable `SHA256SUMS.txt`.
 - The repository root now exposes source, apps, packages, infra, tests, docs, workflows, and release evidence directly instead of requiring GitHub readers to open a versioned package directory first.
 - `/api/chat` is available as the unified audited non-streaming model Q&A path; `/api/chat/stream` is reserved and fails closed until streaming audit/chunking is production-gated.
+- API resource guards now enforce body-size, per-IP, per-endpoint, per-actor, per-role, per-organization, agent-run, chat, and concurrency limits.
+- Model usage now has positive default daily/monthly/per-actor spend budgets and a hard `per_task_max_llm_calls` cap that verified-required calls cannot bypass.
+- Public `/ready` now returns only `ok`; detailed runtime, database, sandbox, and secret checks are available only through authenticated `/admin/ready`.
+- Production profiles set `OMNIDESK_REQUIRE_PRODUCTION_GUARDS=true` so hardened production validation can be explicitly forced.
 - The release remains blocked for customer GA while external evidence categories are missing.
 
 ## Current rating boundary

@@ -76,7 +76,7 @@ def test_readiness_routes_cover_runtime_snapshot_and_middleware(tmp_path, monkey
     with TestClient(app) as client:
         ready = client.get("/ready", headers={"x-request-id": "rid-1"})
         assert ready.status_code == 200
-        assert ready.json()["ok"] is True
+        assert ready.json() == {"ok": True}
         assert ready.headers["x-request-id"] == "rid-1"
         assert ready.headers["traceparent"].startswith("00-")
 
@@ -91,6 +91,7 @@ def test_readiness_reports_database_and_secret_failures(tmp_path, monkeypatch):
 
     monkeypatch.delenv("OMNIDESK_ADMIN_TOKEN", raising=False)
     monkeypatch.delenv("OMNIDESK_GATEWAY_SECRET", raising=False)
+    monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "v" * 40)
     cfg = _isolated_config(tmp_path)
     cfg.gateway.allow_local_admin_without_token = False
     cfg.plugins.enabled = False
@@ -101,11 +102,52 @@ def test_readiness_reports_database_and_secret_failures(tmp_path, monkeypatch):
     with pytest.raises(fastapi.HTTPException) as ready_exc:
         asyncio.run(_endpoint(app, "/ready")())
     assert ready_exc.value.status_code == 503
-    detail = ready_exc.value.detail
+    assert ready_exc.value.detail == {"ok": False}
+
+    with pytest.raises(fastapi.HTTPException) as admin_exc:
+        request = DummyRequest()
+        request.headers = {"authorization": "Bearer " + "v" * 40}
+        asyncio.run(_endpoint(app, "/admin/ready")(request))
+    assert admin_exc.value.status_code == 503
+    detail = admin_exc.value.detail
     assert detail["checks"]["database"] is False
     assert "database unavailable" in detail["checks"]["database_error"]
     assert "OMNIDESK_ADMIN_TOKEN" in detail["checks"]["missing_secrets"]
 
-    with pytest.raises(fastapi.HTTPException) as admin_exc:
-        asyncio.run(_endpoint(app, "/admin/ready")(DummyRequest()))
-    assert admin_exc.value.status_code == 403
+
+def test_api_resource_guard_limits_public_requests(tmp_path):
+    from omnidesk_agent.server import create_app
+
+    cfg = _isolated_config(tmp_path)
+    cfg.gateway.allow_local_admin_without_token = True
+    cfg.api_resource_guard.window_seconds = 60
+    cfg.api_resource_guard.max_requests_per_ip = 1
+    cfg.api_resource_guard.max_requests_per_endpoint = 10
+    cfg.plugins.enabled = False
+    cfg.ensure_dirs()
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        limited = client.get("/health")
+        assert limited.status_code == 429
+        assert limited.json()["detail"] == "ip rate limit exceeded"
+
+
+def test_api_resource_guard_rejects_oversized_body(tmp_path, monkeypatch):
+    from omnidesk_agent.server import create_app
+
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    cfg = _isolated_config(tmp_path)
+    cfg.gateway.admin_allowed_ips = ["testclient", "127.0.0.1"]
+    cfg.api_resource_guard.max_body_bytes = 8
+    cfg.plugins.enabled = False
+    cfg.ensure_dirs()
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat",
+            headers={"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice", "idempotency-key": "oversized"},
+            json={"content": "x" * 100},
+        )
+        assert response.status_code == 413
+        assert response.json()["detail"] == "request body too large"

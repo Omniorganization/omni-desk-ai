@@ -19,7 +19,7 @@ permissions:
   attestations: write
 
 env:
-  EXPECTED_VERSION: 1.12.2+root-monorepo-production-ga-candidate
+  EXPECTED_VERSION: 1.12.3+root-monorepo-production-ga-candidate
   RELEASE_CHANNEL: ${{ inputs.release_channel || 'candidate' }}
 
 jobs:
@@ -159,7 +159,7 @@ jobs:
       - name: Import iOS real-device evidence
         env:
           IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
-          IOS_EVIDENCE_EXPECTED_VERSION: 1.12.2+root-monorepo-production-ga-candidate
+          IOS_EVIDENCE_EXPECTED_VERSION: 1.12.3+root-monorepo-production-ga-candidate
         run: |
           python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
           python scripts/import_ios_real_device_evidence.py \
@@ -200,14 +200,21 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RELEASE_CHANNEL" == "real-ga" ]]; then
-            python scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.2.json
+            python scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.3.json
           elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
-            python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.2.json
+            python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.3.json
           else
             echo "release_channel must be candidate or real-ga" >&2
             exit 64
           fi
-          cp release/real-ga-evidence-audit-1.12.2.json dist/external-ga-evidence-audit.json
+          cp release/real-ga-evidence-audit-1.12.3.json dist/external-ga-evidence-audit.json
+
+      - name: Verify release channel policy after external evidence gate
+        run: |
+          python scripts/check_release_channel_policy.py . \
+            --release-channel "$RELEASE_CHANNEL" \
+            --package-version "$EXPECTED_VERSION" \
+            --package-slug "$EXPECTED_VERSION"
 
       - name: Build and push release image, then capture registry digest
         env:
@@ -305,7 +312,7 @@ jobs:
         with:
           name: real-ga-evidence-import-reports
           path: |
-            release/real-ga-evidence-audit-1.12.2.json
+            release/real-ga-evidence-audit-1.12.3.json
             release/ios-real-device-evidence-import-report.json
             release/tri-app-live-smoke-evidence-import-report.json
             dist/ios-evidence-preflight.json

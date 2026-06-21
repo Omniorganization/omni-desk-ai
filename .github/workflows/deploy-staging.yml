@@ -13,7 +13,7 @@ on:
       expected_version:
         description: Expected package version
         required: true
-        default: 1.12.2+root-monorepo-production-ga-candidate
+        default: 1.12.3+root-monorepo-production-ga-candidate
       deploy_mode:
         description: "Fixed deploy adapter mode: noop, docker-compose, kubectl, or systemd"
         required: true

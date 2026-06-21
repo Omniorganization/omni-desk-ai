@@ -183,13 +183,17 @@ class ModelRouter:
             reason=decision.reason,
         )
         estimated_output_tokens = self.token_budget.estimate_tokens(resp.text)
+        usage = dict(resp.usage or {})
+        actor = request.metadata.get("actor")
+        if actor and not usage.get("actor"):
+            usage["actor"] = str(actor)
         self.cost_ledger.record(
             task_id=request.task_id,
             task=request.task,
             profile=profile,
             model=resp.model,
             provider=resp.provider,
-            usage={**(resp.usage or {}), "estimated_output_tokens": estimated_output_tokens},
+            usage={**usage, "estimated_output_tokens": estimated_output_tokens},
             estimated_output_tokens=estimated_output_tokens,
         )
         if decision.cache_key:
