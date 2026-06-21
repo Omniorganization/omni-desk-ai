@@ -63,6 +63,8 @@ spec:
           env:
             - name: OMNIDESK_ENV
               value: production
+            - name: OMNIDESK_REQUIRE_PRODUCTION_GUARDS
+              value: "true"
             - name: OMNIDESK_RUNNING_IN_CONTAINER
               value: "true"
             - name: OMNIDESK_OTLP_ENDPOINT

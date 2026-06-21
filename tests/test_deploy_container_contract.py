@@ -8,6 +8,7 @@ def test_docker_compose_mounts_production_config_and_binds_all_interfaces():
     assert "./config.production.yaml:/data/config.yaml:ro" in compose
     assert '"--host", "0.0.0.0"' in compose
     assert "OMNIDESK_MEMORY_ENCRYPTION_KEY" in compose
+    assert "OMNIDESK_REQUIRE_PRODUCTION_GUARDS" in compose
 
 
 def test_container_production_example_config_writes_only_under_data():
@@ -17,3 +18,6 @@ def test_container_production_example_config_writes_only_under_data():
     assert "audit_log: /data/audit.log" in cfg
     assert "host: 0.0.0.0" in cfg
     assert "encrypt_at_rest: true" in cfg
+    assert "api_resource_guard:" in cfg
+    assert "per_task_max_llm_calls: 16" in cfg
+    assert "daily_usd_limit: 500.0" in cfg

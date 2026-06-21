@@ -1,6 +1,6 @@
 {
   "name": "Omni Tri-App Sync API",
-  "version": "1.12.2+root-monorepo-production-ga-candidate",
+  "version": "1.12.3+root-monorepo-production-ga-candidate",
   "auth": {
     "type": "bearer",
     "roles": [

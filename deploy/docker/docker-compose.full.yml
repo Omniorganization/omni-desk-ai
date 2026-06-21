@@ -37,6 +37,7 @@ services:
       - "127.0.0.1:18789:18789"
     environment:
       OMNIDESK_ENV: production
+      OMNIDESK_REQUIRE_PRODUCTION_GUARDS: "true"
       OMNIDESK_RUNNING_IN_CONTAINER: "1"
       OMNIDESK_CONFIG: /data/config.yaml
       OMNIDESK_POSTGRES_DSN: ${OMNIDESK_POSTGRES_DSN:?postgresql://omnidesk:<password>@postgres:5432/omnidesk}
@@ -75,6 +76,7 @@ services:
       - ALL
     environment:
       OMNIDESK_ENV: production
+      OMNIDESK_REQUIRE_PRODUCTION_GUARDS: "true"
       OMNIDESK_SANDBOX_RUNNER_TOKEN: ${OMNIDESK_SANDBOX_RUNNER_TOKEN:?required}
       OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET: ${OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET:?required}
       OMNIDESK_SANDBOX_REQUIRE_HMAC: "1"

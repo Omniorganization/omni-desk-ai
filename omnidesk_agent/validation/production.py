@@ -12,6 +12,7 @@ PLACEHOLDER_URLS = {"https://your-domain.example", "https://example.com", "https
 STRONG_SECRET_MIN_LENGTH = 32
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 PRODUCTION_ENV_VALUES = {"prod", "production"}
+REQUIRE_PRODUCTION_GUARDS_ENV = "OMNIDESK_REQUIRE_PRODUCTION_GUARDS"
 PLUGIN_SIGNING_SECRET_ENV = "OMNIDESK_PLUGIN_SIGNING_SECRET"
 DIGEST_PIN_RE = re.compile(r"^[\w./:+=,@-]+@sha256:[a-f0-9]{64}$")
 BAD_DIGESTS = {"0" * 64, "f" * 64, "a" * 64, "0123456789abcdef" * 4}
@@ -25,6 +26,8 @@ class ProductionConfigError(ValueError):
 
 def is_production_mode(cfg: AppConfig, environ: Optional[Mapping[str, str]] = None) -> bool:
     env = os.environ if environ is None else environ
+    if _truthy(env.get(REQUIRE_PRODUCTION_GUARDS_ENV, "")):
+        return True
     env_mode = (
         env.get("OMNIDESK_ENV")
         or env.get("APP_ENV")
@@ -98,6 +101,9 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
     if cfg.observability.expose_public_metrics:
         issues.append("observability.expose_public_metrics must be false in production; use /admin/metrics")
 
+    _validate_api_resource_guard(cfg, issues)
+    _validate_model_budget_policy(cfg, issues)
+
     if getattr(cfg.app_sync, "allow_websocket_query_auth", False):
         issues.append("app_sync.allow_websocket_query_auth must be false in production")
     if not getattr(cfg.app_sync, "require_device_public_key_in_production", True):
@@ -162,6 +168,43 @@ def _validate_storage_policy(cfg: AppConfig, env: Mapping[str, str], issues: lis
         _require_env(env, cfg.storage.postgres_dsn_env, "postgres dsn", issues, min_length=12)
     if cfg.storage.backend == "sqlite" and cfg.gateway.host not in LOOPBACK_HOSTS:
         issues.append("storage.backend=sqlite is single-node only; use postgres before binding production traffic")
+
+
+def _validate_api_resource_guard(cfg: AppConfig, issues: list[str]) -> None:
+    guard = getattr(cfg, "api_resource_guard", None)
+    if guard is None or not bool(getattr(guard, "enabled", False)):
+        issues.append("api_resource_guard.enabled must be true in production")
+        return
+    positive_fields = {
+        "window_seconds": "api_resource_guard.window_seconds must be positive in production",
+        "max_body_bytes": "api_resource_guard.max_body_bytes must be positive in production",
+        "max_requests_per_ip": "api_resource_guard.max_requests_per_ip must be positive in production",
+        "max_requests_per_endpoint": "api_resource_guard.max_requests_per_endpoint must be positive in production",
+        "max_requests_per_actor": "api_resource_guard.max_requests_per_actor must be positive in production",
+        "agent_run_max_requests_per_actor": "api_resource_guard.agent_run_max_requests_per_actor must be positive in production",
+        "chat_max_requests_per_actor": "api_resource_guard.chat_max_requests_per_actor must be positive in production",
+        "max_inflight_requests": "api_resource_guard.max_inflight_requests must be positive in production",
+        "max_inflight_agent_runs": "api_resource_guard.max_inflight_agent_runs must be positive in production",
+        "max_inflight_chat_requests": "api_resource_guard.max_inflight_chat_requests must be positive in production",
+    }
+    for field_name, message in positive_fields.items():
+        if int(getattr(guard, field_name, 0) or 0) <= 0:
+            issues.append(message)
+
+
+def _validate_model_budget_policy(cfg: AppConfig, issues: list[str]) -> None:
+    budget = getattr(getattr(cfg, "models", None), "budget", None)
+    if budget is None:
+        issues.append("models.budget must be configured in production")
+        return
+    for field_name in ("daily_usd_limit", "monthly_usd_limit", "per_actor_daily_usd_limit"):
+        value = getattr(budget, field_name, None)
+        if value is None or float(value) <= 0:
+            issues.append(f"models.budget.{field_name} must be a positive hard limit in production")
+    if getattr(budget, "on_exceed", "") not in {"require_approval", "fallback_local", "block"}:
+        issues.append("models.budget.on_exceed must be require_approval, fallback_local, or block in production")
+    if getattr(cfg.llm, "per_task_max_llm_calls", None) is None or int(getattr(cfg.llm, "per_task_max_llm_calls", 0) or 0) <= 0:
+        issues.append("llm.per_task_max_llm_calls must be a positive hard limit in production")
 
 def _validate_emergency_access_policy(cfg: AppConfig, env: Mapping[str, str], issues: list[str]) -> None:
     required_dual = set(getattr(cfg.permissions, "require_dual_approval_for_risks", []))
@@ -238,6 +281,10 @@ def _require_env(env: Mapping[str, str], env_name: str, label: str, issues: list
 
 def _is_placeholder(value: str) -> bool:
     return value.strip().lower() in PLACEHOLDER_VALUES
+
+
+def _truthy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_valid_digest_pinned_image(image: str) -> bool:

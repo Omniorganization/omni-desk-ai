@@ -1,3 +1,11 @@
+## 1.12.3+root-monorepo-production-ga-candidate
+
+- Added API resource guards for public and authenticated surfaces: body-size caps, IP/endpoint/actor/role/org rate limits, chat and `/agent/run` actor limits, and concurrency backpressure.
+- Redacted public `/ready` to only return `ok`; detailed runtime, database, sandbox, and missing-secret diagnostics now stay behind `/admin/ready`.
+- Made model spend budgets positive by default, fixed durable per-actor model-cost attribution, and restored a hard `per_task_max_llm_calls` cap.
+- Added `OMNIDESK_REQUIRE_PRODUCTION_GUARDS=true` as an explicit production-safety signal and wired it into Docker, Helm, and systemd production profiles.
+- Extended release gates and tests so resource guards, spend budgets, and production guard enforcement remain source-controlled candidate requirements.
+
 ## 1.12.2+root-monorepo-production-ga-candidate
 
 - Added per-matrix CI evidence manifests that bind commit SHA, GitHub Actions run metadata, coverage JSON/XML hashes, and captured ruff/pyright/pytest logs.

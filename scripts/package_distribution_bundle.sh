@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-dist/distribution}"
-VERSION="${VERSION:-1.12.2+root-monorepo-production-ga-candidate}"
+VERSION="${VERSION:-1.12.3+root-monorepo-production-ga-candidate}"
 SOURCE_COMMIT="${SOURCE_COMMIT:-unknown}"
 
 usage() {
@@ -145,7 +145,7 @@ zip_root "Omni-desk-AI-${NATIVE_VERSION}-mobile" "${PACKAGE_DIR}/Omni-desk-AI-${
 zip_root "${SLUG}-full" "${PACKAGE_DIR}/${SLUG}-full.zip"
 
 printf '%s\n' "$SOURCE_COMMIT" > "${PACKAGE_DIR}/SOURCE_COMMIT.txt"
-cp "${ROOT_DIR}/docs/SOURCE_GATED_PRODUCTION_GA_CANDIDATE_1.12.2.md" "${PACKAGE_DIR}/README.md"
+cp "${ROOT_DIR}/docs/SOURCE_GATED_PRODUCTION_GA_CANDIDATE_1.12.3.md" "${PACKAGE_DIR}/README.md"
 
 python3 "${ROOT_DIR}/scripts/write_portable_sha256s.py" \
   --base-dir "$PACKAGE_DIR" \
@@ -161,7 +161,7 @@ python3 "${ROOT_DIR}/scripts/write_distribution_manifest.py" \
   --version "$VERSION" \
   --package-slug "$SLUG" \
   --source-commit "$SOURCE_COMMIT" \
-  --external-audit "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.2.json" \
+  --external-audit "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.3.json" \
   --output release-manifest.json
 python3 "${ROOT_DIR}/scripts/write_distribution_manifest.py" --package-dir "$PACKAGE_DIR" --verify --manifest release-manifest.json
 
@@ -172,6 +172,7 @@ python3 "${ROOT_DIR}/scripts/write_distribution_manifest.py" --package-dir "$PAC
 
 python3 "${ROOT_DIR}/scripts/check_release_hygiene.py" "$PACKAGE_DIR"
 unzip -tq "${OUT_DIR}/${SLUG}-package.zip" >/dev/null
+rm -rf "$WORK_DIR"
 
 echo "Distribution package directory: ${PACKAGE_DIR}"
 echo "Distribution wrapper zip: ${OUT_DIR}/${SLUG}-package.zip"

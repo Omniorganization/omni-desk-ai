@@ -4,7 +4,7 @@ from scripts.check_workflow_governance import main
 
 
 def test_workflow_governance_accepts_patch_contract(tmp_path, capsys) -> None:
-    patch = tmp_path / "patches" / "v1.12.2-apply.patch"
+    patch = tmp_path / "patches" / "v1.12.3-apply.patch"
     patch.parent.mkdir(parents=True)
     patch.write_text("""
 python scripts/check_release_configuration.py --scope web-admin
@@ -13,8 +13,8 @@ python scripts/check_release_configuration.py --scope mobile
 python scripts/check_release_configuration.py --scope tri-app
 python scripts/check_release_configuration.py --scope ios-evidence
 python scripts/check_release_configuration.py --scope tri-app-live-smoke
-IOS_EVIDENCE_EXPECTED_VERSION=1.12.2+root-monorepo-production-ga-candidate
-python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.12.2.json
+IOS_EVIDENCE_EXPECTED_VERSION=1.12.3+root-monorepo-production-ga-candidate
+python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.12.3.json
 python scripts/import_tri_app_live_smoke_evidence.py --write-report release/tri-app-live-smoke-evidence-import-report.json
 actions/upload-artifact
 dist/
@@ -43,7 +43,7 @@ steps:
 
 
 def test_workflow_governance_real_workflow_mode_rejects_patch_only(tmp_path, capsys) -> None:
-    patch = tmp_path / "patches" / "v1.12.2-apply.patch"
+    patch = tmp_path / "patches" / "v1.12.3-apply.patch"
     patch.parent.mkdir(parents=True)
     patch.write_text("""
 python scripts/check_release_configuration.py --scope web-admin
@@ -52,8 +52,8 @@ python scripts/check_release_configuration.py --scope mobile
 python scripts/check_release_configuration.py --scope tri-app
 python scripts/check_release_configuration.py --scope ios-evidence
 python scripts/check_release_configuration.py --scope tri-app-live-smoke
-IOS_EVIDENCE_EXPECTED_VERSION=1.12.2+root-monorepo-production-ga-candidate
-python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.12.2.json
+IOS_EVIDENCE_EXPECTED_VERSION=1.12.3+root-monorepo-production-ga-candidate
+python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.12.3.json
 python scripts/import_tri_app_live_smoke_evidence.py --write-report release/tri-app-live-smoke-evidence-import-report.json
 """, encoding="utf-8")
 
@@ -72,16 +72,16 @@ steps:
   - run: python scripts/check_release_configuration.py --scope mobile
   - run: python scripts/check_release_configuration.py --scope tri-app
   - env:
-      IOS_EVIDENCE_EXPECTED_VERSION: 1.12.2+root-monorepo-production-ga-candidate
+      IOS_EVIDENCE_EXPECTED_VERSION: 1.12.3+root-monorepo-production-ga-candidate
   - run: python scripts/check_release_configuration.py --scope ios-evidence
   - run: python scripts/check_release_configuration.py --scope tri-app-live-smoke
-  - run: python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.12.2.json
+  - run: python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.12.3.json
   - run: python scripts/import_tri_app_live_smoke_evidence.py --write-report release/tri-app-live-smoke-evidence-import-report.json
   - uses: actions/upload-artifact
     with:
       path: |
         dist/
-        release/real-ga-evidence-audit-1.12.2.json
+        release/real-ga-evidence-audit-1.12.3.json
         release/ios-real-device-evidence-import-report.json
         release/tri-app-live-smoke-evidence-import-report.json
   - run: python scripts/write_slsa_provenance.py dist --builder-id release_metadata

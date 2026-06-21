@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import time
 import weakref
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from omnidesk_agent import __version__
 from omnidesk_agent.config import AppConfig
@@ -26,6 +27,7 @@ from omnidesk_agent.server_routes.agent_routes import register_agent_routes, reg
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
 from omnidesk_agent.appsync import register_appsync_routes
+from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.validation.production import assert_production_config_safe
 
 
@@ -64,11 +66,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
     weakref.finalize(app, rt.close)
     metrics = MetricsRegistry()
     event_logger = JsonEventLogger()
+    resource_guard = ApiResourceGuard(cfg.api_resource_guard)
     otel_endpoint = os.getenv(cfg.observability.otlp_endpoint_env, "")
     otel_exporter = AsyncOTLPHttpExporter(endpoint=otel_endpoint, timeout=cfg.observability.otlp_timeout_seconds) if otel_endpoint else None
     app.state.metrics = metrics
     app.state.runtime = rt
     app.state.otel_exporter = otel_exporter
+    app.state.resource_guard = resource_guard
     _wire_runtime_metrics(rt, metrics, otel_exporter)
 
     @app.middleware("http")
@@ -78,7 +82,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
         trace_id = parsed_trace["trace_id"] if parsed_trace else request_id.replace("-", "")[:32].ljust(32, "0")
         request.state.request_id = request_id
         started = time.time()
+        release_resource_guard = None
         try:
+            try:
+                release_resource_guard = await resource_guard.before_request(request)
+            except HTTPException as exc:
+                metrics.inc("omnidesk_http_resource_guard_denials_total", method=request.method, path=request.url.path, status=exc.status_code)
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
             with trace_span(
                 "http.request",
                 trace_id=trace_id,
@@ -102,11 +112,14 @@ def create_app(cfg: AppConfig) -> FastAPI:
             metrics.set("omnidesk_http_last_latency_seconds", elapsed, path=request.url.path)
             metrics.observe("omnidesk_http_request_duration_seconds", elapsed, path=request.url.path, method=request.method)
             event_logger.event("http_request", request_id=request_id, trace_id=trace_id, method=request.method, path=request.url.path, elapsed=elapsed)
+            if release_resource_guard is not None:
+                release_resource_guard()
 
     async def _admin(request: Request, role: str = "viewer"):
         decision = await rt.admin_auth.verify_request(request, required_role=role)
         if not decision.ok:
             raise HTTPException(status_code=403, detail=decision.reason)
+        resource_guard.check_authenticated(request, actor=getattr(decision, "actor", "unknown"), role=getattr(decision, "role", role))
         return decision
 
     def _readiness_snapshot() -> dict:
@@ -185,8 +198,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
     async def ready():
         snapshot = _readiness_snapshot()
         if not snapshot["ok"]:
-            raise HTTPException(status_code=503, detail=snapshot)
-        return snapshot
+            raise HTTPException(status_code=503, detail={"ok": False})
+        return {"ok": True}
 
     @app.get("/admin/ready")
     async def admin_ready(request: Request):

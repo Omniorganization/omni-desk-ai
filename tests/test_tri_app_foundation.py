@@ -238,6 +238,24 @@ def test_api_chat_alias_uses_audited_model_router_and_creates_conversation(tmp_p
         assert stream.status_code == 501
 
 
+def test_api_chat_actor_rate_limit_blocks_repeated_model_spend(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    cfg = _cfg(tmp_path)
+    cfg.api_resource_guard.chat_max_requests_per_actor = 1
+    cfg.api_resource_guard.max_requests_per_actor = 10
+    app = create_app(cfg)
+    fake_router = FakeChatRouter()
+    app.state.runtime.model_router = fake_router
+    with TestClient(app) as client:
+        headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice", "idempotency-key": "chat-limit-1"}
+        first = client.post("/api/chat", headers=headers, json={"content": "first"})
+        assert first.status_code == 200, first.text
+        second = client.post("/api/chat", headers={**headers, "idempotency-key": "chat-limit-2"}, json={"content": "second"})
+        assert second.status_code == 429
+        assert second.json()["detail"] == "chat rate limit exceeded"
+        assert len(fake_router.requests) == 1
+
+
 def test_appsync_ask_route_rejects_viewer_role(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
     monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "viewer-token")
