@@ -31,6 +31,7 @@ class OAuthStateStore:
             ])
 
     def create(self, redirect_uri: str, *, actor: str | None = None) -> str:
+        self.purge_expired()
         state = secrets.token_urlsafe(32)
         actor_key = _actor_key(actor)
         with connect_sqlite(self.db_path) as con:
@@ -54,6 +55,12 @@ class OAuthStateStore:
                 return False
             con.execute("UPDATE oauth_states SET used_at = ? WHERE state = ?", (time.time(), state))
         return True
+
+    def purge_expired(self, *, now: float | None = None) -> int:
+        cutoff = (time.time() if now is None else float(now)) - self.ttl_seconds
+        with connect_sqlite(self.db_path) as con:
+            cursor = con.execute("DELETE FROM oauth_states WHERE created_at < ? OR used_at IS NOT NULL", (cutoff,))
+            return int(cursor.rowcount or 0)
 
 
 def _add_actor_column(con) -> None:

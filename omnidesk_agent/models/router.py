@@ -25,11 +25,13 @@ class RoutePlan:
 
 
 class ModelRouter:
-    def __init__(self, cfg: ModelsConfig, token_budget: TokenBudgetManager, cost_store: ModelCostStore | None = None):
+    def __init__(self, cfg: ModelsConfig, token_budget: TokenBudgetManager, cost_store: ModelCostStore | None = None, *, require_persistent_ledger: bool = False):
         self.cfg = cfg
         self.token_budget = token_budget
         self.providers = {name: self._build_provider(name, p) for name, p in cfg.profiles.items() if p.enabled}
         self._circuit: dict[str, dict[str, float]] = {}
+        if require_persistent_ledger and cost_store is None:
+            raise RuntimeError("models.budget.require_persistent_ledger requires a configured model cost_store")
         self.cost_ledger = ModelCostLedger(store=cost_store)
         self.budget_enforcer = self._build_budget_enforcer(cost_store)
         self.error_counts: dict[str, int] = {}
@@ -264,5 +266,5 @@ class ModelRouter:
         }
 
 
-def build_model_router(cfg: ModelsConfig, token_budget: TokenBudgetManager, cost_store: ModelCostStore | None = None) -> ModelRouter:
-    return ModelRouter(cfg, token_budget, cost_store)
+def build_model_router(cfg: ModelsConfig, token_budget: TokenBudgetManager, cost_store: ModelCostStore | None = None, *, require_persistent_ledger: bool = False) -> ModelRouter:
+    return ModelRouter(cfg, token_budget, cost_store, require_persistent_ledger=require_persistent_ledger)

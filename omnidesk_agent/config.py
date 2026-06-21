@@ -423,6 +423,7 @@ class ApiResourceGuardConfig(BaseModel):
     backend: Literal["memory", "sqlite", "postgres"] = "memory"
     sqlite_path: Path = Path("~/.omnidesk/api_resource_guard.sqlite3").expanduser()
     postgres_dsn_env: str = "OMNIDESK_POSTGRES_DSN"
+    trusted_proxy_ips: list[str] = Field(default_factory=list)
     window_seconds: int = 60
     max_body_bytes: int = 1_048_576
     max_requests_per_ip: int = 300

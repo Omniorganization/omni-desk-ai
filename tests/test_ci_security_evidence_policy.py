@@ -11,14 +11,14 @@ from scripts.check_security_workflow_policy import main as check_security_workfl
 from scripts.write_ci_evidence_manifest import main as write_ci_evidence_manifest_main
 
 
-VERSION = "1.12.4+root-monorepo-production-ga-candidate"
-SLUG = "Omni-desk-AI-1.12.4-root-monorepo-production-ga-candidate"
+VERSION = "1.12.5+root-monorepo-production-ga-candidate"
+SLUG = "Omni-desk-AI-1.12.5-root-monorepo-production-ga-candidate"
 
 
 def test_write_ci_evidence_manifest_binds_commit_run_logs_and_coverage(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "pyproject.toml").write_text('[project]\nversion = "1.12.4+root-monorepo-production-ga-candidate"\n', encoding="utf-8")
+    (root / "pyproject.toml").write_text('[project]\nversion = "1.12.5+root-monorepo-production-ga-candidate"\n', encoding="utf-8")
     coverage_json = tmp_path / "coverage.json"
     coverage_json.write_text(
         json.dumps({"totals": {"covered_lines": 8, "num_statements": 10, "percent_covered": 80.0}}),

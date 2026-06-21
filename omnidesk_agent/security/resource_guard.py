@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from ipaddress import ip_address, ip_network
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -196,7 +197,7 @@ class ApiResourceGuard:
         if not self._enabled():
             return lambda: None
         await self._check_body_size(request)
-        client = _client_key(request)
+        client = _client_key(request, self.cfg)
         path = _path_key(request.url.path)
         window = int(getattr(self.cfg, "window_seconds", 60))
         self._check_rate(f"ip:{client}", int(getattr(self.cfg, "max_requests_per_ip", 300)), window, "ip")
@@ -297,10 +298,36 @@ def _build_rate_limiter(cfg):
     raise ValueError(f"unsupported api_resource_guard.backend: {backend!r}")
 
 
-def _client_key(request: Request) -> str:
+def _client_key(request: Request, cfg=None) -> str:
+    host = getattr(getattr(request, "client", None), "host", None) or "unknown"
     forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-    host = forwarded or getattr(getattr(request, "client", None), "host", None) or "unknown"
+    if forwarded and _is_trusted_proxy(host, getattr(cfg, "trusted_proxy_ips", []) if cfg is not None else []):
+        host = forwarded
     return _clean(host)
+
+
+def _is_trusted_proxy(host: str, trusted_proxy_ips: list[str]) -> bool:
+    if not trusted_proxy_ips:
+        return False
+    host = str(host or "").strip()
+    try:
+        host_ip = ip_address(host)
+    except ValueError:
+        host_ip = None
+    for raw in trusted_proxy_ips:
+        candidate = str(raw or "").strip()
+        if not candidate:
+            continue
+        if host == candidate:
+            return True
+        if host_ip is None:
+            continue
+        try:
+            if host_ip in ip_network(candidate, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _path_key(path: str) -> str:

@@ -1,5 +1,5 @@
 {
-  "version": "1.12.4+root-monorepo-production-ga-candidate",
+  "version": "1.12.5+root-monorepo-production-ga-candidate",
   "evidence_dir": "release/external-evidence",
   "required_files": {
     "native_build": [

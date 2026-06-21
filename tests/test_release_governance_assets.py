@@ -37,6 +37,14 @@ def test_release_governance_assets_exist():
     assert Path("release/license-policy.json").exists()
 
 
+def test_production_config_initializer_does_not_print_generated_secrets():
+    script = Path("scripts/init_production_config.py").read_text(encoding="utf-8")
+    assert "token_urlsafe" not in script
+    assert 'print(f"{name}=' not in script
+    assert 'print(f"- {issue}")' not in script
+    assert "details withheld to avoid logging sensitive config" in script
+
+
 def test_source_main_restore_contract_blocks_package_only_main():
     contract = Path("INDUSTRIAL_SOURCE_MAIN_RESTORE.md").read_text(encoding="utf-8")
     assert "`main` as the source trunk" in contract
@@ -50,8 +58,8 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "release_channel" in workflow
     assert "RELEASE_CHANNEL" in workflow
     assert '[[ "$RELEASE_CHANNEL" == "real-ga" ]]' in workflow
-    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.4.json" in workflow
-    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.4.json" in workflow
+    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.5.json" in workflow
+    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json" in workflow
 
 
 def test_release_channel_policy_script_passes_current_tree():
@@ -67,7 +75,7 @@ def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
     assert "release-external-ga-evidence:" in makefile
     assert "external-ga-evidence-gate:" in makefile
     assert "scripts/check_external_ga_evidence.py .\n" in makefile
-    assert "release/real-ga-evidence-audit-1.12.4.json" in makefile
+    assert "release/real-ga-evidence-audit-1.12.5.json" in makefile
 
 
 def test_ci_coverage_gate_is_80_and_has_group_gate():

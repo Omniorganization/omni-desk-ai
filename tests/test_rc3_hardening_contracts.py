@@ -67,6 +67,9 @@ def test_production_requires_remote_runner_or_digest_pinned_local_docker(monkeyp
     cfg.plugins.enabled = False
     cfg.channels.chrome.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True
+    cfg.storage.backend = "postgres"
+    cfg.app_sync.backend = "postgres"
+    cfg.api_resource_guard.backend = "postgres"
     cfg.sandbox.backend = "remote_docker"
     cfg.sandbox.runner_url = "http://sandbox-runner:18890"
     cfg.sandbox.docker_image = PINNED
@@ -77,6 +80,8 @@ def test_production_requires_remote_runner_or_digest_pinned_local_docker(monkeyp
         "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
         "OMNIDESK_SANDBOX_RUNNER_TOKEN": "x" * 40,
         "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET": "x" * 40,
+        "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
     }
     assert validate_production_config(cfg, env)["ok"] is True
     cfg.sandbox.runner_url = None

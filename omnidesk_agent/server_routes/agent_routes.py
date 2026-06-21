@@ -6,27 +6,35 @@ import uuid
 from typing import Awaitable, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from omnidesk_agent.core.models import ChannelMessage
 
 AdminVerifier = Callable[[Request, str], Awaitable[object]]
 
 
+class AgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    message: str = Field(min_length=1, max_length=12000)
+    secret: Optional[str] = Field(default=None, max_length=4096)
+    idempotency_key: Optional[str] = Field(default=None, max_length=256)
+    source_device: Optional[str] = Field(default=None, max_length=160)
+
+
 def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier) -> None:
     @app.post("/agent/run")
-    async def run_agent(request: Request, body: dict):
+    async def run_agent(request: Request, body: AgentRunRequest):
         decision = await admin(request, "operator")
         secret = os.getenv(cfg.gateway.shared_secret_env, "")
-        provided = str(body.get("secret", ""))
+        provided = str(body.secret or "")
         if secret and not provided:
             raise HTTPException(401, "missing secret")
         if secret and not hmac.compare_digest(secret, provided):
             raise HTTPException(401, "bad secret")
         if provided and not secret:
             raise HTTPException(400, "secret provided but gateway shared secret is not configured")
-        message = str(body.get("message") or "").strip()
-        if not message:
-            raise HTTPException(422, "message is required")
+        message = body.message
         actor = str(getattr(decision, "actor", "") or "operator")
         msg = ChannelMessage(channel="local-api", sender_id=actor, text=message)
         return await rt.orchestrator.handle_message(msg)
