@@ -50,8 +50,8 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "release_channel" in workflow
     assert "RELEASE_CHANNEL" in workflow
     assert '[[ "$RELEASE_CHANNEL" == "real-ga" ]]' in workflow
-    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.3.json" in workflow
-    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.3.json" in workflow
+    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.4.json" in workflow
+    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.4.json" in workflow
 
 
 def test_release_channel_policy_script_passes_current_tree():
@@ -67,7 +67,7 @@ def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
     assert "release-external-ga-evidence:" in makefile
     assert "external-ga-evidence-gate:" in makefile
     assert "scripts/check_external_ga_evidence.py .\n" in makefile
-    assert "release/real-ga-evidence-audit-1.12.3.json" in makefile
+    assert "release/real-ga-evidence-audit-1.12.4.json" in makefile
 
 
 def test_ci_coverage_gate_is_80_and_has_group_gate():
@@ -99,6 +99,10 @@ def test_ci_runs_version_consistency_check():
     assert "scripts/check_security_workflow_policy.py" in ci
     assert "scripts/write_ci_evidence_manifest.py" in ci
     assert "ci-evidence-${{ matrix.python-version }}" in ci
+    assert "--artifact-name \"ci-evidence-${{ matrix.python-version }}\"" in ci
+    writer = Path("scripts/write_ci_evidence_manifest.py").read_text(encoding="utf-8")
+    assert '"job_result": "success"' in writer
+    assert '"artifacts": [' in writer
 
 
 def test_script_executability_contract_passes_current_tree():

@@ -19,7 +19,14 @@ REQUIRED_CI_SNIPPETS = [
     "scripts/write_ci_evidence_manifest.py",
     "ci-evidence.json",
     "ci-evidence-${{ matrix.python-version }}",
+    "--artifact-name \"ci-evidence-${{ matrix.python-version }}\"",
     "actions/upload-artifact@",
+]
+
+REQUIRED_WRITER_SNIPPETS = [
+    '"job_result": "success"',
+    '"artifacts": [',
+    '"expected_paths": [',
 ]
 
 
@@ -31,6 +38,9 @@ def check(root: Path) -> list[str]:
         return ["missing CI workflow: .github/workflows/ci.yml"]
     if not writer.exists():
         issues.append("missing CI evidence writer: scripts/write_ci_evidence_manifest.py")
+        writer_text = ""
+    else:
+        writer_text = writer.read_text(encoding="utf-8")
     text = workflow.read_text(encoding="utf-8")
     for snippet in REQUIRED_CI_SNIPPETS:
         if snippet not in text:
@@ -39,6 +49,9 @@ def check(root: Path) -> list[str]:
         issues.append("CI must emit both coverage JSON and coverage XML reports")
     if "set -o pipefail" not in text or "| tee" not in text:
         issues.append("CI evidence logs must be captured without masking command failures")
+    for snippet in REQUIRED_WRITER_SNIPPETS:
+        if snippet not in writer_text:
+            issues.append(f"CI evidence writer missing snippet: {snippet}")
     return issues
 
 

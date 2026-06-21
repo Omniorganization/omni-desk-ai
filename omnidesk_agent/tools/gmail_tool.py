@@ -62,14 +62,14 @@ class GmailTool:
             self._require_enabled()
             redirect_uri = str(args["redirect_uri"])
             state = str(args.get("state", "omnidesk-gmail"))
-            result = self.adapter.oauth.build_authorization_url(redirect_uri, state)
+            result = self.adapter.oauth.build_authorization_url(redirect_uri, state, actor=ctx.actor)
             return ToolResult(True, data=result, summary="built gmail oauth authorization url")
 
         if action == "auth_callback":
             self._require_enabled()
             code = str(args["code"])
             redirect_uri = str(args["redirect_uri"])
-            token = self.adapter.oauth.exchange_code(code, redirect_uri, args.get("state"))
+            token = self.adapter.oauth.exchange_code(code, redirect_uri, args.get("state"), actor=ctx.actor)
             return ToolResult(True, data={"token_saved": True, "keys": sorted(token.keys())}, summary="exchanged gmail oauth code")
 
         if action == "build_raw_email":

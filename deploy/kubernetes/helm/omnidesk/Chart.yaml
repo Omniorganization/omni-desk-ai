@@ -1,5 +1,5 @@
 apiVersion: v2
 name: omnidesk
-version: 1.12.3
-appVersion: 1.12.3+root-monorepo-production-ga-candidate
+version: 1.12.4
+appVersion: 1.12.4+root-monorepo-production-ga-candidate
 description: OmniDesk enterprise runtime deployment chart

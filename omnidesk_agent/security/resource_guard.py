@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from fastapi import HTTPException, Request
+
+from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
 _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9@._:/-]+")
@@ -14,12 +18,15 @@ _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9@._:/-]+")
 
 @dataclass(frozen=True)
 class ResourceGuardSnapshot:
+    backend: str
     rate_buckets: int
     inflight_total: int
     inflight_by_class: dict[str, int]
 
 
 class InMemoryRateLimiter:
+    backend = "memory"
+
     def __init__(self, clock: Callable[[], float] | None = None):
         self.clock = clock or time.time
         self._lock = threading.Lock()
@@ -52,12 +59,132 @@ class InMemoryRateLimiter:
             return len(self._buckets)
 
 
+class SQLiteRateLimiter:
+    backend = "sqlite"
+
+    def __init__(self, db_path: Path, clock: Callable[[], float] | None = None):
+        self.db_path = db_path.expanduser()
+        self.clock = clock or time.time
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with connect_sqlite(self.db_path) as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_resource_rate_limits (
+                    key TEXT PRIMARY KEY,
+                    window_started REAL NOT NULL,
+                    count INTEGER NOT NULL
+                )
+                """
+            )
+
+    def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
+        if limit <= 0:
+            return False
+        now = self.clock()
+        window_seconds = max(1, int(window_seconds))
+        with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute("SELECT window_started, count FROM api_resource_rate_limits WHERE key = ?", (key,)).fetchone()
+            if not row or now - float(row[0]) >= window_seconds:
+                con.execute(
+                    "INSERT OR REPLACE INTO api_resource_rate_limits(key, window_started, count) VALUES (?, ?, ?)",
+                    (key, now, 1),
+                )
+                return True
+            count = int(row[1])
+            if count >= limit:
+                return False
+            con.execute("UPDATE api_resource_rate_limits SET count = ? WHERE key = ?", (count + 1, key))
+            self._gc(con, now, window_seconds)
+            return True
+
+    def _gc(self, con, now: float, window_seconds: int) -> None:
+        row = con.execute("SELECT COUNT(*) FROM api_resource_rate_limits").fetchone()
+        if int(row[0]) < 4096:
+            return
+        con.execute("DELETE FROM api_resource_rate_limits WHERE window_started <= ?", (now - window_seconds,))
+
+    def size(self) -> int:
+        with connect_sqlite(self.db_path) as con:
+            row = con.execute("SELECT COUNT(*) FROM api_resource_rate_limits").fetchone()
+            return int(row[0])
+
+
+class PostgresRateLimiter:
+    backend = "postgres"
+
+    def __init__(self, *, dsn_env: str, clock: Callable[[], float] | None = None):
+        self.dsn_env = dsn_env
+        self.clock = clock or time.time
+        self._init_schema()
+
+    def _dsn(self) -> str:
+        dsn = os.getenv(self.dsn_env, "")
+        if not dsn:
+            raise RuntimeError(f"{self.dsn_env} is required when api_resource_guard.backend=postgres")
+        return dsn
+
+    def _connect(self):  # type: ignore[no-untyped-def]
+        try:
+            import psycopg  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional production dependency
+            raise RuntimeError("Install psycopg to use api_resource_guard.backend=postgres") from exc
+        return psycopg.connect(self._dsn())
+
+    def _init_schema(self) -> None:
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS omnidesk_api_resource_rate_limits (
+                        key TEXT PRIMARY KEY,
+                        window_started DOUBLE PRECISION NOT NULL,
+                        count INTEGER NOT NULL
+                    )
+                    """
+                )
+
+    def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
+        if limit <= 0:
+            return False
+        now = self.clock()
+        window_seconds = max(1, int(window_seconds))
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO omnidesk_api_resource_rate_limits(key, window_started, count)
+                    VALUES (%s, %s, 1)
+                    ON CONFLICT (key) DO UPDATE SET
+                        window_started = CASE
+                            WHEN %s - omnidesk_api_resource_rate_limits.window_started >= %s THEN %s
+                            ELSE omnidesk_api_resource_rate_limits.window_started
+                        END,
+                        count = CASE
+                            WHEN %s - omnidesk_api_resource_rate_limits.window_started >= %s THEN 1
+                            ELSE omnidesk_api_resource_rate_limits.count + 1
+                        END
+                    RETURNING count
+                    """,
+                    (key, now, now, window_seconds, now, now, window_seconds),
+                )
+                row = cur.fetchone()
+                return int(row[0]) <= limit
+
+    def size(self) -> int:
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM omnidesk_api_resource_rate_limits")
+                row = cur.fetchone()
+                return int(row[0])
+
+
 class ApiResourceGuard:
     """Bound public API consumption before and after admin authentication."""
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.rate = InMemoryRateLimiter()
+        self.rate = _build_rate_limiter(cfg)
         self._lock = threading.Lock()
         self._inflight_total = 0
         self._inflight_by_class: dict[str, int] = {}
@@ -144,6 +271,7 @@ class ApiResourceGuard:
     def snapshot(self) -> ResourceGuardSnapshot:
         with self._lock:
             return ResourceGuardSnapshot(
+                backend=getattr(self.rate, "backend", "unknown"),
                 rate_buckets=self.rate.size(),
                 inflight_total=self._inflight_total,
                 inflight_by_class=dict(self._inflight_by_class),
@@ -156,6 +284,17 @@ def _class_limit(cfg, route_class: str) -> int:
     if route_class == "chat":
         return int(getattr(cfg, "max_inflight_chat_requests", 8))
     return int(getattr(cfg, "max_inflight_requests", 64))
+
+
+def _build_rate_limiter(cfg):
+    backend = str(getattr(cfg, "backend", "memory") or "memory").strip().lower()
+    if backend == "memory":
+        return InMemoryRateLimiter()
+    if backend == "sqlite":
+        return SQLiteRateLimiter(Path(getattr(cfg, "sqlite_path")))
+    if backend == "postgres":
+        return PostgresRateLimiter(dsn_env=str(getattr(cfg, "postgres_dsn_env", "OMNIDESK_POSTGRES_DSN")))
+    raise ValueError(f"unsupported api_resource_guard.backend: {backend!r}")
 
 
 def _client_key(request: Request) -> str:

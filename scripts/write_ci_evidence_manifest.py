@@ -111,7 +111,11 @@ def build_manifest(
     coverage_json: Path | None,
     coverage_xml: Path | None,
     logs: list[tuple[str, Path]],
+    artifact_name: str,
 ) -> dict[str, Any]:
+    matrix_python = python_version or platform.python_version()
+    evidence_dir = f"reports/ci/{matrix_python}"
+    artifact = artifact_name or f"ci-evidence-{matrix_python}"
     return {
         "schema_version": "omnidesk-ci-evidence/v1",
         "project_version": _project_version(root),
@@ -127,9 +131,20 @@ def build_manifest(
             "ref": os.getenv("GITHUB_REF", ""),
             "event_name": os.getenv("GITHUB_EVENT_NAME", ""),
             "actor": os.getenv("GITHUB_ACTOR", ""),
+            "job_result": "success",
+            "artifacts": [
+                {
+                    "name": artifact,
+                    "expected_paths": [
+                        evidence_dir + "/",
+                        "coverage.json",
+                        "coverage.xml",
+                    ],
+                }
+            ],
         },
         "matrix": {
-            "python_version": python_version or platform.python_version(),
+            "python_version": matrix_python,
         },
         "coverage": _coverage_summary(coverage_json, coverage_xml),
         "logs": [_log_summary(name, path) for name, path in logs],
@@ -151,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--coverage-json")
     parser.add_argument("--coverage-xml")
     parser.add_argument("--log", action="append", default=[], help="Captured command log in name=path form; may be repeated.")
+    parser.add_argument("--artifact-name", default="", help="GitHub Actions artifact name that will contain this manifest.")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -168,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             coverage_json=coverage_json,
             coverage_xml=coverage_xml,
             logs=logs,
+            artifact_name=args.artifact_name,
         )
         target = write_manifest(manifest, Path(args.output))
     except (OSError, RuntimeError, json.JSONDecodeError) as exc:

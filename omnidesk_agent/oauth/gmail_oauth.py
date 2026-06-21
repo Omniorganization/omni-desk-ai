@@ -91,7 +91,7 @@ class GmailOAuthManager:
         self.save_token_json(token)
         return token
 
-    def build_authorization_url(self, redirect_uri: str, state: Optional[str] = None) -> dict[str, str]:
+    def build_authorization_url(self, redirect_uri: str, state: Optional[str] = None, *, actor: str | None = None) -> dict[str, str]:
         # Do not trust caller-provided state. Always create a server-side one-time state.
         self._check_redirect_uri(redirect_uri)
         if not self.credentials_available():
@@ -101,7 +101,7 @@ class GmailOAuthManager:
         except ImportError as exc:
             raise RuntimeError("Install google-auth-oauthlib to use Gmail OAuth flow") from exc
 
-        state_value = self.state_store.create(redirect_uri)
+        state_value = self.state_store.create(redirect_uri, actor=actor)
         flow = Flow.from_client_secrets_file(str(self.cfg.credentials_file), scopes=self.scopes, redirect_uri=redirect_uri)
         auth_url, returned_state = flow.authorization_url(
             access_type="offline",
@@ -111,9 +111,9 @@ class GmailOAuthManager:
         )
         return {"authorization_url": auth_url, "state": returned_state}
 
-    def exchange_code(self, code: str, redirect_uri: str, state: Optional[str] = None) -> dict[str, Any]:
+    def exchange_code(self, code: str, redirect_uri: str, state: Optional[str] = None, *, actor: str | None = None) -> dict[str, Any]:
         self._check_redirect_uri(redirect_uri)
-        if not state or not self.state_store.verify_and_use(state, redirect_uri):
+        if not state or not self.state_store.verify_and_use(state, redirect_uri, actor=actor):
             raise PermissionError("Invalid, expired, used, or redirect_uri-mismatched OAuth state")
         if not self.credentials_available():
             raise RuntimeError(f"Gmail credentials file missing: {self.cfg.credentials_file}")

@@ -76,15 +76,17 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
         return validate_extensions(rt)
 
     @app.get("/oauth/gmail/start")
-    async def gmail_oauth_start(request: Request, redirect_uri: str, state: Optional[str] = None):
-        await admin(request, "owner")
-        return rt.adapters["gmail"].oauth.build_authorization_url(redirect_uri=redirect_uri, state=None)
+    async def gmail_oauth_start(request: Request, redirect_uri: str):
+        decision = await admin(request, "owner")
+        actor = str(getattr(decision, "actor", "") or "owner")
+        return rt.adapters["gmail"].oauth.build_authorization_url(redirect_uri=redirect_uri, actor=actor)
 
     @app.get("/oauth/gmail/callback")
     async def gmail_oauth_callback(request: Request, code: str, redirect_uri: str, state: Optional[str] = None):
-        await admin(request, "owner")
+        decision = await admin(request, "owner")
+        actor = str(getattr(decision, "actor", "") or "owner")
         try:
-            token = rt.adapters["gmail"].oauth.exchange_code(code=code, redirect_uri=redirect_uri, state=state)
+            token = rt.adapters["gmail"].oauth.exchange_code(code=code, redirect_uri=redirect_uri, state=state, actor=actor)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         return {"ok": True, "token_saved": True, "keys": sorted(token.keys())}

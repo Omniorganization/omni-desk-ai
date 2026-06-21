@@ -61,6 +61,7 @@ class ModelBudgetConfig(BaseModel):
     monthly_usd_limit: Optional[float] = 5000.0
     per_actor_daily_usd_limit: Optional[float] = 50.0
     on_exceed: Literal["require_approval", "fallback_local", "block"] = "require_approval"
+    require_persistent_ledger: bool = True
 
 
 class ModelsConfig(BaseModel):
@@ -419,6 +420,9 @@ class ObservabilityConfig(BaseModel):
 
 class ApiResourceGuardConfig(BaseModel):
     enabled: bool = True
+    backend: Literal["memory", "sqlite", "postgres"] = "memory"
+    sqlite_path: Path = Path("~/.omnidesk/api_resource_guard.sqlite3").expanduser()
+    postgres_dsn_env: str = "OMNIDESK_POSTGRES_DSN"
     window_seconds: int = 60
     max_body_bytes: int = 1_048_576
     max_requests_per_ip: int = 300

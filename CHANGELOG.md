@@ -1,3 +1,12 @@
+## 1.12.4+root-monorepo-production-ga-candidate
+
+- Bound Gmail OAuth state to the authenticated actor on start and callback so callback exchange cannot be completed under a different actor.
+- Added persistent API resource guard backends and fail-closed production validation for multi-instance deployments that require PostgreSQL-backed rate-limit state.
+- Emitted audit events for API resource guard denials and added dedicated abuse-limit coverage for public, chat, and `/agent/run` surfaces.
+- Required a persistent model-budget ledger in production profiles so per-actor model spend attribution is durable rather than process-local.
+- Extended CI evidence manifests to include successful job result and uploaded artifact identity for each Python matrix cell.
+- Added focused regression tests for OAuth routes, resource guards, model-budget enforcement, public readiness redaction, and agent-run abuse limits.
+
 ## 1.12.3+root-monorepo-production-ga-candidate
 
 - Added API resource guards for public and authenticated surfaces: body-size caps, IP/endpoint/actor/role/org rate limits, chat and `/agent/run` actor limits, and concurrency backpressure.

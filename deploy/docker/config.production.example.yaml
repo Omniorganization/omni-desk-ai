@@ -18,6 +18,8 @@ models:
 
 api_resource_guard:
   enabled: true
+  backend: postgres
+  postgres_dsn_env: OMNIDESK_POSTGRES_DSN
   window_seconds: 60
   max_body_bytes: 1048576
   max_requests_per_ip: 300
