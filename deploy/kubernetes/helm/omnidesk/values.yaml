@@ -29,6 +29,8 @@ storage:
 config:
   publicBaseUrl: https://omnidesk.ai.internal
   sandboxRunnerUrl: http://sandbox-runner:18890
+  # Empty means x-forwarded-for is ignored unless an ingress/LB IP or CIDR is configured.
+  trustedProxyIps: []
 sandboxRunner:
   repository: ghcr.io/yinyufan0813-cmyk/omnidesk-sandbox-runner
   digest: "" # required: runner image digest must be pinned

@@ -221,7 +221,11 @@ def test_agent_routes_cover_run_resume_oauth_approval_and_upgrade(monkeypatch):
     approvals = ApprovalStore()
     register_agent_routes(app, cfg, rt, approvals, allow_admin)
     with TestClient(app) as client:
-        assert client.post("/agent/run", json={"message": "hello", "actor": "a", "secret": "shared"}).json()["text"] == "hello"
+        run = client.post("/agent/run", json={"message": "hello", "secret": "shared"})
+        assert run.json()["text"] == "hello"
+        assert run.json()["sender"] == "operator"
+        assert client.post("/agent/run", json={"message": "hello", "actor": "a", "secret": "shared"}).status_code == 422
+        assert client.post("/agent/run", json={"message": "x" * 12001, "secret": "shared"}).status_code == 422
         assert client.post("/agent/run", json={"message": "hello"}).status_code == 401
         assert client.post("/agent/run", json={"message": "hello", "secret": "wrong"}).status_code == 401
         assert client.post("/agent/resume/run-1", json={"resume_token": "tok"}).json()["run_id"] == "run-1"

@@ -141,3 +141,15 @@ def test_model_router_records_request_actor_in_cost_store(monkeypatch, tmp_path:
     assert response.profile == "chat"
     by_actor = cost_store.summary(days=1, group_by="actor")
     assert by_actor["groups"]["alice"]["calls"] == 1
+
+
+def test_model_router_requires_cost_store_when_persistent_ledger_is_required(tmp_path: Path):
+    cfg = ModelsConfig()
+    token_budget = TokenBudgetManager(tmp_path / "tokens.sqlite3")
+
+    try:
+        ModelRouter(cfg, token_budget, require_persistent_ledger=True)
+    except RuntimeError as exc:
+        assert "models.budget.require_persistent_ledger requires a configured model cost_store" in str(exc)
+    else:
+        raise AssertionError("expected missing persistent model cost store to fail closed")

@@ -10,6 +10,12 @@ from omnidesk_agent.validation.production import (
 )
 
 
+def _enable_postgres_production_state(cfg: AppConfig) -> None:
+    cfg.storage.backend = "postgres"
+    cfg.app_sync.backend = "postgres"
+    cfg.api_resource_guard.backend = "postgres"
+
+
 def test_local_config_is_not_strict_without_production_signal():
     cfg = AppConfig()
 
@@ -22,6 +28,7 @@ def test_require_production_guards_env_is_production_signal():
     cfg = AppConfig()
     cfg.plugins.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True
+    _enable_postgres_production_state(cfg)
 
     result = validate_production_config(
         cfg,
@@ -30,6 +37,8 @@ def test_require_production_guards_env_is_production_signal():
             "OMNIDESK_ADMIN_TOKEN": "x" * 40,
             "OMNIDESK_GATEWAY_SECRET": "x" * 40,
             "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+            "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         },
     )
 
@@ -63,6 +72,7 @@ def test_production_config_accepts_hardened_minimal_runtime():
     cfg.plugins.enabled = False
     cfg.channels.chrome.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True
+    _enable_postgres_production_state(cfg)
     cfg.sandbox.docker_image = "python:3.11-slim@sha256:" + '66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5'
 
     result = validate_production_config(
@@ -72,6 +82,8 @@ def test_production_config_accepts_hardened_minimal_runtime():
             "OMNIDESK_ADMIN_TOKEN": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             "OMNIDESK_GATEWAY_SECRET": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             "OMNIDESK_MEMORY_ENCRYPTION_KEY": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         },
     )
 

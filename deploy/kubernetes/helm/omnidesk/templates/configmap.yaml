@@ -20,10 +20,19 @@ data:
         monthly_usd_limit: 5000.0
         per_actor_daily_usd_limit: 50.0
         on_exceed: require_approval
+        require_persistent_ledger: true
     api_resource_guard:
       enabled: true
       backend: postgres
       postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+{{- if .Values.config.trustedProxyIps }}
+      trusted_proxy_ips:
+{{- range .Values.config.trustedProxyIps }}
+        - {{ . | quote }}
+{{- end }}
+{{- else }}
+      trusted_proxy_ips: []
+{{- end }}
       window_seconds: 60
       max_body_bytes: 1048576
       max_requests_per_ip: 300

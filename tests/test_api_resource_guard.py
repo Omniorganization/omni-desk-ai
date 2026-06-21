@@ -15,6 +15,7 @@ from omnidesk_agent.security.resource_guard import (
     PostgresRateLimiter,
     SQLiteRateLimiter,
     _build_rate_limiter,
+    _client_key,
     _clean,
     _path_key,
 )
@@ -163,6 +164,16 @@ def test_api_resource_guard_config_exposes_shared_backends(tmp_path):
     assert cfg.backend == "sqlite"
     assert cfg.sqlite_path.name == "guard.sqlite3"
     assert cfg.postgres_dsn_env == "OMNIDESK_POSTGRES_DSN"
+    assert cfg.trusted_proxy_ips == []
+
+
+def test_client_key_only_trusts_forwarded_for_from_configured_proxy():
+    request = _request("/api/chat", headers={"x-forwarded-for": "198.51.100.77, 10.0.0.1"})
+
+    assert _client_key(request, ApiResourceGuardConfig()) == "203.0.113.10"
+    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["203.0.113.10"])) == "198.51.100.77"
+    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["203.0.113.0/24"])) == "198.51.100.77"
+    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["198.51.100.0/24"])) == "203.0.113.10"
 
 
 def test_api_resource_guard_handles_disabled_and_body_size_branches():
@@ -230,12 +241,12 @@ def test_api_resource_guard_rate_helpers_and_backend_validation(tmp_path):
         _build_rate_limiter(SimpleNamespace(backend="redis"))
 
 
-def test_multi_instance_production_rejects_memory_resource_guard():
+def test_production_rejects_memory_resource_guard_even_single_instance():
     cfg = AppConfig()
     cfg.plugins.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True
     cfg.storage.backend = "postgres"
-    cfg.storage.require_multi_instance_safe = True
+    cfg.storage.require_multi_instance_safe = False
     cfg.app_sync.backend = "postgres"
     cfg.api_resource_guard.backend = "memory"
 
@@ -251,4 +262,29 @@ def test_multi_instance_production_rejects_memory_resource_guard():
         },
     )
 
-    assert "api_resource_guard.backend must be postgres when storage.require_multi_instance_safe=true" in result["issues"]
+    assert "api_resource_guard.backend must be postgres in production" in result["issues"]
+
+
+def test_production_rejects_invalid_or_global_trusted_proxy_config():
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.memory_privacy.encrypt_at_rest = True
+    cfg.storage.backend = "postgres"
+    cfg.app_sync.backend = "postgres"
+    cfg.api_resource_guard.backend = "postgres"
+    cfg.api_resource_guard.trusted_proxy_ips = ["0.0.0.0/0", "not-an-ip"]
+
+    result = validate_production_config(
+        cfg,
+        {
+            "OMNIDESK_ENV": "production",
+            "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+            "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+            "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+            "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        },
+    )
+
+    assert "api_resource_guard.trusted_proxy_ips must not trust all clients" in result["issues"]
+    assert "api_resource_guard.trusted_proxy_ips contains invalid proxy: not-an-ip" in result["issues"]

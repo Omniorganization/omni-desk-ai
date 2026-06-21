@@ -106,7 +106,12 @@ class OmniDeskRuntime:
         self.tools = ToolRegistry()
         self.adapters = self._build_channel_adapters()
         self.model_cost_store = self.repository_factory.model_cost_store()
-        self.model_router = build_model_router(cfg.models, self.token_budget, self.model_cost_store)
+        self.model_router = build_model_router(
+            cfg.models,
+            self.token_budget,
+            self.model_cost_store,
+            require_persistent_ledger=cfg.models.budget.require_persistent_ledger,
+        )
         self._register_builtin_tools()
         self.skills.load()
         if cfg.plugins.enabled and cfg.capabilities.plugins.enabled:

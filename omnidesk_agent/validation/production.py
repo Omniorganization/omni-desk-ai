@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ipaddress
 import re
 from typing import Mapping, Optional
 
@@ -178,10 +179,11 @@ def _validate_api_resource_guard(cfg: AppConfig, env: Mapping[str, str], issues:
     backend = str(getattr(guard, "backend", "memory") or "memory")
     if backend not in {"memory", "sqlite", "postgres"}:
         issues.append("api_resource_guard.backend must be memory, sqlite, or postgres in production")
-    if getattr(cfg.storage, "require_multi_instance_safe", False) and backend != "postgres":
-        issues.append("api_resource_guard.backend must be postgres when storage.require_multi_instance_safe=true")
+    elif backend != "postgres":
+        issues.append("api_resource_guard.backend must be postgres in production")
     if backend == "postgres":
         _require_env(env, str(getattr(guard, "postgres_dsn_env", cfg.storage.postgres_dsn_env)), "api resource guard postgres dsn", issues, min_length=12)
+    _validate_trusted_proxy_ips(getattr(guard, "trusted_proxy_ips", []), issues)
     positive_fields = {
         "window_seconds": "api_resource_guard.window_seconds must be positive in production",
         "max_body_bytes": "api_resource_guard.max_body_bytes must be positive in production",
@@ -214,10 +216,32 @@ def _validate_model_budget_policy(cfg: AppConfig, issues: list[str]) -> None:
         issues.append("models.budget.on_exceed must be require_approval, fallback_local, or block in production")
     if not bool(getattr(budget, "require_persistent_ledger", False)):
         issues.append("models.budget.require_persistent_ledger must be true in production")
-    if getattr(cfg.storage, "require_multi_instance_safe", False) and cfg.storage.backend != "postgres":
-        issues.append("models.budget requires a postgres-backed shared cost ledger when storage.require_multi_instance_safe=true")
+    if cfg.storage.backend != "postgres":
+        issues.append("models.budget requires storage.backend=postgres in production so the cost ledger is durable and shared")
     if getattr(cfg.llm, "per_task_max_llm_calls", None) is None or int(getattr(cfg.llm, "per_task_max_llm_calls", 0) or 0) <= 0:
         issues.append("llm.per_task_max_llm_calls must be a positive hard limit in production")
+
+
+def _validate_trusted_proxy_ips(values: object, issues: list[str]) -> None:
+    if values in (None, ""):
+        return
+    if not isinstance(values, list):
+        issues.append("api_resource_guard.trusted_proxy_ips must be a list of exact IPs or CIDR ranges")
+        return
+    for raw in values:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if value in {"*", "0.0.0.0/0", "::/0"}:
+            issues.append("api_resource_guard.trusted_proxy_ips must not trust all clients")
+            continue
+        try:
+            if "/" in value:
+                ipaddress.ip_network(value, strict=False)
+            else:
+                ipaddress.ip_address(value)
+        except ValueError:
+            issues.append(f"api_resource_guard.trusted_proxy_ips contains invalid proxy: {value}")
 
 def _validate_emergency_access_policy(cfg: AppConfig, env: Mapping[str, str], issues: list[str]) -> None:
     required_dual = set(getattr(cfg.permissions, "require_dual_approval_for_risks", []))

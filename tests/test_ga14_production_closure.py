@@ -81,6 +81,9 @@ def test_production_config_requires_critical_dual_approval_and_break_glass_hmac(
     cfg.plugins.enabled = False
     cfg.channels.chrome.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True
+    cfg.storage.backend = "postgres"
+    cfg.app_sync.backend = "postgres"
+    cfg.api_resource_guard.backend = "postgres"
     cfg.sandbox.docker_image = "python:3.11-slim@sha256:" + "66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5"
     cfg.permissions.require_dual_approval_for_risks = []
     env = {
@@ -88,6 +91,8 @@ def test_production_config_requires_critical_dual_approval_and_break_glass_hmac(
         "OMNIDESK_ADMIN_TOKEN": "x" * 40,
         "OMNIDESK_GATEWAY_SECRET": "x" * 40,
         "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+        "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
     }
     result = validate_production_config(cfg, env)
     assert "permissions.require_dual_approval_for_risks must include critical in production" in result["issues"]

@@ -3,7 +3,7 @@
   "produced_at": "2026-06-17T00:00:00+08:00",
   "producer": "local-macos-xcode-real-device",
   "platform": "ios",
-  "version": "1.12.4+root-monorepo-production-ga-candidate",
+  "version": "1.12.5+root-monorepo-production-ga-candidate",
   "signature_verified": true,
   "notarization_verified": false,
   "bundle_id": "REPLACE_WITH_REAL_BUNDLE_ID",

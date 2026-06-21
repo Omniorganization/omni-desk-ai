@@ -1,3 +1,13 @@
+## 1.12.5+root-monorepo-production-ga-candidate
+
+- Added trusted proxy handling for API resource guard client keys so `x-forwarded-for` is ignored unless the immediate peer matches configured proxy IPs or CIDR ranges.
+- Tightened production validation to require the API resource guard PostgreSQL backend in production, not only when multi-instance storage is explicitly enabled.
+- Tightened production model-budget validation so production profiles require PostgreSQL-backed shared storage for the durable model-cost ledger.
+- Made the runtime model router fail closed when a persistent ledger is explicitly required but no model cost store is configured.
+- Replaced `/agent/run` raw `dict` input with a Pydantic schema that bounds message size and rejects unknown fields such as caller-supplied actor.
+- Added OAuth state cleanup for expired and used Gmail OAuth states.
+- Documented the new production proxy and ledger constraints in Docker and Helm production configuration examples.
+
 ## 1.12.4+root-monorepo-production-ga-candidate
 
 - Bound Gmail OAuth state to the authenticated actor on start and callback so callback exchange cannot be completed under a different actor.

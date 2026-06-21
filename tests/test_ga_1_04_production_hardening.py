@@ -100,6 +100,9 @@ def test_production_device_registration_requires_public_key_and_random_device_id
     monkeypatch.setenv("OMNIDESK_MEMORY_ENCRYPTION_KEY", "m" * 40)
     cfg = _cfg(tmp_path)
     cfg.memory_privacy.encrypt_at_rest = True
+    denied = validate_production_config(cfg)
+    assert "api_resource_guard.backend must be postgres in production" in denied["issues"]
+    monkeypatch.setattr("omnidesk_agent.server.assert_production_config_safe", lambda _cfg: None)
     app = create_app(cfg)
     headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice", "idempotency-key": "device-reg"}
     with TestClient(app) as client:
