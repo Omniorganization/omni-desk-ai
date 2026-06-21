@@ -88,6 +88,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 release_resource_guard = await resource_guard.before_request(request)
             except HTTPException as exc:
                 metrics.inc("omnidesk_http_resource_guard_denials_total", method=request.method, path=request.url.path, status=exc.status_code)
+                event_logger.event("api_resource_guard_denied", request_id=request_id, trace_id=trace_id, method=request.method, path=request.url.path, status=exc.status_code, reason=str(exc.detail))
                 return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
             with trace_span(
                 "http.request",

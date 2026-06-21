@@ -101,7 +101,7 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
     if cfg.observability.expose_public_metrics:
         issues.append("observability.expose_public_metrics must be false in production; use /admin/metrics")
 
-    _validate_api_resource_guard(cfg, issues)
+    _validate_api_resource_guard(cfg, env, issues)
     _validate_model_budget_policy(cfg, issues)
 
     if getattr(cfg.app_sync, "allow_websocket_query_auth", False):
@@ -170,17 +170,26 @@ def _validate_storage_policy(cfg: AppConfig, env: Mapping[str, str], issues: lis
         issues.append("storage.backend=sqlite is single-node only; use postgres before binding production traffic")
 
 
-def _validate_api_resource_guard(cfg: AppConfig, issues: list[str]) -> None:
+def _validate_api_resource_guard(cfg: AppConfig, env: Mapping[str, str], issues: list[str]) -> None:
     guard = getattr(cfg, "api_resource_guard", None)
     if guard is None or not bool(getattr(guard, "enabled", False)):
         issues.append("api_resource_guard.enabled must be true in production")
         return
+    backend = str(getattr(guard, "backend", "memory") or "memory")
+    if backend not in {"memory", "sqlite", "postgres"}:
+        issues.append("api_resource_guard.backend must be memory, sqlite, or postgres in production")
+    if getattr(cfg.storage, "require_multi_instance_safe", False) and backend != "postgres":
+        issues.append("api_resource_guard.backend must be postgres when storage.require_multi_instance_safe=true")
+    if backend == "postgres":
+        _require_env(env, str(getattr(guard, "postgres_dsn_env", cfg.storage.postgres_dsn_env)), "api resource guard postgres dsn", issues, min_length=12)
     positive_fields = {
         "window_seconds": "api_resource_guard.window_seconds must be positive in production",
         "max_body_bytes": "api_resource_guard.max_body_bytes must be positive in production",
         "max_requests_per_ip": "api_resource_guard.max_requests_per_ip must be positive in production",
         "max_requests_per_endpoint": "api_resource_guard.max_requests_per_endpoint must be positive in production",
         "max_requests_per_actor": "api_resource_guard.max_requests_per_actor must be positive in production",
+        "max_requests_per_role": "api_resource_guard.max_requests_per_role must be positive in production",
+        "max_requests_per_org_endpoint": "api_resource_guard.max_requests_per_org_endpoint must be positive in production",
         "agent_run_max_requests_per_actor": "api_resource_guard.agent_run_max_requests_per_actor must be positive in production",
         "chat_max_requests_per_actor": "api_resource_guard.chat_max_requests_per_actor must be positive in production",
         "max_inflight_requests": "api_resource_guard.max_inflight_requests must be positive in production",
@@ -203,6 +212,10 @@ def _validate_model_budget_policy(cfg: AppConfig, issues: list[str]) -> None:
             issues.append(f"models.budget.{field_name} must be a positive hard limit in production")
     if getattr(budget, "on_exceed", "") not in {"require_approval", "fallback_local", "block"}:
         issues.append("models.budget.on_exceed must be require_approval, fallback_local, or block in production")
+    if not bool(getattr(budget, "require_persistent_ledger", False)):
+        issues.append("models.budget.require_persistent_ledger must be true in production")
+    if getattr(cfg.storage, "require_multi_instance_safe", False) and cfg.storage.backend != "postgres":
+        issues.append("models.budget requires a postgres-backed shared cost ledger when storage.require_multi_instance_safe=true")
     if getattr(cfg.llm, "per_task_max_llm_calls", None) is None or int(getattr(cfg.llm, "per_task_max_llm_calls", 0) or 0) <= 0:
         issues.append("llm.per_task_max_llm_calls must be a positive hard limit in production")
 

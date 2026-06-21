@@ -184,6 +184,7 @@ def test_production_config_requires_resource_and_model_budget_guards():
     cfg.models.budget.daily_usd_limit = None
     cfg.models.budget.monthly_usd_limit = 0
     cfg.models.budget.per_actor_daily_usd_limit = None
+    cfg.models.budget.require_persistent_ledger = False
     cfg.llm.per_task_max_llm_calls = None
 
     result = validate_production_config(
@@ -200,6 +201,7 @@ def test_production_config_requires_resource_and_model_budget_guards():
     assert "models.budget.daily_usd_limit must be a positive hard limit in production" in result["issues"]
     assert "models.budget.monthly_usd_limit must be a positive hard limit in production" in result["issues"]
     assert "models.budget.per_actor_daily_usd_limit must be a positive hard limit in production" in result["issues"]
+    assert "models.budget.require_persistent_ledger must be true in production" in result["issues"]
     assert "llm.per_task_max_llm_calls must be a positive hard limit in production" in result["issues"]
 
 

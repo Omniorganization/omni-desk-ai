@@ -19,5 +19,7 @@ def test_container_production_example_config_writes_only_under_data():
     assert "host: 0.0.0.0" in cfg
     assert "encrypt_at_rest: true" in cfg
     assert "api_resource_guard:" in cfg
+    assert "backend: postgres" in cfg
+    assert "postgres_dsn_env: OMNIDESK_POSTGRES_DSN" in cfg
     assert "per_task_max_llm_calls: 16" in cfg
     assert "daily_usd_limit: 500.0" in cfg

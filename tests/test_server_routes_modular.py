@@ -111,17 +111,24 @@ class Governance:
 
 
 class OAuth:
-    def build_authorization_url(self, redirect_uri, state=None):
+    def __init__(self):
+        self.started = []
+        self.exchanged = []
+
+    def build_authorization_url(self, redirect_uri, state=None, *, actor=None):
+        self.started.append({"redirect_uri": redirect_uri, "state": state, "actor": actor})
         return {"authorization_url": f"https://auth.example/?redirect={redirect_uri}", "state": "server-state"}
 
-    def exchange_code(self, code, redirect_uri, state=None):
+    def exchange_code(self, code, redirect_uri, state=None, *, actor=None):
+        self.exchanged.append({"code": code, "redirect_uri": redirect_uri, "state": state, "actor": actor})
         if state == "bad":
             raise PermissionError("bad state")
         return {"access_token": "token", "refresh_token": "refresh"}
 
 
 class GmailAdapter:
-    oauth = OAuth()
+    def __init__(self):
+        self.oauth = OAuth()
 
 
 class AgentRuntime(Runtime):
@@ -222,6 +229,8 @@ def test_agent_routes_cover_run_resume_oauth_approval_and_upgrade(monkeypatch):
         assert client.get("/oauth/gmail/start", params={"redirect_uri": "https://cb.example"}).json()["state"] == "server-state"
         assert client.get("/oauth/gmail/callback", params={"code": "c", "redirect_uri": "https://cb.example", "state": "ok"}).json()["token_saved"] is True
         assert client.get("/oauth/gmail/callback", params={"code": "c", "redirect_uri": "https://cb.example", "state": "bad"}).status_code == 403
+        assert rt.adapters["gmail"].oauth.started == [{"redirect_uri": "https://cb.example", "state": None, "actor": "owner"}]
+        assert rt.adapters["gmail"].oauth.exchanged[0]["actor"] == "owner"
         assert client.post("/approvals", json={"tool": "shell"}).json()["id"] == "approval-1"
         assert client.get("/approvals").json()["approvals"][0]["tool"] == "shell"
         assert client.post("/approvals/approval-1/approve", json={"by": "owner"}).json()["approval"]["decision"] == "approved"

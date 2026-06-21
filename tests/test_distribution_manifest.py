@@ -7,16 +7,16 @@ from scripts.write_distribution_manifest import main
 from scripts.write_portable_sha256s import main as write_sha256s_main
 
 
-VERSION = "1.12.3+root-monorepo-production-ga-candidate"
-SLUG = "Omni-desk-AI-1.12.3-root-monorepo-production-ga-candidate"
+VERSION = "1.12.4+root-monorepo-production-ga-candidate"
+SLUG = "Omni-desk-AI-1.12.4-root-monorepo-production-ga-candidate"
 
 
 def _write_required_artifacts(package_dir: Path) -> None:
     files = [
-        "Omni-desk-AI-1.12.3-core-release.zip",
-        "Omni-desk-AI-1.12.3-web-admin.zip",
-        "Omni-desk-AI-1.12.3-desktop.zip",
-        "Omni-desk-AI-1.12.3-mobile.zip",
+        "Omni-desk-AI-1.12.4-core-release.zip",
+        "Omni-desk-AI-1.12.4-web-admin.zip",
+        "Omni-desk-AI-1.12.4-desktop.zip",
+        "Omni-desk-AI-1.12.4-mobile.zip",
         f"{SLUG}-full.zip",
     ]
     for item in files:
@@ -74,7 +74,7 @@ def test_distribution_manifest_records_blocked_external_ga_status(tmp_path: Path
 def test_distribution_manifest_rejects_missing_required_artifact(tmp_path: Path, capsys) -> None:
     package_dir = tmp_path / "package"
     package_dir.mkdir()
-    (package_dir / "Omni-desk-AI-1.12.3-core-release.zip").write_bytes(b"core")
+    (package_dir / "Omni-desk-AI-1.12.4-core-release.zip").write_bytes(b"core")
     assert (
         main(
             [

@@ -1,6 +1,6 @@
 [package]
 name = "omnidesk_desktop"
-version = "1.12.3"
+version = "1.12.4"
 edition = "2021"
 
 [dependencies]

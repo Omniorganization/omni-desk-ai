@@ -37,8 +37,8 @@ class GmailAdapter:
     def __init__(self):
         self.oauth = type("OAuth", (), {
             "run_local_flow": lambda self, port=0: {"access_token": "token"},
-            "build_authorization_url": lambda self, redirect_uri, state: {"url": redirect_uri, "state": state},
-            "exchange_code": lambda self, code, redirect_uri, state=None: {"code": code, "state": state},
+            "build_authorization_url": lambda self, redirect_uri, state, actor=None: {"url": redirect_uri, "state": state, "actor": actor},
+            "exchange_code": lambda self, code, redirect_uri, state=None, actor=None: {"code": code, "state": state, "actor": actor},
         })()
 
     def configured(self):
@@ -86,7 +86,7 @@ async def test_gmail_tool_oauth_and_email_branches():
     assert (await tool.call("configured", {}, _ctx())).data == {"configured": True, "authenticated": False}
     assert (await tool.call("auth_local", {"port": 9999}, _ctx())).data["keys"] == ["access_token"]
     assert (await tool.call("auth_url", {"redirect_uri": "http://localhost/cb"}, _ctx())).data["state"] == "omnidesk-gmail"
-    assert (await tool.call("auth_callback", {"code": "c", "redirect_uri": "http://localhost/cb", "state": "s"}, _ctx())).data["keys"] == ["code", "state"]
+    assert (await tool.call("auth_callback", {"code": "c", "redirect_uri": "http://localhost/cb", "state": "s"}, _ctx())).data["keys"] == ["actor", "code", "state"]
     assert (await tool.call("build_raw_email", {"to": "a@example.com", "subject": "S", "body": "B"}, _ctx())).data["raw"] == "a@example.com|S|B"
     assert (await tool.call("send_email", {"to": "a@example.com", "subject": "S", "body": "B"}, _ctx())).data["sent"] is True
     with pytest.raises(ValueError, match="Unsupported gmail action"):

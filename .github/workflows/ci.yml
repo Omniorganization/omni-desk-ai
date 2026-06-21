@@ -83,6 +83,7 @@ jobs:
             --python-version "${{ matrix.python-version }}" \
             --coverage-json coverage.json \
             --coverage-xml coverage.xml \
+            --artifact-name "ci-evidence-${{ matrix.python-version }}" \
             --log "ruff=reports/ci/${{ matrix.python-version }}/ruff.txt" \
             --log "pyright=reports/ci/${{ matrix.python-version }}/pyright.txt" \
             --log "pytest=reports/ci/${{ matrix.python-version }}/pytest-unit.txt" \
