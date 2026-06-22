@@ -114,8 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     mobile_api = _read(root / "apps/mobile-flutter/lib/omni_api.dart")
     self_healing = _read(root / "omnidesk_agent/self_healing.py")
     external_gate = _read(root / "scripts/check_external_ga_evidence.py")
+    external_summary = _read(root / "scripts/write_real_ga_evidence_summary.py")
     external_required = _read(root / "release/external-ga-evidence.required.json")
     external_audit = _read(root / "release/real-ga-evidence-audit-1.12.5.json")
+    package_script = _read(root / "scripts/package_distribution_bundle.sh")
     agents_root = _read(root / "AGENTS.md")
     onboarding = _read(root / "omnidesk_agent/onboarding.py")
     channel_capabilities = _read(root / "omnidesk_agent/channels/capability_matrix.py")
@@ -164,8 +166,17 @@ def main(argv: list[str] | None = None) -> int:
     _check("signRequest" in mobile_identity and "deviceIdentityStore" in mobile_api and "x-omnidesk-device-signature" in mobile_identity, "Mobile client signs sensitive device requests", failures, ok)
     _check("RuntimeSelfHealingController" in self_healing and "rollback_release" in self_healing and "create_upgrade_proposal" in self_healing, "Runtime self-healing policy is codified", failures, ok)
     _check("REQUIRED_EVIDENCE" in external_gate and "blocked_missing_external_evidence" in external_gate, "External real GA evidence checker exists and fails closed", failures, ok)
+    _check("omnidesk-real-ga-evidence-summary/v1" in external_summary and "real_ga_ready" in external_summary and "blocking_categories" in external_summary, "Machine-readable Real GA evidence summary writer exists", failures, ok)
     _check("native-build/flutter-android-release.json" in external_required and "drills/self-healing-failure-injection.json" in external_required, "External real GA evidence required-file contract is declared", failures, ok)
     _check('"status": "blocked_missing_external_evidence"' in external_audit and '"self_healing_failure_injection"' in external_audit, "Current real GA evidence audit records missing external evidence", failures, ok)
+    _check(
+        "write_real_ga_evidence_summary.py" in release_workflow
+        and "dist/external-ga-evidence-summary.json" in release_workflow
+        and "real-ga-evidence-summary.json" in package_script,
+        "Release and distribution flows emit machine-readable Real GA evidence summary",
+        failures,
+        ok,
+    )
     _check("external-ga-evidence-gate" in makefile and "distribution-ga-preflight" in makefile, "Distribution GA preflight includes external real evidence gate", failures, ok)
     _check(
         "RELEASE_CHANNEL" in release_workflow

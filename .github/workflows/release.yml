@@ -208,6 +208,11 @@ jobs:
             exit 64
           fi
           cp release/real-ga-evidence-audit-1.12.5.json dist/external-ga-evidence-audit.json
+          python scripts/write_real_ga_evidence_summary.py . \
+            --audit-report release/real-ga-evidence-audit-1.12.5.json \
+            --output release/real-ga-evidence-summary-1.12.5.json \
+            --source-commit "$GITHUB_SHA"
+          cp release/real-ga-evidence-summary-1.12.5.json dist/external-ga-evidence-summary.json
 
       - name: Verify release channel policy after external evidence gate
         run: |
@@ -313,6 +318,7 @@ jobs:
           name: real-ga-evidence-import-reports
           path: |
             release/real-ga-evidence-audit-1.12.5.json
+            release/real-ga-evidence-summary-1.12.5.json
             release/ios-real-device-evidence-import-report.json
             release/tri-app-live-smoke-evidence-import-report.json
             dist/ios-evidence-preflight.json
