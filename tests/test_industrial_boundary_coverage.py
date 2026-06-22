@@ -92,7 +92,7 @@ def test_gmail_oauth_scopes_redirect_and_missing_dependency_paths(tmp_path, monk
 
 
 def test_gmail_oauth_success_paths_with_fake_google_sdks(tmp_path, monkeypatch):
-    cfg = GmailConfig(credentials_file=tmp_path / "credentials.json", token_file=tmp_path / "token.json")
+    cfg = GmailConfig(credentials_file=tmp_path / "credentials.json", token_file=tmp_path / "token.json", allow_compose=True)
     cfg.credentials_file.write_text("{}", encoding="utf-8")
     mgr = GmailOAuthManager(cfg)
     assert "https://www.googleapis.com/auth/gmail.compose" in mgr.scopes

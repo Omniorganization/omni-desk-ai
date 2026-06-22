@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { OmniAdminApi } from '../lib/api';
 import { resolveGatewayBaseUrl } from '../lib/gateway';
+import { normalizeGatewayActor, verifyGatewayIdentity } from '../lib/session-login';
 
 const originalFetch = globalThis.fetch;
 
@@ -91,4 +92,25 @@ test('resolveGatewayBaseUrl rejects unlisted browser-supplied gateway URLs in pr
   assert.equal(resolveGatewayBaseUrl('https://169.254.169.254/latest/meta-data', env), 'https://gateway.company.example/base');
   assert.equal(resolveGatewayBaseUrl('https://gateway-backup.company.example/', env), 'https://gateway-backup.company.example');
   assert.throws(() => resolveGatewayBaseUrl('file:///etc/passwd', env), /http or https/);
+});
+
+test('verifyGatewayIdentity derives session actor and role from gateway response only', async () => {
+  let requestUrl = '';
+  let requestInit: RequestInit | undefined;
+  const identity = await verifyGatewayIdentity('https://gateway.example/base/', 'secret-token', async (input, init) => {
+    requestUrl = input.toString();
+    requestInit = init;
+    return new Response(JSON.stringify({ ok: true, actor: 'token:OMNIDESK_OPERATOR_TOKEN', role: 'operator' }), { status: 200 });
+  });
+
+  assert.equal(requestUrl, 'https://gateway.example/base/admin/session/identity');
+  assert.equal((requestInit?.headers as Record<string, string>).authorization, 'Bearer secret-token');
+  assert.equal((requestInit?.headers as Record<string, string>)['x-omnidesk-actor'], undefined);
+  assert.deepEqual(identity, { actor: 'token:OMNIDESK_OPERATOR_TOKEN', role: 'operator' });
+  assert.equal(normalizeGatewayActor(' system<script> '), 'systemscript');
+
+  await assert.rejects(
+    () => verifyGatewayIdentity('https://gateway.example', 'bad-token', async () => new Response('forbidden', { status: 403 })),
+    /gateway identity verification failed: 403/,
+  );
 });

@@ -40,8 +40,14 @@ def test_web_admin_csp_and_session_cookie_are_ga_hardened() -> None:
     assert "unsafe-eval" not in next_config
     assert "unsafe-inline" not in next_config
     assert "object-src 'none'" in next_config
+    assert "connect-src 'self' https:" not in next_config
+    assert "connect-src 'self';" in next_config
+    assert "img-src 'self' data:" not in next_config
     assert "__Host-omni_session_token" in session
     assert "maxAge" in login
+    assert "verifyGatewayIdentity" in login
+    assert "payload.actor" not in login
+    assert "payload.role" not in login
 
 
 def test_helm_chart_requires_pipeline_injected_app_digest() -> None:
@@ -112,6 +118,22 @@ def test_production_device_registration_requires_public_key_and_random_device_id
         assert predictable.status_code == 422
         ok = client.post("/app/devices/register", headers={**headers, "idempotency-key": "device-reg-3"}, json={"device_id": "desk_1234567890abcdef1234567890abcdef", "device_type": "desktop", "name": "Desktop", "platform": "macOS", "public_key": "base64:" + "a" * 44})
         assert ok.status_code == 200, ok.text
+
+
+def test_admin_session_identity_returns_token_bound_actor(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
+    app = create_app(_cfg(tmp_path))
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/admin/session/identity",
+            headers={"authorization": "Bearer operator-token", "x-omnidesk-actor": "system"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["actor"] == "alice"
+    assert response.json()["role"] == "operator"
 
 
 def test_native_apps_generate_per_install_device_identity() -> None:

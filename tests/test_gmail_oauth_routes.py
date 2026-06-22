@@ -39,6 +39,7 @@ class FakeOAuth:
 
 def test_gmail_oauth_routes_bind_state_to_authenticated_actor(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
+    monkeypatch.setenv("OMNIDESK_OWNER_ACTOR", "alice")
     app = create_app(_cfg(tmp_path))
     fake = FakeOAuth()
     app.state.runtime.adapters["gmail"].oauth = fake

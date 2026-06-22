@@ -37,6 +37,8 @@ def is_production_mode(cfg: AppConfig, environ: Optional[Mapping[str, str]] = No
     ).strip().lower()
     if env_mode in PRODUCTION_ENV_VALUES:
         return True
+    if env.get("KUBERNETES_SERVICE_HOST"):
+        return True
     if cfg.gateway.public_base_url:
         return True
     return cfg.gateway.host not in LOOPBACK_HOSTS
@@ -76,6 +78,8 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
 
     if cfg.channels.gmail.allow_send and cfg.permissions.approval_mode == "auto_policy":
         issues.append("gmail.allow_send requires human approval; permissions.approval_mode cannot be auto_policy")
+    if cfg.channels.gmail.allow_compose and cfg.permissions.approval_mode == "auto_policy":
+        issues.append("gmail.allow_compose requires human approval; permissions.approval_mode cannot be auto_policy")
     if cfg.channels.gmail.enabled and not cfg.channels.gmail.encrypt_token_at_rest:
         issues.append("channels.gmail.encrypt_token_at_rest must be true in production when Gmail is enabled")
     if cfg.channels.gmail.enabled and cfg.channels.gmail.encrypt_token_at_rest:
@@ -163,6 +167,13 @@ def assert_production_config_safe(cfg: AppConfig, environ: Optional[Mapping[str,
 
 
 def _validate_storage_policy(cfg: AppConfig, env: Mapping[str, str], issues: list[str]) -> None:
+    if env.get("KUBERNETES_SERVICE_HOST"):
+        if cfg.storage.backend != "postgres":
+            issues.append("storage.backend must be postgres when running under Kubernetes")
+        if not getattr(cfg.storage, "require_multi_instance_safe", False):
+            issues.append("storage.require_multi_instance_safe must be true when running under Kubernetes")
+        if cfg.app_sync.backend != "postgres":
+            issues.append("app_sync.backend must be postgres when running under Kubernetes")
     if getattr(cfg.storage, "require_multi_instance_safe", False) and cfg.storage.backend != "postgres":
         issues.append("storage.require_multi_instance_safe=true requires storage.backend=postgres in production")
     if cfg.storage.backend == "postgres":

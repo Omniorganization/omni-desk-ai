@@ -40,6 +40,11 @@ class AdminAuth:
         viewer_token_env: str = "OMNIDESK_VIEWER_TOKEN",
         operator_token_env: str = "OMNIDESK_OPERATOR_TOKEN",
         owner_token_env: str = "OMNIDESK_OWNER_TOKEN",
+        admin_actor_env: str = "OMNIDESK_ADMIN_ACTOR",
+        viewer_actor_env: str = "OMNIDESK_VIEWER_ACTOR",
+        operator_actor_env: str = "OMNIDESK_OPERATOR_ACTOR",
+        owner_actor_env: str = "OMNIDESK_OWNER_ACTOR",
+        legacy_actor_env: str = "OMNIDESK_LEGACY_ADMIN_ACTOR",
         legacy_secret_env: Optional[str] = None,
         allow_local_without_token: bool = False,
         allowed_ips: Optional[list[str]] = None,
@@ -53,6 +58,13 @@ class AdminAuth:
             "operator": operator_token_env,
             "owner": owner_token_env,
         }
+        self.admin_actor_env = admin_actor_env
+        self.role_actor_envs = {
+            "viewer": viewer_actor_env,
+            "operator": operator_actor_env,
+            "owner": owner_actor_env,
+        }
+        self.legacy_actor_env = legacy_actor_env
         self.legacy_secret_env = legacy_secret_env
         self.allow_local_without_token = allow_local_without_token
         self.allowed_ips = set(allowed_ips or [])
@@ -72,7 +84,6 @@ class AdminAuth:
             provided = auth.split(" ", 1)[1].strip()
         provided = provided or (headers.get("x-omnidesk-admin-token", "") if headers else "")
         legacy_provided = headers.get("x-omnidesk-gateway-secret", "") if headers else ""
-        requested_actor = self._actor_from_headers(headers)
 
         if self.allowed_ips and client_host not in self.allowed_ips:
             decision = AdminAuthDecision(False, "client IP is not allowed", actor="unknown", role="unknown")
@@ -90,7 +101,7 @@ class AdminAuth:
 
             if matching:
                 role, env_name = matching[0]
-                decision = self._role_decision(True, "admin token accepted", requested_actor or f"token:{env_name}", role, required_role)
+                decision = self._role_decision(True, "admin token accepted", self._actor_for_token(role, env_name), role, required_role)
                 decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
                 self._audit(decision, client_host, required_role, path)
                 return decision
@@ -100,14 +111,14 @@ class AdminAuth:
                 self._audit(decision, client_host, required_role, path)
                 return decision
 
-            decision = self._role_decision(True, "legacy gateway secret accepted", requested_actor or "token:legacy-gateway-secret", "owner", required_role)
+            decision = self._role_decision(True, "legacy gateway secret accepted", self._actor_for_legacy_secret(), "owner", required_role)
             decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
             self._audit(decision, client_host, required_role, path)
             return decision
 
         if legacy:
             if legacy_provided and hmac.compare_digest(legacy_provided, legacy):
-                decision = self._role_decision(True, "legacy gateway secret accepted", requested_actor or "token:legacy-gateway-secret", "owner", required_role)
+                decision = self._role_decision(True, "legacy gateway secret accepted", self._actor_for_legacy_secret(), "owner", required_role)
                 decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
                 self._audit(decision, client_host, required_role, path)
                 return decision
@@ -116,7 +127,7 @@ class AdminAuth:
             return decision
 
         if self.allow_local_without_token and (client_host in {"127.0.0.1", "::1", "localhost"} or client_host in self.allowed_ips):
-            decision = self._role_decision(True, "local development without admin token", requested_actor or "local-development", "owner", required_role)
+            decision = self._role_decision(True, "local development without admin token", "local-development", "owner", required_role)
             decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
             self._audit(decision, client_host, required_role, path)
             return decision
@@ -135,8 +146,21 @@ class AdminAuth:
         raw = (headers.get("x-omnidesk-actor", "") if headers else "").strip()
         if not raw:
             return ""
+        return AdminAuth._sanitize_actor(raw)
+
+    @staticmethod
+    def _sanitize_actor(raw: str) -> str:
         safe = "".join(ch for ch in raw if ch.isalnum() or ch in {"@", ".", "_", "-", ":"})
         return safe[:128]
+
+    def _actor_for_token(self, role: str, env_name: str) -> str:
+        actor_env = self.admin_actor_env if env_name == self.admin_token_env else self.role_actor_envs.get(role, "")
+        configured = self._sanitize_actor(os.getenv(actor_env, "")) if actor_env else ""
+        return configured or f"token:{env_name}"
+
+    def _actor_for_legacy_secret(self) -> str:
+        configured = self._sanitize_actor(os.getenv(self.legacy_actor_env, ""))
+        return configured or f"token:{self.legacy_secret_env or 'legacy-gateway-secret'}"
 
     def _maybe_elevate_break_glass(self, decision: AdminAuthDecision, headers: Any, required_role: str, path: str) -> AdminAuthDecision:
         if not self.break_glass_enabled or self.break_glass_store is None:

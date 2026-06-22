@@ -69,6 +69,15 @@ def _runtime_slo_snapshot(rt, metrics) -> dict:
 
 
 def register_admin_routes(app: FastAPI, cfg, rt, metrics, version: str, admin: AdminVerifier) -> None:
+    @app.get("/admin/session/identity")
+    async def admin_session_identity(request: Request):
+        decision = await admin(request, "viewer")
+        return {
+            "ok": True,
+            "actor": str(getattr(decision, "actor", "admin")),
+            "role": str(getattr(decision, "role", "viewer")),
+        }
+
     @app.get("/admin/status")
     async def admin_status(request: Request):
         await admin(request, "viewer")

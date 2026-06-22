@@ -40,10 +40,12 @@ def test_daemon_core_state_uses_repository_factory_not_direct_sqlite_paths():
 
 def test_break_glass_elevates_authenticated_actor_only(tmp_path, monkeypatch):
     monkeypatch.setenv("VIEWER_TOKEN", "viewer-token-value")
+    monkeypatch.setenv("VIEWER_ACTOR", "alice")
     store = BreakGlassStore(tmp_path / "break.sqlite3", audit_log=tmp_path / "audit.jsonl")
     store.open(session_id="s1", actor="alice", approved_by="bob", reason="production incident", ttl_seconds=60)
     auth = AdminAuth(
         viewer_token_env="VIEWER_TOKEN",
+        viewer_actor_env="VIEWER_ACTOR",
         operator_token_env="OPERATOR_TOKEN",
         owner_token_env="OWNER_TOKEN",
         break_glass_store=store,
@@ -59,9 +61,10 @@ def test_break_glass_elevates_authenticated_actor_only(tmp_path, monkeypatch):
     assert decision.actor == "alice"
     assert decision.role == "owner"
 
+    monkeypatch.setenv("VIEWER_ACTOR", "mallory")
     wrong_actor = Headers({
         "x-omnidesk-admin-token": "viewer-token-value",
-        "x-omnidesk-actor": "mallory",
+        "x-omnidesk-actor": "alice",
         "x-omnidesk-break-glass-session": "s1",
     })
     denied = auth.verify_headers(wrong_actor, client_host="127.0.0.1", required_role="owner", path="/admin/outbound/x/cancel")

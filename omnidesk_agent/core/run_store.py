@@ -13,16 +13,17 @@ from typing import Any, Optional
 
 
 class RunStore:
-    UPDATE_FIELDS = {
-        "approval_proposal_json",
-        "current_step_index",
-        "plan_json",
-        "results_json",
-        "resume_token",
-        "status",
-        "updated_at",
-        "waiting_approval_id",
+    UPDATE_FIELD_COLUMNS = {
+        "approval_proposal_json": "approval_proposal_json",
+        "current_step_index": "current_step_index",
+        "plan_json": "plan_json",
+        "results_json": "results_json",
+        "resume_token": "resume_token",
+        "status": "status",
+        "updated_at": "updated_at",
+        "waiting_approval_id": "waiting_approval_id",
     }
+    UPDATE_FIELDS = set(UPDATE_FIELD_COLUMNS)
 
     def __init__(self, db_path: Path):
         self.db_path = db_path.expanduser()
@@ -171,10 +172,10 @@ class RunStore:
         if unknown:
             raise ValueError(f"unsupported run update field(s): {', '.join(sorted(unknown))}")
         fields["updated_at"] = time.time()
-        assignments = ", ".join([f"{k}=?" for k in fields])
+        assignments = ", ".join([f"{self.UPDATE_FIELD_COLUMNS[k]}=?" for k in fields])
         values = list(fields.values()) + [run_id]
         with connect_sqlite(self.db_path) as con:
-            # Column names are restricted by UPDATE_FIELDS before this statement is built.
+            # Column names are fixed internal constants selected by UPDATE_FIELD_COLUMNS.
             con.execute(f"UPDATE runs SET {assignments} WHERE id = ?", values)  # nosec B608
 
     def get(self, run_id: str) -> Optional[dict[str, Any]]:

@@ -34,6 +34,7 @@ class FakeOrchestrator:
 
 def test_agent_run_actor_rate_limit_blocks_repeated_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
     cfg = _cfg(tmp_path)
     cfg.api_resource_guard.agent_run_max_requests_per_actor = 1
     cfg.api_resource_guard.max_requests_per_actor = 10

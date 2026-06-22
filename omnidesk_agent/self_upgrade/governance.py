@@ -17,6 +17,7 @@ from omnidesk_agent.self_upgrade.release.shadow_mode import ShadowModeEvaluator
 from omnidesk_agent.self_upgrade.release.canary_release import CanaryReleaseManager
 from omnidesk_agent.self_upgrade.memory.upgrade_memory import UpgradeMemory
 from omnidesk_agent.self_upgrade.state_machine import UpgradeStateMachine
+from omnidesk_agent.security.prompt_injection import sanitize_review_payload
 
 
 class GovernedSelfImprovement:
@@ -48,7 +49,7 @@ class GovernedSelfImprovement:
     def create_proposals_from_failures(self, failure_summary: list[dict[str, Any]]) -> list[dict]:
         created = []
         for item in failure_summary:
-            proposal = self.proposal_generator.from_failure_summary(item)
+            proposal = self.proposal_generator.from_failure_summary(sanitize_review_payload(item))
             self.proposal_store.create(proposal)
             created.append(proposal.to_dict())
         return created

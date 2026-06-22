@@ -217,6 +217,58 @@ def test_production_config_requires_resource_and_model_budget_guards():
     assert "llm.per_task_max_llm_calls must be a positive hard limit in production" in result["issues"]
 
 
+def test_production_config_rejects_gmail_compose_without_human_approval():
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.channels.chrome.enabled = False
+    cfg.channels.gmail.enabled = True
+    cfg.channels.gmail.allow_compose = True
+    cfg.permissions.approval_mode = "auto_policy"
+    cfg.memory_privacy.encrypt_at_rest = True
+    _enable_postgres_production_state(cfg)
+    cfg.sandbox.docker_image = "python:3.11-slim@sha256:" + '66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5'
+
+    result = validate_production_config(
+        cfg,
+        {
+            "OMNIDESK_ENV": "production",
+            "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+            "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+            "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+            "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY": "x" * 40,
+        },
+    )
+
+    assert "gmail.allow_compose requires human approval; permissions.approval_mode cannot be auto_policy" in result["issues"]
+
+
+def test_kubernetes_environment_requires_multi_instance_postgres_storage():
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.channels.chrome.enabled = False
+    cfg.memory_privacy.encrypt_at_rest = True
+    cfg.storage.backend = "sqlite"
+    cfg.storage.require_multi_instance_safe = False
+    cfg.app_sync.backend = "json"
+
+    result = validate_production_config(
+        cfg,
+        {
+            "KUBERNETES_SERVICE_HOST": "10.0.0.1",
+            "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+            "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+            "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+        },
+    )
+
+    assert result["production"] is True
+    assert "storage.backend must be postgres when running under Kubernetes" in result["issues"]
+    assert "storage.require_multi_instance_safe must be true when running under Kubernetes" in result["issues"]
+    assert "app_sync.backend must be postgres when running under Kubernetes" in result["issues"]
+
+
 def test_production_config_rejects_weak_secrets_and_placeholder_public_url():
     cfg = AppConfig()
     cfg.plugins.enabled = False

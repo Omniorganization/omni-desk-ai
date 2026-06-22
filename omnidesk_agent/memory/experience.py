@@ -10,6 +10,7 @@ from omnidesk_agent.config import MemoryPrivacyConfig
 from omnidesk_agent.privacy.encryption import EncryptionProvider
 from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter
 from omnidesk_agent.memory.governed_writer import GovernedMemoryWriter
+from omnidesk_agent.security.prompt_injection import sanitize_memory_text
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
@@ -199,9 +200,9 @@ class ExperienceStore:
             "privacy_level": privacy_level,
             "reason": "legacy task trace redacted before persistence",
         })
-        task = self._encrypt_text(self.privacy.redact_text(task))
-        plan = self._encrypt_text(self.privacy.redact_text(plan))
-        outcome = self._encrypt_text(self.privacy.redact_text(outcome))
+        task = self._encrypt_text(self._sanitize_persisted_text(task))
+        plan = self._encrypt_text(self._sanitize_persisted_text(plan))
+        outcome = self._encrypt_text(self._sanitize_persisted_text(outcome))
         cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO experiences(created_at, task, plan, outcome, tags) VALUES(?,?,?,?,?)",
@@ -230,11 +231,14 @@ class ExperienceStore:
                 (query, limit),
             ).fetchall()
         except sqlite3.OperationalError:
-            like = f"%{query}%"
+            like = self._like_contains(query)
             rows = cur.execute(
                 """
                 SELECT * FROM experiences
-                WHERE task LIKE ? OR plan LIKE ? OR outcome LIKE ? OR tags LIKE ?
+                WHERE task LIKE ? ESCAPE '\\'
+                   OR plan LIKE ? ESCAPE '\\'
+                   OR outcome LIKE ? ESCAPE '\\'
+                   OR tags LIKE ? ESCAPE '\\'
                 ORDER BY created_at DESC LIMIT ?
                 """,
                 (like, like, like, like, limit),
@@ -284,7 +288,7 @@ class ExperienceStore:
             "namespace": f"{channel or 'unknown'}:{actor or 'unknown'}",
         }
         for _field in self.SENSITIVE_STRUCTURED_FIELDS:
-            values[_field] = self._encrypt_text(values.get(_field))
+            values[_field] = self._encrypt_text(self._sanitize_persisted_text(values.get(_field)))
         cur = self.conn.cursor()
         cur.execute(
             """
@@ -348,12 +352,15 @@ class ExperienceStore:
                     (query, limit),
                 ).fetchall()
         except sqlite3.OperationalError:
-            like = f"%{query}%"
+            like = self._like_contains(query)
             if only_reusable:
                 rows = cur.execute(
                     """
                     SELECT * FROM structured_experiences e
-                    WHERE (goal LIKE ? OR failure_reason LIKE ? OR recommended_next_action LIKE ? OR tags LIKE ?)
+                    WHERE (goal LIKE ? ESCAPE '\\'
+                       OR failure_reason LIKE ? ESCAPE '\\'
+                       OR recommended_next_action LIKE ? ESCAPE '\\'
+                       OR tags LIKE ? ESCAPE '\\')
                     AND e.reusable_skill = 1
                     ORDER BY updated_at DESC LIMIT ?
                     """,
@@ -363,7 +370,10 @@ class ExperienceStore:
                 rows = cur.execute(
                     """
                     SELECT * FROM structured_experiences e
-                    WHERE (goal LIKE ? OR failure_reason LIKE ? OR recommended_next_action LIKE ? OR tags LIKE ?)
+                    WHERE (goal LIKE ? ESCAPE '\\'
+                       OR failure_reason LIKE ? ESCAPE '\\'
+                       OR recommended_next_action LIKE ? ESCAPE '\\'
+                       OR tags LIKE ? ESCAPE '\\')
                     ORDER BY updated_at DESC LIMIT ?
                     """,
                     (like, like, like, like, limit),
@@ -578,7 +588,7 @@ class ExperienceStore:
             "preferred_surface": preferred_surface,
             "preferred_channel": preferred_channel,
             "preferred_app": preferred_app,
-            "last_task": self._encrypt_text(self.privacy.redact_text(task[:1000])),
+            "last_task": self._encrypt_text(self._sanitize_persisted_text(task[:1000])),
             "last_status": status,
             "updated_at": now,
         }
@@ -723,6 +733,16 @@ class ExperienceStore:
         if isinstance(value, str):
             return self.encryption.encrypt_text(value)
         return value
+
+    def _sanitize_persisted_text(self, value: Any) -> Any:
+        if value is None:
+            return None
+        return sanitize_memory_text(self.privacy.redact_text(str(value)))
+
+    @staticmethod
+    def _like_contains(query: str) -> str:
+        escaped = str(query).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
 
     def _decrypt_text(self, value: Any) -> Any:
         if isinstance(value, str):

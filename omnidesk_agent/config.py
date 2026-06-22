@@ -340,10 +340,10 @@ class GmailConfig(BaseModel):
     readonly: bool = True
     allow_send: bool = False
     allow_modify: bool = False
-    allow_compose: bool = True
+    allow_compose: bool = False
     oauth_redirect_allowlist: list[str] = Field(default_factory=list)
     oauth_state_ttl_seconds: int = 600
-    encrypt_token_at_rest: bool = False
+    encrypt_token_at_rest: bool = True
     token_encryption_key_env: str = "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY"
 
 class ChromeConfig(BaseModel):
