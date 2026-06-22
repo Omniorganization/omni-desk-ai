@@ -23,6 +23,7 @@ def test_release_governance_assets_exist():
     assert Path("scripts/check_release_channel_policy.py").exists()
     assert Path("scripts/check_ci_evidence_contract.py").exists()
     assert Path("scripts/write_ci_evidence_manifest.py").exists()
+    assert Path("scripts/write_real_ga_evidence_summary.py").exists()
     assert Path("scripts/check_security_workflow_policy.py").exists()
     assert Path("scripts/check_license_policy.py").exists()
     assert Path("scripts/docker_scan.sh").exists()
@@ -60,6 +61,8 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert '[[ "$RELEASE_CHANNEL" == "real-ga" ]]' in workflow
     assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.5.json" in workflow
     assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json" in workflow
+    assert "write_real_ga_evidence_summary.py" in workflow
+    assert "dist/external-ga-evidence-summary.json" in workflow
 
 
 def test_release_channel_policy_script_passes_current_tree():
@@ -76,6 +79,7 @@ def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
     assert "external-ga-evidence-gate:" in makefile
     assert "scripts/check_external_ga_evidence.py .\n" in makefile
     assert "release/real-ga-evidence-audit-1.12.5.json" in makefile
+    assert "scripts/write_real_ga_evidence_summary.py" in makefile
 
 
 def test_ci_coverage_gate_is_80_and_has_group_gate():

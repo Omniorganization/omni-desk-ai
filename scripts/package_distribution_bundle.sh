@@ -163,6 +163,10 @@ python3 "${ROOT_DIR}/scripts/write_distribution_manifest.py" \
   --source-commit "$SOURCE_COMMIT" \
   --external-audit "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.5.json" \
   --output release-manifest.json
+python3 "${ROOT_DIR}/scripts/write_real_ga_evidence_summary.py" "$ROOT_DIR" \
+  --audit-report "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.5.json" \
+  --output "${PACKAGE_DIR}/real-ga-evidence-summary.json" \
+  --source-commit "$SOURCE_COMMIT"
 python3 "${ROOT_DIR}/scripts/write_distribution_manifest.py" --package-dir "$PACKAGE_DIR" --verify --manifest release-manifest.json
 
 (

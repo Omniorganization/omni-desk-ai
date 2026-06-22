@@ -129,6 +129,7 @@ workflow-governance-preflight:
 	$(PYTHON) scripts/check_workflow_governance.py . --require-real-workflows
 
 distribution-package-manifest:
+	$(PYTHON) scripts/write_real_ga_evidence_summary.py . --audit-report release/real-ga-evidence-audit-1.12.5.json --output "$(PACKAGE_DIR)/real-ga-evidence-summary.json" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)"
 	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --version "$(DISTRIBUTION_PACKAGE_VERSION)" --package-slug "$(DISTRIBUTION_PACKAGE_SLUG)" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)" --external-audit release/real-ga-evidence-audit-1.12.5.json --output release-manifest.json
 	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --verify --manifest release-manifest.json
 
@@ -139,6 +140,7 @@ package-final-gate: distribution-package-manifest
 
 external-ga-evidence-audit:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/write_real_ga_evidence_summary.py . --audit-report release/real-ga-evidence-audit-1.12.5.json --output release/real-ga-evidence-summary-1.12.5.json
 
 external-ga-evidence-gate:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py .
