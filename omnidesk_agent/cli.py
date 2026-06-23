@@ -17,6 +17,23 @@ from omnidesk_agent.storage.sqlite import close_all_open_connections
 from omnidesk_agent.validation.production import assert_production_config_safe, validate_production_config
 
 
+_PRODUCTION_ISSUE_CATEGORY_MARKERS = (
+    ("api_resource_guard", ("api_resource_guard", "api resource guard")),
+    ("app_sync", ("app_sync",)),
+    ("capabilities", ("capabilities.",)),
+    ("channels", ("channels.",)),
+    ("gateway", ("gateway.", "gateway ")),
+    ("gmail", ("gmail",)),
+    ("memory_privacy", ("memory_privacy", "memory encryption")),
+    ("models", ("models.", "llm.")),
+    ("observability", ("observability.",)),
+    ("permissions", ("permissions.", "break-glass")),
+    ("plugins", ("plugins.", "plugin ")),
+    ("sandbox", ("sandbox.",)),
+    ("storage", ("storage.", "postgres dsn")),
+)
+
+
 @contextmanager
 def runtime_context(cfg: AppConfig, *, validate_production: bool = True) -> Iterator[OmniDeskRuntime]:
     rt = None
@@ -33,6 +50,36 @@ def runtime_context(cfg: AppConfig, *, validate_production: bool = True) -> Iter
                     close()
         finally:
             close_all_open_connections()
+
+
+def _production_issue_category(issue: object) -> str:
+    text = str(issue).lower()
+    for category, markers in _PRODUCTION_ISSUE_CATEGORY_MARKERS:
+        if any(marker in text for marker in markers):
+            return category
+    return "production_config"
+
+
+def _production_check_output(cfg: AppConfig, result: dict) -> dict:
+    issues = list(result.get("issues") or [])
+    budget = cfg.models.budget
+    return {
+        "ok": bool(result.get("ok")),
+        "production": bool(result.get("production")),
+        "issue_count": len(issues),
+        "issue_categories": sorted({_production_issue_category(issue) for issue in issues}),
+        "issues_redacted": bool(issues),
+        "storage_backend": cfg.storage.backend,
+        "api_resource_guard_backend": cfg.api_resource_guard.backend,
+        "model_budget": {
+            "daily_usd_limit": budget.daily_usd_limit,
+            "monthly_usd_limit": budget.monthly_usd_limit,
+            "per_actor_daily_usd_limit": budget.per_actor_daily_usd_limit,
+            "on_exceed": budget.on_exceed,
+            "require_persistent_ledger": budget.require_persistent_ledger,
+        },
+        "cost_ledger_backend": "postgres" if cfg.storage.backend == "postgres" else "sqlite",
+    }
 
 
 def main() -> None:
@@ -155,11 +202,7 @@ def main() -> None:
 
     if args.cmd == "production-check":
         result = validate_production_config(cfg)
-        result["storage_backend"] = cfg.storage.backend
-        result["api_resource_guard_backend"] = cfg.api_resource_guard.backend
-        result["model_budget"] = cfg.models.budget.model_dump()
-        result["cost_ledger_backend"] = "postgres" if cfg.storage.backend == "postgres" else "sqlite"
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(_production_check_output(cfg, result), ensure_ascii=False, indent=2))
         if not result["ok"]:
             raise SystemExit(1)
         return

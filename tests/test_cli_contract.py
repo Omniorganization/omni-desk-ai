@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -99,6 +100,36 @@ def test_cli_runtime_commands(monkeypatch, capsys, args, expected):
 def test_cli_remember_prints_record_id(monkeypatch, capsys):
     output = _run_cli(monkeypatch, capsys, ["remember", "check stock", "--tags", "sales,inventory"])
     assert "remembered experience #7" in output
+
+
+def test_cli_production_check_redacts_sensitive_validator_issues(monkeypatch, capsys):
+    cfg = AppConfig()
+    raw_issues = [
+        "gateway shared secret must be at least 32 chars: OMNIDESK_GATEWAY_SECRET",
+        "api resource guard postgres dsn is not configured: OMNIDESK_POSTGRES_DSN",
+        "literal actual-secret-value from validator context",
+    ]
+
+    monkeypatch.setattr(cli, "load_config", lambda path, ensure_dirs=True: cfg)
+    monkeypatch.setattr(
+        cli,
+        "validate_production_config",
+        lambda cfg: {"ok": False, "production": True, "issues": raw_issues},
+    )
+    monkeypatch.setattr(sys, "argv", ["omnidesk", "--config", "ignored.yaml", "production-check"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["issue_count"] == 3
+    assert payload["issues_redacted"] is True
+    assert payload["issue_categories"] == ["api_resource_guard", "gateway", "production_config"]
+    assert "issues" not in payload
+    assert "OMNIDESK_GATEWAY_SECRET" not in output
+    assert "OMNIDESK_POSTGRES_DSN" not in output
+    assert "actual-secret-value" not in output
 
 
 def test_cli_serve_applies_host_and_port_before_creating_app(monkeypatch):
