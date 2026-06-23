@@ -7,6 +7,7 @@ from pathlib import Path
 
 from scripts.check_ci_evidence_contract import main as check_ci_evidence_contract_main
 from scripts.check_license_policy import main as check_license_policy_main
+from scripts.check_production_install_policy import main as check_production_install_policy_main
 from scripts.check_security_workflow_policy import main as check_security_workflow_policy_main
 from scripts.write_ci_evidence_manifest import main as write_ci_evidence_manifest_main
 
@@ -72,6 +73,23 @@ def test_write_ci_evidence_manifest_binds_commit_run_logs_and_coverage(tmp_path:
 def test_ci_and_security_workflow_policy_contracts_pass_current_tree() -> None:
     assert check_ci_evidence_contract_main(["."]) == 0
     assert check_security_workflow_policy_main(["."]) == 0
+    assert check_production_install_policy_main(["."]) == 0
+
+
+def test_security_workflow_dependency_review_and_all_python_locks_are_blocking() -> None:
+    workflow = Path(".github/workflows/security.yml").read_text(encoding="utf-8")
+    dependency_review = workflow[workflow.index("actions/dependency-review-action@"):workflow.index("actions/dependency-review-action@") + 300]
+    assert "continue-on-error: true" not in dependency_review
+    for lockfile in [
+        "requirements.lock",
+        "requirements.runtime.lock",
+        "requirements.bootstrap.lock",
+        "requirements.dev.lock",
+        "requirements.security.lock",
+        "requirements.enterprise.lock",
+    ]:
+        assert f"python scripts/check_lock_hashes.py {lockfile}" in workflow
+        assert f"pip-audit --disable-pip -r {lockfile}" in workflow
 
 
 def test_license_policy_skips_lockfile_packages_that_do_not_match_current_marker(tmp_path: Path) -> None:

@@ -34,6 +34,10 @@ class PassingProvider:
         return ModelResponse(text=f"ok:{request.metadata.get('profile')}", provider=self.provider_name, model=self.model, profile=self.profile_name)
 
 
+class OpenAIPassingProvider(PassingProvider):
+    provider_name = "openai"
+
+
 def test_model_router_falls_back_after_primary_failure(monkeypatch, tmp_path: Path):
     import omnidesk_agent.models.router as router_mod
 
@@ -141,6 +145,61 @@ def test_model_router_records_request_actor_in_cost_store(monkeypatch, tmp_path:
     assert response.profile == "chat"
     by_actor = cost_store.summary(days=1, group_by="actor")
     assert by_actor["groups"]["alice"]["calls"] == 1
+
+
+def test_model_router_uses_server_pricing_for_budget_precheck(monkeypatch, tmp_path: Path):
+    import omnidesk_agent.models.router as router_mod
+
+    monkeypatch.setitem(router_mod.PROVIDER_CLASSES, "openai", OpenAIPassingProvider)
+    cfg = ModelsConfig(
+        default="chat",
+        profiles={"chat": ModelProfileConfig(provider="openai", model="gpt-5.1", api_key_env=None, max_output_tokens=6000)},
+        routing={"chat": {"primary": "chat", "fallback": [], "max_retries": 0}},
+    )
+    cfg.budget.per_actor_daily_usd_limit = 0.05
+    cfg.budget.daily_usd_limit = 10.0
+    cfg.budget.monthly_usd_limit = 100.0
+    cfg.budget.on_exceed = "block"
+    token_budget = TokenBudgetManager(tmp_path / "tokens.sqlite3")
+    cost_store = ModelCostStore(tmp_path / "costs.sqlite3")
+    router = ModelRouter(cfg, token_budget, cost_store)
+
+    request = ModelRequest(
+        system="s",
+        user="u",
+        task="chat",
+        task_id="budget-task",
+        metadata={"actor": "alice", "projected_cost_usd": 0.0, "estimated_cost_usd": 0.0},
+    )
+
+    try:
+        asyncio.run(router.complete(request))
+    except RuntimeError as exc:
+        assert "model budget exceeded" in str(exc)
+        assert "actor model budget exceeded" in str(exc)
+    else:
+        raise AssertionError("expected server-side projected cost to block the request")
+
+
+def test_model_router_records_server_estimated_cost_when_provider_omits_cost(monkeypatch, tmp_path: Path):
+    import omnidesk_agent.models.router as router_mod
+
+    monkeypatch.setitem(router_mod.PROVIDER_CLASSES, "openai", OpenAIPassingProvider)
+    cfg = ModelsConfig(
+        default="chat",
+        profiles={"chat": ModelProfileConfig(provider="openai", model="gpt-5.1-mini", api_key_env=None, max_output_tokens=800)},
+        routing={"chat": {"primary": "chat", "fallback": [], "max_retries": 0}},
+    )
+    token_budget = TokenBudgetManager(tmp_path / "tokens.sqlite3")
+    cost_store = ModelCostStore(tmp_path / "costs.sqlite3")
+    router = ModelRouter(cfg, token_budget, cost_store)
+
+    response = asyncio.run(router.complete(ModelRequest(system="s", user="hello world", task="chat", task_id="cost-task", metadata={"actor": "alice"})))
+
+    assert response.profile == "chat"
+    summary = cost_store.summary(days=1, group_by="actor")
+    assert summary["estimated_cost_usd"] > 0
+    assert summary["groups"]["alice"]["estimated_cost_usd"] > 0
 
 
 def test_model_router_requires_cost_store_when_persistent_ledger_is_required(tmp_path: Path):

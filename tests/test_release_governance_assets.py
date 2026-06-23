@@ -22,6 +22,7 @@ def test_release_governance_assets_exist():
     assert Path("scripts/write_distribution_manifest.py").exists()
     assert Path("scripts/check_release_channel_policy.py").exists()
     assert Path("scripts/check_ci_evidence_contract.py").exists()
+    assert Path("scripts/check_production_install_policy.py").exists()
     assert Path("scripts/write_ci_evidence_manifest.py").exists()
     assert Path("scripts/write_real_ga_evidence_summary.py").exists()
     assert Path("scripts/check_security_workflow_policy.py").exists()
@@ -63,6 +64,17 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json" in workflow
     assert "write_real_ga_evidence_summary.py" in workflow
     assert "dist/external-ga-evidence-summary.json" in workflow
+    assert "scripts/check_production_install_policy.py ." in workflow
+
+
+def test_release_sbom_is_generated_from_lockfiles():
+    release = Path("scripts/build_release.sh").read_text(encoding="utf-8")
+    assert '"schema_version": "omnidesk-lockfile-sbom/v1"' in release
+    assert "requirements.lock" in release
+    assert "requirements.runtime.lock" in release
+    assert "requirements.bootstrap.lock" in release
+    assert "requirements.enterprise.lock" in release
+    assert "lockfile_sha256" in release
 
 
 def test_release_channel_policy_script_passes_current_tree():

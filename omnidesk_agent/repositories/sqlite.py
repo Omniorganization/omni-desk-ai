@@ -138,6 +138,10 @@ class SQLiteRepositoryFactory:
         from omnidesk_agent.core.run_store import RunStore
         return RunStore(self.workspace_root / "runs.sqlite3")
 
+    def agent_run_idempotency_store(self):
+        from omnidesk_agent.security.agent_run_idempotency import SQLiteAgentRunIdempotencyStore
+        return SQLiteAgentRunIdempotencyStore(self.workspace_root / "agent_run_idempotency.sqlite3")
+
 
     def learning_experiments(self):
         from omnidesk_agent.self_learning.experiments.experiment_manager import ExperimentManager

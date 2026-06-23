@@ -4,6 +4,8 @@ import asyncio
 
 import pytest
 
+from omnidesk_agent.server_routes.agent_routes import UpgradeEvaluateRequest
+
 
 def _app(tmp_path):
     from omnidesk_agent.config import AppConfig
@@ -50,7 +52,7 @@ def test_self_upgrade_evaluate_requires_operator_role(tmp_path, monkeypatch):
         endpoint = _endpoint(app, "/self-upgrade/proposals/{proposal_id}/evaluate")
 
         with pytest.raises(fastapi.HTTPException) as exc:
-            asyncio.run(endpoint("missing", DummyRequest("view"), {}))
+            asyncio.run(endpoint("missing", DummyRequest("view"), UpgradeEvaluateRequest(idempotency_key="upgrade-viewer")))
         assert exc.value.status_code == 403
     finally:
         app.state.runtime.close()
@@ -68,7 +70,7 @@ def test_self_upgrade_canary_evaluate_requires_owner_role(tmp_path, monkeypatch)
         endpoint = _endpoint(app, "/self-upgrade/proposals/{proposal_id}/evaluate")
 
         with pytest.raises(fastapi.HTTPException) as exc:
-            asyncio.run(endpoint("missing", DummyRequest("op"), {"allow_canary": True}))
+            asyncio.run(endpoint("missing", DummyRequest("op"), UpgradeEvaluateRequest(allow_canary=True, idempotency_key="upgrade-canary")))
         assert exc.value.status_code == 403
     finally:
         app.state.runtime.close()

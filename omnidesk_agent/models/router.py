@@ -12,6 +12,7 @@ from omnidesk_agent.models.providers import PROVIDER_CLASSES, ProviderSettings
 from omnidesk_agent.models.cost_ledger import ModelCostLedger
 from omnidesk_agent.models.cost_store import ModelCostStore
 from omnidesk_agent.models.budget_policy import ModelBudgetEnforcer, ModelBudgetPolicy
+from omnidesk_agent.models.pricing import ModelPricingTable
 from omnidesk_agent.models.provider_errors import classify_provider_error
 from omnidesk_agent.models.schema_retry import StructuredOutputError, build_repair_prompt, validate_json_text
 
@@ -34,6 +35,7 @@ class ModelRouter:
             raise RuntimeError("models.budget.require_persistent_ledger requires a configured model cost_store")
         self.cost_ledger = ModelCostLedger(store=cost_store)
         self.budget_enforcer = self._build_budget_enforcer(cost_store)
+        self.pricing_table = ModelPricingTable()
         self.error_counts: dict[str, int] = {}
 
 
@@ -51,10 +53,10 @@ class ModelRouter:
             return None
         return ModelBudgetEnforcer(cost_store, policy)
 
-    def _check_budget(self, request: ModelRequest, *, profile: str) -> str | None:
+    def _check_budget(self, request: ModelRequest, *, profile: str, provider: Any) -> str | None:
         if self.budget_enforcer is None:
             return None
-        projected = float(request.metadata.get("projected_cost_usd") or request.metadata.get("estimated_cost_usd") or 0.0)
+        projected = self._estimate_projected_cost(request, provider)
         actor = request.metadata.get("actor")
         decision = self.budget_enforcer.check(actor=str(actor) if actor else None, projected_cost_usd=projected)
         if decision.ok:
@@ -62,6 +64,15 @@ class ModelRouter:
         if decision.action == "fallback_local" and profile != "local" and "local" in self.providers:
             return "fallback_local"
         raise RuntimeError(f"model budget exceeded: {decision.reason}; action={decision.action}; observed={decision.observed_cost_usd:.6f}; limit={decision.limit_usd}")
+
+    def _estimate_projected_cost(self, request: ModelRequest, provider: Any) -> float:
+        output_tokens = int(getattr(provider.settings, "max_output_tokens", self.cfg.max_output_tokens) or self.cfg.max_output_tokens)
+        return self.pricing_table.estimate(
+            provider=str(getattr(provider, "provider_name", "")),
+            model=str(getattr(provider, "model", "")),
+            input_tokens=self.token_budget.estimate_tokens(request.system) + self.token_budget.estimate_tokens(request.user),
+            output_tokens=output_tokens,
+        )
 
     def _build_provider(self, name: str, p: ModelProfileConfig):
         cls = PROVIDER_CLASSES.get(p.provider)
@@ -123,7 +134,7 @@ class ModelRouter:
                 last_error = RuntimeError(f"Model profile circuit open: {profile}")
                 continue
 
-            budget_action = self._check_budget(request, profile=profile)
+            budget_action = self._check_budget(request, profile=profile, provider=provider)
             if budget_action == "fallback_local":
                 provider = self.providers.get("local")
                 profile = "local"
@@ -189,6 +200,15 @@ class ModelRouter:
         actor = request.metadata.get("actor")
         if actor and not usage.get("actor"):
             usage["actor"] = str(actor)
+        usage.setdefault("estimated_input_tokens", decision.estimated_input_tokens)
+        usage.setdefault("estimated_output_tokens", estimated_output_tokens)
+        if not usage.get("cost_usd") and not usage.get("estimated_cost_usd"):
+            usage["estimated_cost_usd"] = self.pricing_table.estimate(
+                provider=str(resp.provider),
+                model=str(resp.model),
+                input_tokens=decision.estimated_input_tokens,
+                output_tokens=estimated_output_tokens,
+            )
         self.cost_ledger.record(
             task_id=request.task_id,
             task=request.task,
@@ -263,6 +283,7 @@ class ModelRouter:
             "providers": {n: {"provider": p.provider_name, "model": p.model} for n, p in self.providers.items()},
             "error_counts": dict(self.error_counts),
             "cost_ledger": self.cost_ledger.summary(),
+            "cost_ledger_backend": type(self.cost_ledger.store).__name__ if self.cost_ledger.store is not None else None,
         }
 
 

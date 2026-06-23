@@ -9,6 +9,8 @@ import pytest
 from omnidesk_agent.config import MemoryPrivacyConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.core.token_budget import TokenBudgetConfig
+from omnidesk_agent.models.budget_policy import ModelBudgetEnforcer, ModelBudgetPolicy
+from omnidesk_agent.security.agent_run_idempotency import AgentRunIdempotencyConflict, AgentRunIdempotencyInProgress
 from omnidesk_agent.repositories.postgres_state import (
     PostgresApprovalStore,
     PostgresBreakGlassStore,
@@ -117,6 +119,7 @@ def test_postgres_state_loads_and_runtime_factories(tmp_path: Path) -> None:
     assert runtime.approval_store(ttl_seconds=30) is not None
     assert runtime.break_glass_store(audit_log=tmp_path / "audit.jsonl") is not None
     assert runtime.run_store() is not None
+    assert runtime.agent_run_idempotency_store() is not None
     assert runtime.job_queue() is not None
     assert runtime.outbound_messages() is not None
     assert runtime.webhook_security() is not None
@@ -241,6 +244,23 @@ def test_postgres_learning_memory_token_and_cost_contracts() -> None:
     assert summary["calls"] == 2
     assert summary["groups"]["openai"]["estimated_cost_usd"] == pytest.approx(0.36)
 
+    shared_costs = PostgresModelCostStore(state)
+    enforcer = ModelBudgetEnforcer(
+        shared_costs,
+        ModelBudgetPolicy(
+            daily_usd_limit=10.0,
+            monthly_usd_limit=100.0,
+            per_actor_daily_usd_limit=0.50,
+            on_exceed="block",
+        ),
+    )
+    costs.record(task_id="task-3", actor="alice", provider="openai", model="gpt-5.1", profile="planner", estimated_cost_usd=0.45)
+    allowed = enforcer.check(actor="alice", projected_cost_usd=0.04)
+    blocked = enforcer.check(actor="alice", projected_cost_usd=0.06)
+    assert allowed.ok is True
+    assert blocked.ok is False
+    assert blocked.reason == "actor model budget exceeded"
+
     experiments = PostgresExperimentManager(state)
     experiments.create(ExperimentSpec("exp-1", "Policy", "old", "new", treatment_percent=50))
     assert experiments.get("exp-1")["name"] == "Policy"
@@ -287,3 +307,22 @@ def test_postgres_learning_memory_token_and_cost_contracts() -> None:
     report = memory.metrics_report(days=1)
     assert report["task_count"] == 1
     assert report["success_rate"] == 1.0
+
+
+def test_postgres_agent_run_idempotency_is_shared_across_instances() -> None:
+    state = MemoryJsonState()
+    runtime_a = _runtime_with_state(state)
+    runtime_b = _runtime_with_state(state)
+    first = runtime_a.agent_run_idempotency_store()
+    second = runtime_b.agent_run_idempotency_store()
+    payload = {"route": "/agent/run", "actor": "alice", "source_device": "web", "message": "hello"}
+
+    assert first.begin(actor="alice", key="same-key", source_device="web", payload=payload) is None
+    with pytest.raises(AgentRunIdempotencyInProgress):
+        second.begin(actor="alice", key="same-key", source_device="web", payload=payload)
+
+    first.complete(actor="alice", key="same-key", source_device="web", response={"ok": True, "run_id": "run-1"})
+    assert second.begin(actor="alice", key="same-key", source_device="web", payload=payload) == {"ok": True, "run_id": "run-1"}
+
+    with pytest.raises(AgentRunIdempotencyConflict):
+        second.begin(actor="alice", key="same-key", source_device="web", payload={**payload, "message": "different"})

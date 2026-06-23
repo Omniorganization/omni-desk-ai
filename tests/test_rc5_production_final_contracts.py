@@ -107,7 +107,7 @@ class _BudgetProvider:
 @pytest.mark.asyncio
 async def test_model_router_blocks_when_budget_exceeded(tmp_path):
     cfg = ModelsConfig()
-    cfg.budget.daily_usd_limit = 1.0
+    cfg.budget.daily_usd_limit = 0.5
     cfg.budget.on_exceed = "block"
     store = ModelCostStore(tmp_path / "cost.sqlite3")
     store.record(task_id="old", provider="fake", model="m", profile="fast", task="chat", estimated_cost_usd=1.0)

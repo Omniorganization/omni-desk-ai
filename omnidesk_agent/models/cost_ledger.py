@@ -22,8 +22,9 @@ class ModelCostEntry:
 class ModelCostLedger:
     """Lightweight per-runtime model usage ledger.
 
-    Prices are intentionally not hard-coded. Providers can pass cost metadata in
-    usage; otherwise the ledger still provides per-task token attribution.
+    The router supplies a server-side fallback estimate when providers do not
+    report exact billed cost, so callers cannot control projected spend through
+    request metadata.
     """
 
     entries: list[ModelCostEntry] = field(default_factory=list)

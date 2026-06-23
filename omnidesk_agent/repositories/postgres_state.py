@@ -1151,6 +1151,9 @@ class PostgresRuntimeStateStores:
         return PostgresBreakGlassStore(self.state, audit_log=audit_log)
     def run_store(self) -> PostgresRunStore:
         return PostgresRunStore(self.state)
+    def agent_run_idempotency_store(self):
+        from omnidesk_agent.security.agent_run_idempotency import JsonStateAgentRunIdempotencyStore
+        return JsonStateAgentRunIdempotencyStore(self.state)
     def job_queue(self) -> PostgresJobQueue:
         return PostgresJobQueue(self.state)
     def outbound_messages(self) -> PostgresOutboundMessageStore:
@@ -1180,10 +1183,11 @@ class PostgresRuntimeStateStores:
         self.state.stats_by_status("jobs")
         self.state.stats_by_status("outbound_messages")
         self.state.stats_by_status("runs")
+        self.state.list("agent_run_idempotency", limit=1)
         self.state.list("memory_experiences", limit=1)
         self.state.list("structured_experiences", limit=1)
         self.state.list("llm_cache", limit=1)
         self.state.list("llm_usage", limit=1)
         self.state.list("model_cost_events", limit=1)
         self.state.list("learning_experiments", limit=1)
-        return {"ok": True, "stores": ["approvals", "dual_approvals", "break_glass", "webhooks", "jobs", "outbound", "runs", "memory", "token_budget", "model_cost", "learning_experiments"]}
+        return {"ok": True, "stores": ["approvals", "dual_approvals", "break_glass", "webhooks", "jobs", "outbound", "runs", "agent_run_idempotency", "memory", "token_budget", "model_cost", "learning_experiments"]}

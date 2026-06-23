@@ -536,7 +536,7 @@ def _safe_yaml_load(stream_or_text):
     return loaded
 
 
-def load_config(path: Optional[Union[str, Path]] = None) -> AppConfig:
+def load_config(path: Optional[Union[str, Path]] = None, *, ensure_dirs: bool = True) -> AppConfig:
     data: dict[str, Any] = {}
     if path:
         p = Path(path).expanduser()
@@ -544,7 +544,8 @@ def load_config(path: Optional[Union[str, Path]] = None) -> AppConfig:
             with p.open("r", encoding="utf-8") as f:
                 data = _safe_yaml_load(f) or {}
     cfg = AppConfig.model_validate(data)
-    cfg.ensure_dirs()
+    if ensure_dirs:
+        cfg.ensure_dirs()
     return cfg
 
 def getenv_required(env_name: str) -> str:

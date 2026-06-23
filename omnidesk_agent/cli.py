@@ -14,7 +14,7 @@ from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.server import create_app
 from omnidesk_agent.storage.sqlite import close_all_open_connections
-from omnidesk_agent.validation.production import assert_production_config_safe
+from omnidesk_agent.validation.production import assert_production_config_safe, validate_production_config
 
 
 @contextmanager
@@ -66,6 +66,7 @@ def main() -> None:
     sub.add_parser("validate-models")
     sub.add_parser("validate-models-live")
     sub.add_parser("validate-webhook-signatures")
+    sub.add_parser("production-check")
     sub.add_parser("gmail-auth")
     learn_p = sub.add_parser("learning-report"); learn_p.add_argument("--days", type=int, default=7)
     l10_p = sub.add_parser("learning-l10-report"); l10_p.add_argument("--days", type=int, default=7); l10_p.add_argument("--format", choices=["json", "html"], default="json")
@@ -80,7 +81,12 @@ def main() -> None:
     search_p = sub.add_parser("search"); search_p.add_argument("query")
     serve_p = sub.add_parser("serve"); serve_p.add_argument("--host"); serve_p.add_argument("--port", type=int)
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config, ensure_dirs=args.cmd != "production-check")
+    except TypeError as exc:
+        if "ensure_dirs" not in str(exc):
+            raise
+        cfg = load_config(args.config)
 
     if args.cmd == "doctor":
         from omnidesk_agent.onboarding import run_doctor
@@ -145,6 +151,17 @@ def main() -> None:
 
     if args.cmd == "validate-webhook-signatures":
         print(json.dumps({"ok": True, "tests": ["wechat_signature", "line_signature_valid"]}, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "production-check":
+        result = validate_production_config(cfg)
+        result["storage_backend"] = cfg.storage.backend
+        result["api_resource_guard_backend"] = cfg.api_resource_guard.backend
+        result["model_budget"] = cfg.models.budget.model_dump()
+        result["cost_ledger_backend"] = "postgres" if cfg.storage.backend == "postgres" else "sqlite"
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result["ok"]:
+            raise SystemExit(1)
         return
 
     if args.cmd == "gmail-auth":

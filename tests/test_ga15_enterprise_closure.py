@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from pathlib import Path
 
 import pytest
@@ -85,13 +86,14 @@ def test_break_glass_routes_require_enabled_policy_and_distinct_approver(tmp_pat
     register_break_glass_routes(app, cfg, RT(), admin)
     client = TestClient(app)
 
-    bad = client.post("/admin/break-glass/open", json={"actor": "owner", "approved_by": "owner", "reason": "outage"})
+    owner_headers = {"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-bad"}
+    bad = client.post("/admin/break-glass/open", headers=owner_headers, json={"actor": "owner", "reason": "outage active"})
     assert bad.status_code == 400
-    opened = client.post("/admin/break-glass/open", json={"actor": "operator", "approved_by": "owner", "reason": "restore", "ttl_seconds": 60})
+    opened = client.post("/admin/break-glass/open", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-open"}, json={"actor": "operator", "reason": "restore access", "ttl_seconds": 60})
     assert opened.status_code == 200
     session_id = opened.json()["session"]["session_id"]
     assert client.get(f"/admin/break-glass/status/{session_id}").json()["session"]["active"] is True
-    revoked = client.post(f"/admin/break-glass/revoke/{session_id}", json={"revoked_by": "owner"})
+    revoked = client.post(f"/admin/break-glass/revoke/{session_id}", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-revoke"}, json={})
     assert revoked.status_code == 200
     assert client.get(f"/admin/break-glass/status/{session_id}").json()["session"]["active"] is False
 
@@ -128,9 +130,36 @@ def test_production_example_config_passes_with_required_env(monkeypatch) -> None
         "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
         "OMNIDESK_POSTGRES_DSN": "postgresql://omnidesk:secret@postgres:5432/omnidesk",
     }
-    cfg = load_config("deploy/docker/config.production.example.yaml")
+    cfg = load_config("deploy/docker/config.production.example.yaml", ensure_dirs=False)
     result = validate_production_config(cfg, env)
     assert result["ok"] is True, result["issues"]
+
+
+def test_cli_production_check_reports_shared_backends(monkeypatch, capsys) -> None:
+    from omnidesk_agent.cli import main
+
+    env = {
+        "OMNIDESK_ENV": "production",
+        "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+        "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+        "OMNIDESK_PLUGIN_SIGNING_SECRET": "x" * 40,
+        "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+        "OMNIDESK_SANDBOX_RUNNER_TOKEN": "x" * 40,
+        "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET": "x" * 40,
+        "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
+        "OMNIDESK_POSTGRES_DSN": "postgresql://omnidesk:secret@postgres:5432/omnidesk",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr("sys.argv", ["omnidesk", "--config", "examples/config.production.yaml", "production-check"])
+
+    main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True, result["issues"]
+    assert result["storage_backend"] == "postgres"
+    assert result["api_resource_guard_backend"] == "postgres"
+    assert result["cost_ledger_backend"] == "postgres"
 
 
 def test_async_otlp_exporter_enqueues_without_blocking() -> None:

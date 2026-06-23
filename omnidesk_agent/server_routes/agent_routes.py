@@ -3,12 +3,13 @@ from __future__ import annotations
 import hmac
 import os
 import uuid
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.security.agent_run_idempotency import AgentRunIdempotencyConflict, AgentRunIdempotencyInProgress
 
 AdminVerifier = Callable[[Request, str], Awaitable[object]]
 
@@ -20,6 +21,82 @@ class AgentRunRequest(BaseModel):
     secret: Optional[str] = Field(default=None, max_length=4096)
     idempotency_key: Optional[str] = Field(default=None, max_length=256)
     source_device: Optional[str] = Field(default=None, max_length=160)
+
+
+class AgentResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    resume_token: Optional[str] = Field(default=None, max_length=512)
+    idempotency_key: Optional[str] = Field(default=None, max_length=256)
+
+
+class UpgradeEvaluateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    old_permissions: Optional[list[str]] = Field(default=None, max_length=200)
+    new_permissions: Optional[list[str]] = Field(default=None, max_length=200)
+    stable_plan: Optional[dict[str, Any]] = None
+    shadow_plan: Optional[dict[str, Any]] = None
+    allow_canary: bool = False
+    idempotency_key: Optional[str] = Field(default=None, max_length=256)
+
+
+class CreateApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    tool: str = Field(min_length=1, max_length=160)
+    action: Optional[str] = Field(default=None, max_length=240)
+    args: dict[str, Any] = Field(default_factory=dict)
+    risk: Optional[Literal["low", "medium", "high", "critical"]] = None
+    reason: Optional[str] = Field(default=None, max_length=1000)
+    source: Optional[str] = Field(default=None, max_length=160)
+    actor: Optional[str] = Field(default=None, max_length=128)
+    scope_hash: Optional[str] = Field(default=None, max_length=256)
+    requires_dual_approval: bool = False
+    expires_at: Optional[float] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    by: Optional[str] = Field(default=None, max_length=128)
+    decided_by: Optional[str] = Field(default=None, max_length=128)
+    reason: Optional[str] = Field(default=None, max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DualApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    approver: Optional[str] = Field(default=None, max_length=128)
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+class BreakGlassOpenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    session_id: Optional[str] = Field(default=None, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=8, max_length=1000)
+    ttl_seconds: int = Field(default=900, ge=1, le=3600)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BreakGlassRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    revoked_by: Optional[str] = Field(default=None, max_length=128)
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+def _require_idempotency_key(request: Request, body_key: Optional[str] = None) -> str:
+    key = str(request.headers.get("idempotency-key") or body_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=428, detail="idempotency-key required")
+    if len(key) > 256:
+        raise HTTPException(status_code=422, detail="idempotency-key is too long")
+    return key
 
 
 def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier) -> None:
@@ -34,20 +111,41 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
             raise HTTPException(401, "bad secret")
         if provided and not secret:
             raise HTTPException(400, "secret provided but gateway shared secret is not configured")
+        idempotency_key = _require_idempotency_key(request, body.idempotency_key)
         message = body.message
         actor = str(getattr(decision, "actor", "") or "operator")
+        payload = {"route": "/agent/run", "actor": actor, "source_device": body.source_device or "", "message": message}
+        idempotency = getattr(rt, "agent_run_idempotency", None)
+        if idempotency is not None:
+            try:
+                cached = idempotency.begin(actor=actor, key=idempotency_key, source_device=body.source_device, payload=payload)
+            except AgentRunIdempotencyConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except AgentRunIdempotencyInProgress as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if cached is not None:
+                return cached
         msg = ChannelMessage(channel="local-api", sender_id=actor, text=message)
-        return await rt.orchestrator.handle_message(msg)
+        try:
+            result = await rt.orchestrator.handle_message(msg)
+        except Exception:
+            if idempotency is not None:
+                idempotency.fail(actor=actor, key=idempotency_key, source_device=body.source_device)
+            raise
+        if idempotency is not None and isinstance(result, dict):
+            idempotency.complete(actor=actor, key=idempotency_key, source_device=body.source_device, response=result)
+        return result
 
     @app.post("/agent/resume/{run_id}")
-    async def resume_agent(run_id: str, request: Request, body: Optional[dict] = None):
+    async def resume_agent(run_id: str, request: Request, body: AgentResumeRequest | None = None):
         await admin(request, "owner")
-        body = body or {}
+        body = body or AgentResumeRequest()
+        _require_idempotency_key(request, body.idempotency_key)
         metrics = getattr(rt, "metrics", None)
         inc = getattr(metrics, "inc", None)
         if callable(inc):
             inc("omnidesk_resume_attempts_total")
-        result = await rt.orchestrator.resume(run_id, resume_token=body.get("resume_token"))
+        result = await rt.orchestrator.resume(run_id, resume_token=body.resume_token)
         if callable(inc) and isinstance(result, dict):
             status = str(result.get("status", "unknown"))
             failure_statuses = {"resume_denied", "approval_not_satisfied", "not_found", "missing_approval_id", "missing_plan"}
@@ -58,16 +156,17 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
         return result
 
     @app.post("/self-upgrade/proposals/{proposal_id}/evaluate")
-    async def evaluate_upgrade_proposal(proposal_id: str, request: Request, body: Optional[dict] = None):
-        body = body or {}
-        allow_canary = bool(body.get("allow_canary", False))
+    async def evaluate_upgrade_proposal(proposal_id: str, request: Request, body: UpgradeEvaluateRequest | None = None):
+        body = body or UpgradeEvaluateRequest()
+        allow_canary = bool(body.allow_canary)
         await admin(request, "owner" if allow_canary else "operator")
+        _require_idempotency_key(request, body.idempotency_key)
         return await rt.governance.evaluate_proposal(
             proposal_id,
-            old_permissions=body.get("old_permissions"),
-            new_permissions=body.get("new_permissions"),
-            stable_plan=body.get("stable_plan"),
-            shadow_plan=body.get("shadow_plan"),
+            old_permissions=body.old_permissions,
+            new_permissions=body.new_permissions,
+            stable_plan=body.stable_plan,
+            shadow_plan=body.shadow_plan,
             allow_canary=allow_canary,
         )
 
@@ -100,14 +199,15 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
         return {"ok": True, "token_saved": True, "keys": sorted(token.keys())}
 
     @app.post("/approvals")
-    async def create_approval(request: Request, body: dict):
+    async def create_approval(request: Request, body: CreateApprovalRequest):
         decision = await admin(request, "operator")
-        body = dict(body)
+        _require_idempotency_key(request)
+        proposal = body.model_dump(exclude_none=True)
         actor = getattr(decision, "actor", request.headers.get("x-omnidesk-actor", "operator"))
-        body.setdefault("created_by", actor)
-        body.setdefault("proposer", actor)
-        approval_id = approvals.create(body)
-        return {"ok": True, "id": approval_id, "requires_dual_approval": bool(body.get("requires_dual_approval")), "created_by": actor}
+        proposal.setdefault("created_by", actor)
+        proposal.setdefault("proposer", actor)
+        approval_id = approvals.create(proposal)
+        return {"ok": True, "id": approval_id, "requires_dual_approval": bool(proposal.get("requires_dual_approval")), "created_by": actor}
 
     @app.get("/approvals")
     async def list_approvals(request: Request, status: Optional[str] = None):
@@ -127,9 +227,9 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
         return {"ok": True, "dual_approval": decision.__dict__}
 
     @app.post("/approvals/{approval_id}/dual-approve")
-    async def dual_approve_request(approval_id: str, request: Request, body: Optional[dict] = None):
+    async def dual_approve_request(approval_id: str, request: Request, body: DualApproveRequest | None = None):
         decision = await admin(request, "owner")
-        body = body or {}
+        _require_idempotency_key(request)
         store = getattr(rt, "dual_approval_store", None)
         if store is None:
             raise HTTPException(404, "dual approval store not available")
@@ -143,9 +243,11 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
         return {"ok": True, "dual_approval": decision.__dict__}
 
     @app.post("/approvals/{approval_id}/approve")
-    async def approve_request(approval_id: str, request: Request, body: Optional[dict] = None):
+    async def approve_request(approval_id: str, request: Request, body: ApprovalDecisionRequest | None = None):
         decision = await admin(request, "owner")
-        result = dict(body or {})
+        body = body or ApprovalDecisionRequest()
+        _require_idempotency_key(request)
+        result = body.model_dump(exclude_none=True)
         result.setdefault("decided_by", getattr(decision, "actor", "owner"))
         try:
             return {"ok": True, "approval": approvals.decide(approval_id, "approved", result)}
@@ -153,9 +255,11 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
             raise HTTPException(409, str(exc)) from exc
 
     @app.post("/approvals/{approval_id}/deny")
-    async def deny_request(approval_id: str, request: Request, body: Optional[dict] = None):
+    async def deny_request(approval_id: str, request: Request, body: ApprovalDecisionRequest | None = None):
         decision = await admin(request, "owner")
-        result = dict(body or {})
+        body = body or ApprovalDecisionRequest()
+        _require_idempotency_key(request)
+        result = body.model_dump(exclude_none=True)
         result.setdefault("decided_by", getattr(decision, "actor", "owner"))
         return {"ok": True, "approval": approvals.decide(approval_id, "denied", result)}
 
@@ -164,22 +268,24 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
 # API semantics close to the agent execution routes.
 def register_break_glass_routes(app: FastAPI, cfg, rt, admin: AdminVerifier) -> None:
     @app.post("/admin/break-glass/open")
-    async def open_break_glass(request: Request, body: dict):
+    async def open_break_glass(request: Request, body: BreakGlassOpenRequest):
         decision = await admin(request, "owner")
+        _require_idempotency_key(request)
         if not getattr(cfg.permissions, "break_glass_enabled", False):
             raise HTTPException(403, "break-glass is disabled")
         store = getattr(rt, "break_glass_store", None)
         if store is None:
             raise HTTPException(404, "break-glass store not available")
-        session_id = str(body.get("session_id") or uuid.uuid4())
+        session_id = str(body.session_id or uuid.uuid4())
+        approved_by = str(getattr(decision, "actor", "") or request.headers.get("x-omnidesk-actor") or "")
         try:
             session = store.open(
                 session_id=session_id,
-                actor=str(body.get("actor", "")),
-                approved_by=str(getattr(decision, "actor", "") or body.get("approved_by", "")),
-                reason=str(body.get("reason", "")),
-                ttl_seconds=int(body.get("ttl_seconds", 900)),
-                metadata={k: v for k, v in body.items() if k not in {"session_id", "actor", "approved_by", "reason", "ttl_seconds"}},
+                actor=body.actor,
+                approved_by=approved_by,
+                reason=body.reason,
+                ttl_seconds=body.ttl_seconds,
+                metadata=body.metadata,
             )
         except (ValueError, PermissionError) as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -197,14 +303,15 @@ def register_break_glass_routes(app: FastAPI, cfg, rt, admin: AdminVerifier) -> 
             raise HTTPException(404, str(exc)) from exc
 
     @app.post("/admin/break-glass/revoke/{session_id}")
-    async def revoke_break_glass(session_id: str, request: Request, body: Optional[dict] = None):
+    async def revoke_break_glass(session_id: str, request: Request, body: BreakGlassRevokeRequest | None = None):
         decision = await admin(request, "owner")
-        body = body or {}
+        body = body or BreakGlassRevokeRequest()
+        _require_idempotency_key(request)
         store = getattr(rt, "break_glass_store", None)
         if store is None:
             raise HTTPException(404, "break-glass store not available")
         try:
-            store.revoke(session_id, revoked_by=str(getattr(decision, "actor", "") or body.get("revoked_by") or request.headers.get("x-omnidesk-actor") or "owner"))
+            store.revoke(session_id, revoked_by=str(getattr(decision, "actor", "") or body.revoked_by or request.headers.get("x-omnidesk-actor") or "owner"))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"ok": True, "session_id": session_id, "revoked": True}

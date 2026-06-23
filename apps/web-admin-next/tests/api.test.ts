@@ -81,6 +81,21 @@ test('askConversation posts through the server-side chat proxy with csrf only', 
   });
 });
 
+test('runtime status is fetched through the server-side proxy', async () => {
+  let requestUrl = '';
+  globalThis.fetch = async (input, init) => {
+    requestUrl = input.toString();
+    assert.equal((init?.headers as Record<string, string>)['x-csrf-token'], 'csrf-token');
+    return new Response(JSON.stringify({ ok: true, runtime: { resource_guard: { backend: 'postgres' } } }), { status: 200 });
+  };
+
+  const api = new OmniAdminApi({ csrfToken: 'csrf-token' });
+  const result = await api.runtime();
+
+  assert.equal(requestUrl, '/api/omni/runtime');
+  assert.equal(result.runtime.resource_guard.backend, 'postgres');
+});
+
 test('resolveGatewayBaseUrl rejects unlisted browser-supplied gateway URLs in production', () => {
   const env = {
     NODE_ENV: 'production',

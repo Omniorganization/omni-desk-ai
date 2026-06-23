@@ -98,7 +98,11 @@ class ApprovalStore:
 
 
 class Orchestrator:
+    def __init__(self):
+        self.messages = []
+
     async def handle_message(self, msg):
+        self.messages.append(msg)
         return {"ok": True, "text": msg.text, "sender": msg.sender_id}
 
     async def resume(self, run_id, resume_token=None):
@@ -212,33 +216,44 @@ def test_admin_routes_cover_status_jobs_outbound_learning_and_slo(tmp_path):
         assert client.post("/admin/jobs/dead-letter/missing/requeue").status_code == 404
 
 
-def test_agent_routes_cover_run_resume_oauth_approval_and_upgrade(monkeypatch):
+def test_agent_routes_cover_run_resume_oauth_approval_and_upgrade(monkeypatch, tmp_path):
+    from omnidesk_agent.security.agent_run_idempotency import SQLiteAgentRunIdempotencyStore
+
     app = FastAPI()
     cfg = AppConfig()
     cfg.gateway.shared_secret_env = "OMNIDESK_TEST_GATEWAY_SECRET"
     monkeypatch.setenv("OMNIDESK_TEST_GATEWAY_SECRET", "shared")
     rt = AgentRuntime()
+    rt.agent_run_idempotency = SQLiteAgentRunIdempotencyStore(tmp_path / "agent_run_idempotency.sqlite3")
     approvals = ApprovalStore()
     register_agent_routes(app, cfg, rt, approvals, allow_admin)
     with TestClient(app) as client:
-        run = client.post("/agent/run", json={"message": "hello", "secret": "shared"})
+        run = client.post("/agent/run", headers={"idempotency-key": "run-1"}, json={"message": "hello", "secret": "shared"})
         assert run.json()["text"] == "hello"
         assert run.json()["sender"] == "operator"
+        replay = client.post("/agent/run", headers={"idempotency-key": "run-1"}, json={"message": "hello", "secret": "shared"})
+        assert replay.json() == run.json()
+        assert len(rt.orchestrator.messages) == 1
+        mismatch = client.post("/agent/run", headers={"idempotency-key": "run-1"}, json={"message": "changed", "secret": "shared"})
+        assert mismatch.status_code == 409
         assert client.post("/agent/run", json={"message": "hello", "actor": "a", "secret": "shared"}).status_code == 422
         assert client.post("/agent/run", json={"message": "x" * 12001, "secret": "shared"}).status_code == 422
         assert client.post("/agent/run", json={"message": "hello"}).status_code == 401
         assert client.post("/agent/run", json={"message": "hello", "secret": "wrong"}).status_code == 401
-        assert client.post("/agent/resume/run-1", json={"resume_token": "tok"}).json()["run_id"] == "run-1"
-        assert client.post("/self-upgrade/proposals/p1/evaluate", json={"allow_canary": True}).json()["proposal_id"] == "p1"
+        assert client.post("/agent/run", json={"message": "hello", "secret": "shared"}).status_code == 428
+        assert client.post("/agent/resume/run-1", headers={"idempotency-key": "resume-1"}, json={"resume_token": "tok"}).json()["run_id"] == "run-1"
+        assert client.post("/self-upgrade/proposals/p1/evaluate", headers={"idempotency-key": "upgrade-1"}, json={"allow_canary": True}).json()["proposal_id"] == "p1"
         assert client.get("/oauth/gmail/start", params={"redirect_uri": "https://cb.example"}).json()["state"] == "server-state"
         assert client.get("/oauth/gmail/callback", params={"code": "c", "redirect_uri": "https://cb.example", "state": "ok"}).json()["token_saved"] is True
         assert client.get("/oauth/gmail/callback", params={"code": "c", "redirect_uri": "https://cb.example", "state": "bad"}).status_code == 403
         assert rt.adapters["gmail"].oauth.started == [{"redirect_uri": "https://cb.example", "state": None, "actor": "owner"}]
         assert rt.adapters["gmail"].oauth.exchanged[0]["actor"] == "owner"
-        assert client.post("/approvals", json={"tool": "shell"}).json()["id"] == "approval-1"
+        assert client.post("/approvals", headers={"idempotency-key": "approval-create-1"}, json={"tool": "shell"}).json()["id"] == "approval-1"
+        assert client.post("/approvals", json={"tool": "shell"}).status_code == 428
+        assert client.post("/approvals", headers={"idempotency-key": "approval-bad"}, json={"tool": "shell", "unknown": "x"}).status_code == 422
         assert client.get("/approvals").json()["approvals"][0]["tool"] == "shell"
-        assert client.post("/approvals/approval-1/approve", json={"by": "owner"}).json()["approval"]["decision"] == "approved"
-        assert client.post("/approvals/approval-1/deny", json={}).json()["approval"]["decision"] == "denied"
+        assert client.post("/approvals/approval-1/approve", headers={"idempotency-key": "approval-approve-1"}, json={"by": "owner"}).json()["approval"]["decision"] == "approved"
+        assert client.post("/approvals/approval-1/deny", headers={"idempotency-key": "approval-deny-1"}, json={}).json()["approval"]["decision"] == "denied"
 
 
 def test_webhook_routes_cover_all_channel_enqueue_paths():

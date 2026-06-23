@@ -44,11 +44,11 @@ def test_agent_run_actor_rate_limit_blocks_repeated_execution(tmp_path, monkeypa
 
     with TestClient(app) as client:
         headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice"}
-        first = client.post("/agent/run", headers=headers, json={"message": "first"})
+        first = client.post("/agent/run", headers={**headers, "idempotency-key": "run-first"}, json={"message": "first"})
         assert first.status_code == 200, first.text
         assert first.json()["sender"] == "alice"
 
-        second = client.post("/agent/run", headers=headers, json={"message": "second"})
+        second = client.post("/agent/run", headers={**headers, "idempotency-key": "run-second"}, json={"message": "second"})
         assert second.status_code == 429
         assert second.json()["detail"] == "agent rate limit exceeded"
         assert [msg.text for msg in fake.messages] == ["first"]
