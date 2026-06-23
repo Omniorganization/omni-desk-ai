@@ -42,6 +42,24 @@ def test_model_cost_store_persists_and_groups(tmp_path):
     assert summary["groups"]["openai"]["output_tokens"] == 5
 
 
+def test_model_cost_store_rejects_group_by_sql_injection(tmp_path):
+    store = ModelCostStore(tmp_path / "costs.sqlite3")
+    store.record(task_id="t1", actor="alice", provider="openai", model="m", profile="fast", task="chat", input_tokens=10, output_tokens=5, estimated_cost_usd=0.25)
+
+    for group_by in [
+        "provider; DROP TABLE model_cost_events; --",
+        "actor) UNION SELECT password FROM users --",
+        "model, estimated_cost_usd",
+        "",
+        None,
+    ]:
+        summary = store.summary(days=7, group_by=group_by)
+        assert summary["calls"] == 1
+        assert summary["groups"] == {}
+
+    assert store.summary(days=7, group_by="provider")["groups"]["openai"]["calls"] == 1
+
+
 def test_outbound_dispatcher_classifies_non_retryable_channel_errors(tmp_path):
     class AuthErrorAdapter:
         async def send_text(self, recipient: str, text: str, **kwargs):

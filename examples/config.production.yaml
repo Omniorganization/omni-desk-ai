@@ -1,0 +1,131 @@
+workspace:
+  root: /data/workspace
+  memory_db: /data/memory.sqlite3
+  skills_dirs:
+    - /data/skills
+  plugins_dirs:
+    - /data/plugins
+
+gateway:
+  host: 0.0.0.0
+  port: 18789
+  public_base_url: https://omnidesk.internal.prod
+  allow_local_admin_without_token: false
+  require_webhook_signatures: true
+  admin_allowed_ips: []
+  shared_secret_env: OMNIDESK_GATEWAY_SECRET
+  admin_token_env: OMNIDESK_ADMIN_TOKEN
+
+storage:
+  backend: postgres
+  postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+  require_multi_instance_safe: true
+
+app_sync:
+  backend: postgres
+  postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+  namespace: production
+  require_idempotency: true
+  allow_websocket_query_auth: false
+  require_device_public_key_in_production: true
+  require_device_signed_requests_in_production: true
+  reject_predictable_device_ids_in_production: true
+  device_signature_max_skew_seconds: 300
+
+api_resource_guard:
+  enabled: true
+  backend: postgres
+  postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+  trusted_proxy_ips: []
+  window_seconds: 60
+  max_body_bytes: 1048576
+  max_requests_per_ip: 300
+  max_requests_per_endpoint: 120
+  max_requests_per_actor: 120
+  max_requests_per_role: 600
+  max_requests_per_org_endpoint: 600
+  agent_run_max_requests_per_actor: 20
+  chat_max_requests_per_actor: 60
+  max_inflight_requests: 64
+  max_inflight_agent_runs: 4
+  max_inflight_chat_requests: 8
+
+llm:
+  per_task_max_llm_calls: 16
+
+models:
+  budget:
+    daily_usd_limit: 500.0
+    monthly_usd_limit: 5000.0
+    per_actor_daily_usd_limit: 50.0
+    on_exceed: require_approval
+    require_persistent_ledger: true
+
+permissions:
+  approval_mode: remote_approval
+  default_mode: ask
+  no_tty_mode: deny
+  audit_log: /data/audit.log
+  shell_backend: remote_docker
+  always_ask_tools: [computer, shell, channels, files, ui_bridge, browser, gmail]
+  require_dual_approval_for_risks: [critical]
+  break_glass_enabled: true
+  audit_checkpoint_hmac_key_env: OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY
+
+sandbox:
+  backend: remote_docker
+  runner_url: http://sandbox-runner:18890
+  runner_token_env: OMNIDESK_SANDBOX_RUNNER_TOKEN
+  runner_hmac_secret_env: OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET
+  docker_image: python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+  docker_network: none
+  timeout_seconds: 120
+  memory_limit: 512m
+  cpus: "1.0"
+
+plugins:
+  enabled: true
+  trusted_only: true
+  allow_in_process: false
+  default_sandbox: docker
+  production_forbid_subprocess: true
+
+capabilities:
+  plugins:
+    enabled: true
+  shell:
+    enabled: true
+  browser:
+    enabled: false
+  ui_bridge:
+    enabled: false
+  gmail:
+    enabled: false
+  channels:
+    enabled: false
+
+memory_privacy:
+  redact_pii: true
+  isolate_by_actor: true
+  encrypt_at_rest: true
+  encryption_backend: local_fernet
+  encryption_key_env: OMNIDESK_MEMORY_ENCRYPTION_KEY
+  retention_days: 30
+
+channels:
+  gmail:
+    enabled: false
+    allow_send: false
+    allow_compose: false
+    encrypt_token_at_rest: true
+  chrome:
+    enabled: false
+    devtools_host: 127.0.0.1
+    allowed_origins: []
+    forbid_default_profile: true
+    dedicated_profile_dir: /data/chrome-profile
+
+observability:
+  expose_public_metrics: false
+  structured_json_logs: true
+  trace_http_requests: true

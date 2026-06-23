@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 
 root = Path.cwd()
 try:
@@ -50,11 +51,40 @@ package_files = sorted(
     str(path.relative_to(root))
     for path in (root / "omnidesk_agent").rglob("*.py")
 )
+
+lockfiles = [
+    "requirements.lock",
+    "requirements.bootstrap.lock",
+    "requirements.runtime.lock",
+    "requirements.enterprise.lock",
+    "requirements.security.lock",
+    "requirements.dev.lock",
+]
+
+def parse_lockfile(path: Path) -> dict:
+    entries = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("--"):
+            continue
+        requirement = line.split(" \\", 1)[0].strip()
+        requirement = requirement.split(" --hash=", 1)[0].strip()
+        match = re.match(r"([A-Za-z0-9_.-]+)==([^;\s]+)", requirement)
+        if match:
+            entries.append({"name": match.group(1).lower().replace("_", "-"), "version": match.group(2)})
+    return {
+        "path": str(path.relative_to(root)),
+        "lockfile_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "package_count": len(entries),
+        "packages": entries,
+    }
+
 sbom = {
+    "schema_version": "omnidesk-lockfile-sbom/v1",
     "name": project.get("name"),
     "version": project.get("version"),
-    "dependencies": project.get("dependencies", []),
-    "optional_dependencies": project.get("optional-dependencies", {}),
+    "source": "hash-locked requirements lockfiles",
+    "lockfiles": [parse_lockfile(root / rel) for rel in lockfiles],
     "package_files": package_files,
 }
 (root / "dist" / "sbom.json").write_text(json.dumps(sbom, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

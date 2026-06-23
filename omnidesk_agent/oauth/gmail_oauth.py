@@ -14,7 +14,7 @@ class GmailOAuthManager:
         self.cfg = cfg
         self.state_store = OAuthStateStore(cfg.token_file.parent / "gmail_oauth_states.sqlite3", cfg.oauth_state_ttl_seconds)
         self.encryption = (
-            EncryptionProvider.from_env(cfg.token_encryption_key_env, required=True, key_id="gmail-token")
+            EncryptionProvider.from_env(cfg.token_encryption_key_env, required=bool(getattr(cfg, "enabled", False)), key_id="gmail-token")
             if getattr(cfg, "encrypt_token_at_rest", False)
             else EncryptionProvider.disabled()
         )
@@ -22,7 +22,7 @@ class GmailOAuthManager:
     @property
     def scopes(self) -> list[str]:
         scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
-        if getattr(self.cfg, "allow_compose", True):
+        if getattr(self.cfg, "allow_compose", False):
             scopes.append("https://www.googleapis.com/auth/gmail.compose")
         if getattr(self.cfg, "allow_send", False):
             scopes.append("https://www.googleapis.com/auth/gmail.send")

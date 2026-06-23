@@ -12,11 +12,19 @@ SECURITY_SNIPPETS = [
     "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
     "github.com/zricethezav/gitleaks/v8@v8.28.0",
     "gitleaks\" detect --source . --no-git --redact --verbose --config .gitleaks.toml",
-    "continue-on-error: true",
     "scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json",
     "scripts/check_security_workflow_policy.py .",
     "security-events: write",
     "pull-requests: read",
+]
+
+LOCKFILES = [
+    "requirements.lock",
+    "requirements.runtime.lock",
+    "requirements.bootstrap.lock",
+    "requirements.dev.lock",
+    "requirements.security.lock",
+    "requirements.enterprise.lock",
 ]
 
 DOCKER_SCAN_SNIPPETS = [
@@ -44,9 +52,21 @@ def check(root: Path) -> list[str]:
     for rel in REQUIRED_FILES:
         if not (root / rel).exists():
             issues.append(f"missing security policy asset: {rel}")
-    missing_security = _missing_snippets(root / ".github" / "workflows" / "security.yml", SECURITY_SNIPPETS)
+    security_workflow = root / ".github" / "workflows" / "security.yml"
+    missing_security = _missing_snippets(security_workflow, SECURITY_SNIPPETS)
     if missing_security:
         issues.append("security.yml missing snippets: " + ", ".join(missing_security))
+    security_text = security_workflow.read_text(encoding="utf-8") if security_workflow.exists() else ""
+    for lockfile in LOCKFILES:
+        if f"python scripts/check_lock_hashes.py {lockfile}" not in security_text:
+            issues.append(f"security.yml must hash-check lockfile: {lockfile}")
+        if f"pip-audit --disable-pip -r {lockfile}" not in security_text:
+            issues.append(f"security.yml must pip-audit lockfile: {lockfile}")
+    dependency_review_index = security_text.find("actions/dependency-review-action@")
+    if dependency_review_index >= 0:
+        dependency_review_block = security_text[dependency_review_index:dependency_review_index + 300]
+        if "continue-on-error: true" in dependency_review_block:
+            issues.append("dependency-review must be blocking; remove continue-on-error: true")
     missing_docker = _missing_snippets(root / ".github" / "workflows" / "docker-scan.yml", DOCKER_SCAN_SNIPPETS)
     if missing_docker:
         issues.append("docker-scan.yml missing snippets: " + ", ".join(missing_docker))

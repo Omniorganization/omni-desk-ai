@@ -84,6 +84,14 @@ def test_readiness_routes_cover_runtime_snapshot_and_middleware(tmp_path, monkey
         assert admin_ready.status_code == 200
         assert admin_ready.json()["checks"]["database"] is True
 
+        status = client.get("/admin/status", headers={"x-omnidesk-admin-token": "a" * 40})
+        assert status.status_code == 200
+        runtime = status.json()["runtime"]
+        assert runtime["resource_guard"]["enabled"] is True
+        assert runtime["resource_guard"]["backend"] in {"memory", "sqlite", "postgres"}
+        assert "cost_ledger" in runtime
+        assert runtime["release_evidence"]["summary_path"].endswith("real-ga-evidence-summary-1.12.5.json")
+
 
 def test_readiness_reports_database_and_secret_failures(tmp_path, monkeypatch):
     fastapi = pytest.importorskip("fastapi")

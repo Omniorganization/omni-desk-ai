@@ -81,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         failures.append(str(exc))
 
+    try:
+        _run([sys.executable, "scripts/check_production_install_policy.py", "."], root)
+        ok.append("production install policy gate passes")
+    except Exception as exc:
+        failures.append(str(exc))
+
     pyproject = _read(root / "pyproject.toml")
     version = _project_version(pyproject)
     chart_version = _native_version(version)

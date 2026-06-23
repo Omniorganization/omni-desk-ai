@@ -340,10 +340,10 @@ class GmailConfig(BaseModel):
     readonly: bool = True
     allow_send: bool = False
     allow_modify: bool = False
-    allow_compose: bool = True
+    allow_compose: bool = False
     oauth_redirect_allowlist: list[str] = Field(default_factory=list)
     oauth_state_ttl_seconds: int = 600
-    encrypt_token_at_rest: bool = False
+    encrypt_token_at_rest: bool = True
     token_encryption_key_env: str = "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY"
 
 class ChromeConfig(BaseModel):
@@ -536,7 +536,7 @@ def _safe_yaml_load(stream_or_text):
     return loaded
 
 
-def load_config(path: Optional[Union[str, Path]] = None) -> AppConfig:
+def load_config(path: Optional[Union[str, Path]] = None, *, ensure_dirs: bool = True) -> AppConfig:
     data: dict[str, Any] = {}
     if path:
         p = Path(path).expanduser()
@@ -544,7 +544,8 @@ def load_config(path: Optional[Union[str, Path]] = None) -> AppConfig:
             with p.open("r", encoding="utf-8") as f:
                 data = _safe_yaml_load(f) or {}
     cfg = AppConfig.model_validate(data)
-    cfg.ensure_dirs()
+    if ensure_dirs:
+        cfg.ensure_dirs()
     return cfg
 
 def getenv_required(env_name: str) -> str:

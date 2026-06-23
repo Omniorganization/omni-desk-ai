@@ -162,6 +162,9 @@ class PostgresRepositoryFactory:
     def run_store(self):
         return self._runtime_state().run_store()
 
+    def agent_run_idempotency_store(self):
+        return self._runtime_state().agent_run_idempotency_store()
+
 
     def learning_experiments(self):
         return self._runtime_state().learning_experiments()

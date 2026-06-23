@@ -14,7 +14,24 @@ from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.server import create_app
 from omnidesk_agent.storage.sqlite import close_all_open_connections
-from omnidesk_agent.validation.production import assert_production_config_safe
+from omnidesk_agent.validation.production import assert_production_config_safe, validate_production_config
+
+
+_PRODUCTION_ISSUE_CATEGORY_MARKERS = (
+    ("api_resource_guard", ("api_resource_guard", "api resource guard")),
+    ("app_sync", ("app_sync",)),
+    ("capabilities", ("capabilities.",)),
+    ("channels", ("channels.",)),
+    ("gateway", ("gateway.", "gateway ")),
+    ("gmail", ("gmail",)),
+    ("memory_privacy", ("memory_privacy", "memory encryption")),
+    ("models", ("models.", "llm.")),
+    ("observability", ("observability.",)),
+    ("permissions", ("permissions.", "break-glass")),
+    ("plugins", ("plugins.", "plugin ")),
+    ("sandbox", ("sandbox.",)),
+    ("storage", ("storage.", "postgres dsn")),
+)
 
 
 @contextmanager
@@ -33,6 +50,36 @@ def runtime_context(cfg: AppConfig, *, validate_production: bool = True) -> Iter
                     close()
         finally:
             close_all_open_connections()
+
+
+def _production_issue_category(issue: object) -> str:
+    text = str(issue).lower()
+    for category, markers in _PRODUCTION_ISSUE_CATEGORY_MARKERS:
+        if any(marker in text for marker in markers):
+            return category
+    return "production_config"
+
+
+def _production_check_output(cfg: AppConfig, result: dict) -> dict:
+    issues = list(result.get("issues") or [])
+    budget = cfg.models.budget
+    return {
+        "ok": bool(result.get("ok")),
+        "production": bool(result.get("production")),
+        "issue_count": len(issues),
+        "issue_categories": sorted({_production_issue_category(issue) for issue in issues}),
+        "issues_redacted": bool(issues),
+        "storage_backend": cfg.storage.backend,
+        "api_resource_guard_backend": cfg.api_resource_guard.backend,
+        "model_budget": {
+            "daily_usd_limit": budget.daily_usd_limit,
+            "monthly_usd_limit": budget.monthly_usd_limit,
+            "per_actor_daily_usd_limit": budget.per_actor_daily_usd_limit,
+            "on_exceed": budget.on_exceed,
+            "require_persistent_ledger": budget.require_persistent_ledger,
+        },
+        "cost_ledger_backend": "postgres" if cfg.storage.backend == "postgres" else "sqlite",
+    }
 
 
 def main() -> None:
@@ -66,6 +113,7 @@ def main() -> None:
     sub.add_parser("validate-models")
     sub.add_parser("validate-models-live")
     sub.add_parser("validate-webhook-signatures")
+    sub.add_parser("production-check")
     sub.add_parser("gmail-auth")
     learn_p = sub.add_parser("learning-report"); learn_p.add_argument("--days", type=int, default=7)
     l10_p = sub.add_parser("learning-l10-report"); l10_p.add_argument("--days", type=int, default=7); l10_p.add_argument("--format", choices=["json", "html"], default="json")
@@ -80,7 +128,12 @@ def main() -> None:
     search_p = sub.add_parser("search"); search_p.add_argument("query")
     serve_p = sub.add_parser("serve"); serve_p.add_argument("--host"); serve_p.add_argument("--port", type=int)
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config, ensure_dirs=args.cmd != "production-check")
+    except TypeError as exc:
+        if "ensure_dirs" not in str(exc):
+            raise
+        cfg = load_config(args.config)
 
     if args.cmd == "doctor":
         from omnidesk_agent.onboarding import run_doctor
@@ -145,6 +198,13 @@ def main() -> None:
 
     if args.cmd == "validate-webhook-signatures":
         print(json.dumps({"ok": True, "tests": ["wechat_signature", "line_signature_valid"]}, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "production-check":
+        result = validate_production_config(cfg)
+        print(json.dumps(_production_check_output(cfg, result), ensure_ascii=False, indent=2))
+        if not result["ok"]:
+            raise SystemExit(1)
         return
 
     if args.cmd == "gmail-auth":

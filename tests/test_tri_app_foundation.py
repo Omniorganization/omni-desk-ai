@@ -57,6 +57,7 @@ def test_tri_app_store_links_desktop_mobile_web_business_line(tmp_path):
 def test_appsync_routes_create_task_approval_and_sync(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
     monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "viewer-token")
     cfg = _cfg(tmp_path)
     app = create_app(cfg)
@@ -82,6 +83,7 @@ def test_appsync_routes_create_task_approval_and_sync(tmp_path, monkeypatch):
 def test_shared_app_api_contract_matches_backend_routes(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
     monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "viewer-token")
     root = Path(__file__).resolve().parents[1]
     contract = json.loads((root / "apps" / "shared" / "omni-app-api.contract.json").read_text())
@@ -197,6 +199,7 @@ class FakeChatRouter:
 def test_appsync_ask_route_uses_model_router_and_persists_messages(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
     monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "viewer-token")
     app = create_app(_cfg(tmp_path))
     fake_router = FakeChatRouter()

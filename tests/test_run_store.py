@@ -1,4 +1,6 @@
 from __future__ import annotations
+import pytest
+
 from omnidesk_agent.core.run_store import RunStore
 
 
@@ -10,3 +12,10 @@ def test_run_store_lifecycle(tmp_path):
     assert store.get(rid)["status"] == "waiting_approval"
     store.complete(rid, "completed", [{"ok": True}])
     assert store.get(rid)["status"] == "completed"
+
+
+def test_run_store_update_rejects_unmapped_columns(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite3")
+    rid = store.create({"channel": "local-cli", "sender_id": "owner", "text": "hello"})
+    with pytest.raises(ValueError, match="unsupported run update field"):
+        store.update(rid, {"status = 'completed' --": "completed"})

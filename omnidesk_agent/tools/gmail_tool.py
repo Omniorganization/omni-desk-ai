@@ -21,7 +21,7 @@ class GmailTool:
     def _require_compose_allowed(self) -> None:
         self._require_enabled()
         cfg = getattr(self.adapter, "cfg", None)
-        if cfg is not None and not getattr(cfg, "allow_compose", True):
+        if cfg is not None and not getattr(cfg, "allow_compose", False):
             raise PermissionError("Gmail compose is disabled by configuration")
 
     def _require_send_allowed(self) -> None:

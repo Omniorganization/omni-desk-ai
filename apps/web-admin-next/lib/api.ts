@@ -32,6 +32,7 @@ export class OmniAdminApi {
   }
 
   bootstrap() { return this.request<any>('/api/omni/bootstrap'); }
+  runtime() { return this.request<any>('/api/omni/runtime'); }
   ecosystem() { return this.request<any>('/api/omni/channels/ecosystem'); }
   approvals() { return this.request<any>('/api/omni/approvals?status=pending'); }
   notifications() { return this.request<any>('/api/omni/notifications?audience=web_admin'); }

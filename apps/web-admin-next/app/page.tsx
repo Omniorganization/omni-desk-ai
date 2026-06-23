@@ -17,6 +17,7 @@ export default function Page() {
   const [csrfToken, setCsrfToken] = useState('');
   const [decisionReason, setDecisionReason] = useState('Reviewed in Web Admin controlled-staging console');
   const [snapshot, setSnapshot] = useState<any>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<any>(null);
   const [ecosystem, setEcosystem] = useState<any>(null);
   const [chatConversationId, setChatConversationId] = useState('');
   const [chatInput, setChatInput] = useState('帮我分析今天任务状态');
@@ -46,6 +47,7 @@ export default function Page() {
       const activeApi = new OmniAdminApi({ csrfToken: activeCsrf, actor, role });
       await activeApi.registerAdminDevice();
       setSnapshot(await activeApi.bootstrap());
+      setRuntimeStatus(await activeApi.runtime());
       setEcosystem(await activeApi.ecosystem());
     } catch (e: any) {
       setError(e.message || String(e));
@@ -91,6 +93,7 @@ export default function Page() {
   }
 
   const approvals = snapshot?.pending_approvals || [];
+  const runtime = runtimeStatus?.runtime || {};
   return <main>
     <section className="card">
       <h1>Omni Web Admin</h1>
@@ -111,8 +114,13 @@ export default function Page() {
     </section>
     <section className="grid">
       <div className="card"><h2>设备</h2><pre>{JSON.stringify(snapshot?.devices || [], null, 2)}</pre></div>
-      <div className="card"><h2>Runtime</h2><pre>{JSON.stringify(snapshot?.runtime_status || [], null, 2)}</pre></div>
+      <div className="card"><h2>Runtime</h2><pre>{JSON.stringify(runtimeStatus || snapshot?.runtime_status || [], null, 2)}</pre></div>
       <div className="card"><h2>渠道生态</h2><pre>{JSON.stringify(ecosystem?.channels?.slice?.(0, 18) || [], null, 2)}</pre></div>
+    </section>
+    <section className="grid">
+      <div className="card"><h2>Resource Guard</h2><pre>{JSON.stringify(runtime.resource_guard || {}, null, 2)}</pre></div>
+      <div className="card"><h2>Cost Ledger</h2><pre>{JSON.stringify(runtime.cost_ledger || {}, null, 2)}</pre></div>
+      <div className="card"><h2>GA Evidence</h2><pre>{JSON.stringify(runtime.release_evidence || {}, null, 2)}</pre></div>
     </section>
     <section className="card">
       <h2>Chat Console</h2>
