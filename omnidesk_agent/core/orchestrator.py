@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Any, Optional
 
+import asyncio
 from dataclasses import asdict
 import json
 
@@ -48,7 +49,7 @@ class Orchestrator:
         self.dual_approval_store = dual_approval_store
 
     async def handle_message(self, msg: ChannelMessage) -> dict:
-        run_id = self.run_store.create(asdict(msg)) if self.run_store else None
+        run_id = await asyncio.to_thread(self.run_store.create, asdict(msg)) if self.run_store else None
         learning_assignment = None
         if self.learning_loop is not None:
             try:
@@ -68,11 +69,11 @@ class Orchestrator:
     async def resume(self, run_id: str, resume_token: Optional[str] = None) -> dict:
         if self.run_store is None:
             return {"ok": False, "status": "resume_unavailable", "message": "RunStore is not configured"}
-        run = self.run_store.get(run_id)
+        run = await asyncio.to_thread(self.run_store.get, run_id)
         if not run:
             return {"ok": False, "status": "not_found", "run_id": run_id}
         try:
-            self.run_store.require_resume_token(run_id, resume_token)
+            await asyncio.to_thread(self.run_store.require_resume_token, run_id, resume_token)
         except (KeyError, PermissionError) as exc:
             return {"ok": False, "status": "resume_denied", "run_id": run_id, "error": str(exc)}
         if run["status"] != "waiting_approval":
@@ -87,27 +88,27 @@ class Orchestrator:
         resume_started = False
         try:
             with trace_span("orchestrator.resume.consume_token", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), run_id=run_id, approval_id=approval_id):
-                self.run_store.consume_resume_token(run_id, resume_token)
+                await asyncio.to_thread(self.run_store.consume_resume_token, run_id, resume_token)
             resume_started = True
             proposal = run.get("approval_proposal") or {}
             if proposal.get("requires_dual_approval"):
                 dual_store = getattr(self.approval_store, "dual_approval_store", None) or getattr(self, "dual_approval_store", None)
                 if dual_store is None:
                     raise PermissionError("dual approval store is required for critical approval resume")
-                dual_decision = dual_store.status(approval_id)
+                dual_decision = await asyncio.to_thread(dual_store.status, approval_id)
                 if not dual_decision.ready:
                     raise PermissionError(f"dual approval is not satisfied: {dual_decision.reason}")
             if hasattr(self.approval_store, "consume_approved"):
-                self.approval_store.consume_approved(approval_id, proposal, consumed_by_run_id=run_id)
+                await asyncio.to_thread(self.approval_store.consume_approved, approval_id, proposal, consumed_by_run_id=run_id)
             else:
-                self.approval_store.require_approved(approval_id, proposal)
+                await asyncio.to_thread(self.approval_store.require_approved, approval_id, proposal)
             if hasattr(self.permissions, "allow_approved_proposal"):
-                self.permissions.allow_approved_proposal(run.get("approval_proposal") or {})
+                await asyncio.to_thread(self.permissions.allow_approved_proposal, run.get("approval_proposal") or {})
             if self.run_store:
-                self.run_store.update(run_id, {"status": "running", "waiting_approval_id": None})
+                await asyncio.to_thread(self.run_store.update, run_id, {"status": "running", "waiting_approval_id": None})
         except PermissionError as exc:
             if resume_started and hasattr(self.run_store, "mark_resume_failed"):
-                self.run_store.mark_resume_failed(run_id, str(exc))
+                await asyncio.to_thread(self.run_store.mark_resume_failed, run_id, str(exc))
             return {"ok": False, "status": "approval_not_satisfied", "approval_id": approval_id, "error": str(exc)}
 
         msg = message_from_dict(run["original_message"])
@@ -189,7 +190,8 @@ class Orchestrator:
             self._metric("omnidesk_approval_waiting_runs_total", tool=str(approval.proposal.get("tool", "")) if isinstance(approval.proposal, dict) else "unknown")
             all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
             if self.run_store and run_id:
-                resume_token = self.run_store.save_waiting(
+                resume_token = await asyncio.to_thread(
+                    self.run_store.save_waiting,
                     run_id,
                     asdict(plan),
                     current_step_index,
@@ -215,7 +217,7 @@ class Orchestrator:
         all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
         status = "completed" if all(r["ok"] for r in all_results) else "failed"
         if self.run_store and run_id:
-            self.run_store.complete(run_id, status, all_results)
+            await asyncio.to_thread(self.run_store.complete, run_id, status, all_results)
         resume_token = None
 
         outcome = "\n".join([r.get("summary") or r.get("error") or "" for r in all_results])

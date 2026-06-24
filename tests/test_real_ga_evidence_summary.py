@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,11 +12,11 @@ def test_real_ga_evidence_summary_preserves_blockers_without_claiming_real_ga(tm
     monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     (root / "release").mkdir()
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "omnidesk-agent"\nversion = "1.12.6+root-monorepo-production-ga-candidate"\n',
+        '[project]\nname = "omnidesk-agent"\nversion = "1.12.7+root-monorepo-production-ga-candidate"\n',
         encoding="utf-8",
     )
     audit = {
-        "version": "1.12.6+root-monorepo-production-ga-candidate",
+        "version": "1.12.7+root-monorepo-production-ga-candidate",
         "status": "blocked_missing_external_evidence",
         "blocker_count": 1,
         "policy": "real external systems required",
@@ -34,8 +35,8 @@ def test_real_ga_evidence_summary_preserves_blockers_without_claiming_real_ga(tm
             },
         },
     }
-    audit_path = root / "release" / "real-ga-evidence-audit-1.12.6.json"
-    output_path = root / "release" / "real-ga-evidence-summary-1.12.6.json"
+    audit_path = root / "release" / "real-ga-evidence-audit-1.12.7.json"
+    output_path = root / "release" / "real-ga-evidence-summary-1.12.7.json"
     audit_path.write_text(json.dumps(audit), encoding="utf-8")
 
     rc = write_real_ga_evidence_summary.main(
@@ -56,6 +57,8 @@ def test_real_ga_evidence_summary_preserves_blockers_without_claiming_real_ga(tm
     assert summary["source_commit"] == "abc123"
     assert summary["workflow_evidence"]["source_commit"] == "abc123"
     assert summary["workflow_evidence"]["job_status"] == "unavailable"
+    assert summary["workflow_evidence"]["artifact_name"] == "real-ga-evidence-audit-1.12.7.json"
+    assert summary["workflow_evidence"]["artifact_digest"] == f"sha256:{hashlib.sha256(audit_path.read_bytes()).hexdigest()}"
     assert summary["real_ga_ready"] is False
     assert summary["blocker_count"] == 1
     assert summary["blocking_categories"] == [

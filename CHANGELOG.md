@@ -1,3 +1,9 @@
+## 1.12.7+root-monorepo-production-ga-candidate
+
+- Bound Real GA evidence summaries to the audited JSON evidence file by default with a `sha256:<digest>` artifact identity.
+- Kept workflow, Makefile, package, Web, Desktop, Mobile, Helm, Docker, and release-evidence version surfaces aligned after the evidence hardening change.
+- Added regression coverage so generated evidence summaries record the source commit, artifact name, job status, and audit report digest without manual parameters.
+
 ## 1.12.6+root-monorepo-production-ga-candidate
 
 - Replaced bounded PostgreSQL JSON-state model-cost aggregation with a dedicated SQL ledger table and direct SQL summary queries.

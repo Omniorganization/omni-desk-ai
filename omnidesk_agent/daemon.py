@@ -285,8 +285,8 @@ class OmniDeskRuntime:
                 "side_effect": side_effect_stats,
             },
             "release_evidence": {
-                "summary_path": "release/real-ga-evidence-summary-1.12.6.json",
-                "audit_path": "release/real-ga-evidence-audit-1.12.6.json",
+                "summary_path": "release/real-ga-evidence-summary-1.12.7.json",
+                "audit_path": "release/real-ga-evidence-audit-1.12.7.json",
                 "status": "requires_external_real_ga_evidence",
             },
             "security": {"dual_approval_for_risks": list(self.cfg.permissions.require_dual_approval_for_risks), "break_glass_enabled": bool(self.cfg.permissions.break_glass_enabled)},

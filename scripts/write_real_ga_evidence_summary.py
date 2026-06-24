@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -84,6 +85,14 @@ def _workflow_evidence(
         "artifact_name": artifact_name or env.get("OMNIDESK_EVIDENCE_ARTIFACT_NAME") or None,
         "artifact_digest": digest or None,
     }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def build_summary(
@@ -173,14 +182,16 @@ def main(argv: list[str] | None = None) -> int:
     source_commit = args.source_commit or os.environ.get("GITHUB_SHA") or _git_head(root)
 
     report = json.loads(audit_path.read_text(encoding="utf-8"))
+    artifact_name = args.artifact_name or audit_path.name
+    artifact_digest = args.artifact_digest or os.environ.get("OMNIDESK_EVIDENCE_ARTIFACT_DIGEST") or _file_sha256(audit_path)
     summary = build_summary(
         report,
         source_commit=source_commit,
         workflow_run_id=args.workflow_run_id,
         workflow_run_url=args.workflow_run_url,
         job_status=args.job_status,
-        artifact_name=args.artifact_name,
-        artifact_digest=args.artifact_digest,
+        artifact_name=artifact_name,
+        artifact_digest=artifact_digest,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

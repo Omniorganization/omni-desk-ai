@@ -15,14 +15,14 @@ REQUIRED_SNIPPETS = [
     "IOS_EVIDENCE_EXPECTED_VERSION",
     "import_ios_real_device_evidence.py",
     "import_tri_app_live_smoke_evidence.py",
-    "real-ga-evidence-audit-1.12.6.json",
+    "real-ga-evidence-audit-1.12.7.json",
     "tri-app-live-smoke-evidence-import-report.json",
 ]
 
 REPORT_UPLOAD_SNIPPETS = [
     "upload-artifact",
     "dist/",
-    "release/real-ga-evidence-audit-1.12.6.json",
+    "release/real-ga-evidence-audit-1.12.7.json",
     "release/ios-real-device-evidence-import-report.json",
     "release/tri-app-live-smoke-evidence-import-report.json",
 ]
@@ -36,7 +36,7 @@ def check(root: Path, *, require_real_workflows: bool = False) -> list[str]:
     issues: list[str] = []
     workflow_paths = sorted((root / ".github" / "workflows").glob("*.yml")) + sorted((root / ".github" / "workflows").glob("*.yaml"))
     release_workflow = root / ".github" / "workflows" / "release.yml"
-    fallback_paths = [root / "patches" / "v1.12.6-apply.patch", root / "Makefile"]
+    fallback_paths = [root / "patches" / "v1.12.7-apply.patch", root / "Makefile"]
     if require_real_workflows:
         if not release_workflow.exists():
             return ["real workflow mode requires .github/workflows/release.yml"]
@@ -44,7 +44,7 @@ def check(root: Path, *, require_real_workflows: bool = False) -> list[str]:
     else:
         text = _read_existing(workflow_paths + fallback_paths)
     if not text:
-        issues.append("no workflow, Makefile, or v1.12.6 patch content found for governance validation")
+        issues.append("no workflow, Makefile, or v1.12.7 patch content found for governance validation")
         return issues
     for snippet in REQUIRED_SNIPPETS:
         if snippet not in text:
