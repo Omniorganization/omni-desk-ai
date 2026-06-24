@@ -119,6 +119,9 @@ def test_version_consistency_script_passes_current_tree():
 
 def test_ci_runs_version_consistency_check():
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "name: CI" in ci
+    assert "needs: test" in ci
+    assert "CI matrix passed" in ci
     assert "scripts/check_version_consistency.py" in ci
     assert "scripts/check_script_executability.py" in ci
     assert "scripts/check_ci_evidence_contract.py" in ci
