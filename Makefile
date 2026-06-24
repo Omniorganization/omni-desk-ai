@@ -6,10 +6,10 @@ PUBLIC_BASE_URL ?= https://omnidesk.company.example.invalid
 SANDBOX_IMAGE ?= python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 RUNNER_URL ?= http://sandbox-runner:18890
 IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
-IOS_EVIDENCE_EXPECTED_VERSION ?= 1.12.5+root-monorepo-production-ga-candidate
+IOS_EVIDENCE_EXPECTED_VERSION ?= 1.12.6+root-monorepo-production-ga-candidate
 PACKAGE_DIR ?= dist/package
-DISTRIBUTION_PACKAGE_VERSION ?= 1.12.5+root-monorepo-production-ga-candidate
-DISTRIBUTION_PACKAGE_SLUG ?= Omni-desk-AI-1.12.5-root-monorepo-production-ga-candidate
+DISTRIBUTION_PACKAGE_VERSION ?= 1.12.6+root-monorepo-production-ga-candidate
+DISTRIBUTION_PACKAGE_SLUG ?= Omni-desk-AI-1.12.6-root-monorepo-production-ga-candidate
 DISTRIBUTION_SOURCE_COMMIT ?= unknown
 RELEASE_CHANNEL ?= candidate
 
@@ -119,7 +119,7 @@ tri-app-release-preflight:
 ios-real-device-evidence-import:
 	IOS_EVIDENCE_RAW_DIR="$(IOS_EVIDENCE_RAW_DIR)" IOS_EVIDENCE_EXPECTED_VERSION="$(IOS_EVIDENCE_EXPECTED_VERSION)" $(PYTHON) scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
 	$(PYTHON) scripts/import_ios_real_device_evidence.py --raw-dir "$(IOS_EVIDENCE_RAW_DIR)" --expected-version "$(IOS_EVIDENCE_EXPECTED_VERSION)" --copy --write-report release/ios-real-device-evidence-import-report.json
-	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json
+	$(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.6.json
 
 tri-app-live-smoke-preflight:
 	$(PYTHON) scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
@@ -129,8 +129,8 @@ workflow-governance-preflight:
 	$(PYTHON) scripts/check_workflow_governance.py . --require-real-workflows
 
 distribution-package-manifest:
-	$(PYTHON) scripts/write_real_ga_evidence_summary.py . --audit-report release/real-ga-evidence-audit-1.12.5.json --output "$(PACKAGE_DIR)/real-ga-evidence-summary.json" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)"
-	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --version "$(DISTRIBUTION_PACKAGE_VERSION)" --package-slug "$(DISTRIBUTION_PACKAGE_SLUG)" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)" --external-audit release/real-ga-evidence-audit-1.12.5.json --output release-manifest.json
+	$(PYTHON) scripts/write_real_ga_evidence_summary.py . --audit-report release/real-ga-evidence-audit-1.12.6.json --output "$(PACKAGE_DIR)/real-ga-evidence-summary.json" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)"
+	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --version "$(DISTRIBUTION_PACKAGE_VERSION)" --package-slug "$(DISTRIBUTION_PACKAGE_SLUG)" --source-commit "$(DISTRIBUTION_SOURCE_COMMIT)" --external-audit release/real-ga-evidence-audit-1.12.6.json --output release-manifest.json
 	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --verify --manifest release-manifest.json
 
 package-final-gate: distribution-package-manifest
@@ -139,17 +139,17 @@ package-final-gate: distribution-package-manifest
 	$(PYTHON) scripts/write_distribution_manifest.py --package-dir "$(PACKAGE_DIR)" --verify --manifest release-manifest.json
 
 external-ga-evidence-audit:
-	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json
-	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/write_real_ga_evidence_summary.py . --audit-report release/real-ga-evidence-audit-1.12.5.json --output release/real-ga-evidence-summary-1.12.5.json
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.6.json
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/write_real_ga_evidence_summary.py . --audit-report release/real-ga-evidence-audit-1.12.6.json --output release/real-ga-evidence-summary-1.12.6.json
 
 external-ga-evidence-gate:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py .
 
 release-external-ga-evidence:
 	@if [ "$(RELEASE_CHANNEL)" = "real-ga" ]; then \
-		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.5.json; \
+		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.6.json; \
 	elif [ "$(RELEASE_CHANNEL)" = "candidate" ]; then \
-		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json; \
+		PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.6.json; \
 	else \
 		echo "RELEASE_CHANNEL must be candidate or real-ga" >&2; exit 64; \
 	fi

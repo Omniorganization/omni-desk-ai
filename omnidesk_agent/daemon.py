@@ -102,6 +102,7 @@ class OmniDeskRuntime:
         self.execution_strategy = ResultOrientedExecutionStrategy()
         self.run_store = self.repository_factory.run_store()
         self.agent_run_idempotency = self.repository_factory.agent_run_idempotency_store()
+        self.side_effect_idempotency = self.repository_factory.side_effect_idempotency_store()
         self.skills = SkillRegistry(cfg.workspace.skills_dirs)
         self.plugins = PluginRegistry(cfg.workspace.plugins_dirs, cfg.plugins)
         self.tools = ToolRegistry()
@@ -233,6 +234,8 @@ class OmniDeskRuntime:
             self.outbound_messages,
             self.token_budget,
             self.run_store,
+            getattr(self, "agent_run_idempotency", None),
+            getattr(self, "side_effect_idempotency", None),
             self.approval_store,
             getattr(self, "dual_approval_store", None),
             getattr(self, "break_glass_store", None),
@@ -253,6 +256,10 @@ class OmniDeskRuntime:
         model_router_status = self.model_router.status()
         resource_guard_backend = str(getattr(self.cfg.api_resource_guard, "backend", "memory"))
         cost_ledger_backend = model_router_status.get("cost_ledger_backend")
+        side_effect_stats = {}
+        stats = getattr(getattr(self, "side_effect_idempotency", None), "stats", None)
+        if callable(stats):
+            side_effect_stats = stats()
         return {
             "workspace": str(self.cfg.workspace.root),
             "tools": self.tools.names(),
@@ -272,9 +279,14 @@ class OmniDeskRuntime:
                 "persistent": cost_ledger_backend is not None,
                 "multi_instance_safe": cost_ledger_backend == "PostgresModelCostStore",
             },
+            "idempotency": {
+                "agent_run_enabled": getattr(self, "agent_run_idempotency", None) is not None,
+                "side_effect_enabled": getattr(self, "side_effect_idempotency", None) is not None,
+                "side_effect": side_effect_stats,
+            },
             "release_evidence": {
-                "summary_path": "release/real-ga-evidence-summary-1.12.5.json",
-                "audit_path": "release/real-ga-evidence-audit-1.12.5.json",
+                "summary_path": "release/real-ga-evidence-summary-1.12.6.json",
+                "audit_path": "release/real-ga-evidence-audit-1.12.6.json",
                 "status": "requires_external_real_ga_evidence",
             },
             "security": {"dual_approval_for_risks": list(self.cfg.permissions.require_dual_approval_for_risks), "break_glass_enabled": bool(self.cfg.permissions.break_glass_enabled)},

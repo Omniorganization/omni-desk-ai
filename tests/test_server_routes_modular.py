@@ -85,32 +85,45 @@ class Runtime:
 class ApprovalStore:
     def __init__(self):
         self.items = []
+        self.decisions = []
 
     def create(self, body):
         self.items.append(body)
-        return "approval-1"
+        return f"approval-{len(self.items)}"
 
     def list(self, status=None):
         return self.items
 
     def decide(self, approval_id, decision, body):
+        self.decisions.append((approval_id, decision, body))
         return {"id": approval_id, "decision": decision, "metadata": body}
 
 
 class Orchestrator:
     def __init__(self):
         self.messages = []
+        self.resumes = []
+        self.next_result = None
 
     async def handle_message(self, msg):
         self.messages.append(msg)
+        if self.next_result is not None:
+            result = self.next_result
+            self.next_result = None
+            return result
         return {"ok": True, "text": msg.text, "sender": msg.sender_id}
 
     async def resume(self, run_id, resume_token=None):
+        self.resumes.append((run_id, resume_token))
         return {"ok": True, "run_id": run_id, "resume_token": resume_token}
 
 
 class Governance:
+    def __init__(self):
+        self.calls = []
+
     async def evaluate_proposal(self, proposal_id, **kwargs):
+        self.calls.append((proposal_id, kwargs))
         return {"proposal_id": proposal_id, "kwargs": kwargs}
 
 
@@ -218,6 +231,7 @@ def test_admin_routes_cover_status_jobs_outbound_learning_and_slo(tmp_path):
 
 def test_agent_routes_cover_run_resume_oauth_approval_and_upgrade(monkeypatch, tmp_path):
     from omnidesk_agent.security.agent_run_idempotency import SQLiteAgentRunIdempotencyStore
+    from omnidesk_agent.security.idempotency import SQLiteSideEffectIdempotencyStore
 
     app = FastAPI()
     cfg = AppConfig()
@@ -225,6 +239,7 @@ def test_agent_routes_cover_run_resume_oauth_approval_and_upgrade(monkeypatch, t
     monkeypatch.setenv("OMNIDESK_TEST_GATEWAY_SECRET", "shared")
     rt = AgentRuntime()
     rt.agent_run_idempotency = SQLiteAgentRunIdempotencyStore(tmp_path / "agent_run_idempotency.sqlite3")
+    rt.side_effect_idempotency = SQLiteSideEffectIdempotencyStore(tmp_path / "side_effect_idempotency.sqlite3")
     approvals = ApprovalStore()
     register_agent_routes(app, cfg, rt, approvals, allow_admin)
     with TestClient(app) as client:
@@ -241,18 +256,32 @@ def test_agent_routes_cover_run_resume_oauth_approval_and_upgrade(monkeypatch, t
         assert client.post("/agent/run", json={"message": "hello"}).status_code == 401
         assert client.post("/agent/run", json={"message": "hello", "secret": "wrong"}).status_code == 401
         assert client.post("/agent/run", json={"message": "hello", "secret": "shared"}).status_code == 428
+        rt.orchestrator.next_result = ["non-dict-ok"]
+        list_run = client.post("/agent/run", headers={"idempotency-key": "run-list"}, json={"message": "list", "secret": "shared"})
+        assert list_run.json() == {"ok": True, "result": ["non-dict-ok"]}
+        list_replay = client.post("/agent/run", headers={"idempotency-key": "run-list"}, json={"message": "list", "secret": "shared"})
+        assert list_replay.json() == list_run.json()
         assert client.post("/agent/resume/run-1", headers={"idempotency-key": "resume-1"}, json={"resume_token": "tok"}).json()["run_id"] == "run-1"
+        assert client.post("/agent/resume/run-1", headers={"idempotency-key": "resume-1"}, json={"resume_token": "tok"}).json()["run_id"] == "run-1"
+        assert len(rt.orchestrator.resumes) == 1
+        assert client.post("/agent/resume/run-1", headers={"idempotency-key": "resume-1"}, json={"resume_token": "changed"}).status_code == 409
         assert client.post("/self-upgrade/proposals/p1/evaluate", headers={"idempotency-key": "upgrade-1"}, json={"allow_canary": True}).json()["proposal_id"] == "p1"
+        assert client.post("/self-upgrade/proposals/p1/evaluate", headers={"idempotency-key": "upgrade-1"}, json={"allow_canary": True}).json()["proposal_id"] == "p1"
+        assert len(rt.governance.calls) == 1
         assert client.get("/oauth/gmail/start", params={"redirect_uri": "https://cb.example"}).json()["state"] == "server-state"
         assert client.get("/oauth/gmail/callback", params={"code": "c", "redirect_uri": "https://cb.example", "state": "ok"}).json()["token_saved"] is True
         assert client.get("/oauth/gmail/callback", params={"code": "c", "redirect_uri": "https://cb.example", "state": "bad"}).status_code == 403
         assert rt.adapters["gmail"].oauth.started == [{"redirect_uri": "https://cb.example", "state": None, "actor": "owner"}]
         assert rt.adapters["gmail"].oauth.exchanged[0]["actor"] == "owner"
         assert client.post("/approvals", headers={"idempotency-key": "approval-create-1"}, json={"tool": "shell"}).json()["id"] == "approval-1"
+        assert client.post("/approvals", headers={"idempotency-key": "approval-create-1"}, json={"tool": "shell"}).json()["id"] == "approval-1"
+        assert len(approvals.items) == 1
         assert client.post("/approvals", json={"tool": "shell"}).status_code == 428
         assert client.post("/approvals", headers={"idempotency-key": "approval-bad"}, json={"tool": "shell", "unknown": "x"}).status_code == 422
         assert client.get("/approvals").json()["approvals"][0]["tool"] == "shell"
         assert client.post("/approvals/approval-1/approve", headers={"idempotency-key": "approval-approve-1"}, json={"by": "owner"}).json()["approval"]["decision"] == "approved"
+        assert client.post("/approvals/approval-1/approve", headers={"idempotency-key": "approval-approve-1"}, json={"by": "owner"}).json()["approval"]["decision"] == "approved"
+        assert len(approvals.decisions) == 1
         assert client.post("/approvals/approval-1/deny", headers={"idempotency-key": "approval-deny-1"}, json={}).json()["approval"]["decision"] == "denied"
 
 

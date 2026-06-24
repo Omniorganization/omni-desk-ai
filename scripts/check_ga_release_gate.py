@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     external_gate = _read(root / "scripts/check_external_ga_evidence.py")
     external_summary = _read(root / "scripts/write_real_ga_evidence_summary.py")
     external_required = _read(root / "release/external-ga-evidence.required.json")
-    external_audit = _read(root / "release/real-ga-evidence-audit-1.12.5.json")
+    external_audit = _read(root / "release/real-ga-evidence-audit-1.12.6.json")
     package_script = _read(root / "scripts/package_distribution_bundle.sh")
     agents_root = _read(root / "AGENTS.md")
     onboarding = _read(root / "omnidesk_agent/onboarding.py")
@@ -188,8 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         "RELEASE_CHANNEL" in release_workflow
         and "real-ga" in release_workflow
         and "candidate" in release_workflow
-        and "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.5.json" in release_workflow
-        and "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json" in release_workflow,
+        and "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.6.json" in release_workflow
+        and "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.6.json" in release_workflow,
         "Release workflow separates candidate audit from Real GA fail-closed evidence gate",
         failures,
         ok,

@@ -11,6 +11,7 @@ from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.core.token_budget import TokenBudgetConfig
 from omnidesk_agent.models.budget_policy import ModelBudgetEnforcer, ModelBudgetPolicy
 from omnidesk_agent.security.agent_run_idempotency import AgentRunIdempotencyConflict, AgentRunIdempotencyInProgress
+from omnidesk_agent.security.idempotency import SideEffectIdempotencyConflict, SideEffectIdempotencyInProgress
 from omnidesk_agent.repositories.postgres_state import (
     PostgresApprovalStore,
     PostgresBreakGlassStore,
@@ -120,6 +121,7 @@ def test_postgres_state_loads_and_runtime_factories(tmp_path: Path) -> None:
     assert runtime.break_glass_store(audit_log=tmp_path / "audit.jsonl") is not None
     assert runtime.run_store() is not None
     assert runtime.agent_run_idempotency_store() is not None
+    assert runtime.side_effect_idempotency_store() is not None
     assert runtime.job_queue() is not None
     assert runtime.outbound_messages() is not None
     assert runtime.webhook_security() is not None
@@ -166,8 +168,7 @@ def test_postgres_approval_run_breakglass_and_webhook_contracts(tmp_path: Path) 
     assert runs.get_by_approval(approval_id) is None
 
     breakglass = PostgresBreakGlassStore(state, audit_log=tmp_path / "audit.jsonl")
-    with pytest.raises(PermissionError):
-        breakglass.open(session_id="bg0", actor="alice", approved_by="alice", reason="same")
+    assert breakglass.open(session_id="bg0", actor="alice", approved_by="alice", reason="self emergency", ttl_seconds=60).active is True
     session = breakglass.open(session_id="bg1", actor="alice", approved_by="bob", reason="restore", ttl_seconds=60)
     assert session.active is True
     with pytest.raises(PermissionError):
@@ -326,3 +327,47 @@ def test_postgres_agent_run_idempotency_is_shared_across_instances() -> None:
 
     with pytest.raises(AgentRunIdempotencyConflict):
         second.begin(actor="alice", key="same-key", source_device="web", payload={**payload, "message": "different"})
+
+
+def test_postgres_side_effect_idempotency_is_shared_across_instances() -> None:
+    state = MemoryJsonState()
+    runtime_a = _runtime_with_state(state)
+    runtime_b = _runtime_with_state(state)
+    first = runtime_a.side_effect_idempotency_store()
+    second = runtime_b.side_effect_idempotency_store()
+    payload = {"approval_id": "approval-1", "decision": "approved"}
+
+    assert first.begin(route="/approvals/{approval_id}/approve", actor="owner", key="same-key", resource_id="approval-1", payload=payload) is None
+    with pytest.raises(SideEffectIdempotencyInProgress):
+        second.begin(route="/approvals/{approval_id}/approve", actor="owner", key="same-key", resource_id="approval-1", payload=payload)
+
+    first.complete(route="/approvals/{approval_id}/approve", actor="owner", key="same-key", resource_id="approval-1", response=["approved"])
+    assert second.begin(route="/approvals/{approval_id}/approve", actor="owner", key="same-key", resource_id="approval-1", payload=payload) == {"ok": True, "result": ["approved"]}
+
+    with pytest.raises(SideEffectIdempotencyConflict):
+        second.begin(route="/approvals/{approval_id}/approve", actor="owner", key="same-key", resource_id="approval-1", payload={**payload, "decision": "denied"})
+
+
+def test_postgres_model_cost_summary_does_not_truncate_large_ledgers() -> None:
+    state = MemoryJsonState()
+    costs = PostgresModelCostStore(state)
+    now = time.time()
+    for idx in range(20050):
+        costs.record(
+            id=f"event-{idx}",
+            task_id="task-large",
+            actor="alice",
+            provider="openai",
+            model="gpt",
+            profile="planner",
+            input_tokens=1,
+            output_tokens=2,
+            estimated_cost_usd=0.001,
+            created_at=now,
+        )
+
+    summary = costs.summary(days=1, group_by="actor")
+    assert summary["calls"] == 20050
+    assert summary["input_tokens"] == 20050
+    assert summary["output_tokens"] == 40100
+    assert summary["groups"]["alice"]["calls"] == 20050

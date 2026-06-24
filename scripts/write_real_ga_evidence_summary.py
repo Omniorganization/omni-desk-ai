@@ -59,7 +59,45 @@ def _github_context(env: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
-def build_summary(report: dict[str, Any], *, source_commit: str, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+def _workflow_evidence(
+    env: Mapping[str, str],
+    *,
+    source_commit: str,
+    workflow_run_id: str | None = None,
+    workflow_run_url: str | None = None,
+    job_status: str | None = None,
+    artifact_name: str | None = None,
+    artifact_digest: str | None = None,
+) -> dict[str, Any]:
+    github = _github_context(env)
+    run_id = workflow_run_id or str(github.get("run_id") or "")
+    run_url = workflow_run_url or github.get("run_url")
+    status = job_status or env.get("GITHUB_JOB_STATUS") or ("success" if github.get("available") else "unavailable")
+    digest = artifact_digest or env.get("OMNIDESK_EVIDENCE_ARTIFACT_DIGEST")
+    return {
+        "source_commit": source_commit,
+        "workflow_run_id": run_id or None,
+        "workflow_run_url": run_url,
+        "workflow": github.get("workflow"),
+        "job": github.get("job"),
+        "job_status": status,
+        "artifact_name": artifact_name or env.get("OMNIDESK_EVIDENCE_ARTIFACT_NAME") or None,
+        "artifact_digest": digest or None,
+    }
+
+
+def build_summary(
+    report: dict[str, Any],
+    *,
+    source_commit: str,
+    env: Mapping[str, str] | None = None,
+    workflow_run_id: str | None = None,
+    workflow_run_url: str | None = None,
+    job_status: str | None = None,
+    artifact_name: str | None = None,
+    artifact_digest: str | None = None,
+) -> dict[str, Any]:
+    env = os.environ if env is None else env
     categories: list[dict[str, Any]] = []
     blocking_categories: list[dict[str, Any]] = []
     for key, value in sorted((report.get("categories") or {}).items()):
@@ -98,7 +136,16 @@ def build_summary(report: dict[str, Any], *, source_commit: str, env: Mapping[st
         "blocker_count": blocker_count,
         "blocking_categories": blocking_categories,
         "categories": categories,
-        "github": _github_context(os.environ if env is None else env),
+        "github": _github_context(env),
+        "workflow_evidence": _workflow_evidence(
+            env,
+            source_commit=source_commit,
+            workflow_run_id=workflow_run_id,
+            workflow_run_url=workflow_run_url,
+            job_status=job_status,
+            artifact_name=artifact_name,
+            artifact_digest=artifact_digest,
+        ),
         "policy": report.get("policy", ""),
     }
 
@@ -109,6 +156,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-report", help="External GA evidence audit JSON. Defaults to release/real-ga-evidence-audit-<native-version>.json.")
     parser.add_argument("--output", help="Summary output path. Defaults to release/real-ga-evidence-summary-<native-version>.json.")
     parser.add_argument("--source-commit", help="Source commit to bind into the summary. Defaults to GITHUB_SHA or git HEAD.")
+    parser.add_argument("--workflow-run-id", help="GitHub Actions workflow run id to bind into the summary.")
+    parser.add_argument("--workflow-run-url", help="GitHub Actions workflow run URL to bind into the summary.")
+    parser.add_argument("--job-status", help="Final job status to bind into the summary.")
+    parser.add_argument("--artifact-name", help="Evidence artifact name to bind into the summary.")
+    parser.add_argument("--artifact-digest", help="Evidence artifact sha256 digest to bind into the summary.")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -121,7 +173,15 @@ def main(argv: list[str] | None = None) -> int:
     source_commit = args.source_commit or os.environ.get("GITHUB_SHA") or _git_head(root)
 
     report = json.loads(audit_path.read_text(encoding="utf-8"))
-    summary = build_summary(report, source_commit=source_commit)
+    summary = build_summary(
+        report,
+        source_commit=source_commit,
+        workflow_run_id=args.workflow_run_id,
+        workflow_run_url=args.workflow_run_url,
+        job_status=args.job_status,
+        artifact_name=args.artifact_name,
+        artifact_digest=args.artifact_digest,
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"ok": True, "output": str(output), "status": summary["status"], "blocker_count": summary["blocker_count"]}, sort_keys=True))

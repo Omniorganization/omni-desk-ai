@@ -1,6 +1,6 @@
 # OmniDesk Industrial GA Evidence
 
-Version: `1.12.5+root-monorepo-production-ga-candidate`
+Version: `1.12.6+root-monorepo-production-ga-candidate`
 
 Status: Production GA candidate, not a final Real Production GA attestation.
 

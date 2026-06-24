@@ -60,8 +60,8 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "release_channel" in workflow
     assert "RELEASE_CHANNEL" in workflow
     assert '[[ "$RELEASE_CHANNEL" == "real-ga" ]]' in workflow
-    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.5.json" in workflow
-    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.5.json" in workflow
+    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.6.json" in workflow
+    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.6.json" in workflow
     assert "write_real_ga_evidence_summary.py" in workflow
     assert "dist/external-ga-evidence-summary.json" in workflow
     assert "scripts/check_production_install_policy.py ." in workflow
@@ -90,7 +90,7 @@ def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
     assert "release-external-ga-evidence:" in makefile
     assert "external-ga-evidence-gate:" in makefile
     assert "scripts/check_external_ga_evidence.py .\n" in makefile
-    assert "release/real-ga-evidence-audit-1.12.5.json" in makefile
+    assert "release/real-ga-evidence-audit-1.12.6.json" in makefile
     assert "scripts/write_real_ga_evidence_summary.py" in makefile
 
 

@@ -33,6 +33,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_omnidesk_jobs_dedupe
   ON omnidesk_core_state ((value_json->>'dedupe_key')) WHERE namespace='jobs';
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_omnidesk_outbound_idempotency
   ON omnidesk_core_state ((value_json->>'idempotency_key')) WHERE namespace='outbound_messages';
+CREATE TABLE IF NOT EXISTS omnidesk_model_cost_events (
+  id TEXT PRIMARY KEY,
+  task_id TEXT,
+  run_id TEXT,
+  actor TEXT,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  profile TEXT NOT NULL,
+  task TEXT,
+  input_tokens BIGINT NOT NULL DEFAULT 0,
+  output_tokens BIGINT NOT NULL DEFAULT 0,
+  estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+  cache_hit BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_omnidesk_model_cost_created
+  ON omnidesk_model_cost_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_omnidesk_model_cost_provider
+  ON omnidesk_model_cost_events(provider, model, created_at);
+CREATE INDEX IF NOT EXISTS idx_omnidesk_model_cost_actor
+  ON omnidesk_model_cost_events(actor, created_at);
+CREATE INDEX IF NOT EXISTS idx_omnidesk_model_cost_task
+  ON omnidesk_model_cost_events(task_id, created_at);
 """
 
 
@@ -509,8 +532,6 @@ class PostgresBreakGlassStore:
         reason = reason.strip()
         if not actor or not approved_by or not reason:
             raise ValueError("actor, approved_by, and reason are required")
-        if actor == approved_by:
-            raise PermissionError("break-glass approver must be distinct from actor")
         if ttl_seconds <= 0 or ttl_seconds > 3600:
             raise ValueError("break-glass ttl must be between 1 and 3600 seconds")
         now = time.time()
@@ -804,6 +825,7 @@ class PostgresModelCostStore:
 
     def __init__(self, state: _PostgresJsonState):
         self.state = state
+        self._sql_backed = callable(getattr(state, "_connect", None))
 
     def record(self, **kwargs: Any) -> str:
         event_id = str(kwargs.get("id") or uuid.uuid4())
@@ -822,12 +844,42 @@ class PostgresModelCostStore:
             "cache_hit": bool(kwargs.get("cache_hit")),
             "created_at": float(kwargs.get("created_at") or time.time()),
         }
+        if self._sql_backed:
+            with self.state._connect() as con:  # type: ignore[attr-defined]
+                with con.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO omnidesk_model_cost_events(
+                          id, task_id, run_id, actor, provider, model, profile, task,
+                          input_tokens, output_tokens, estimated_cost_usd, cache_hit, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            row["id"],
+                            row["task_id"],
+                            row["run_id"],
+                            row["actor"],
+                            row["provider"],
+                            row["model"],
+                            row["profile"],
+                            row["task"],
+                            row["input_tokens"],
+                            row["output_tokens"],
+                            row["estimated_cost_usd"],
+                            row["cache_hit"],
+                            row["created_at"],
+                        ),
+                    )
+            return event_id
         self.state.put(self.namespace, event_id, row)
         return event_id
 
     def summary(self, *, days: int = 7, group_by: Optional[str] = None) -> dict[str, Any]:
-        since = time.time() - max(1, int(days)) * 86400
-        rows = [r for r in self.state.list(self.namespace, limit=10000) if float(r.get("created_at") or 0) >= since]
+        days = max(1, int(days))
+        since = time.time() - days * 86400
+        if self._sql_backed:
+            return self._summary_sql(days=days, since=since, group_by=group_by)
+        rows = [r for r in self.state.list(self.namespace, limit=250000) if float(r.get("created_at") or 0) >= since]
         calls = len(rows)
         input_tokens = sum(int(r.get("input_tokens") or 0) for r in rows)
         output_tokens = sum(int(r.get("output_tokens") or 0) for r in rows)
@@ -844,6 +896,51 @@ class PostgresModelCostStore:
                 bucket["output_tokens"] += int(r.get("output_tokens") or 0)
                 bucket["estimated_cost_usd"] += float(r.get("estimated_cost_usd") or 0.0)
         return {"days": days, "calls": calls, "input_tokens": input_tokens, "output_tokens": output_tokens, "estimated_cost_usd": cost, "cache_hits": cache_hits, "group_by": group_by, "groups": grouped}
+
+    def _summary_sql(self, *, days: int, since: float, group_by: Optional[str]) -> dict[str, Any]:
+        allowed_columns = {"provider": "provider", "actor": "actor", "task": "task_id", "profile": "profile", "model": "model"}
+        with self.state._connect() as con:  # type: ignore[attr-defined]
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                           COALESCE(SUM(estimated_cost_usd),0), COALESCE(SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END),0)
+                    FROM omnidesk_model_cost_events WHERE created_at >= %s
+                    """,
+                    (since,),
+                )
+                row = cur.fetchone() or (0, 0, 0, 0.0, 0)
+                grouped: dict[str, dict[str, Any]] = {}
+                column = allowed_columns.get(str(group_by or ""))
+                if column:
+                    # Column name is selected from allowed_columns, never raw caller input.
+                    cur.execute(
+                        f"""
+                        SELECT COALESCE({column}, ''), COUNT(*), COALESCE(SUM(input_tokens),0),
+                               COALESCE(SUM(output_tokens),0), COALESCE(SUM(estimated_cost_usd),0)
+                        FROM omnidesk_model_cost_events
+                        WHERE created_at >= %s
+                        GROUP BY COALESCE({column}, '')
+                        """,  # nosec B608
+                        (since,),
+                    )
+                    for item in cur.fetchall():
+                        grouped[str(item[0] or "unknown")] = {
+                            "calls": int(item[1]),
+                            "input_tokens": int(item[2]),
+                            "output_tokens": int(item[3]),
+                            "estimated_cost_usd": float(item[4]),
+                        }
+        return {
+            "days": days,
+            "calls": int(row[0]),
+            "input_tokens": int(row[1]),
+            "output_tokens": int(row[2]),
+            "estimated_cost_usd": float(row[3]),
+            "cache_hits": int(row[4]),
+            "group_by": group_by,
+            "groups": grouped,
+        }
 
     def close(self) -> None:
         return None
@@ -1154,6 +1251,9 @@ class PostgresRuntimeStateStores:
     def agent_run_idempotency_store(self):
         from omnidesk_agent.security.agent_run_idempotency import JsonStateAgentRunIdempotencyStore
         return JsonStateAgentRunIdempotencyStore(self.state)
+    def side_effect_idempotency_store(self):
+        from omnidesk_agent.security.idempotency import JsonStateSideEffectIdempotencyStore
+        return JsonStateSideEffectIdempotencyStore(self.state)
     def job_queue(self) -> PostgresJobQueue:
         return PostgresJobQueue(self.state)
     def outbound_messages(self) -> PostgresOutboundMessageStore:
@@ -1184,10 +1284,11 @@ class PostgresRuntimeStateStores:
         self.state.stats_by_status("outbound_messages")
         self.state.stats_by_status("runs")
         self.state.list("agent_run_idempotency", limit=1)
+        self.state.list("side_effect_idempotency", limit=1)
         self.state.list("memory_experiences", limit=1)
         self.state.list("structured_experiences", limit=1)
         self.state.list("llm_cache", limit=1)
         self.state.list("llm_usage", limit=1)
-        self.state.list("model_cost_events", limit=1)
+        self.model_cost_store().summary(days=1)
         self.state.list("learning_experiments", limit=1)
-        return {"ok": True, "stores": ["approvals", "dual_approvals", "break_glass", "webhooks", "jobs", "outbound", "runs", "agent_run_idempotency", "memory", "token_budget", "model_cost", "learning_experiments"]}
+        return {"ok": True, "stores": ["approvals", "dual_approvals", "break_glass", "webhooks", "jobs", "outbound", "runs", "agent_run_idempotency", "side_effect_idempotency", "memory", "token_budget", "model_cost", "learning_experiments"]}

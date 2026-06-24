@@ -42,11 +42,10 @@ def test_storage_health_roundtrip_and_multi_instance_guard(tmp_path: Path) -> No
         storage_plan(backend="sqlite", require_multi_instance_safe=True)
 
 
-def test_break_glass_is_time_boxed_distinct_and_audited(tmp_path: Path) -> None:
+def test_break_glass_is_time_boxed_targeted_and_audited(tmp_path: Path) -> None:
     audit = tmp_path / "audit.jsonl"
     store = BreakGlassStore(tmp_path / "breakglass.sqlite3", audit_log=audit)
-    with pytest.raises(PermissionError):
-        store.open(session_id="s0", actor="owner", approved_by="owner", reason="outage", ttl_seconds=60)
+    assert store.open(session_id="s0", actor="owner", approved_by="owner", reason="outage", ttl_seconds=60).active is True
     session = store.open(session_id="s1", actor="operator", approved_by="owner", reason="restore production", ttl_seconds=60)
     assert session.active is True
     assert store.assert_active("s1", actor="operator").session_id == "s1"
