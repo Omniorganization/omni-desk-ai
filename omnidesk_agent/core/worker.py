@@ -52,14 +52,14 @@ class WebhookWorker:
                 await asyncio.sleep(self.poll_interval_seconds)
 
     async def run_once(self) -> bool:
-        job = self.queue.claim_next()
+        job = await asyncio.to_thread(self.queue.claim_next)
         if not job:
             return False
         job_id = str(job["id"])
         try:
             message = JobQueue.message_from_payload(str(job["payload_json"]))
             result = await self.orchestrator.handle_message(message)
-            self.queue.complete(job_id, result)
+            await asyncio.to_thread(self.queue.complete, job_id, result)
         except Exception as exc:  # worker must persist failure, not crash the loop
-            self.queue.fail(job_id, exc)
+            await asyncio.to_thread(self.queue.fail, job_id, exc)
         return True

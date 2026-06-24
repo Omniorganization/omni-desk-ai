@@ -4,6 +4,7 @@ from typing import Optional
 import hashlib
 import json
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -88,7 +89,9 @@ class TokenBudgetManager:
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
-        return max(1, len(text) // 3)
+        cjk_chars = sum(1 for ch in text if unicodedata.east_asian_width(ch) in {"W", "F"})
+        non_cjk_chars = len(text) - cjk_chars
+        return max(1, cjk_chars + non_cjk_chars // 3)
 
     @staticmethod
     def _hash(value: str) -> str:

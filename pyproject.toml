@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnidesk-agent"
-version = "1.12.6+root-monorepo-production-ga-candidate"
+version = "1.12.7+root-monorepo-production-ga-candidate"
 description = "Local-first multi-channel AI desktop assistant runtime"
 requires-python = ">=3.10"
 dependencies = [

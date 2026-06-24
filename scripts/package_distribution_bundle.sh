@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-dist/distribution}"
-VERSION="${VERSION:-1.12.6+root-monorepo-production-ga-candidate}"
+VERSION="${VERSION:-1.12.7+root-monorepo-production-ga-candidate}"
 SOURCE_COMMIT="${SOURCE_COMMIT:-unknown}"
 
 usage() {
@@ -19,6 +19,10 @@ while [[ $# -gt 0 ]]; do
     *) usage; exit 2 ;;
   esac
 done
+
+if [[ "$OUT_DIR" != /* ]]; then
+  OUT_DIR="${ROOT_DIR}/${OUT_DIR}"
+fi
 
 if ! command -v rsync >/dev/null 2>&1; then
   echo "rsync is required to build clean split distribution zips" >&2
@@ -145,7 +149,7 @@ zip_root "Omni-desk-AI-${NATIVE_VERSION}-mobile" "${PACKAGE_DIR}/Omni-desk-AI-${
 zip_root "${SLUG}-full" "${PACKAGE_DIR}/${SLUG}-full.zip"
 
 printf '%s\n' "$SOURCE_COMMIT" > "${PACKAGE_DIR}/SOURCE_COMMIT.txt"
-cp "${ROOT_DIR}/docs/SOURCE_GATED_PRODUCTION_GA_CANDIDATE_1.12.6.md" "${PACKAGE_DIR}/README.md"
+cp "${ROOT_DIR}/docs/SOURCE_GATED_PRODUCTION_GA_CANDIDATE_1.12.7.md" "${PACKAGE_DIR}/README.md"
 
 python3 "${ROOT_DIR}/scripts/write_portable_sha256s.py" \
   --base-dir "$PACKAGE_DIR" \
@@ -161,10 +165,10 @@ python3 "${ROOT_DIR}/scripts/write_distribution_manifest.py" \
   --version "$VERSION" \
   --package-slug "$SLUG" \
   --source-commit "$SOURCE_COMMIT" \
-  --external-audit "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.6.json" \
+  --external-audit "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.7.json" \
   --output release-manifest.json
 python3 "${ROOT_DIR}/scripts/write_real_ga_evidence_summary.py" "$ROOT_DIR" \
-  --audit-report "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.6.json" \
+  --audit-report "${ROOT_DIR}/release/real-ga-evidence-audit-1.12.7.json" \
   --output "${PACKAGE_DIR}/real-ga-evidence-summary.json" \
   --source-commit "$SOURCE_COMMIT"
 python3 "${ROOT_DIR}/scripts/write_distribution_manifest.py" --package-dir "$PACKAGE_DIR" --verify --manifest release-manifest.json

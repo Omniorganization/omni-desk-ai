@@ -20,6 +20,8 @@ class PermissionDecision:
 
 
 class PermissionManager:
+    _AUDIT_TAIL_CHUNK_BYTES = 8192
+
     def __init__(self, cfg: PermissionConfig, approval_store=None):
         self.cfg = cfg
         self.approval_store = approval_store
@@ -27,6 +29,9 @@ class PermissionManager:
         self.metrics: Any = None
         self.audit_log = cfg.audit_log.expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
+        self._cached_last_hash: str | None = None
+        self._cached_audit_size: int | None = None
+        self._cached_audit_mtime_ns: int | None = None
 
     def session_key(self, proposal_dict: dict[str, Any]) -> str:
         source = str(proposal_dict.get("source", "unknown"))
@@ -148,27 +153,64 @@ class PermissionManager:
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True)
         with self.audit_log.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+        self._cache_last_hash(str(entry["hash"]))
 
     def _last_audit_hash(self) -> str:
         try:
-            if not self.audit_log.exists() or self.audit_log.stat().st_size == 0:
+            if not self.audit_log.exists():
+                self._cache_last_hash("0" * 64, size=0, mtime_ns=0)
                 return "0" * 64
-            with self.audit_log.open("rb") as f:
-                f.seek(0, 2)
-                pos = f.tell() - 1
-                while pos > 0:
-                    f.seek(pos)
-                    if f.read(1) == b"\n":
-                        break
-                    pos -= 1
-                if pos <= 0:
-                    f.seek(0)
-                line = f.readline().decode("utf-8", errors="replace").strip()
+            stat = self.audit_log.stat()
+            if stat.st_size == 0:
+                self._cache_last_hash("0" * 64, size=0, mtime_ns=stat.st_mtime_ns)
+                return "0" * 64
+            if (
+                self._cached_last_hash
+                and self._cached_audit_size == stat.st_size
+                and self._cached_audit_mtime_ns == stat.st_mtime_ns
+            ):
+                return self._cached_last_hash
+            line = self._read_last_audit_line()
             parsed = json.loads(line) if line else {}
             value = str(parsed.get("hash") or "")
-            return value if len(value) == 64 else "0" * 64
+            last_hash = value if len(value) == 64 else "0" * 64
+            self._cache_last_hash(last_hash, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+            return last_hash
         except Exception:
             return "0" * 64
+
+    def _read_last_audit_line(self) -> str:
+        with self.audit_log.open("rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            if pos <= 0:
+                return ""
+            buffer = b""
+            while pos > 0:
+                read_size = min(self._AUDIT_TAIL_CHUNK_BYTES, pos)
+                pos -= read_size
+                f.seek(pos)
+                buffer = f.read(read_size) + buffer
+                stripped = buffer.rstrip(b"\n")
+                separator = stripped.rfind(b"\n")
+                if separator >= 0:
+                    return stripped[separator + 1 :].decode("utf-8", errors="replace").strip()
+            return buffer.rstrip(b"\n").decode("utf-8", errors="replace").strip()
+
+    def _cache_last_hash(self, value: str, *, size: int | None = None, mtime_ns: int | None = None) -> None:
+        self._cached_last_hash = value if len(value) == 64 else "0" * 64
+        if size is not None and mtime_ns is not None:
+            self._cached_audit_size = size
+            self._cached_audit_mtime_ns = mtime_ns
+            return
+        try:
+            stat = self.audit_log.stat()
+        except OSError:
+            self._cached_audit_size = 0
+            self._cached_audit_mtime_ns = 0
+        else:
+            self._cached_audit_size = stat.st_size
+            self._cached_audit_mtime_ns = stat.st_mtime_ns
 
     def _metric(self, name: str, **labels: Any) -> None:
         metrics = getattr(self, "metrics", None)
