@@ -13,3 +13,19 @@ Enable these repository rules before promoting a release artifact to production:
 9. Require deployment artifacts to be digest-pinned and attested before promotion.
 
 The source-controlled baseline is recorded in `.github/branch-protection.required.json`; the repository control plane must be configured to match it before a release artifact is promoted.
+
+## Live Verification
+
+Source-controlled policy is not enough for production promotion. Verify the live
+GitHub control plane before promoting a candidate:
+
+```bash
+GITHUB_TOKEN=<admin-token> python scripts/check_github_branch_protection_live.py . \
+  --repo yinyufan0813-cmyk/omni-desk-ai \
+  --write-report release/github-branch-protection-live.json
+```
+
+The command fails closed when the default branch is not protected, when required
+status checks are missing, when CODEOWNERS review is not required, or when force
+pushes/deletions/conversation-resolution controls do not match
+`.github/branch-protection.required.json`.

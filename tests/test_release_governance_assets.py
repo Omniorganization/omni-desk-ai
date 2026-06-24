@@ -22,6 +22,7 @@ def test_release_governance_assets_exist():
     assert Path("scripts/write_distribution_manifest.py").exists()
     assert Path("scripts/check_release_channel_policy.py").exists()
     assert Path("scripts/check_ci_evidence_contract.py").exists()
+    assert Path("scripts/check_github_branch_protection_live.py").exists()
     assert Path("scripts/check_production_install_policy.py").exists()
     assert Path("scripts/write_ci_evidence_manifest.py").exists()
     assert Path("scripts/write_real_ga_evidence_summary.py").exists()
@@ -82,6 +83,7 @@ def test_release_channel_policy_script_passes_current_tree():
     assert result.returncode == 0, result.stderr
     assert "Real GA branch never uses --audit-only" in result.stdout
     assert "Release workflow rechecks channel naming and evidence status after external evidence gate" in result.stdout
+    assert "Live GitHub branch protection verifier is documented" in result.stdout
 
 
 def test_makefile_external_evidence_targets_keep_real_ga_fail_closed():
