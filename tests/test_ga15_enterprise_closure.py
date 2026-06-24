@@ -72,7 +72,7 @@ def test_dual_approval_is_enforced_before_approve_and_consume(tmp_path: Path) ->
     assert consumed["status"] == "consumed"
 
 
-def test_break_glass_routes_require_enabled_policy_and_distinct_approver(tmp_path: Path) -> None:
+def test_break_glass_routes_require_enabled_policy_and_delegated_dual_approval(tmp_path: Path) -> None:
     cfg = AppConfig()
     cfg.permissions.break_glass_enabled = True
 
@@ -86,11 +86,15 @@ def test_break_glass_routes_require_enabled_policy_and_distinct_approver(tmp_pat
     register_break_glass_routes(app, cfg, RT(), admin)
     client = TestClient(app)
 
-    owner_headers = {"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-bad"}
-    bad = client.post("/admin/break-glass/open", headers=owner_headers, json={"actor": "owner", "reason": "outage active"})
-    assert bad.status_code == 400
-    opened = client.post("/admin/break-glass/open", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-open"}, json={"actor": "operator", "reason": "restore access", "ttl_seconds": 60})
+    self_open = client.post("/admin/break-glass/open", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-self"}, json={"reason": "outage active"})
+    assert self_open.status_code == 200
+    assert self_open.json()["target_actor"] == "owner"
+    delegated_without_dual = client.post("/admin/break-glass/open", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-bad"}, json={"target_actor": "operator", "reason": "restore access"})
+    assert delegated_without_dual.status_code == 409
+    opened = client.post("/admin/break-glass/open", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-open"}, json={"target_actor": "operator", "reason": "restore access", "ttl_seconds": 60, "requires_dual_approval": True})
     assert opened.status_code == 200
+    assert opened.json()["approved_by"] == "owner"
+    assert opened.json()["target_actor"] == "operator"
     session_id = opened.json()["session"]["session_id"]
     assert client.get(f"/admin/break-glass/status/{session_id}").json()["session"]["active"] is True
     revoked = client.post(f"/admin/break-glass/revoke/{session_id}", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-revoke"}, json={})

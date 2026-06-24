@@ -90,7 +90,7 @@ def test_readiness_routes_cover_runtime_snapshot_and_middleware(tmp_path, monkey
         assert runtime["resource_guard"]["enabled"] is True
         assert runtime["resource_guard"]["backend"] in {"memory", "sqlite", "postgres"}
         assert "cost_ledger" in runtime
-        assert runtime["release_evidence"]["summary_path"].endswith("real-ga-evidence-summary-1.12.5.json")
+        assert runtime["release_evidence"]["summary_path"].endswith("real-ga-evidence-summary-1.12.6.json")
 
 
 def test_readiness_reports_database_and_secret_failures(tmp_path, monkeypatch):

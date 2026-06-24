@@ -12,7 +12,7 @@ from typing import Any
 OK_STATUSES = {"ok", "passed", "success", "succeeded", "verified"}
 PLACEHOLDER_RE = re.compile(r"\b(REPLACE_WITH_|todo|tbd|placeholder|example|mock|fake|sample)\b", re.IGNORECASE)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-VERSION = "1.12.5+root-monorepo-production-ga-candidate"
+VERSION = "1.12.6+root-monorepo-production-ga-candidate"
 SCHEMA_VERSION = "ios-real-device-evidence/v1"
 APNS_ARTIFACT_KINDS = {
     "apns_provider_receipt",

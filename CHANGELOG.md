@@ -1,3 +1,12 @@
+## 1.12.6+root-monorepo-production-ga-candidate
+
+- Replaced bounded PostgreSQL JSON-state model-cost aggregation with a dedicated SQL ledger table and direct SQL summary queries.
+- Added a shared side-effect idempotency store for resume, approvals, self-upgrade evaluation, and break-glass open/revoke routes.
+- Normalized and cached non-dict `/agent/run` orchestrator results so idempotent replay covers the full response surface.
+- Clarified break-glass semantics by separating authenticated approver identity from optional target actor; delegated target actors now require dual-approval metadata.
+- Extended runtime status and Postgres health checks to surface side-effect idempotency and SQL-backed model-cost readiness.
+- Extended Real GA evidence summaries with workflow run, job status, source commit, and optional artifact digest binding.
+
 ## 1.12.5+root-monorepo-production-ga-candidate
 
 - Added trusted proxy handling for API resource guard client keys so `x-forwarded-for` is ignored unless the immediate peer matches configured proxy IPs or CIDR ranges.

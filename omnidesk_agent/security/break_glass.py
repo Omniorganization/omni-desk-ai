@@ -55,8 +55,6 @@ class BreakGlassStore:
         reason = reason.strip()
         if not actor or not approved_by or not reason:
             raise ValueError("actor, approved_by, and reason are required")
-        if actor == approved_by:
-            raise PermissionError("break-glass approver must be distinct from actor")
         if ttl_seconds <= 0 or ttl_seconds > 3600:
             raise ValueError("break-glass ttl must be between 1 and 3600 seconds")
         now = time.time()

@@ -165,6 +165,8 @@ class PostgresRepositoryFactory:
     def agent_run_idempotency_store(self):
         return self._runtime_state().agent_run_idempotency_store()
 
+    def side_effect_idempotency_store(self):
+        return self._runtime_state().side_effect_idempotency_store()
 
     def learning_experiments(self):
         return self._runtime_state().learning_experiments()

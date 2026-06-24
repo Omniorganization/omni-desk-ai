@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.security.idempotency import hash_payload as _hash_payload
+from omnidesk_agent.security.idempotency import normalize_idempotency_response
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
@@ -17,17 +18,9 @@ class AgentRunIdempotencyInProgress(ValueError):
     pass
 
 
-def _canonical_json(value: dict[str, Any]) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _hash_payload(value: dict[str, Any]) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
 def _scope_key(*, actor: str, source_device: Optional[str], key: str) -> str:
     scoped = {"route": "/agent/run", "actor": actor, "source_device": source_device or "", "key": key}
-    return hashlib.sha256(_canonical_json(scoped).encode("utf-8")).hexdigest()
+    return _hash_payload(scoped)
 
 
 class SQLiteAgentRunIdempotencyStore:
@@ -80,9 +73,10 @@ class SQLiteAgentRunIdempotencyStore:
             )
         return None
 
-    def complete(self, *, actor: str, key: str, source_device: Optional[str], response: dict[str, Any]) -> None:
+    def complete(self, *, actor: str, key: str, source_device: Optional[str], response: Any) -> None:
         now = time.time()
         scope = _scope_key(actor=actor, source_device=source_device, key=key)
+        normalized = normalize_idempotency_response(response)
         with connect_sqlite(self.db_path) as con:
             con.execute(
                 """
@@ -90,7 +84,7 @@ class SQLiteAgentRunIdempotencyStore:
                 SET status='completed', response_json=?, updated_at=?, expires_at=?
                 WHERE scope_key=? AND status='running'
                 """,
-                (json.dumps(response, ensure_ascii=False, sort_keys=True, default=str), now, now + self.ttl_seconds, scope),
+                (json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str), now, now + self.ttl_seconds, scope),
             )
 
     def fail(self, *, actor: str, key: str, source_device: Optional[str]) -> None:
@@ -135,14 +129,15 @@ class JsonStateAgentRunIdempotencyStore:
             return dict(existing["response"])
         raise AgentRunIdempotencyInProgress("idempotent /agent/run request is already in progress")
 
-    def complete(self, *, actor: str, key: str, source_device: Optional[str], response: dict[str, Any]) -> None:
+    def complete(self, *, actor: str, key: str, source_device: Optional[str], response: Any) -> None:
         now = time.time()
         scope = _scope_key(actor=actor, source_device=source_device, key=key)
+        normalized = normalize_idempotency_response(response)
         try:
             self.state.update_locked(
                 self.namespace,
                 scope,
-                lambda row: {**row, "status": "completed", "response": dict(response), "updated_at": now, "expires_at": now + self.ttl_seconds},
+                lambda row: {**row, "status": "completed", "response": normalized, "updated_at": now, "expires_at": now + self.ttl_seconds},
             )
         except KeyError:
             return

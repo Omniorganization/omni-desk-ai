@@ -6,15 +6,16 @@ from pathlib import Path
 from scripts import write_real_ga_evidence_summary
 
 
-def test_real_ga_evidence_summary_preserves_blockers_without_claiming_real_ga(tmp_path: Path) -> None:
+def test_real_ga_evidence_summary_preserves_blockers_without_claiming_real_ga(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     (root / "release").mkdir()
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "omnidesk-agent"\nversion = "1.12.5+root-monorepo-production-ga-candidate"\n',
+        '[project]\nname = "omnidesk-agent"\nversion = "1.12.6+root-monorepo-production-ga-candidate"\n',
         encoding="utf-8",
     )
     audit = {
-        "version": "1.12.5+root-monorepo-production-ga-candidate",
+        "version": "1.12.6+root-monorepo-production-ga-candidate",
         "status": "blocked_missing_external_evidence",
         "blocker_count": 1,
         "policy": "real external systems required",
@@ -33,8 +34,8 @@ def test_real_ga_evidence_summary_preserves_blockers_without_claiming_real_ga(tm
             },
         },
     }
-    audit_path = root / "release" / "real-ga-evidence-audit-1.12.5.json"
-    output_path = root / "release" / "real-ga-evidence-summary-1.12.5.json"
+    audit_path = root / "release" / "real-ga-evidence-audit-1.12.6.json"
+    output_path = root / "release" / "real-ga-evidence-summary-1.12.6.json"
     audit_path.write_text(json.dumps(audit), encoding="utf-8")
 
     rc = write_real_ga_evidence_summary.main(
@@ -53,6 +54,8 @@ def test_real_ga_evidence_summary_preserves_blockers_without_claiming_real_ga(tm
     summary = json.loads(output_path.read_text(encoding="utf-8"))
     assert summary["schema_version"] == "omnidesk-real-ga-evidence-summary/v1"
     assert summary["source_commit"] == "abc123"
+    assert summary["workflow_evidence"]["source_commit"] == "abc123"
+    assert summary["workflow_evidence"]["job_status"] == "unavailable"
     assert summary["real_ga_ready"] is False
     assert summary["blocker_count"] == 1
     assert summary["blocking_categories"] == [
