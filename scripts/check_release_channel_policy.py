@@ -131,6 +131,7 @@ def check_policy(
     makefile = _read(root / "Makefile")
     external_gate = _read(root / "scripts/check_external_ga_evidence.py")
     distribution_manifest = _read(root / "scripts/write_distribution_manifest.py")
+    branch_protection_doc = _read(root / "docs/BRANCH_PROTECTION.md")
     codeowners = _read(root / ".github/CODEOWNERS")
     gitignore = _read(root / ".gitignore")
 
@@ -187,6 +188,13 @@ def check_policy(
 
     protection = root / ".github/branch-protection.required.json"
     _check(protection.exists(), "Source-controlled branch protection contract exists", failures, ok)
+    _check(
+        (root / "scripts/check_github_branch_protection_live.py").exists()
+        and "check_github_branch_protection_live.py" in branch_protection_doc,
+        "Live GitHub branch protection verifier is documented",
+        failures,
+        ok,
+    )
     if protection.exists():
         policy = _read_json(protection)
         required_checks = set(policy.get("required_status_checks", []))
