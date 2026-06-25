@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from omnidesk_agent.appsync.store import AppSyncStore
@@ -52,6 +53,67 @@ def test_tri_app_store_links_desktop_mobile_web_business_line(tmp_path):
     assert store.get_task(result["task"]["task_id"])["status"] == "queued"
     sync = store.sync_since(0)
     assert any(event["event_type"] == "approval.decided" for event in sync["events"])
+
+
+def test_appsync_store_filters_cross_organization_objects_and_sync(tmp_path):
+    store = AppSyncStore(tmp_path / "app_sync.json")
+    store.register_device(actor="alice", device_id="alice-mobile", device_type="mobile", name="Alice phone", platform="iOS", organization_id="org-a")
+    store.register_device(actor="alice", device_id="alice-desktop", device_type="desktop", name="Alice desktop", platform="macOS", organization_id="org-a")
+    store.register_device(actor="bob", device_id="bob-mobile", device_type="mobile", name="Bob phone", platform="Android", organization_id="org-b")
+    store.register_device(actor="bob", device_id="bob-desktop", device_type="desktop", name="Bob desktop", platform="Linux", organization_id="org-b")
+
+    alice_convo = store.create_conversation(actor="alice", title="Org A task", source_device_id="alice-mobile")
+    bob_convo = store.create_conversation(actor="bob", title="Org B task", source_device_id="bob-mobile")
+    with pytest.raises(PermissionError):
+        store.create_conversation(actor="charlie", title="Hijack org A", source_device_id="alice-mobile")
+    alice_created = store.add_message_and_task(
+        actor="alice",
+        conversation_id=alice_convo["conversation_id"],
+        content="Run org A desktop workflow",
+        source_device_id="alice-mobile",
+        requires_desktop_runtime=True,
+        risk="high",
+    )
+    bob_created = store.add_message_and_task(
+        actor="bob",
+        conversation_id=bob_convo["conversation_id"],
+        content="Run org B desktop workflow",
+        source_device_id="bob-mobile",
+        requires_desktop_runtime=True,
+        risk="high",
+    )
+    store.decide_approval(approval_id=alice_created["approval"]["approval_id"], actor="alice", decision="approved")
+    store.decide_approval(approval_id=bob_created["approval"]["approval_id"], actor="bob", decision="approved")
+
+    assert [item["conversation_id"] for item in store.list_conversations("alice")] == [alice_convo["conversation_id"]]
+    assert store.list_messages(alice_convo["conversation_id"], actor="bob") == []
+    with pytest.raises(KeyError):
+        store.get_task(alice_created["task"]["task_id"], actor="bob")
+    with pytest.raises(PermissionError):
+        store.add_message_and_task(actor="bob", conversation_id=alice_convo["conversation_id"], content="cross org write")
+
+    alice_approvals = store.list_approvals(actor="alice")
+    bob_approvals = store.list_approvals(actor="bob")
+    assert {item["organization_id"] for item in alice_approvals} == {"org-a"}
+    assert {item["organization_id"] for item in bob_approvals} == {"org-b"}
+    assert {item["organization_id"] for item in store.list_notifications(actor="alice")} == {"org-a"}
+    assert {item["organization_id"] for item in store.list_notifications(actor="bob")} == {"org-b"}
+
+    bob_claimed = store.claim_next_task(actor="bob", device_id="bob-desktop", lease_seconds=60)
+    assert bob_claimed is not None
+    assert bob_claimed["task_id"] == bob_created["task"]["task_id"]
+    alice_claimed = store.claim_next_task(actor="alice", device_id="alice-desktop", lease_seconds=60)
+    assert alice_claimed is not None
+    assert alice_claimed["task_id"] == alice_created["task"]["task_id"]
+
+    alice_sync = store.sync_since(0, actor="alice")
+    bob_sync = store.sync_since(0, actor="bob")
+    assert alice_sync["events"]
+    assert bob_sync["events"]
+    assert {event["organization_id"] for event in alice_sync["events"]} == {"org-a"}
+    assert {event["organization_id"] for event in bob_sync["events"]} == {"org-b"}
+    assert bob_created["task"]["task_id"] not in json.dumps(alice_sync, sort_keys=True)
+    assert alice_created["task"]["task_id"] not in json.dumps(bob_sync, sort_keys=True)
 
 
 def test_appsync_routes_create_task_approval_and_sync(tmp_path, monkeypatch):
@@ -353,4 +415,18 @@ def test_postgres_normalized_schema_contract():
     assert "model_provider TEXT" in NORMALIZED_SCHEMA_SQL
     assert "usage JSONB" in NORMALIZED_SCHEMA_SQL
     assert "trace_id TEXT" in NORMALIZED_SCHEMA_SQL
+    for table in [
+        "omnidesk_appsync_conversations",
+        "omnidesk_appsync_messages",
+        "omnidesk_appsync_approvals",
+        "omnidesk_appsync_notifications",
+        "omnidesk_appsync_runtime_status",
+        "omnidesk_appsync_device_enrollments",
+        "omnidesk_appsync_sync_events",
+        "omnidesk_appsync_push_outbox",
+        "omnidesk_appsync_device_challenges",
+    ]:
+        start = NORMALIZED_SCHEMA_SQL.index(f"CREATE TABLE IF NOT EXISTS {table}")
+        end = NORMALIZED_SCHEMA_SQL.index(");", start)
+        assert "organization_id TEXT NOT NULL" in NORMALIZED_SCHEMA_SQL[start:end]
     assert "FOR UPDATE SKIP LOCKED" not in NORMALIZED_SCHEMA_SQL or "omnidesk_appsync_tasks_claim_idx" in NORMALIZED_SCHEMA_SQL

@@ -8,9 +8,20 @@ from omnidesk_agent.models.base import ModelRequest
 def validate_models(runtime) -> dict:
     router = runtime.model_router
     required_tasks = ["planner", "tool_plan", "chat", "code", "vision", "private", "summarize", "upgrade"]
-    routing = router.cfg.routing
     profiles = router.providers
-    coverage = {task: bool(routing.get(task) in profiles) for task in required_tasks}
+    coverage = {}
+    for task in required_tasks:
+        if hasattr(router, "route_plan"):
+            plan = router.route_plan(task)
+            route_profiles = list(getattr(plan, "profiles", []))
+        else:
+            raw = router.cfg.routing.get(task)
+            if isinstance(raw, dict):
+                primary = str(raw.get("primary") or "")
+                route_profiles = [primary] + [str(item) for item in raw.get("fallback", []) if str(item) != primary]
+            else:
+                route_profiles = [str(raw)] if raw else []
+        coverage[task] = bool(route_profiles) and all(profile in profiles for profile in route_profiles)
     provider_aliases = sorted({
         "openai", "openai_responses", "openai_chat", "openai_compatible", "azure_openai",
         "anthropic", "claude", "gemini", "google", "ollama", "deepseek", "qwen", "dashscope",

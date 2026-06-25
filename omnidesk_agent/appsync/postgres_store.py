@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_devices (
 );
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_conversations (
     namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
     conversation_id TEXT NOT NULL,
     title TEXT NOT NULL,
     actor TEXT NOT NULL,
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_conversations (
 );
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_messages (
     namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
     message_id TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
     role TEXT NOT NULL,
@@ -94,6 +96,8 @@ ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS model_name TEXT;
 ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS model_profile TEXT;
 ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS usage JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS trace_id TEXT;
+ALTER TABLE omnidesk_appsync_conversations ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_messages ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_tasks (
     namespace TEXT NOT NULL,
     task_id TEXT NOT NULL,
@@ -118,6 +122,7 @@ CREATE INDEX IF NOT EXISTS omnidesk_appsync_tasks_claim_idx
     ON omnidesk_appsync_tasks(namespace, requires_desktop_runtime, status, lease_expires_at, created_at);
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_approvals (
     namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
     approval_id TEXT NOT NULL,
     task_id TEXT NOT NULL,
     risk TEXT NOT NULL,
@@ -137,6 +142,7 @@ CREATE INDEX IF NOT EXISTS omnidesk_appsync_approvals_pending_idx
     ON omnidesk_appsync_approvals(namespace, status, expires_at);
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_notifications (
     namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
     notification_id TEXT NOT NULL,
     audience TEXT NOT NULL,
     title TEXT NOT NULL,
@@ -150,6 +156,7 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_notifications (
 );
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_runtime_status (
     namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
     device_id TEXT NOT NULL,
     status TEXT NOT NULL,
     version TEXT,
@@ -161,6 +168,7 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_runtime_status (
 );
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_device_enrollments (
     namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
     enrollment_id TEXT NOT NULL,
     device_type TEXT NOT NULL,
     requested_by TEXT NOT NULL,
@@ -186,6 +194,7 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_idempotency_keys (
 );
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_sync_events (
     namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
     seq BIGINT NOT NULL,
     event_type TEXT NOT NULL,
     actor TEXT NOT NULL,
@@ -203,12 +212,90 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_task_leases (
     PRIMARY KEY(namespace, task_id)
 );
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_push_outbox (
-    namespace TEXT NOT NULL, push_id TEXT NOT NULL, device_id TEXT NOT NULL, platform TEXT NOT NULL, push_token TEXT, audience TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, related_id TEXT, status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL, PRIMARY KEY(namespace, push_id)
+    namespace TEXT NOT NULL, organization_id TEXT NOT NULL DEFAULT 'org_default', push_id TEXT NOT NULL, device_id TEXT NOT NULL, platform TEXT NOT NULL, push_token TEXT, audience TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, related_id TEXT, status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL, PRIMARY KEY(namespace, push_id)
 );
 CREATE INDEX IF NOT EXISTS omnidesk_appsync_push_pending_idx ON omnidesk_appsync_push_outbox(namespace, status, created_at);
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_device_challenges (
-    namespace TEXT NOT NULL, challenge_id TEXT NOT NULL, enrollment_id TEXT NOT NULL, device_id TEXT NOT NULL, nonce_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at DOUBLE PRECISION NOT NULL, expires_at DOUBLE PRECISION NOT NULL, verified_at DOUBLE PRECISION, PRIMARY KEY(namespace, challenge_id)
+    namespace TEXT NOT NULL, organization_id TEXT NOT NULL DEFAULT 'org_default', challenge_id TEXT NOT NULL, enrollment_id TEXT NOT NULL, device_id TEXT NOT NULL, nonce_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at DOUBLE PRECISION NOT NULL, expires_at DOUBLE PRECISION NOT NULL, verified_at DOUBLE PRECISION, PRIMARY KEY(namespace, challenge_id)
 );
+CREATE TABLE IF NOT EXISTS omnidesk_appsync_local_outbox (
+    namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    actor TEXT NOT NULL,
+    device_id TEXT,
+    idempotency_key TEXT,
+    payload_hash TEXT NOT NULL,
+    conflict_policy TEXT NOT NULL,
+    status TEXT NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at DOUBLE PRECISION,
+    remote_seq BIGINT,
+    last_error TEXT,
+    created_at DOUBLE PRECISION NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY(namespace, operation_id)
+);
+CREATE INDEX IF NOT EXISTS omnidesk_appsync_local_outbox_pending_idx ON omnidesk_appsync_local_outbox(namespace, organization_id, status, created_at);
+CREATE TABLE IF NOT EXISTS omnidesk_appsync_local_inbox (
+    namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    remote_event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    actor TEXT NOT NULL,
+    source_device_id TEXT,
+    idempotency_key TEXT,
+    payload_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    received_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY(namespace, remote_event_id)
+);
+CREATE TABLE IF NOT EXISTS omnidesk_appsync_sync_cursors (
+    namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    cursor_id TEXT NOT NULL,
+    remote TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    device_id TEXT,
+    since_seq BIGINT NOT NULL DEFAULT 0,
+    updated_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY(namespace, cursor_id)
+);
+CREATE TABLE IF NOT EXISTS omnidesk_appsync_sync_conflicts (
+    namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    conflict_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    remote_event_id TEXT,
+    conflict_type TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    status TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    local_payload JSONB NOT NULL,
+    remote_payload JSONB NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL,
+    resolved_at DOUBLE PRECISION,
+    PRIMARY KEY(namespace, conflict_id)
+);
+CREATE TABLE IF NOT EXISTS omnidesk_appsync_operation_log (
+    namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_default',
+    seq BIGINT NOT NULL,
+    event TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY(namespace, seq, event)
+);
+ALTER TABLE omnidesk_appsync_approvals ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_notifications ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_runtime_status ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_device_enrollments ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_sync_events ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_device_challenges ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
 """
 
 
@@ -222,10 +309,10 @@ class PostgresAppSyncStore(AppSyncStore):
     from the database tables rather than a compact file/state payload.
     """
 
-    def __init__(self, dsn: str, namespace: str = "default"):
+    def __init__(self, dsn: str, namespace: str = "default", *, local_outbox_enabled: bool = False):
         self.dsn = dsn
         self.namespace = namespace or "default"
-        super().__init__(Path(".postgres-appsync-state.json"))
+        super().__init__(Path(".postgres-appsync-state.json"), local_outbox_enabled=local_outbox_enabled)
 
     def _connect(self):
         try:
@@ -256,6 +343,12 @@ class PostgresAppSyncStore(AppSyncStore):
             "device_challenges": {k: asdict(v) for k, v in self.device_challenges.items()},
             "events": self.events[-1000:],
             "idempotency": self.idempotency,
+            "local_outbox": {k: asdict(v) for k, v in self.local_outbox.items()},
+            "local_inbox": {k: asdict(v) for k, v in self.local_inbox.items()},
+            "operation_log": self.operation_log[-2000:],
+            "sync_cursors": {k: asdict(v) for k, v in self.sync_cursors.items()},
+            "sync_conflicts": {k: asdict(v) for k, v in self.sync_conflicts.items()},
+            "network_state": self.network_state,
         }
 
     @staticmethod
@@ -298,11 +391,11 @@ class PostgresAppSyncStore(AppSyncStore):
                 """, (ns,))
                 self.devices = {r[1]: DeviceRecord(organization_id=r[0], device_id=r[1], device_type=r[2], name=r[3], platform=r[4], actor=r[5], push_token=r[6], public_key=r[7], token_hash=r[8], credential_status=r[9], trust_level=r[10], revoked_at=r[11], last_challenge_nonce_hash=r[12], last_challenge_expires_at=r[13], capabilities=self._json_list(r[14]), online=bool(r[15]), last_seen_at=float(r[16]), created_at=float(r[17]), updated_at=float(r[18])) for r in cur.fetchall()}
 
-                cur.execute("SELECT conversation_id, title, actor, source_device_id, created_at, updated_at FROM omnidesk_appsync_conversations WHERE namespace=%s", (ns,))
-                self.conversations = {r[0]: ConversationRecord(conversation_id=r[0], title=r[1], actor=r[2], source_device_id=r[3], created_at=float(r[4]), updated_at=float(r[5])) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, conversation_id, title, actor, source_device_id, created_at, updated_at FROM omnidesk_appsync_conversations WHERE namespace=%s", (ns,))
+                self.conversations = {r[1]: ConversationRecord(organization_id=r[0], conversation_id=r[1], title=r[2], actor=r[3], source_device_id=r[4], created_at=float(r[5]), updated_at=float(r[6])) for r in cur.fetchall()}
 
-                cur.execute("SELECT message_id, conversation_id, role, content, actor, source_device_id, task_id, model_provider, model_name, model_profile, usage, trace_id, created_at FROM omnidesk_appsync_messages WHERE namespace=%s", (ns,))
-                self.messages = {r[0]: MessageRecord(message_id=r[0], conversation_id=r[1], role=r[2], content=r[3], actor=r[4], source_device_id=r[5], task_id=r[6], model_provider=r[7], model_name=r[8], model_profile=r[9], usage=r[10] if isinstance(r[10], dict) else json.loads(r[10] or "{}"), trace_id=r[11], created_at=float(r[12])) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, message_id, conversation_id, role, content, actor, source_device_id, task_id, model_provider, model_name, model_profile, usage, trace_id, created_at FROM omnidesk_appsync_messages WHERE namespace=%s", (ns,))
+                self.messages = {r[1]: MessageRecord(organization_id=r[0], message_id=r[1], conversation_id=r[2], role=r[3], content=r[4], actor=r[5], source_device_id=r[6], task_id=r[7], model_provider=r[8], model_name=r[9], model_profile=r[10], usage=r[11] if isinstance(r[11], dict) else json.loads(r[11] or "{}"), trace_id=r[12], created_at=float(r[13])) for r in cur.fetchall()}
 
                 cur.execute("""
                     SELECT task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at
@@ -310,26 +403,26 @@ class PostgresAppSyncStore(AppSyncStore):
                 """, (ns,))
                 self.tasks = {r[0]: TaskRecord(task_id=r[0], conversation_id=r[1], title=r[2], actor=r[3], organization_id=r[4], status=r[5], assigned_runtime_device_id=r[6], requires_desktop_runtime=bool(r[7]), approval_id=r[8], result_summary=r[9], idempotency_key=r[10], claimed_by_device_id=r[11], lease_expires_at=r[12], attempt_count=int(r[13]), created_at=float(r[14]), updated_at=float(r[15])) for r in cur.fetchall()}
 
-                cur.execute("SELECT approval_id, task_id, risk, action, reason, requested_by, status, decided_by, decision_reason, decision_idempotency_key, created_at, decided_at, expires_at FROM omnidesk_appsync_approvals WHERE namespace=%s", (ns,))
-                self.approvals = {r[0]: ApprovalRecord(approval_id=r[0], task_id=r[1], risk=r[2], action=r[3], reason=r[4], requested_by=r[5], status=r[6], decided_by=r[7], decision_reason=r[8], decision_idempotency_key=r[9], created_at=float(r[10]), decided_at=r[11], expires_at=r[12]) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, approval_id, task_id, risk, action, reason, requested_by, status, decided_by, decision_reason, decision_idempotency_key, created_at, decided_at, expires_at FROM omnidesk_appsync_approvals WHERE namespace=%s", (ns,))
+                self.approvals = {r[1]: ApprovalRecord(organization_id=r[0], approval_id=r[1], task_id=r[2], risk=r[3], action=r[4], reason=r[5], requested_by=r[6], status=r[7], decided_by=r[8], decision_reason=r[9], decision_idempotency_key=r[10], created_at=float(r[11]), decided_at=r[12], expires_at=r[13]) for r in cur.fetchall()}
 
-                cur.execute("SELECT notification_id, audience, title, body, event_type, actor, related_id, read, created_at FROM omnidesk_appsync_notifications WHERE namespace=%s", (ns,))
-                self.notifications = {r[0]: NotificationRecord(notification_id=r[0], audience=r[1], title=r[2], body=r[3], event_type=r[4], actor=r[5], related_id=r[6], read=bool(r[7]), created_at=float(r[8])) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, notification_id, audience, title, body, event_type, actor, related_id, read, created_at FROM omnidesk_appsync_notifications WHERE namespace=%s", (ns,))
+                self.notifications = {r[1]: NotificationRecord(organization_id=r[0], notification_id=r[1], audience=r[2], title=r[3], body=r[4], event_type=r[5], actor=r[6], related_id=r[7], read=bool(r[8]), created_at=float(r[9])) for r in cur.fetchall()}
 
-                cur.execute("SELECT device_id, status, version, hostname, active_task_id, capabilities, last_heartbeat_at FROM omnidesk_appsync_runtime_status WHERE namespace=%s", (ns,))
-                self.runtimes = {r[0]: RuntimeStatusRecord(device_id=r[0], status=r[1], version=r[2], hostname=r[3], active_task_id=r[4], capabilities=self._json_list(r[5]), last_heartbeat_at=float(r[6])) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, device_id, status, version, hostname, active_task_id, capabilities, last_heartbeat_at FROM omnidesk_appsync_runtime_status WHERE namespace=%s", (ns,))
+                self.runtimes = {r[1]: RuntimeStatusRecord(organization_id=r[0], device_id=r[1], status=r[2], version=r[3], hostname=r[4], active_task_id=r[5], capabilities=self._json_list(r[6]), last_heartbeat_at=float(r[7])) for r in cur.fetchall()}
 
-                cur.execute("SELECT enrollment_id, device_type, requested_by, pairing_code_hash, status, device_id, public_key, created_at, expires_at, completed_at FROM omnidesk_appsync_device_enrollments WHERE namespace=%s", (ns,))
-                self.device_enrollments = {r[0]: DeviceEnrollmentRecord(enrollment_id=r[0], device_type=r[1], requested_by=r[2], pairing_code_hash=r[3], status=r[4], device_id=r[5], public_key=r[6], created_at=float(r[7]), expires_at=float(r[8]), completed_at=r[9]) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, enrollment_id, device_type, requested_by, pairing_code_hash, status, device_id, public_key, created_at, expires_at, completed_at FROM omnidesk_appsync_device_enrollments WHERE namespace=%s", (ns,))
+                self.device_enrollments = {r[1]: DeviceEnrollmentRecord(organization_id=r[0], enrollment_id=r[1], device_type=r[2], requested_by=r[3], pairing_code_hash=r[4], status=r[5], device_id=r[6], public_key=r[7], created_at=float(r[8]), expires_at=float(r[9]), completed_at=r[10]) for r in cur.fetchall()}
 
-                cur.execute("SELECT push_id, device_id, platform, audience, title, body, related_id, status, attempt_count, last_error, created_at, updated_at FROM omnidesk_appsync_push_outbox WHERE namespace=%s", (ns,))
-                self.push_outbox = {r[0]: PushOutboxRecord(push_id=r[0], device_id=r[1], platform=r[2], audience=r[3], title=r[4], body=r[5], related_id=r[6], status=r[7], attempt_count=int(r[8]), last_error=r[9], created_at=float(r[10]), updated_at=float(r[11])) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, push_id, device_id, platform, audience, title, body, related_id, status, attempt_count, last_error, created_at, updated_at FROM omnidesk_appsync_push_outbox WHERE namespace=%s", (ns,))
+                self.push_outbox = {r[1]: PushOutboxRecord(organization_id=r[0], push_id=r[1], device_id=r[2], platform=r[3], audience=r[4], title=r[5], body=r[6], related_id=r[7], status=r[8], attempt_count=int(r[9]), last_error=r[10], created_at=float(r[11]), updated_at=float(r[12])) for r in cur.fetchall()}
 
-                cur.execute("SELECT challenge_id, enrollment_id, device_id, nonce_hash, status, created_at, expires_at, verified_at FROM omnidesk_appsync_device_challenges WHERE namespace=%s", (ns,))
-                self.device_challenges = {r[0]: DeviceChallengeRecord(challenge_id=r[0], enrollment_id=r[1], device_id=r[2], nonce_hash=r[3], status=r[4], created_at=float(r[5]), expires_at=float(r[6]), verified_at=r[7]) for r in cur.fetchall()}
+                cur.execute("SELECT organization_id, challenge_id, enrollment_id, device_id, nonce_hash, status, created_at, expires_at, verified_at FROM omnidesk_appsync_device_challenges WHERE namespace=%s", (ns,))
+                self.device_challenges = {r[1]: DeviceChallengeRecord(organization_id=r[0], challenge_id=r[1], enrollment_id=r[2], device_id=r[3], nonce_hash=r[4], status=r[5], created_at=float(r[6]), expires_at=float(r[7]), verified_at=r[8]) for r in cur.fetchall()}
 
-                cur.execute("SELECT seq, event_type, actor, payload, created_at FROM omnidesk_appsync_sync_events WHERE namespace=%s ORDER BY seq ASC", (ns,))
-                self.events = [{"seq": int(r[0]), "event_type": r[1], "actor": r[2], "payload": r[3] if isinstance(r[3], dict) else json.loads(r[3]), "ts": float(r[4])} for r in cur.fetchall()][-1000:]
+                cur.execute("SELECT seq, organization_id, event_type, actor, payload, created_at FROM omnidesk_appsync_sync_events WHERE namespace=%s ORDER BY seq ASC", (ns,))
+                self.events = [{"seq": int(r[0]), "organization_id": r[1], "event_type": r[2], "actor": r[3], "payload": r[4] if isinstance(r[4], dict) else json.loads(r[4]), "ts": float(r[5])} for r in cur.fetchall()][-1000:]
                 self._seq = max([int(e.get("seq", 0)) for e in self.events] or [0])
 
                 cur.execute("SELECT organization_id, actor, endpoint, key, payload_hash, response, created_at FROM omnidesk_appsync_idempotency_keys WHERE namespace=%s", (ns,))
@@ -379,21 +472,21 @@ class PostgresAppSyncStore(AppSyncStore):
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_conversations(namespace, conversation_id, title, actor, source_device_id, created_at, updated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(namespace, conversation_id) DO UPDATE SET title=EXCLUDED.title, updated_at=EXCLUDED.updated_at
+                INSERT INTO omnidesk_appsync_conversations(namespace, organization_id, conversation_id, title, actor, source_device_id, created_at, updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(namespace, conversation_id) DO UPDATE SET organization_id=EXCLUDED.organization_id, title=EXCLUDED.title, updated_at=EXCLUDED.updated_at
                 """,
-                (ns, v["conversation_id"], v["title"], v["actor"], v.get("source_device_id"), v["created_at"], v["updated_at"]),
+                (ns, v.get("organization_id", "org_default"), v["conversation_id"], v["title"], v["actor"], v.get("source_device_id"), v["created_at"], v["updated_at"]),
             )
         for item in self.messages.values():
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_messages(namespace, message_id, conversation_id, role, content, actor, source_device_id, task_id, model_provider, model_name, model_profile, usage, trace_id, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                INSERT INTO omnidesk_appsync_messages(namespace, organization_id, message_id, conversation_id, role, content, actor, source_device_id, task_id, model_provider, model_name, model_profile, usage, trace_id, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(namespace, message_id) DO NOTHING
                 """,
-                (ns, v["message_id"], v["conversation_id"], v["role"], v["content"], v["actor"], v.get("source_device_id"), v.get("task_id"), v.get("model_provider"), v.get("model_name"), v.get("model_profile"), Jsonb(v.get("usage") or {}), v.get("trace_id"), v["created_at"]),
+                (ns, v.get("organization_id", "org_default"), v["message_id"], v["conversation_id"], v["role"], v["content"], v["actor"], v.get("source_device_id"), v.get("task_id"), v.get("model_provider"), v.get("model_name"), v.get("model_profile"), Jsonb(v.get("usage") or {}), v.get("trace_id"), v["created_at"]),
             )
         for item in self.tasks.values():
             v = asdict(item)
@@ -418,41 +511,41 @@ class PostgresAppSyncStore(AppSyncStore):
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_approvals(namespace, approval_id, task_id, risk, action, reason, requested_by, status, decided_by, decision_reason, decision_idempotency_key, created_at, decided_at, expires_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(namespace, approval_id) DO UPDATE SET status=EXCLUDED.status, decided_by=EXCLUDED.decided_by, decision_reason=EXCLUDED.decision_reason, decision_idempotency_key=EXCLUDED.decision_idempotency_key, decided_at=EXCLUDED.decided_at
+                INSERT INTO omnidesk_appsync_approvals(namespace, organization_id, approval_id, task_id, risk, action, reason, requested_by, status, decided_by, decision_reason, decision_idempotency_key, created_at, decided_at, expires_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(namespace, approval_id) DO UPDATE SET organization_id=EXCLUDED.organization_id, status=EXCLUDED.status, decided_by=EXCLUDED.decided_by, decision_reason=EXCLUDED.decision_reason, decision_idempotency_key=EXCLUDED.decision_idempotency_key, decided_at=EXCLUDED.decided_at
                 """,
-                (ns, v["approval_id"], v["task_id"], v["risk"], v["action"], v["reason"], v["requested_by"], v["status"], v.get("decided_by"), v.get("decision_reason"), v.get("decision_idempotency_key"), v["created_at"], v.get("decided_at"), v.get("expires_at")),
+                (ns, v.get("organization_id", "org_default"), v["approval_id"], v["task_id"], v["risk"], v["action"], v["reason"], v["requested_by"], v["status"], v.get("decided_by"), v.get("decision_reason"), v.get("decision_idempotency_key"), v["created_at"], v.get("decided_at"), v.get("expires_at")),
             )
         for item in self.notifications.values():
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_notifications(namespace, notification_id, audience, title, body, event_type, actor, related_id, read, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                INSERT INTO omnidesk_appsync_notifications(namespace, organization_id, notification_id, audience, title, body, event_type, actor, related_id, read, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(namespace, notification_id) DO UPDATE SET read=EXCLUDED.read
                 """,
-                (ns, v["notification_id"], v["audience"], v["title"], v["body"], v["event_type"], v["actor"], v.get("related_id"), v["read"], v["created_at"]),
+                (ns, v.get("organization_id", "org_default"), v["notification_id"], v["audience"], v["title"], v["body"], v["event_type"], v["actor"], v.get("related_id"), v["read"], v["created_at"]),
             )
         for item in self.runtimes.values():
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_runtime_status(namespace, device_id, status, version, hostname, active_task_id, capabilities, last_heartbeat_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(namespace, device_id) DO UPDATE SET status=EXCLUDED.status, version=EXCLUDED.version, hostname=EXCLUDED.hostname, active_task_id=EXCLUDED.active_task_id, capabilities=EXCLUDED.capabilities, last_heartbeat_at=EXCLUDED.last_heartbeat_at
+                INSERT INTO omnidesk_appsync_runtime_status(namespace, organization_id, device_id, status, version, hostname, active_task_id, capabilities, last_heartbeat_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(namespace, device_id) DO UPDATE SET organization_id=EXCLUDED.organization_id, status=EXCLUDED.status, version=EXCLUDED.version, hostname=EXCLUDED.hostname, active_task_id=EXCLUDED.active_task_id, capabilities=EXCLUDED.capabilities, last_heartbeat_at=EXCLUDED.last_heartbeat_at
                 """,
-                (ns, v["device_id"], v["status"], v.get("version"), v.get("hostname"), v.get("active_task_id"), Jsonb(v.get("capabilities") or []), v["last_heartbeat_at"]),
+                (ns, v.get("organization_id", "org_default"), v["device_id"], v["status"], v.get("version"), v.get("hostname"), v.get("active_task_id"), Jsonb(v.get("capabilities") or []), v["last_heartbeat_at"]),
             )
         for item in self.device_enrollments.values():
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_device_enrollments(namespace, enrollment_id, device_type, requested_by, pairing_code_hash, status, device_id, public_key, created_at, expires_at, completed_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(namespace, enrollment_id) DO UPDATE SET status=EXCLUDED.status, device_id=EXCLUDED.device_id, public_key=EXCLUDED.public_key, completed_at=EXCLUDED.completed_at
+                INSERT INTO omnidesk_appsync_device_enrollments(namespace, organization_id, enrollment_id, device_type, requested_by, pairing_code_hash, status, device_id, public_key, created_at, expires_at, completed_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(namespace, enrollment_id) DO UPDATE SET organization_id=EXCLUDED.organization_id, status=EXCLUDED.status, device_id=EXCLUDED.device_id, public_key=EXCLUDED.public_key, completed_at=EXCLUDED.completed_at
                 """,
-                (ns, v["enrollment_id"], v["device_type"], v["requested_by"], v["pairing_code_hash"], v["status"], v.get("device_id"), v.get("public_key"), v["created_at"], v["expires_at"], v.get("completed_at")),
+                (ns, v.get("organization_id", "org_default"), v["enrollment_id"], v["device_type"], v["requested_by"], v["pairing_code_hash"], v["status"], v.get("device_id"), v.get("public_key"), v["created_at"], v["expires_at"], v.get("completed_at")),
             )
         for scoped, item in self.idempotency.items():
             cur.execute(
@@ -467,30 +560,30 @@ class PostgresAppSyncStore(AppSyncStore):
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_push_outbox(namespace, push_id, device_id, platform, push_token, audience, title, body, related_id, status, attempt_count, last_error, created_at, updated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(namespace, push_id) DO UPDATE SET status=EXCLUDED.status, attempt_count=EXCLUDED.attempt_count, last_error=EXCLUDED.last_error, updated_at=EXCLUDED.updated_at
+                INSERT INTO omnidesk_appsync_push_outbox(namespace, organization_id, push_id, device_id, platform, push_token, audience, title, body, related_id, status, attempt_count, last_error, created_at, updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(namespace, push_id) DO UPDATE SET organization_id=EXCLUDED.organization_id, status=EXCLUDED.status, attempt_count=EXCLUDED.attempt_count, last_error=EXCLUDED.last_error, updated_at=EXCLUDED.updated_at
                 """,
-                (ns, v["push_id"], v["device_id"], v["platform"], self.devices.get(v["device_id"], DeviceRecord(device_id=v["device_id"], device_type="mobile", name="unknown", platform=v["platform"], actor="system")).push_token, v["audience"], v["title"], v["body"], v.get("related_id"), v["status"], v["attempt_count"], v.get("last_error"), v["created_at"], v["updated_at"]),
+                (ns, v.get("organization_id", "org_default"), v["push_id"], v["device_id"], v["platform"], self.devices.get(v["device_id"], DeviceRecord(device_id=v["device_id"], device_type="mobile", name="unknown", platform=v["platform"], actor="system")).push_token, v["audience"], v["title"], v["body"], v.get("related_id"), v["status"], v["attempt_count"], v.get("last_error"), v["created_at"], v["updated_at"]),
             )
         for item in self.device_challenges.values():
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_device_challenges(namespace, challenge_id, enrollment_id, device_id, nonce_hash, status, created_at, expires_at, verified_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(namespace, challenge_id) DO UPDATE SET status=EXCLUDED.status, verified_at=EXCLUDED.verified_at
+                INSERT INTO omnidesk_appsync_device_challenges(namespace, organization_id, challenge_id, enrollment_id, device_id, nonce_hash, status, created_at, expires_at, verified_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(namespace, challenge_id) DO UPDATE SET organization_id=EXCLUDED.organization_id, status=EXCLUDED.status, verified_at=EXCLUDED.verified_at
                 """,
-                (ns, v["challenge_id"], v["enrollment_id"], v["device_id"], v["nonce_hash"], v["status"], v["created_at"], v["expires_at"], v.get("verified_at")),
+                (ns, v.get("organization_id", "org_default"), v["challenge_id"], v["enrollment_id"], v["device_id"], v["nonce_hash"], v["status"], v["created_at"], v["expires_at"], v.get("verified_at")),
             )
         for event in self.events[-1000:]:
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_sync_events(namespace, seq, event_type, actor, payload, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s)
+                INSERT INTO omnidesk_appsync_sync_events(namespace, organization_id, seq, event_type, actor, payload, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(namespace, seq) DO NOTHING
                 """,
-                (ns, int(event.get("seq", 0)), str(event.get("event_type", "unknown")), str(event.get("actor", "unknown")), Jsonb(event.get("payload", {})), float(event.get("ts", 0.0))),
+                (ns, str(event.get("organization_id") or event.get("payload", {}).get("organization_id") or "org_default"), int(event.get("seq", 0)), str(event.get("event_type", "unknown")), str(event.get("actor", "unknown")), Jsonb(event.get("payload", {})), float(event.get("ts", 0.0))),
             )
 
 
@@ -506,7 +599,8 @@ class PostgresAppSyncStore(AppSyncStore):
         import time
         lease_seconds = max(15, min(int(lease_seconds or 60), 600))
         now = time.time()
-        params = {"namespace": self.namespace, "device_id": device_id, "now": now, "lease_expires_at": now + lease_seconds}
+        organization_id = self._organization_for_device(device_id) if device_id in self.devices else self._organization_for_actor(actor)
+        params = {"namespace": self.namespace, "organization_id": organization_id, "device_id": device_id, "now": now, "lease_expires_at": now + lease_seconds}
         with self._connect() as conn:
             self._ensure_schema(conn)
             with conn.cursor() as cur:
@@ -517,13 +611,17 @@ class PostgresAppSyncStore(AppSyncStore):
             return None
         task = self._row_to_task(row)
         self.tasks[task["task_id"]] = TaskRecord(**task)
-        self._event("task.claimed", actor, {"task_id": task["task_id"], "device_id": device_id, "lease_expires_at": task.get("lease_expires_at"), "capabilities": list(capabilities or [])})
+        self._event("task.claimed", actor, {"task_id": task["task_id"], "device_id": device_id, "lease_expires_at": task.get("lease_expires_at"), "capabilities": list(capabilities or []), "organization_id": task.get("organization_id", organization_id)})
         self._persist()
         return task
 
     def update_task_status(self, *, task_id: str, actor: str, status: str, result_summary: str | None = None, assigned_runtime_device_id: str | None = None, idempotency_key: str | None = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         import time
         now = time.time()
+        existing_task = self.tasks.get(task_id)
+        organization_id = self._normalize_org_id(existing_task.organization_id if existing_task else self._organization_for_actor(actor))
+        if assigned_runtime_device_id and assigned_runtime_device_id in self.devices and self._organization_for_device(assigned_runtime_device_id) != organization_id:
+            raise PermissionError("runtime device belongs to a different organization")
         with self._connect() as conn:
             self._ensure_schema(conn)
             with conn.cursor() as cur:
@@ -531,10 +629,10 @@ class PostgresAppSyncStore(AppSyncStore):
                     """
                     UPDATE omnidesk_appsync_tasks
                     SET status=%(status)s, result_summary=COALESCE(%(result_summary)s, result_summary), assigned_runtime_device_id=COALESCE(%(assigned_runtime_device_id)s, assigned_runtime_device_id), lease_expires_at=CASE WHEN %(status)s IN ('completed','failed','cancelled') THEN NULL ELSE lease_expires_at END, updated_at=%(now)s
-                    WHERE namespace=%(namespace)s AND task_id=%(task_id)s
+                    WHERE namespace=%(namespace)s AND organization_id=%(organization_id)s AND task_id=%(task_id)s
                     RETURNING namespace, task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at
                     """,
-                    {"namespace": self.namespace, "task_id": task_id, "status": status, "result_summary": result_summary, "assigned_runtime_device_id": assigned_runtime_device_id, "now": now},
+                    {"namespace": self.namespace, "organization_id": organization_id, "task_id": task_id, "status": status, "result_summary": result_summary, "assigned_runtime_device_id": assigned_runtime_device_id, "now": now},
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -542,24 +640,26 @@ class PostgresAppSyncStore(AppSyncStore):
             raise KeyError("task not found in postgres appsync source of truth")
         task = self._row_to_task(row)
         self.tasks[task["task_id"]] = TaskRecord(**task)
-        self._event("task.status", actor, {"task_id": task_id, "status": status})
+        self._event("task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.get("organization_id", organization_id)})
         self._persist()
         return task
 
     def renew_task_lease(self, *, actor: str, task_id: str, device_id: str, lease_seconds: int = 60) -> dict[str, Any]:
         import time
         now = time.time()
+        existing_task = self.tasks.get(task_id)
+        organization_id = self._normalize_org_id(existing_task.organization_id if existing_task else self._organization_for_device(device_id))
         with self._connect() as conn:
             self._ensure_schema(conn)
             with conn.cursor() as cur:
-                cur.execute(LEASE_RENEWAL_SQL, {"namespace": self.namespace, "task_id": task_id, "device_id": device_id, "now": now, "lease_expires_at": now + max(15, min(int(lease_seconds or 60), 600))})
+                cur.execute(LEASE_RENEWAL_SQL, {"namespace": self.namespace, "organization_id": organization_id, "task_id": task_id, "device_id": device_id, "now": now, "lease_expires_at": now + max(15, min(int(lease_seconds or 60), 600))})
                 row = cur.fetchone()
             conn.commit()
         if not row:
             raise KeyError("lease not found")
         task = self._row_to_task(row)
         self.tasks[task["task_id"]] = TaskRecord(**task)
-        self._event("task.lease_renewed", actor, {"task_id": task_id, "device_id": device_id, "lease_expires_at": task.get("lease_expires_at")})
+        self._event("task.lease_renewed", actor, {"task_id": task_id, "device_id": device_id, "lease_expires_at": task.get("lease_expires_at"), "organization_id": task.get("organization_id", organization_id)})
         self._persist()
         return task
 
@@ -570,6 +670,7 @@ WITH candidate AS (
     FROM omnidesk_appsync_tasks t
     LEFT JOIN omnidesk_appsync_approvals a ON a.namespace = t.namespace AND a.approval_id = t.approval_id
     WHERE t.namespace = %(namespace)s
+      AND t.organization_id = %(organization_id)s
       AND t.requires_desktop_runtime = true
       AND t.status IN ('queued', 'running')
       AND (t.status = 'queued' OR t.lease_expires_at IS NULL OR t.lease_expires_at <= %(now)s)
@@ -594,6 +695,6 @@ ON CONFLICT(namespace, organization_id, actor, endpoint, key) DO NOTHING
 LEASE_RENEWAL_SQL = """
 UPDATE omnidesk_appsync_tasks
 SET lease_expires_at = %(lease_expires_at)s, updated_at = %(now)s
-WHERE namespace = %(namespace)s AND task_id = %(task_id)s AND claimed_by_device_id = %(device_id)s AND status = 'running'
+WHERE namespace = %(namespace)s AND organization_id = %(organization_id)s AND task_id = %(task_id)s AND claimed_by_device_id = %(device_id)s AND status = 'running'
 RETURNING namespace, task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at
 """

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent import __version__
+from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.channels.dingtalk import DingTalkChannel
 from omnidesk_agent.channels.gmail import GmailChannel
 from omnidesk_agent.channels.lark_feishu import FeishuChannel, LarkChannel
@@ -22,6 +25,7 @@ from omnidesk_agent.channels.telegram import TelegramChannel
 from omnidesk_agent.channels.whatsapp_cloud import WhatsAppCloudChannel
 from omnidesk_agent.channels.wechat_official import WeChatOfficialChannel
 from omnidesk_agent.channels.x_channel import XChannel
+from omnidesk_agent.channels.http_client import set_channel_offline_mode
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
 from omnidesk_agent.core.llm import RouterLLMAdapter, RuleBasedLLM
@@ -33,6 +37,7 @@ from omnidesk_agent.core.token_budget import TokenBudgetConfig
 from omnidesk_agent.core.worker import WebhookWorker
 from omnidesk_agent.learning.daily_job import DailySelfLearningJob
 from omnidesk_agent.models.router import build_model_router
+from omnidesk_agent.offline.connectivity import ConnectivityManager, ReconnectSyncWorker
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.repositories.runtime import build_repository_factory, storage_plan
 from omnidesk_agent.security.admin_auth import AdminAuth
@@ -40,6 +45,7 @@ from omnidesk_agent.security.audit_worm import WormAuditCheckpoint
 from omnidesk_agent.security.permissions import PermissionManager
 from omnidesk_agent.self_learning.runtime_loop import RuntimeLearningLoop
 from omnidesk_agent.self_upgrade.governance import GovernedSelfImprovement
+from omnidesk_agent.self_upgrade.auto_update import AutoUpdateRunner, SignatureVerifier, UpdateManifestClient
 from omnidesk_agent.skills.registry import SkillRegistry
 from omnidesk_agent.tools.browser import BrowserTool
 from omnidesk_agent.tools.channel_send import ChannelSendTool
@@ -57,6 +63,8 @@ from omnidesk_agent.tools.vision import VisionGroundingTool
 
 class OmniDeskRuntime:
     def __init__(self, cfg: AppConfig):
+        cfg.apply_runtime_policies()
+        set_channel_offline_mode(bool(cfg.runtime.offline_mode and cfg.runtime.deny_external_services_in_offline_mode))
         self.cfg = cfg
         self.metrics: Any = None
         self.otel_exporter: Any = None
@@ -138,6 +146,8 @@ class OmniDeskRuntime:
         self.learning_job = DailySelfLearningJob(self.memory, cfg.workspace.root)
         self.governance = GovernedSelfImprovement(cfg.workspace.root, Path.cwd(), sandbox_cfg=cfg.sandbox)
         self.proposal_store = self.governance.proposal_store
+        self.reconnect_worker: ReconnectSyncWorker | None = None
+        self._reconnect_task: asyncio.Task | None = None
 
     def _build_channel_adapters(self) -> dict:
         return {
@@ -210,8 +220,17 @@ class OmniDeskRuntime:
             self.webhook_worker.start()
         if self.outbound_dispatcher is not None:
             self.outbound_dispatcher.start()
+        if self._should_start_reconnect_loop():
+            self.reconnect_worker = self._build_reconnect_worker()
+            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
     async def aclose(self) -> None:
+        if self._reconnect_task is not None:
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
         if self.webhook_worker is not None:
             await self.webhook_worker.stop()
         if self.outbound_dispatcher is not None:
@@ -219,6 +238,7 @@ class OmniDeskRuntime:
         self.close()
 
     def close(self) -> None:
+        set_channel_offline_mode(False)
         for resource in (
             self.memory,
             self.governance,
@@ -251,6 +271,49 @@ class OmniDeskRuntime:
             self.close()
         except Exception:
             pass
+
+    def _should_start_reconnect_loop(self) -> bool:
+        return bool(self.cfg.updates.auto_check_on_reconnect and self.cfg.updates.manifest_url)
+
+    async def _reconnect_loop(self) -> None:
+        while True:
+            await asyncio.to_thread(self.run_reconnect_once)
+            await asyncio.sleep(60)
+
+    def _app_sync_store(self):
+        store = getattr(self, "app_sync", None)
+        if store is None:
+            store = create_appsync_store(self.cfg)
+            self.app_sync = store
+        return store
+
+    def _build_reconnect_worker(self) -> ReconnectSyncWorker:
+        manifest_url = self.cfg.updates.manifest_url
+        backend_health_url = None
+        if self.cfg.gateway.public_base_url:
+            backend_health_url = self.cfg.gateway.public_base_url.rstrip("/") + "/health"
+        connectivity = ConnectivityManager(manifest_url=manifest_url, backend_health_url=backend_health_url)
+
+        def update_check() -> dict[str, Any]:
+            if not manifest_url:
+                return {"ok": False, "status": "skipped", "reason": "updates.manifest_url is not configured"}
+            runner = AutoUpdateRunner(
+                cfg=self.cfg.updates,
+                manifest_client=UpdateManifestClient(manifest_url),
+                signature_verifier=SignatureVerifier(
+                    public_key=self.cfg.runtime.release_public_key,
+                    public_key_file=self.cfg.runtime.release_public_key_file,
+                ),
+                health_check=lambda candidate: (candidate / "release-manifest.json").exists(),
+            )
+            return runner.run_once(current_version=__version__)
+
+        return ReconnectSyncWorker(connectivity=connectivity, store=self._app_sync_store(), actor="system", upload=None, update_check=update_check)
+
+    def run_reconnect_once(self) -> dict[str, Any]:
+        worker = self.reconnect_worker or self._build_reconnect_worker()
+        self.reconnect_worker = worker
+        return worker.run_once()
 
     def status(self) -> dict:
         model_router_status = self.model_router.status()

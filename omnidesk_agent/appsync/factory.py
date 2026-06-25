@@ -17,9 +17,9 @@ def create_appsync_store(cfg: Any) -> AppSyncStore:
         if not dsn:
             raise RuntimeError(f"Missing PostgreSQL AppSync DSN environment variable: {dsn_env}")
         namespace = getattr(app_sync_cfg, "namespace", "default")
-        return PostgresAppSyncStore(dsn=dsn, namespace=namespace)
+        return PostgresAppSyncStore(dsn=dsn, namespace=namespace, local_outbox_enabled=bool(getattr(getattr(cfg, "runtime", None), "offline_mode", False)))
 
     path = getattr(app_sync_cfg, "json_path", None) if app_sync_cfg is not None else None
     if path:
-        return AppSyncStore(path)
-    return AppSyncStore(cfg.workspace.root / "app_sync_state.json")
+        return AppSyncStore(path, local_outbox_enabled=bool(getattr(getattr(cfg, "runtime", None), "offline_mode", False)))
+    return AppSyncStore(cfg.workspace.root / "app_sync_state.json", local_outbox_enabled=bool(getattr(getattr(cfg, "runtime", None), "offline_mode", False)))

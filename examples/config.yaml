@@ -13,8 +13,22 @@ llm:
   require_approval_above_estimated_tokens: 20000
 
 
+runtime:
+  offline_mode: false
+  offline_cache_root: ~/.omnidesk/offline-cache
+  release_public_key_file: ~/.omnidesk/offline-cache/signatures/release-ed25519.pub
+  required_ollama_models: [qwen2.5-coder:7b]
+  required_embedding_models: []
+  required_rerank_models: []
+  required_vision_models: []
+  required_docker_images:
+    - python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+  required_release_artifacts: []
+  deny_external_services_in_offline_mode: true
+
 models:
   default: fast
+  offline_mode: false
   max_output_tokens: 1200
   routing:
     planner: planner
@@ -48,6 +62,26 @@ models:
     cohere: {enabled: false, provider: cohere, model: command-a-03-2025, api_key_env: COHERE_API_KEY, max_output_tokens: 1600}
     baidu_qianfan: {enabled: false, provider: baidu_qianfan, model: ernie-4.0-turbo-8k, api_key_env: BAIDU_QIANFAN_ACCESS_TOKEN, base_url: https://qianfan.baidubce.com/v2}
     bedrock_claude: {enabled: false, provider: bedrock, model: 'anthropic.claude-3-5-sonnet-20240620-v1:0', region: us-east-1, max_output_tokens: 4000}
+
+updates:
+  enabled: true
+  auto_check_on_reconnect: true
+  manifest_url: null
+  channel: stable
+  allow_background_download: true
+  allow_auto_activate: true
+  require_signature: true
+  require_sbom: true
+  require_external_ga_evidence: true
+  require_health_check: true
+  rollback_on_failure: true
+  max_skipped_versions: 3
+  maintenance_window:
+    start: "02:00"
+    end: "05:00"
+  release_slots_dir: ~/.omnidesk/releases
+  artifact_cache_dir: ~/.omnidesk/offline-cache/release-artifacts
+  audit_log: ~/.omnidesk/update_audit.jsonl
 
 gateway:
   host: 127.0.0.1
