@@ -145,7 +145,10 @@ class SignatureVerifier:
         if key_text.startswith("base64:"):
             public_key = ed25519.Ed25519PublicKey.from_public_bytes(base64.b64decode(key_text.split(":", 1)[1]))
         else:
-            public_key = serialization.load_pem_public_key(key_text.encode("utf-8"))
+            loaded_key = serialization.load_pem_public_key(key_text.encode("utf-8"))
+            if not isinstance(loaded_key, ed25519.Ed25519PublicKey):
+                raise RuntimeError("release public key must be Ed25519")
+            public_key = loaded_key
         signature = base64.b64decode(signature_value.split(":", 1)[1] if signature_value.startswith("base64:") else signature_value)
         try:
             public_key.verify(signature, payload)
