@@ -134,6 +134,26 @@ def test_ci_runs_version_consistency_check():
     assert '"artifacts": [' in writer
 
 
+def test_main_push_workflows_cover_release_commit_gates():
+    workflow_names = {
+        "Tri-App Quality Gate": Path(".github/workflows/tri-app-quality.yml"),
+        "Docker Image Scan": Path(".github/workflows/docker-scan.yml"),
+        "Self Upgrade Gate": Path(".github/workflows/self-upgrade-gate.yml"),
+        "Supply Chain Standard Verification": Path(".github/workflows/supply-chain.yml"),
+    }
+    for name, path in workflow_names.items():
+        text = path.read_text(encoding="utf-8")
+        assert "push:" in text, f"{name} must run on the final main merge commit"
+        assert "branches: [main]" in text, f"{name} must scope push coverage to main"
+
+    supply_chain = workflow_names["Supply Chain Standard Verification"].read_text(encoding="utf-8")
+    assert "source-supply-chain-contract" in supply_chain
+    assert "github.event_name == 'push'" in supply_chain
+    assert "github.event_name != 'push'" in supply_chain
+    assert "scripts/check_supply_chain_standard.py ." in supply_chain
+    assert "scripts/check_production_install_policy.py ." in supply_chain
+
+
 def test_script_executability_contract_passes_current_tree():
     result = subprocess.run([sys.executable, "scripts/check_script_executability.py", "."], text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr

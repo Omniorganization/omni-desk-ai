@@ -1,6 +1,8 @@
 name: Self Upgrade Gate
 
 on:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - "omnidesk_agent/self_upgrade/**"
