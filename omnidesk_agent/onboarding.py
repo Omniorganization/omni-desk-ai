@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -82,6 +84,95 @@ def _file(path: Path, *, required: bool, category: str, fix: str) -> DoctorCheck
     )
 
 
+def _dir(path: Path, *, required: bool, category: str, fix: str) -> DoctorCheck:
+    if path.exists() and path.is_dir():
+        return DoctorCheck(name=str(path), status="pass", detail="present", category=category)
+    return DoctorCheck(
+        name=str(path),
+        status="blocked" if required else "warn",
+        detail="missing",
+        fix=fix,
+        category=category,
+    )
+
+
+def _ollama_model_check(base_url: str, models: list[str], *, required: bool) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    url = base_url.rstrip("/") + "/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:  # nosec B310 - local Ollama URL from config
+            payload = response.read().decode("utf-8", errors="replace")
+        import json
+
+        data = json.loads(payload)
+        available = {str(item.get("name") or "") for item in data.get("models", []) if isinstance(item, dict)}
+        checks.append(DoctorCheck("ollama_service", "pass", base_url, category="offline-models"))
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        checks.append(DoctorCheck(
+            "ollama_service",
+            "blocked" if required else "warn",
+            f"Ollama tags endpoint unavailable: {exc}",
+            fix="Start Ollama locally and pull required models before going offline.",
+            category="offline-models",
+        ))
+        available = set()
+    for model in models:
+        status: CheckStatus = "pass" if model in available else ("blocked" if required else "warn")
+        checks.append(DoctorCheck(
+            f"ollama_model:{model}",
+            status,
+            "available" if model in available else "missing",
+            fix=f"Run: ollama pull {model}",
+            category="offline-models",
+        ))
+    return checks
+
+
+def build_offline_doctor_checks(cfg: AppConfig, *, root: Path, required: bool) -> list[DoctorCheck]:
+    cache_root = cfg.runtime.offline_cache_root
+    checks = [
+        _which("ollama", required=required, category="offline-models", fix="Install Ollama and pull the configured local models."),
+        _dir(cache_root / "models", required=required, category="offline-cache", fix="Preload local model blobs under the offline cache."),
+        _dir(cache_root / "wheels", required=required, category="offline-cache", fix="Populate a Python wheelhouse for offline installs."),
+        _dir(cache_root / "npm", required=required, category="offline-cache", fix="Populate npm/pnpm cache before disconnecting."),
+        _dir(cache_root / "cargo", required=required, category="offline-cache", fix="Populate Cargo registry/git cache before disconnecting."),
+        _dir(cache_root / "flutter", required=required, category="offline-cache", fix="Populate Flutter pub cache before disconnecting."),
+        _dir(cache_root / "docker-images", required=required, category="offline-cache", fix="Save required Docker images as tar files or pin available local digests."),
+        _dir(cache_root / "release-artifacts", required=required, category="offline-cache", fix="Prefetch signed release artifacts before disconnecting."),
+        _dir(cache_root / "sbom", required=required, category="offline-cache", fix="Prefetch SBOMs for release artifacts."),
+        _dir(cache_root / "signatures", required=required, category="offline-cache", fix="Store release public keys and signature sidecars locally."),
+        _file(root / "release" / "external-ga-evidence.required.json", required=True, category="evidence", fix="Restore the external GA evidence contract."),
+    ]
+    local_profile = cfg.models.profiles.get("local")
+    base_url = str(getattr(local_profile, "base_url", "") or "http://127.0.0.1:11434")
+    model_names = list(dict.fromkeys(
+        list(cfg.runtime.required_ollama_models)
+        + list(cfg.runtime.required_embedding_models)
+        + list(cfg.runtime.required_rerank_models)
+        + list(cfg.runtime.required_vision_models)
+    ))
+    checks.extend(_ollama_model_check(base_url, model_names, required=required))
+    public_key_path = cfg.runtime.release_public_key_file
+    if cfg.runtime.release_public_key:
+        checks.append(DoctorCheck("release_public_key", "pass", "configured inline", category="offline-update"))
+    elif public_key_path:
+        checks.append(_file(public_key_path, required=required, category="offline-update", fix="Store the Ed25519 release manifest public key before disconnecting."))
+    else:
+        checks.append(DoctorCheck("release_public_key", "blocked" if required else "warn", "not configured", fix="Configure runtime.release_public_key or runtime.release_public_key_file.", category="offline-update"))
+    for image in cfg.runtime.required_docker_images:
+        image_slug = image.replace("/", "_").replace(":", "_").replace("@", "_")
+        tar_path = cache_root / "docker-images" / f"{image_slug}.tar"
+        digest_path = cache_root / "docker-images" / f"{image_slug}.digest"
+        if tar_path.exists() or digest_path.exists():
+            checks.append(DoctorCheck(f"docker_image:{image}", "pass", "cached", category="offline-cache"))
+        else:
+            checks.append(DoctorCheck(f"docker_image:{image}", "blocked" if required else "warn", "not cached", fix="Run docker pull while online, then docker save the pinned image into the offline cache.", category="offline-cache"))
+    for artifact in cfg.runtime.required_release_artifacts:
+        artifact_path = cache_root / "release-artifacts" / artifact
+        checks.append(_file(artifact_path, required=required, category="offline-update", fix="Prefetch the signed release artifact before disconnecting."))
+    return checks
+
+
 def run_doctor(cfg: AppConfig, *, profile: str = "single-mac-ga-lab", fix: bool = False, root: Path | None = None) -> DoctorReport:
     """Run the source and host readiness doctor without fabricating external evidence."""
 
@@ -97,6 +188,7 @@ def run_doctor(cfg: AppConfig, *, profile: str = "single-mac-ga-lab", fix: bool 
             ]
         )
 
+    offline_required = profile == "offline-first" or cfg.runtime.offline_mode
     checks: list[DoctorCheck] = [
         DoctorCheck("host_os", "pass", f"{platform.system()} {platform.machine()}", category="host"),
         _which("python3", required=True, category="runtime", fix="Install Python 3.11+ for the backend API and tests."),
@@ -118,6 +210,8 @@ def run_doctor(cfg: AppConfig, *, profile: str = "single-mac-ga-lab", fix: bool 
         _file(root / "release" / "external-ga-evidence.required.json", required=True, category="evidence", fix="Restore the external GA evidence contract."),
         _file(root / "AGENTS.md", required=True, category="codex", fix="Add repository-level AI coding guardrails."),
     ]
+    if offline_required:
+        checks.extend(build_offline_doctor_checks(cfg, root=root, required=True))
     counts = {"pass": 0, "warn": 0, "blocked": 0}
     for check in checks:
         counts[check.status] += 1

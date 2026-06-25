@@ -66,6 +66,7 @@ class ModelBudgetConfig(BaseModel):
 
 class ModelsConfig(BaseModel):
     default: str = "fast"
+    offline_mode: bool = False
     budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
     max_output_tokens: int = 1200
     profiles: dict[str, ModelProfileConfig] = Field(default_factory=lambda: {
@@ -85,6 +86,45 @@ class ModelsConfig(BaseModel):
         "private": {"primary": "local", "fallback": [], "max_retries": 1},
         "summarize": {"primary": "fast", "fallback": ["local"], "max_retries": 1},
     })
+
+
+class RuntimeConfig(BaseModel):
+    offline_mode: bool = False
+    offline_cache_root: Path = Path("~/.omnidesk/offline-cache").expanduser()
+    release_public_key: Optional[str] = None
+    release_public_key_file: Optional[Path] = Path("~/.omnidesk/offline-cache/signatures/release-ed25519.pub").expanduser()
+    required_ollama_models: list[str] = Field(default_factory=lambda: ["qwen2.5-coder:7b"])
+    required_embedding_models: list[str] = Field(default_factory=list)
+    required_rerank_models: list[str] = Field(default_factory=list)
+    required_vision_models: list[str] = Field(default_factory=list)
+    required_docker_images: list[str] = Field(default_factory=lambda: [DEFAULT_SANDBOX_IMAGE])
+    required_release_artifacts: list[str] = Field(default_factory=list)
+    deny_external_services_in_offline_mode: bool = True
+
+
+class MaintenanceWindowConfig(BaseModel):
+    start: str = "02:00"
+    end: str = "05:00"
+
+
+class UpdateConfig(BaseModel):
+    enabled: bool = True
+    auto_check_on_reconnect: bool = True
+    manifest_url: Optional[str] = None
+    channel: Literal["dev", "internal", "candidate", "real-ga", "stable", "emergency-hotfix"] = "stable"
+    allow_background_download: bool = True
+    allow_auto_activate: bool = True
+    require_signature: bool = True
+    require_sbom: bool = True
+    require_external_ga_evidence: bool = True
+    require_health_check: bool = True
+    rollback_on_failure: bool = True
+    max_skipped_versions: int = 3
+    maintenance_window: MaintenanceWindowConfig = Field(default_factory=MaintenanceWindowConfig)
+    release_slots_dir: Path = Path("~/.omnidesk/releases").expanduser()
+    artifact_cache_dir: Path = Path("~/.omnidesk/offline-cache/release-artifacts").expanduser()
+    audit_log: Path = Path("~/.omnidesk/update_audit.jsonl").expanduser()
+
 
 class GatewayConfig(BaseModel):
     host: str = "127.0.0.1"
@@ -484,8 +524,10 @@ class LearningConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
+    updates: UpdateConfig = Field(default_factory=UpdateConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
@@ -500,10 +542,55 @@ class AppConfig(BaseModel):
     memory_privacy: MemoryPrivacyConfig = Field(default_factory=MemoryPrivacyConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
+    def model_post_init(self, __context: Any) -> None:
+        self.apply_runtime_policies()
+
+    def apply_runtime_policies(self) -> None:
+        if not self.runtime.offline_mode:
+            self.models.offline_mode = False
+            return
+        self.models.offline_mode = True
+        self.models.default = "local"
+        for task in ("chat", "planner", "tool_plan", "code", "upgrade", "summarize", "private", "vision"):
+            self.models.routing[task] = {"primary": "local", "fallback": [], "max_retries": 0}
+        if self.runtime.deny_external_services_in_offline_mode:
+            self.capabilities.channels.enabled = False
+            self.capabilities.gmail.enabled = False
+            self.channels.gmail.enabled = False
+            for name in (
+                "telegram",
+                "whatsapp_cloud",
+                "wechat_official",
+                "meta_graph",
+                "dingtalk",
+                "lark",
+                "feishu",
+                "line",
+                "x",
+                "slack",
+                "discord",
+                "google_chat",
+                "signal",
+                "imessage",
+                "microsoft_teams",
+                "matrix",
+                "qq",
+            ):
+                channel_cfg = getattr(self.channels, name, None)
+                if channel_cfg is not None:
+                    channel_cfg.enabled = False
+
     def ensure_dirs(self) -> None:
+        self.apply_runtime_policies()
         self.workspace.root.mkdir(parents=True, exist_ok=True)
         self.workspace.memory_db.parent.mkdir(parents=True, exist_ok=True)
         self.permissions.audit_log.parent.mkdir(parents=True, exist_ok=True)
+        if self.runtime.offline_mode:
+            self.runtime.offline_cache_root.mkdir(parents=True, exist_ok=True)
+        if self.updates.manifest_url:
+            self.updates.release_slots_dir.mkdir(parents=True, exist_ok=True)
+            self.updates.artifact_cache_dir.mkdir(parents=True, exist_ok=True)
+            self.updates.audit_log.parent.mkdir(parents=True, exist_ok=True)
         for d in self.workspace.skills_dirs:
             d.mkdir(parents=True, exist_ok=True)
         for d in self.workspace.plugins_dirs:
@@ -544,6 +631,7 @@ def load_config(path: Optional[Union[str, Path]] = None, *, ensure_dirs: bool = 
             with p.open("r", encoding="utf-8") as f:
                 data = _safe_yaml_load(f) or {}
     cfg = AppConfig.model_validate(data)
+    cfg.apply_runtime_policies()
     if ensure_dirs:
         cfg.ensure_dirs()
     return cfg

@@ -154,6 +154,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             user_message = store.add_chat_user_message(actor=actor, conversation_id=conversation_id, content=content, source_device_id=source_device_id)
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
 
         router = getattr(rt, "model_router", None)
         complete = getattr(router, "complete", None)
@@ -191,6 +193,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         result = {
             "conversation_id": conversation_id,
             "user_message": user_message,
@@ -224,22 +228,26 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
                 raise HTTPException(422, "public_key is required for desktop/mobile device enrollment in production")
             if getattr(app_sync_cfg, "reject_predictable_device_ids_in_production", True) and supplied_device_id and _is_predictable_device_id(supplied_device_id):
                 raise HTTPException(422, "predictable device_id values are forbidden in production; use a per-install generated id")
-        device = store.register_device(
-            actor=_actor(decision),
-            device_id=supplied_device_id,
-            device_type=device_type,
-            name=payload.get("name") or device_type,
-            platform=payload.get("platform") or "unknown",
-            push_token=payload.get("push_token"),
-            capabilities=payload.get("capabilities") or [],
-            public_key=public_key or None,
-            token_hash=payload.get("token_hash"),
-            organization_id=payload.get("organization_id") or "org_default",
-            idempotency_key=idem_key,
-            idempotency_payload=payload,
-        )
+        actor = _actor(decision)
+        try:
+            device = store.register_device(
+                actor=actor,
+                device_id=supplied_device_id,
+                device_type=device_type,
+                name=payload.get("name") or device_type,
+                platform=payload.get("platform") or "unknown",
+                push_token=payload.get("push_token"),
+                capabilities=payload.get("capabilities") or [],
+                public_key=public_key or None,
+                token_hash=payload.get("token_hash"),
+                organization_id=payload.get("organization_id") or "org_default",
+                idempotency_key=idem_key,
+                idempotency_payload=payload,
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         metrics.inc("omnidesk_app_device_registered_total", device_type=device_type) if metrics else None
-        return {"ok": True, "device": device, "sync_seq": store.sync_since(0)["sync_seq"]}
+        return {"ok": True, "device": device, "sync_seq": store.sync_since(0, actor=actor)["sync_seq"]}
 
     @app.get("/app/conversations")
     async def app_list_conversations(request: Request):
@@ -251,7 +259,10 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         decision = await admin(request, "operator")
         payload = await request.json()
         idem_key = _require_idempotency(cfg, request, payload)
-        conversation = store.create_conversation(actor=_actor(decision), title=payload.get("title") or "New conversation", source_device_id=payload.get("source_device_id"), idempotency_key=idem_key, idempotency_payload=payload)
+        try:
+            conversation = store.create_conversation(actor=_actor(decision), title=payload.get("title") or "New conversation", source_device_id=payload.get("source_device_id"), idempotency_key=idem_key, idempotency_payload=payload)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         return {"ok": True, "conversation": conversation}
 
     @app.post("/app/conversations/{conversation_id}/messages")
@@ -276,6 +287,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         metrics.inc("omnidesk_app_task_created_total") if metrics else None
         return {"ok": True, **result}
 
@@ -305,13 +318,16 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
                 "title": payload.get("title") or "API chat",
                 "source_device_id": payload.get("source_device_id"),
             }
-            conversation = store.create_conversation(
-                actor=actor,
-                title=idem_payload["title"],
-                source_device_id=idem_payload["source_device_id"],
-                idempotency_key=None,
-                idempotency_payload=idem_payload,
-            )
+            try:
+                conversation = store.create_conversation(
+                    actor=actor,
+                    title=idem_payload["title"],
+                    source_device_id=idem_payload["source_device_id"],
+                    idempotency_key=None,
+                    idempotency_payload=idem_payload,
+                )
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
             conversation_id = conversation["conversation_id"]
         return await _complete_chat_turn(conversation_id, request, payload, actor)
 
@@ -322,9 +338,9 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
 
     @app.get("/app/tasks/{task_id}")
     async def app_get_task(task_id: str, request: Request):
-        await admin(request, "viewer")
+        decision = await admin(request, "viewer")
         try:
-            return {"ok": True, "task": store.get_task(task_id)}
+            return {"ok": True, "task": store.get_task(task_id, actor=_actor(decision))}
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
 
@@ -342,12 +358,14 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         return {"ok": True, "task": task}
 
     @app.get("/app/approvals")
     async def app_list_approvals(request: Request, status: Optional[str] = None):
-        await admin(request, "viewer")
-        return {"ok": True, "approvals": store.list_approvals(status=status)}
+        decision = await admin(request, "viewer")
+        return {"ok": True, "approvals": store.list_approvals(status=status, actor=_actor(decision))}
 
     @app.post("/app/approvals/{approval_id}/decide")
     async def app_decide_approval(approval_id: str, request: Request):
@@ -363,6 +381,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         metrics.inc("omnidesk_app_approval_decision_total", decision=verdict) if metrics else None
@@ -370,8 +390,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
 
     @app.get("/app/notifications")
     async def app_notifications(request: Request, audience: Optional[str] = None, unread_only: bool = False):
-        await admin(request, "viewer")
-        return {"ok": True, "notifications": store.list_notifications(audience=audience, unread_only=unread_only)}
+        decision = await admin(request, "viewer")
+        return {"ok": True, "notifications": store.list_notifications(audience=audience, unread_only=unread_only, actor=_actor(decision))}
 
     @app.post("/app/devices/{device_id}/push-token")
     async def app_register_push_token(device_id: str, request: Request):
@@ -385,6 +405,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             device = store.register_push_token(actor=_actor(decision), device_id=device_id, push_token=push_token, platform=payload.get("platform") or "unknown")
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         return {"ok": True, "device": device}
 
     @app.post("/app/devices/enrollment/start")
@@ -397,7 +419,10 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             raise HTTPException(422, "device_type must be desktop, mobile, or web_admin")
         if len(pairing_code) < 8:
             raise HTTPException(422, "pairing_code must be at least 8 characters")
-        enrollment = store.start_device_enrollment(actor=_actor(decision), device_type=device_type, pairing_code=pairing_code)
+        try:
+            enrollment = store.start_device_enrollment(actor=_actor(decision), device_type=device_type, pairing_code=pairing_code)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         return {"ok": True, "enrollment": enrollment}
 
     @app.post("/app/devices/enrollment/{enrollment_id}/complete")
@@ -414,6 +439,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"ok": True, "enrollment": enrollment}
@@ -427,6 +454,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             challenge = store.issue_device_challenge(actor=_actor(decision), enrollment_id=enrollment_id, device_id=str(payload.get("device_id") or ""))
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"ok": True, "challenge": challenge}
@@ -439,6 +468,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             credential = store.verify_device_challenge(actor=_actor(decision), enrollment_id=enrollment_id, challenge_id=str(payload.get("challenge_id") or ""), device_id=str(payload.get("device_id") or ""), signature=str(payload.get("signature") or ""))
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"ok": True, "credential": credential}
@@ -452,6 +483,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             device = store.rotate_device_token(actor=_actor(decision), device_id=device_id)
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"ok": True, "device": device}
@@ -465,6 +498,8 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             device = store.revoke_device(actor=_actor(decision), device_id=device_id, reason=payload.get("reason"))
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         return {"ok": True, "device": device}
 
     @app.post("/app/push/dispatch")
@@ -485,15 +520,18 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         status = payload.get("status") or "online"
         if status not in {"online", "offline", "degraded"}:
             raise HTTPException(422, "invalid runtime status")
-        runtime = store.heartbeat_runtime(
-            actor=_actor(decision),
-            device_id=device_id,
-            status=status,
-            version=payload.get("version"),
-            hostname=payload.get("hostname"),
-            active_task_id=payload.get("active_task_id"),
-            capabilities=payload.get("capabilities") or [],
-        )
+        try:
+            runtime = store.heartbeat_runtime(
+                actor=_actor(decision),
+                device_id=device_id,
+                status=status,
+                version=payload.get("version"),
+                hostname=payload.get("hostname"),
+                active_task_id=payload.get("active_task_id"),
+                capabilities=payload.get("capabilities") or [],
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         return {"ok": True, "runtime": runtime}
 
 
@@ -505,19 +543,49 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         await _require_signed_device_request(cfg=cfg, store=store, request=request, raw_body=raw_body, required_device_types={"desktop"}, expected_device_id=str(device_id or ""), metrics=metrics)
         if not device_id:
             raise HTTPException(422, "device_id is required")
-        task = store.claim_next_task(
-            actor=_actor(decision),
-            device_id=device_id,
-            lease_seconds=int(payload.get("lease_seconds") or getattr(cfg.app_sync, "task_lease_seconds", 60)),
-            capabilities=payload.get("capabilities") or [],
-        )
+        try:
+            task = store.claim_next_task(
+                actor=_actor(decision),
+                device_id=device_id,
+                lease_seconds=int(payload.get("lease_seconds") or getattr(cfg.app_sync, "task_lease_seconds", 60)),
+                capabilities=payload.get("capabilities") or [],
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         metrics.inc("omnidesk_app_desktop_task_claim_total", claimed="true" if task else "false") if metrics else None
         return {"ok": True, "task": task}
 
     @app.get("/app/sync")
     async def app_sync(request: Request, since_seq: int = 0):
-        await admin(request, "viewer")
-        return {"ok": True, **store.sync_since(int(since_seq or 0))}
+        decision = await admin(request, "viewer")
+        return {"ok": True, **store.sync_since(int(since_seq or 0), actor=_actor(decision))}
+
+    @app.post("/app/sync")
+    async def app_sync_bidirectional(request: Request):
+        decision = await admin(request, "operator")
+        payload = await request.json()
+        actor = _actor(decision)
+        device_id = str(payload.get("device_id") or "").strip() or None
+        remote = str(payload.get("remote") or "default")
+        conflict_policy = str(payload.get("conflict_policy") or "manual-review")
+        if conflict_policy not in {"server-wins", "client-wins", "manual-review", "merge"}:
+            raise HTTPException(422, "invalid conflict_policy")
+        operations = payload.get("operations") or []
+        remote_events = payload.get("remote_events") or []
+        if not isinstance(operations, list) or not isinstance(remote_events, list):
+            raise HTTPException(422, "operations and remote_events must be arrays")
+        uploaded = store.receive_outbox_operations(actor=actor, operations=operations, remote=remote, device_id=device_id, conflict_policy=conflict_policy) if operations else {"applied": 0, "duplicates": 0, "conflicts": [], "cursor": 0}
+        pulled = store.record_remote_events(actor=actor, events=remote_events, remote=remote, device_id=device_id, conflict_policy=conflict_policy) if remote_events else {"applied": 0, "duplicates": 0, "conflicts": [], "cursor": 0}
+        since_seq = int(payload.get("since_seq") or 0)
+        sync = store.sync_since(since_seq, actor=actor)
+        if payload.get("cursor") is not None:
+            store.record_sync_cursor(actor=actor, remote=remote, since_seq=int(payload.get("cursor") or 0), device_id=device_id)
+        return {"ok": True, "uploaded": uploaded, "pulled": pulled, "state": store.sync_state(actor=actor), **sync}
+
+    @app.get("/app/sync/state")
+    async def app_sync_state(request: Request):
+        decision = await admin(request, "viewer")
+        return {"ok": True, **store.sync_state(actor=_actor(decision))}
 
     @app.websocket("/app/ws")
     async def app_ws(websocket: WebSocket):
@@ -527,6 +595,7 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         if not auth_decision.ok:
             await websocket.close(code=1008, reason="unauthorized")
             return
+        actor = _actor(auth_decision)
         await websocket.accept()
         since_seq = 0
         try:
@@ -535,8 +604,9 @@ def register_appsync_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
             except ValueError:
                 since_seq = 0
             while True:
-                await websocket.send_json({"ok": True, **store.sync_since(since_seq)})
-                since_seq = int(store.sync_since(since_seq)["sync_seq"])
+                sync = store.sync_since(since_seq, actor=actor)
+                await websocket.send_json({"ok": True, **sync})
+                since_seq = int(sync["sync_seq"])
                 await asyncio.sleep(2)
         except WebSocketDisconnect:
             return

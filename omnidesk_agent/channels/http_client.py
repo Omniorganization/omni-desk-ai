@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -16,6 +17,7 @@ except ModuleNotFoundError:  # allow channel parsing without outbound HTTP deps
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _REDACTOR = MemoryPrivacyFilter()
+_OFFLINE_MODE = False
 
 
 @dataclass
@@ -33,6 +35,16 @@ class ChannelHttpError(RuntimeError):
         self.status_code = status_code
         self.request_id = request_id
         self.response_text = response_text
+
+
+def set_channel_offline_mode(enabled: bool) -> None:
+    global _OFFLINE_MODE
+    _OFFLINE_MODE = bool(enabled)
+
+
+def _offline_mode_enabled() -> bool:
+    value = os.getenv("OMNIDESK_OFFLINE_MODE", "").strip().lower()
+    return _OFFLINE_MODE or value in {"1", "true", "yes", "on"}
 
 
 def _require_httpx():
@@ -85,6 +97,8 @@ class ChannelHttpClient:
         idempotency_key: Optional[str] = None,
         channel: str = "unknown",
     ) -> ChannelHttpResult:
+        if _offline_mode_enabled():
+            raise ChannelHttpError("offline mode forbids outbound channel HTTP calls")
         lib = _require_httpx()
         last_error: Optional[BaseException] = None
         request_headers = dict(headers or {})

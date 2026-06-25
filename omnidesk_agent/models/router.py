@@ -94,11 +94,24 @@ class ModelRouter:
         provider.provider_name = p.provider
         return provider
 
+    def _offline_forbids_profile(self, profile: str, provider: Any) -> bool:
+        if not getattr(self.cfg, "offline_mode", False):
+            return False
+        provider_name = str(getattr(provider, "provider_name", "") or getattr(getattr(provider, "settings", None), "provider", ""))
+        base_url = str(getattr(getattr(provider, "settings", None), "base_url", "") or "")
+        if profile == "local" and provider_name == "ollama":
+            return False
+        if provider_name == "ollama" and (base_url.startswith("http://127.0.0.1") or base_url.startswith("http://localhost")):
+            return False
+        return True
+
     def route_plan(self, task: str, metadata: Optional[dict[str, Any]] = None) -> RoutePlan:
         metadata = metadata or {}
         explicit_profile = metadata.get("profile")
         if explicit_profile:
             return RoutePlan(profiles=[str(explicit_profile)])
+        if getattr(self.cfg, "offline_mode", False):
+            return RoutePlan(profiles=["local"], max_retries=0)
 
         raw = self.cfg.routing.get(task) or self.cfg.routing.get("chat") or self.cfg.default
         if isinstance(raw, str):
@@ -129,6 +142,9 @@ class ModelRouter:
             provider = self.providers.get(profile)
             if not provider:
                 last_error = RuntimeError(f"Model profile not configured or disabled: {profile}")
+                continue
+            if self._offline_forbids_profile(profile, provider):
+                last_error = RuntimeError(f"offline mode forbids external model profile: {profile}")
                 continue
             if self._circuit_open(profile, plan):
                 last_error = RuntimeError(f"Model profile circuit open: {profile}")
@@ -277,6 +293,7 @@ class ModelRouter:
     def status(self) -> dict[str, Any]:
         return {
             "default": self.cfg.default,
+            "offline_mode": bool(getattr(self.cfg, "offline_mode", False)),
             "profiles": sorted(self.providers.keys()),
             "routing": self.cfg.routing,
             "circuit": self._circuit,

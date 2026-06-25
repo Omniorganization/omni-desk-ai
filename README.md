@@ -34,6 +34,9 @@ omnidesk remember "回复客户报价前先检查库存表" --tags sales,invento
 
 # 检索经验
 omnidesk search "报价 库存"
+
+# 检查断网工作所需的本地模型、缓存、签名公钥和 release 包
+omnidesk doctor --profile offline-first --config examples/config.yaml
 ```
 
 ## 核心目录
@@ -64,6 +67,14 @@ examples/config.yaml           配置样例
 deploy/systemd                 Linux 后台常驻
 deploy/launchd                 macOS 后台常驻
 ```
+
+## Offline-First / Reconnect Update
+
+`runtime.offline_mode: true` 会把 `chat/planner/code/upgrade/summarize` 等核心任务强制路由到本地 Ollama profile，并阻断显式外部模型 profile 与外部 channel HTTP 调用。断网期间 AppSync 写入本地 durable outbox；重连 worker 会先同步 outbox 和远端事件，再检查 signed update manifest。
+
+运行时自动更新只处理签名 release 包：校验 manifest、artifact SHA-256、SBOM、source commit、release channel 和外部 GA evidence 后，先 staging 到 release slot，再 health check，失败自动切回 `previous`。源码改动、PR merge、权限提升和缺失证据放行仍然必须人工审查。
+
+详见 [docs/OFFLINE_FIRST_RECONNECT_UPDATE.md](docs/OFFLINE_FIRST_RECONNECT_UPDATE.md)。
 
 ## Release Boundary
 

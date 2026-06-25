@@ -88,7 +88,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     doctor_p = sub.add_parser("doctor")
     doctor_p.add_argument("--fix", action="store_true")
-    doctor_p.add_argument("--profile", choices=["source-only", "single-mac-ga-lab", "enterprise"], default="single-mac-ga-lab")
+    doctor_p.add_argument("--profile", choices=["source-only", "single-mac-ga-lab", "enterprise", "offline-first"], default="single-mac-ga-lab")
     onboard_p = sub.add_parser("onboard")
     onboard_p.add_argument("--enterprise", action="store_true")
     onboard_p.add_argument("--single-mac-ga-lab", action="store_true")
@@ -113,6 +113,7 @@ def main() -> None:
     sub.add_parser("validate-models")
     sub.add_parser("validate-models-live")
     sub.add_parser("validate-webhook-signatures")
+    sub.add_parser("reconnect-once")
     sub.add_parser("production-check")
     sub.add_parser("gmail-auth")
     learn_p = sub.add_parser("learning-report"); learn_p.add_argument("--days", type=int, default=7)
@@ -198,6 +199,11 @@ def main() -> None:
 
     if args.cmd == "validate-webhook-signatures":
         print(json.dumps({"ok": True, "tests": ["wechat_signature", "line_signature_valid"]}, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "reconnect-once":
+        with runtime_context(cfg) as rt:
+            print(json.dumps(rt.run_reconnect_once(), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "production-check":

@@ -1,5 +1,11 @@
 ## 1.12.7+root-monorepo-production-ga-candidate
 
+- Added `runtime.offline_mode` and update policy configuration so core model tasks are forced to the local Ollama profile while external channel/Gmail access is disabled in offline mode.
+- Added durable AppSync local outbox/inbox/cursor/conflict records plus bidirectional `POST /app/sync` for reconnect upload, dedupe, conflict capture, and cursor updates.
+- Added a reconnect worker that gates auto-update checks behind successful outbox synchronization.
+- Added signed runtime update components for manifest fetch, Ed25519 verification, artifact/SBOM checks, release slot staging, health-check activation, audit logging, and rollback to `previous`.
+- Added offline doctor checks and documentation for offline caches, required local models, signed manifests, and auto-activation boundaries.
+
 - Bound Real GA evidence summaries to the audited JSON evidence file by default with a `sha256:<digest>` artifact identity.
 - Kept workflow, Makefile, package, Web, Desktop, Mobile, Helm, Docker, and release-evidence version surfaces aligned after the evidence hardening change.
 - Added regression coverage so generated evidence summaries record the source commit, artifact name, job status, and audit report digest without manual parameters.
