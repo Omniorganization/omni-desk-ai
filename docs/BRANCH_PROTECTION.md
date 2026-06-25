@@ -14,6 +14,16 @@ Enable these repository rules before promoting a release artifact to production:
 
 The source-controlled baseline is recorded in `.github/branch-protection.required.json`; the repository control plane must be configured to match it before a release artifact is promoted.
 
+## Release Commit Workflow Coverage
+
+The final `main` merge commit must have first-party push workflow evidence, not
+only pull-request head evidence. The CI, Security, Release Policy, Tri-App
+Quality Gate, Docker Image Scan, Self Upgrade Gate, and Supply Chain Standard
+Verification workflows are expected to run on `push` to `main`. Artifact-level
+supply-chain verification still runs only on release workflow dispatch/call
+inputs; the `main` push path runs the source-level lockfile, install-policy, and
+supply-chain standard contracts.
+
 ## Live Verification
 
 Source-controlled policy is not enough for production promotion. Verify the live
