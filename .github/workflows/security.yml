@@ -44,6 +44,7 @@ jobs:
       - run: pip-audit --disable-pip -r requirements.enterprise.lock
       - run: python scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json
       - run: python scripts/check_security_workflow_policy.py .
+      - run: python scripts/check_security_attack_surface.py .
 
   codeql:
     name: CodeQL
