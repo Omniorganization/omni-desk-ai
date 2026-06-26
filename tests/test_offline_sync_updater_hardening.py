@@ -10,8 +10,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from omnidesk_agent.appsync.offline_sync_apply import patch_offline_sync_application
-from omnidesk_agent.appsync.store import AppSyncStore
+from omnidesk_agent.appsync.offline_sync_apply import ApplyingAppSyncStore
 from omnidesk_agent.config import UpdateConfig
 from omnidesk_agent.self_upgrade.auto_update import (
     AutoUpdateRunner,
@@ -133,8 +132,7 @@ def test_default_release_health_check_rejects_manifest_only_candidate(tmp_path: 
 
 
 def test_uploaded_offline_operations_mutate_appsync_state(tmp_path: Path) -> None:
-    patch_offline_sync_application()
-    store = AppSyncStore(tmp_path / "appsync.json")
+    store = ApplyingAppSyncStore(tmp_path / "appsync.json")
     operations = [
         {
             "operation_id": "op-conv",
@@ -158,6 +156,7 @@ def test_uploaded_offline_operations_mutate_appsync_state(tmp_path: Path) -> Non
     result = store.receive_outbox_operations(actor="alice", operations=operations, remote="mobile", device_id="mobile-1")
 
     assert result["applied"] == 2
+    assert result["applied_state_mutations"] == 2
     assert store.conversations["conv_offline"].title == "Offline customer case"
     assert store.messages["msg_offline"].content == "Captured while offline"
     sync = store.sync_since(0, actor="alice")
