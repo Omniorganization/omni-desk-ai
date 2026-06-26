@@ -1,5 +1,9 @@
 ## 1.12.7+root-monorepo-production-ga-candidate
 
+- Added a security attack-surface closure gate that fails closed on unsafe production defaults for admin auth, webhook signatures, Postgres-backed multi-instance state, device-signed AppSync, resource guard limits, remote approval, sandbox runner auth, plugin subprocess policy, and high-risk capability defaults.
+- Added a dedicated Security Attack Surface Gate workflow with focused regression coverage for admin auth, self-upgrade auth, webhook signatures, device signed requests, abuse limits, file path escape, browser security, and API resource guard behavior.
+- Hardened Docker, Helm, and production example configs so shell, browser, UI bridge, Gmail, and outbound channels default to disabled in production templates and must be enabled only after tenant/actor-specific controls are verified.
+- Bound the new attack-surface gate into Release Policy, Security, Main Verification, branch protection requirements, source maturity closure, and production evidence metadata without claiming customer-distribution Real GA.
 - Added a source maturity closure gate for source engineering, release governance, security/supply-chain, tri-app, and offline sync/reconnect quality dimensions.
 - Strengthened the branch protection source contract with required status checks, required jobs, up-to-date branch policy, conversation resolution, CODEOWNERS review, signed commits, and pending-check blocking semantics.
 - Added a required iOS simulator source build to the tri-app quality workflow so iOS source readiness is validated on pull requests and main pushes while signed IPA/TestFlight evidence remains a separate external GA gate.
