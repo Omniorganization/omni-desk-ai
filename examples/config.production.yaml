@@ -93,8 +93,10 @@ plugins:
 capabilities:
   plugins:
     enabled: true
+  # High-risk capabilities are disabled in production templates by default.
+  # Enable per tenant/actor only after remote approval, sandbox, audit, and budget controls are verified.
   shell:
-    enabled: true
+    enabled: false
   browser:
     enabled: false
   ui_bridge:
