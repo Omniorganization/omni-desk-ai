@@ -1,5 +1,7 @@
 ## 1.12.7+root-monorepo-production-ga-candidate
 
+- Replaced the offline AppSync monkey patch with explicit `ApplyingAppSyncStore` and `ApplyingDurablePostgresAppSyncStore` classes so uploaded operation application is a formal backend contract rather than a process-global runtime mutation.
+- Added a `main` post-merge verification workflow that reruns source release gates, focused runtime regressions, Web Admin checks, Desktop checks, and emits a `main-verification-evidence.json` artifact bound to the merge commit.
 - Hardened runtime auto-update trust boundaries so reconnect updates require Ed25519 manifest signatures, mandatory artifact/SBOM SHA-256 digests, disabled background-download enforcement, and a runtime-marker health check before activation.
 - Closed the offline sync application gap by applying uploaded conversation/message/task/approval/notification operations into AppSync state instead of only recording inbox rows.
 - Added a durable PostgreSQL offline-sync store wrapper that hydrates and mirrors local outbox, inbox, cursors, conflicts, and operation logs across restarts and multi-instance gateways.
