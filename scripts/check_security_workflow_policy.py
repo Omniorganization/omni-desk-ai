@@ -14,8 +14,21 @@ SECURITY_SNIPPETS = [
     "gitleaks\" detect --source . --no-git --redact --verbose --config .gitleaks.toml",
     "scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json",
     "scripts/check_security_workflow_policy.py .",
+    "scripts/check_security_attack_surface.py .",
     "security-events: write",
     "pull-requests: read",
+]
+
+ATTACK_SURFACE_WORKFLOW_SNIPPETS = [
+    "name: Security Attack Surface Gate",
+    "security-attack-surface:",
+    "python scripts/check_security_attack_surface.py . --write-report dist/evidence/security-attack-surface.json",
+    "tests/test_admin_auth.py",
+    "tests/test_webhook_forced_signatures.py",
+    "tests/test_device_signed_requests.py",
+    "tests/test_agent_run_abuse_limits.py",
+    "tests/test_files_path_escape_strict.py",
+    "tests/test_browser_security.py",
 ]
 
 LOCKFILES = [
@@ -35,10 +48,12 @@ DOCKER_SCAN_SNIPPETS = [
 
 REQUIRED_FILES = [
     ".github/workflows/security.yml",
+    ".github/workflows/security-attack-surface.yml",
     ".github/workflows/docker-scan.yml",
     ".gitleaks.toml",
     "release/license-policy.json",
     "scripts/check_license_policy.py",
+    "scripts/check_security_attack_surface.py",
 ]
 
 
@@ -56,6 +71,10 @@ def check(root: Path) -> list[str]:
     missing_security = _missing_snippets(security_workflow, SECURITY_SNIPPETS)
     if missing_security:
         issues.append("security.yml missing snippets: " + ", ".join(missing_security))
+    attack_surface_workflow = root / ".github" / "workflows" / "security-attack-surface.yml"
+    missing_attack_surface = _missing_snippets(attack_surface_workflow, ATTACK_SURFACE_WORKFLOW_SNIPPETS)
+    if missing_attack_surface:
+        issues.append("security-attack-surface.yml missing snippets: " + ", ".join(missing_attack_surface))
     security_text = security_workflow.read_text(encoding="utf-8") if security_workflow.exists() else ""
     for lockfile in LOCKFILES:
         if f"python scripts/check_lock_hashes.py {lockfile}" not in security_text:
@@ -74,7 +93,7 @@ def check(root: Path) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify security workflows include CodeQL, secret scanning, dependency review, license policy, and container scanning gates.")
+    parser = argparse.ArgumentParser(description="Verify security workflows include CodeQL, secret scanning, dependency review, license policy, container scanning, and attack-surface gates.")
     parser.add_argument("root", nargs="?", default=".")
     args = parser.parse_args(argv)
     issues = check(Path(args.root))
