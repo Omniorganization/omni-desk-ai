@@ -1,0 +1,13 @@
+{
+  "schema": "omnidesk-source-maturity-targets/v1",
+  "scope": "source_only_not_customer_distribution_ga",
+  "target_scores": {
+    "source_engineering": 100,
+    "release_governance": 100,
+    "security_supply_chain": 100,
+    "tri_app_engineering": 100,
+    "offline_sync_reconnect": 100
+  },
+  "gate": "scripts/check_source_maturity_closure.py . --write-report dist/evidence/source-maturity-closure.json",
+  "ga_boundary": "Customer-distribution GA still requires real external signing, store, push, rollback, backup/restore, soak, and failure-injection evidence."
+}
