@@ -67,7 +67,7 @@ def _tri_app_engineering(root: Path) -> list[tuple[str, bool]]:
         ("web admin quality job exists", _contains(root, workflow, "web-admin:", "npm run typecheck", "npm run build")),
         ("desktop tauri quality job exists", _contains(root, workflow, "desktop-tauri:", "cargo check --locked")),
         ("android appbundle quality job exists", _contains(root, workflow, "mobile-flutter:", "flutter build appbundle --release")),
-        ("iOS simulator source quality job exists", _contains(root, workflow, "mobile-ios-simulator:", "flutter build ios --simulator --no-codesign")),
+        ("iOS source quality job exists", _contains(root, workflow, "mobile-ios-simulator:", "--mode mobile-ios-source")),
         ("iOS signed release gate remains declared", _contains(root, workflow, "mobile-ios-release:", "flutter build ipa --release")),
     ]
 
