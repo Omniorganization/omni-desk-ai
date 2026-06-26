@@ -22,11 +22,14 @@ REQUIRED_WORKFLOW_SNIPPETS = (
     "omnidesk-main-verification-artifact/v1",
 )
 
-REQUIRED_MANIFEST_KEYS = (
-    "main_verification_evidence",
-    "artifact_name_pattern",
-    "evidence_digest_algorithm",
+REQUIRED_CONTRACT_KEYS = (
     "schema",
+    "artifact_manifest_schema",
+    "artifact_name_pattern",
+    "evidence_file",
+    "artifact_manifest_file",
+    "evidence_digest_algorithm",
+    "required_for_customer_distribution_ga",
 )
 
 
@@ -66,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     main_contract = evidence_manifest.get("main_verification_evidence")
     _assert(isinstance(main_contract, dict), "production-evidence manifest must declare main_verification_evidence", failures)
     if isinstance(main_contract, dict):
-        for key in REQUIRED_MANIFEST_KEYS:
+        for key in REQUIRED_CONTRACT_KEYS:
             _assert(key in main_contract, f"main_verification_evidence must declare {key}", failures)
         _assert(main_contract.get("schema") == "omnidesk-main-verification/v1", "main verification schema must match workflow evidence schema", failures)
         _assert(main_contract.get("artifact_manifest_schema") == "omnidesk-main-verification-artifact/v1", "main verification artifact schema must match workflow artifact schema", failures)
