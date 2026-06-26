@@ -1,0 +1,1 @@
+Source governance closure package. This is source-only closure evidence and does not replace external customer-distribution GA evidence.

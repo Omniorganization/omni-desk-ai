@@ -43,6 +43,7 @@ jobs:
           python scripts/check_supply_chain_standard.py .
           python scripts/check_enterprise_readiness.py .
           python scripts/check_kubernetes_contract.py .
+          python scripts/check_branch_protection_contract.py .
           python scripts/check_main_verification_contract.py .
           python scripts/check_external_ga_evidence.py . --audit-only --write-report /tmp/external-ga-evidence-contract.json
           python scripts/check_ga_release_gate.py .
@@ -87,6 +88,7 @@ jobs:
                   "supply_chain_standard",
                   "enterprise_readiness",
                   "kubernetes_contract",
+                  "branch_protection_contract",
                   "focused_runtime_regression",
                   "web_admin_verify",
                   "desktop_verify",

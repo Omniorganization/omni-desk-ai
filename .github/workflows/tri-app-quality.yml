@@ -120,6 +120,22 @@ jobs:
         timeout-minutes: 20
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-android-release
 
+  mobile-ios-simulator:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/mobile-flutter
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.35.x"
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-source
+
   mobile-ios-release:
     runs-on: macos-latest
     if: ${{ github.event_name == 'workflow_dispatch' }}
