@@ -12,6 +12,8 @@
   "required_approving_review_count": 1,
   "required_status_checks": [
     "Release Policy",
+    "release-policy",
+    "external-ga-evidence-contract",
     "CI",
     "Security",
     "Docker Image Scan",
