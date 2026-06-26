@@ -16,6 +16,7 @@
     "external-ga-evidence-contract",
     "CI",
     "Security",
+    "Security Attack Surface Gate",
     "Docker Image Scan",
     "Tri-App Quality Gate",
     "Main Verification",
@@ -35,6 +36,7 @@
     "mobile-ios-simulator",
     "backend-and-contract",
     "main-verification",
+    "security-attack-surface",
     "source-maturity-closure"
   ],
   "restricted_paths": [
