@@ -1,6 +1,7 @@
 name: Main Verification
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -10,7 +11,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: main-verification-${{ github.ref }}
+  group: main-verification-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -42,6 +43,7 @@ jobs:
           python scripts/check_supply_chain_standard.py .
           python scripts/check_enterprise_readiness.py .
           python scripts/check_kubernetes_contract.py .
+          python scripts/check_main_verification_contract.py .
           python scripts/check_external_ga_evidence.py . --audit-only --write-report /tmp/external-ga-evidence-contract.json
           python scripts/check_ga_release_gate.py .
       - name: Focused runtime regression tests
@@ -64,21 +66,55 @@ jobs:
         run: |
           mkdir -p dist/evidence
           python - <<'PY'
-          import json, os
-          payload = {
+          import hashlib, json, os
+          evidence = {
               "schema": "omnidesk-main-verification/v1",
               "status": "passed",
               "commit": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
               "workflow": os.environ["GITHUB_WORKFLOW"],
               "ref": os.environ["GITHUB_REF"],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "trigger": os.environ["GITHUB_EVENT_NAME"],
+              "required_gates": [
+                  "version_consistency",
+                  "release_channel_policy",
+                  "ci_evidence_contract",
+                  "security_workflow_policy",
+                  "observability_contract",
+                  "deployment_readiness",
+                  "supply_chain_standard",
+                  "enterprise_readiness",
+                  "kubernetes_contract",
+                  "focused_runtime_regression",
+                  "web_admin_verify",
+                  "desktop_verify",
+              ],
           }
-          with open("dist/evidence/main-verification-evidence.json", "w", encoding="utf-8") as fh:
-              json.dump(payload, fh, ensure_ascii=False, sort_keys=True, indent=2)
+          evidence_path = "dist/evidence/main-verification-evidence.json"
+          with open(evidence_path, "w", encoding="utf-8") as fh:
+              json.dump(evidence, fh, ensure_ascii=False, sort_keys=True, indent=2)
               fh.write("\n")
+          digest = "sha256:" + hashlib.sha256(open(evidence_path, "rb").read()).hexdigest()
+          manifest = {
+              "schema": "omnidesk-main-verification-artifact/v1",
+              "status": "passed",
+              "commit": evidence["commit"],
+              "run_id": evidence["run_id"],
+              "artifact_name": f"main-verification-evidence-{evidence['commit']}",
+              "evidence_path": "main-verification-evidence.json",
+              "evidence_digest": digest,
+          }
+          with open("dist/evidence/main-verification-artifact.json", "w", encoding="utf-8") as fh:
+              json.dump(manifest, fh, ensure_ascii=False, sort_keys=True, indent=2)
+              fh.write("\n")
+          print(f"MAIN_VERIFICATION_EVIDENCE_DIGEST={digest}")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: main-verification-evidence
-          path: dist/evidence/main-verification-evidence.json
+          name: main-verification-evidence-${{ github.sha }}
+          path: |
+            dist/evidence/main-verification-evidence.json
+            dist/evidence/main-verification-artifact.json
           if-no-files-found: error
