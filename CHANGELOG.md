@@ -1,5 +1,8 @@
 ## 1.12.7+root-monorepo-production-ga-candidate
 
+- Added a stronger main verification evidence contract with manual `workflow_dispatch`, commit-addressed artifact naming, SHA-256 evidence digests, a machine-readable artifact manifest, and release-policy enforcement.
+- Added `scripts/check_main_verification_contract.py` so source gates fail closed if the post-merge evidence workflow or production evidence manifest loses its audit binding.
+- Added `scripts/bump_version_surfaces.py` to perform a single consistency-gated release surface bump across Python, Docker, workflows, Web, Desktop, Mobile, Helm, shared contract, package locks, and release manifests.
 - Replaced the offline AppSync monkey patch with explicit `ApplyingAppSyncStore` and `ApplyingDurablePostgresAppSyncStore` classes so uploaded operation application is a formal backend contract rather than a process-global runtime mutation.
 - Added a `main` post-merge verification workflow that reruns source release gates, focused runtime regressions, Web Admin checks, Desktop checks, and emits a `main-verification-evidence.json` artifact bound to the merge commit.
 - Hardened runtime auto-update trust boundaries so reconnect updates require Ed25519 manifest signatures, mandatory artifact/SBOM SHA-256 digests, disabled background-download enforcement, and a runtime-marker health check before activation.
