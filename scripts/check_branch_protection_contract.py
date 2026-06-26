@@ -10,6 +10,7 @@ REQUIRED_STATUS_CHECKS = {
     "Release Policy",
     "CI",
     "Security",
+    "Security Attack Surface Gate",
     "Docker Image Scan",
     "Tri-App Quality Gate",
     "Main Verification",
@@ -30,6 +31,7 @@ REQUIRED_JOBS = {
     "mobile-ios-simulator",
     "backend-and-contract",
     "main-verification",
+    "security-attack-surface",
     "source-maturity-closure",
 }
 
