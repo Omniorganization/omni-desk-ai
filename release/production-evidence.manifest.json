@@ -11,6 +11,7 @@
     "release_hygiene": "required",
     "tri_app_runtime_evidence": "required",
     "strict_native_release_targets": "required",
+    "ios_simulator_source_gate": "required",
     "signed_device_request_enforcement": "required",
     "device_nonce_replay_guard": "required",
     "runtime_self_healing_policy": "required",
@@ -19,6 +20,7 @@
     "desktop_npm_typecheck_test_build": "required",
     "main_post_merge_verification": "required",
     "main_verification_evidence_digest": "required",
+    "branch_protection_contract": "required",
     "external_evidence_audit": "required",
     "external_evidence_distribution_gate": "required",
     "onboarding_doctor": "required",
@@ -29,6 +31,12 @@
     "repair_pr_workflow": "required",
     "agent_eval_promotion_gate": "required",
     "desktop_control_hub_status": "required"
+  },
+  "branch_protection_contract": {
+    "schema": "omnidesk-branch-protection/v1",
+    "policy_file": ".github/branch-protection.required.json",
+    "contract_check": "scripts/check_branch_protection_contract.py .",
+    "required_for_customer_distribution_ga": true
   },
   "main_verification_evidence": {
     "schema": "omnidesk-main-verification/v1",
