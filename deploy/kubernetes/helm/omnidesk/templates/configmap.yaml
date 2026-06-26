@@ -12,6 +12,8 @@ data:
       allow_local_admin_without_token: false
       require_webhook_signatures: true
       admin_allowed_ips: []
+      shared_secret_env: OMNIDESK_GATEWAY_SECRET
+      admin_token_env: OMNIDESK_ADMIN_TOKEN
     llm:
       per_task_max_llm_calls: 16
     models:
@@ -51,6 +53,14 @@ data:
       no_tty_mode: deny
       audit_log: /data/audit.log
       shell_backend: remote_docker
+      always_ask_tools:
+        - computer
+        - shell
+        - channels
+        - files
+        - ui_bridge
+        - browser
+        - gmail
       require_dual_approval_for_risks:
         - critical
       break_glass_enabled: true
@@ -58,6 +68,8 @@ data:
     sandbox:
       backend: remote_docker
       runner_url: {{ .Values.config.sandboxRunnerUrl | quote }}
+      runner_token_env: OMNIDESK_SANDBOX_RUNNER_TOKEN
+      runner_hmac_secret_env: OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET
       docker_image: {{ printf "%s@%s" .Values.image.repository (required "image.digest is required" .Values.image.digest) | quote }}
       docker_network: none
     app_sync:
@@ -85,9 +97,19 @@ data:
       plugins:
         enabled: true
       shell:
-        enabled: true
+        enabled: false
+      browser:
+        enabled: false
+      ui_bridge:
+        enabled: false
+      gmail:
+        enabled: false
+      channels:
+        enabled: false
     memory_privacy:
       redact_pii: true
       isolate_by_actor: true
       encrypt_at_rest: true
+      encryption_backend: local_fernet
+      encryption_key_env: OMNIDESK_MEMORY_ENCRYPTION_KEY
       retention_days: 30
