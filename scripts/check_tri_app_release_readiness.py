@@ -17,6 +17,7 @@ REQUIRED_ENV_GROUPS = {
     "device_login": ["OMNIDESK_OWNER_TOKEN", "OMNIDESK_OPERATOR_TOKEN", "OMNIDESK_VIEWER_TOKEN"],
 }
 
+
 def _version(command: str) -> str:
     try:
         completed = subprocess.run([command, "--version"], check=False, capture_output=True, text=True, timeout=10)
@@ -25,25 +26,33 @@ def _version(command: str) -> str:
     output = (completed.stdout or completed.stderr).strip().splitlines()
     return output[0] if output else "version output unavailable"
 
+
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
+
 def _check(condition: bool, message: str, failures: list[str], ok: list[str]) -> None:
     (ok if condition else failures).append(message)
 
+
 def _toolchain_required(mode: str) -> list[str]:
-    if mode == "source": return ["node", "npm"]
-    if mode == "desktop-release": return ["node", "npm", "cargo", "rustc"]
-    if mode in {"mobile-release", "mobile-android-release", "mobile-ios-release"}: return ["flutter"]
+    if mode == "source":
+        return ["node", "npm"]
+    if mode == "desktop-release":
+        return ["node", "npm", "cargo", "rustc"]
+    if mode in {"mobile-release", "mobile-android-release", "mobile-ios-release", "mobile-ios-source"}:
+        return ["flutter"]
     return ["node", "npm", "flutter", "cargo", "rustc"]
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check OmniDesk tri-app readiness.")
     parser.add_argument("root", nargs="?", default=".")
-    parser.add_argument("--mode", choices=["source", "release", "desktop-release", "mobile-release", "mobile-android-release", "mobile-ios-release"], default="release")
+    parser.add_argument("--mode", choices=["source", "release", "desktop-release", "mobile-release", "mobile-android-release", "mobile-ios-release", "mobile-ios-source"], default="release")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve(); apps = root / "apps"
     failures: list[str] = []; warnings: list[str] = []; ok: list[str] = []
@@ -109,9 +118,10 @@ def main(argv: list[str] | None = None) -> int:
     _check("tri-app-release-builds" in makefile and "tri-app-release-web" in makefile and "tri-app-release-desktop" in makefile and "tri-app-release-mobile" in makefile, "Makefile declares strict tri-app release build targets", failures, ok)
     _check("cargo check --locked" in release_contract, "Desktop release gate uses cargo check --locked", failures, ok)
     _check("flutter build appbundle --release" in release_contract, "Mobile release gate requires Android appbundle build", failures, ok)
+    _check("flutter build ios --simulator --no-codesign" in release_contract, "Mobile iOS source gate requires simulator build", failures, ok)
     _check("OMNI_ANDROID_KEYSTORE" in release_contract, "Mobile Android release gate provisions signing credentials", failures, ok)
     _check("flutter build ipa --release" in release_contract, "Mobile release gate requires iOS release build", failures, ok)
-    _check("dart analyze" in release_contract, "Mobile release gate runs Dart analyzer", failures, ok)
+    _check("dart analyze" in release_contract or "flutter analyze" in release_contract, "Mobile release gate runs Dart analyzer", failures, ok)
     _check("npm ci" in release_contract, "Web/Desktop release gate uses npm ci", failures, ok)
     if args.mode != "source":
         for group, names in REQUIRED_ENV_GROUPS.items():
@@ -123,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     for message in warnings: print(f"WARN    {message}")
     for message in failures: print(f"BLOCKER {message}")
     return 1 if failures else 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
