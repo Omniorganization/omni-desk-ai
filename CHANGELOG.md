@@ -1,5 +1,8 @@
 ## 1.12.7+root-monorepo-production-ga-candidate
 
+- Added a source maturity closure gate for source engineering, release governance, security/supply-chain, tri-app, and offline sync/reconnect quality dimensions.
+- Strengthened the branch protection source contract with required status checks, required jobs, up-to-date branch policy, conversation resolution, CODEOWNERS review, signed commits, and pending-check blocking semantics.
+- Added a required iOS simulator source build to the tri-app quality workflow so iOS source readiness is validated on pull requests and main pushes while signed IPA/TestFlight evidence remains a separate external GA gate.
 - Added a stronger main verification evidence contract with manual `workflow_dispatch`, commit-addressed artifact naming, SHA-256 evidence digests, a machine-readable artifact manifest, and release-policy enforcement.
 - Added `scripts/check_main_verification_contract.py` so source gates fail closed if the post-merge evidence workflow or production evidence manifest loses its audit binding.
 - Added `scripts/bump_version_surfaces.py` to perform a single consistency-gated release surface bump across Python, Docker, workflows, Web, Desktop, Mobile, Helm, shared contract, package locks, and release manifests.
