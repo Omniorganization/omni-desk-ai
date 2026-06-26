@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Literal, Optional
 
 from omnidesk_agent.appsync.store import (
     AppSyncStore,
@@ -14,38 +14,41 @@ from omnidesk_agent.appsync.store import (
     _now,
 )
 
-_PATCHED = False
+ConflictPolicy = Literal["server-wins", "client-wins", "manual-review", "merge"]
 
 
-def patch_offline_sync_application() -> None:
-    """Make uploaded offline operations mutate AppSync state, not just inbox rows."""
-    global _PATCHED
-    if _PATCHED:
-        return
-    original = AppSyncStore.receive_outbox_operations
+class ApplyingAppSyncMixin:
+    """Formal AppSync contract for applying uploaded offline operations.
 
-    def wrapped(
-        self: AppSyncStore,
+    The previous implementation used a global monkey patch to mutate
+    ``AppSyncStore.receive_outbox_operations``. This mixin keeps the behavior
+    explicit on the store instance returned by the factory, which makes backend
+    selection, test coverage, and multi-instance reasoning deterministic.
+    """
+
+    def receive_outbox_operations(
+        self,
         *,
         actor: str,
         operations: list[dict[str, Any]],
         remote: str = "default",
-        device_id: str | None = None,
-        conflict_policy: str = "manual-review",
+        device_id: Optional[str] = None,
+        conflict_policy: ConflictPolicy = "manual-review",
     ) -> dict[str, Any]:
-        result = original(
-            self,
+        result = super().receive_outbox_operations(  # type: ignore[misc]
             actor=actor,
             operations=operations,
             remote=remote,
             device_id=device_id,
-            conflict_policy=conflict_policy,  # type: ignore[arg-type]
+            conflict_policy=conflict_policy,
         )
-        apply_uploaded_operations(self, actor=actor, operations=operations, remote=remote, device_id=device_id)
-        return result
+        application = apply_uploaded_operations(self, actor=actor, operations=operations, remote=remote, device_id=device_id)  # type: ignore[arg-type]
+        return {**result, **application}
 
-    AppSyncStore.receive_outbox_operations = wrapped  # type: ignore[assignment,method-assign]
-    _PATCHED = True
+
+class ApplyingAppSyncStore(ApplyingAppSyncMixin, AppSyncStore):
+    """JSON AppSync store that applies uploaded offline operations."""
+
 
 
 def apply_uploaded_operations(
