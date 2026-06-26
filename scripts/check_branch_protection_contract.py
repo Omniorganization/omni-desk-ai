@@ -6,7 +6,6 @@ import json
 import sys
 from pathlib import Path
 
-
 REQUIRED_STATUS_CHECKS = {
     "Release Policy",
     "CI",
@@ -15,6 +14,7 @@ REQUIRED_STATUS_CHECKS = {
     "Tri-App Quality Gate",
     "Main Verification",
     "Self Upgrade Gate",
+    "Source Maturity Closure",
 }
 
 REQUIRED_JOBS = {
@@ -30,6 +30,7 @@ REQUIRED_JOBS = {
     "mobile-ios-simulator",
     "backend-and-contract",
     "main-verification",
+    "source-maturity-closure",
 }
 
 REQUIRED_BOOLEAN_TRUE = (
