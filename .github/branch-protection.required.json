@@ -17,7 +17,8 @@
     "Docker Image Scan",
     "Tri-App Quality Gate",
     "Main Verification",
-    "Self Upgrade Gate"
+    "Self Upgrade Gate",
+    "Source Maturity Closure"
   ],
   "required_jobs": [
     "release-policy",
@@ -31,7 +32,8 @@
     "mobile-flutter",
     "mobile-ios-simulator",
     "backend-and-contract",
-    "main-verification"
+    "main-verification",
+    "source-maturity-closure"
   ],
   "restricted_paths": [
     ".github/",
