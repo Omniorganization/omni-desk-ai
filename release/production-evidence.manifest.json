@@ -17,6 +17,8 @@
     "tri_app_release_workflow_dependency": "required",
     "web_admin_npm_typecheck_test_build": "required",
     "desktop_npm_typecheck_test_build": "required",
+    "main_post_merge_verification": "required",
+    "main_verification_evidence_digest": "required",
     "external_evidence_audit": "required",
     "external_evidence_distribution_gate": "required",
     "onboarding_doctor": "required",
@@ -27,6 +29,16 @@
     "repair_pr_workflow": "required",
     "agent_eval_promotion_gate": "required",
     "desktop_control_hub_status": "required"
+  },
+  "main_verification_evidence": {
+    "schema": "omnidesk-main-verification/v1",
+    "artifact_manifest_schema": "omnidesk-main-verification-artifact/v1",
+    "artifact_name_pattern": "main-verification-evidence-${commit_sha}",
+    "evidence_file": "main-verification-evidence.json",
+    "artifact_manifest_file": "main-verification-artifact.json",
+    "evidence_digest_algorithm": "sha256",
+    "required_for_customer_distribution_ga": true,
+    "policy": "Every protected main merge commit must have a successful main-verification workflow artifact whose evidence digest is bound to the merge commit and workflow run id."
   },
   "external_evidence_required": {
     "oci_app_image_digest": "release workflow must capture final registry sha256 digest",
