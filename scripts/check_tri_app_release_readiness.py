@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     _check("tri-app-release-builds" in makefile and "tri-app-release-web" in makefile and "tri-app-release-desktop" in makefile and "tri-app-release-mobile" in makefile, "Makefile declares strict tri-app release build targets", failures, ok)
     _check("cargo check --locked" in release_contract, "Desktop release gate uses cargo check --locked", failures, ok)
     _check("flutter build appbundle --release" in release_contract, "Mobile release gate requires Android appbundle build", failures, ok)
-    _check("flutter build ios --simulator --no-codesign" in release_contract, "Mobile iOS source gate requires simulator build", failures, ok)
+    _check("mobile-ios-simulator" in release_contract and "--mode mobile-ios-source" in release_contract, "Mobile iOS source gate is required on pull requests and main pushes", failures, ok)
     _check("OMNI_ANDROID_KEYSTORE" in release_contract, "Mobile Android release gate provisions signing credentials", failures, ok)
     _check("flutter build ipa --release" in release_contract, "Mobile release gate requires iOS release build", failures, ok)
     _check("dart analyze" in release_contract or "flutter analyze" in release_contract, "Mobile release gate runs Dart analyzer", failures, ok)
