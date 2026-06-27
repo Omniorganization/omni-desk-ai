@@ -15,8 +15,8 @@ REQUIRED_FILES = (
 
 SERVER_SNIPPETS = (
     "BIGSELLER_REGISTER_ROUTES",
-    "BIGSELLER_ENABLED",
     "_register_optional_bigseller_routes",
+    "if _env_flag(\"BIGSELLER_REGISTER_ROUTES\"):",
 )
 
 ROUTE_SNIPPETS = (
@@ -37,6 +37,7 @@ WORKER_SNIPPETS = (
 
 DOC_SNIPPETS = (
     "BIGSELLER_REGISTER_ROUTES",
+    "BIGSELLER_ENABLED does not register routes",
     "GET /integrations/bigseller/errors",
     "POST /integrations/bigseller/errors/{error_id}/retry",
     "POST /integrations/bigseller/errors/{error_id}/resolve",
@@ -78,7 +79,7 @@ def audit(root: Path) -> dict[str, object]:
     except FileNotFoundError:
         pass
     return {
-        "schema": "omnidesk-bigseller-route-enablement/v1",
+        "schema": "omnidesk-bigseller-route-enablement/v2",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": "This gate verifies explicit route enablement and Admin error operations. It does not validate external BigSeller traffic.",
