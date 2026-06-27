@@ -33,6 +33,14 @@ REQUIRED_EVIDENCE: dict[str, dict[str, Any]] = {
         ],
         "requires_artifact": True,
     },
+    "live_branch_protection": {
+        "label": "true GitHub branch protection control-plane verification",
+        "files": ["control-plane/github-branch-protection-live.json"],
+    },
+    "model_live_smoke": {
+        "label": "true live model Q&A smoke with audit and budget ledger evidence",
+        "files": ["model/model-live-smoke.json"],
+    },
     "push_delivery": {
         "label": "true APNS/FCM push delivery",
         "files": ["push/apns-live-delivery.json", "push/fcm-live-delivery.json"],
@@ -165,6 +173,36 @@ def _category_specific(category: str, doc: dict[str, Any]) -> list[str]:
             issues.append("signature_verified must be true")
         if "macos" in str(doc.get("platform", "")).lower() and not _bool_true(doc.get("notarization_verified")):
             issues.append("macOS notarization must be verified")
+    elif category == "live_branch_protection":
+        if doc.get("schema") != "omnidesk-live-branch-protection/v1":
+            issues.append("schema must be omnidesk-live-branch-protection/v1")
+        if not str(doc.get("repository") or "").strip():
+            issues.append("repository is required")
+        if not str(doc.get("branch") or "").strip():
+            issues.append("branch is required")
+        if doc.get("failures") not in ([], None):
+            issues.append("live branch protection report must have no failures")
+    elif category == "model_live_smoke":
+        if doc.get("schema") not in (None, "omnidesk-model-live-smoke/v1"):
+            issues.append("schema must be omnidesk-model-live-smoke/v1 when present")
+        for field in ("environment", "backend_base_url", "scenario_id", "model_request_id", "trace_id", "audit_event_id", "cost_ledger_entry_id"):
+            if not str(doc.get(field) or "").strip():
+                issues.append(f"{field} is required")
+        if str(doc.get("environment", "")).strip().lower() not in {"staging", "production", "prod"}:
+            issues.append("environment must be staging or production")
+        for field in ("response_non_empty", "audit_logged", "cost_ledger_recorded", "budget_enforced", "approval_required_on_budget_exceeded"):
+            if not _bool_true(doc.get(field)):
+                issues.append(f"{field} must be true")
+        try:
+            if float(doc.get("p95_latency_ms")) <= 0 or float(doc.get("p95_latency_ms")) > 15000:
+                issues.append("p95_latency_ms must be > 0 and <= 15000")
+        except Exception:
+            issues.append("p95_latency_ms must be numeric")
+        try:
+            if float(doc.get("error_rate")) < 0 or float(doc.get("error_rate")) > 0.01:
+                issues.append("error_rate must be between 0 and 0.01")
+        except Exception:
+            issues.append("error_rate must be numeric")
     elif category == "push_delivery":
         if not _bool_true(doc.get("delivery_success")):
             issues.append("delivery_success must be true")

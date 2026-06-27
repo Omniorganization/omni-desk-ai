@@ -39,6 +39,7 @@ jobs:
           python scripts/check_ci_evidence_contract.py .
           python scripts/check_security_workflow_policy.py .
           python scripts/check_security_attack_surface.py .
+          python scripts/check_real_ga_readiness_contract.py .
           python scripts/check_observability_contract.py .
           python scripts/check_deployment_readiness.py --compose-file deploy/docker/docker-compose.full.yml
           python scripts/check_supply_chain_standard.py .
@@ -85,6 +86,7 @@ jobs:
                   "ci_evidence_contract",
                   "security_workflow_policy",
                   "security_attack_surface",
+                  "real_ga_readiness_contract",
                   "observability_contract",
                   "deployment_readiness",
                   "supply_chain_standard",

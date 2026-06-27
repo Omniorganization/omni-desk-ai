@@ -1,13 +1,16 @@
 {
   "version": "1.12.7+root-monorepo-production-ga-candidate",
   "status": "source_gate_ready_external_evidence_blocked",
-  "generated_at": "2026-06-15T00:00:00Z",
+  "generated_at": "2026-06-27T00:00:00Z",
   "local_source_evidence": {
     "version_consistency": "required",
     "ga_release_gate": "required",
     "kubernetes_source_contract": "required",
     "docker_production_config_validation": "required",
     "security_attack_surface_gate": "required",
+    "real_ga_readiness_contract": "required",
+    "live_branch_protection_contract": "required",
+    "model_live_smoke_contract": "required",
     "pytest_chunked_full_suite": "required",
     "release_hygiene": "required",
     "tri_app_runtime_evidence": "required",
@@ -39,12 +42,26 @@
     "contract_check": "scripts/check_branch_protection_contract.py .",
     "required_for_customer_distribution_ga": true
   },
+  "live_branch_protection_control_plane": {
+    "schema": "omnidesk-live-branch-protection/v1",
+    "contract_check": "scripts/check_live_branch_protection_contract.py . --repository $GITHUB_REPOSITORY --write-report release/external-evidence/control-plane/github-branch-protection-live.json",
+    "workflow": ".github/workflows/real-ga-readiness.yml",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Live GitHub control-plane verification only; it does not replace signed artifacts, push, soak, rollback, backup/restore, or failure-injection evidence."
+  },
   "security_attack_surface_gate": {
     "schema": "omnidesk-security-attack-surface/v1",
     "contract_check": "scripts/check_security_attack_surface.py . --write-report dist/evidence/security-attack-surface.json",
     "workflow": ".github/workflows/security-attack-surface.yml",
     "required_for_customer_distribution_ga": true,
     "boundary": "Source/config gate only; it does not replace live penetration, signing, push, soak, rollback, backup/restore, or failure-injection evidence."
+  },
+  "model_live_smoke_evidence": {
+    "schema": "omnidesk-model-live-smoke/v1",
+    "contract_check": "scripts/check_model_live_smoke_evidence.py . --write-report dist/evidence/model-live-smoke-check.json",
+    "workflow": ".github/workflows/real-ga-readiness.yml",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Validates a real model Q&A smoke evidence document; it does not generate or simulate a model response."
   },
   "main_verification_evidence": {
     "schema": "omnidesk-main-verification/v1",
@@ -57,6 +74,10 @@
     "policy": "Every protected main merge commit must have a successful main-verification workflow artifact whose evidence digest is bound to the merge commit and workflow run id."
   },
   "external_evidence_required": {
+    "native_build": "true Flutter/Rust/Tauri native build evidence with artifact references and sha256 checks",
+    "signed_artifacts": "true Android/iOS/Desktop signed artifacts, including macOS notarization and platform signature verification",
+    "live_branch_protection_control_plane": "live GitHub branch-protection API report matching .github/branch-protection.required.json",
+    "model_live_smoke": "live model Q&A smoke proving non-empty response, trace, audit event, cost ledger, and budget enforcement",
     "oci_app_image_digest": "release workflow must capture final registry sha256 digest",
     "oci_sandbox_runner_digest": "release environment must provide final sandbox-runner sha256 digest",
     "helm_locked_values": "scripts/render_locked_helm_values.py must generate dist/values.production.locked.yaml",
@@ -64,14 +85,16 @@
     "windows_code_signing": "must be attached by native signer CI before customer distribution",
     "android_signed_aab": "must be produced by mobile signer CI before Play distribution",
     "ios_testflight_or_signed_ipa": "must be produced by iOS signer CI before TestFlight/App Store distribution",
+    "push_delivery": "true APNS/FCM push delivery evidence with provider receipt ids",
     "apns_fcm_live_push": "must be verified in staging with provider credentials",
+    "postgres_soak": "true multi-instance Postgres soak with at least three gateways, two workers, sixty minutes, and zero critical failures",
     "multi_instance_postgres_soak": "must be verified with at least three gateways and multiple workers",
     "rollback_drill": "must include failed rollout and SLO recovery evidence",
     "backup_restore_drill": "must include restore timestamp, RPO, and RTO evidence",
+    "self_healing_failure_injection": "must include controlled failure injection, containment action, rollback/proposal decision, and post-recovery health verification",
     "web_admin_signed_oci_image": "must be produced by release CI with digest-pinned base image and Cosign signature",
     "desktop_native_signed_artifacts": "must include platform-specific signed macOS/Windows/Linux artifacts before customer distribution",
-    "device_signature_live_rollout": "must verify real desktop/mobile challenge verification and signed-request enforcement in staging",
-    "self_healing_drill_report": "must include controlled failure injection, containment action, rollback/proposal decision, and post-recovery health verification"
+    "device_signature_live_rollout": "must verify real desktop/mobile challenge verification and signed-request enforcement in staging"
   },
   "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_external_ga_evidence.py to pass against real external signer, registry, store, staging, push, and operations evidence."
 }
