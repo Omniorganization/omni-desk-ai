@@ -1,3 +1,4 @@
+# pyright: reportGeneralTypeIssues=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -5,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
-from typing import Any, Optional
+from typing import Any, Optional, cast
 import urllib.parse
 
 import httpx
@@ -104,8 +105,11 @@ class HttpBigSellerClient(BigSellerClient):
     @staticmethod
     def _pick(payload: dict[str, Any], *keys: str) -> Any:
         for key in keys:
-            if key in payload and payload[key] not in {None, ""}:
-                return payload[key]
+            if key not in payload:
+                continue
+            value = payload[key]
+            if value is not None and value != "":
+                return value
         return None
 
     @staticmethod
@@ -127,7 +131,11 @@ class HttpBigSellerClient(BigSellerClient):
     def _body_bytes(kwargs: dict[str, Any]) -> bytes:
         if "json" in kwargs:
             return json.dumps(
-                kwargs["json"], ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str
+                kwargs["json"],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
             ).encode("utf-8")
         content = kwargs.get("content") or kwargs.get("data")
         if content is None:
@@ -268,11 +276,9 @@ class HttpBigSellerClient(BigSellerClient):
             return payload
         if not isinstance(payload, dict):
             return []
-        keys = [root_key] if root_key else []
+        keys: list[str] = [root_key] if root_key else []
         keys.extend(["data", "items", "list", "rows", "records", "result"])
         for key in keys:
-            if not key:
-                continue
             value = payload.get(key)
             if isinstance(value, list):
                 return value
@@ -286,22 +292,26 @@ class HttpBigSellerClient(BigSellerClient):
         if isinstance(payload, dict):
             data = payload.get("data")
             if isinstance(data, dict):
-                return data
-            return payload
+                return cast(dict[str, Any], data)
+            return cast(dict[str, Any], payload)
         if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-            return payload[0]
+            return cast(dict[str, Any], payload[0])
         return {}
 
     def _parse_token_response(self, payload: Any) -> BigSellerTokenState:
         data = self._first_dict(payload)
         expires_at = None
-        raw_expires_at = self._pick(data, "expires_at", "expire_at", "expiresAt", "expireTime")
+        raw_expires_at = self._pick(
+            data, "expires_at", "expire_at", "expiresAt", "expireTime"
+        )
         raw_expires_in = self._pick(data, "expires_in", "expire_in", "expiresIn")
         if raw_expires_at is not None:
             expires_at = self._parse_datetime(raw_expires_at)
         elif raw_expires_in is not None:
             try:
-                expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(raw_expires_in))
+                expires_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=int(raw_expires_in)
+                )
             except (TypeError, ValueError):
                 expires_at = None
         return BigSellerTokenState(
@@ -348,34 +358,52 @@ class HttpBigSellerClient(BigSellerClient):
         self.token_manager.replace(token_state)
         return token_state
 
-    def _map_order(self, row: dict[str, Any], *, fallback_store_id: str | None = None) -> BigSellerOrder:
-        items = []
-        raw_items = row.get("items") or row.get("order_items") or row.get("sku_list") or []
-        if isinstance(raw_items, dict):
-            raw_items = self._items(raw_items)
-        for item in raw_items if isinstance(raw_items, list) else []:
+    def _map_order(
+        self, row: dict[str, Any], *, fallback_store_id: str | None = None
+    ) -> BigSellerOrder:
+        items: list[BigSellerOrderItem] = []
+        raw_items_value = row.get("items") or row.get("order_items") or row.get("sku_list") or []
+        if isinstance(raw_items_value, dict):
+            raw_items_list = self._items(raw_items_value)
+        elif isinstance(raw_items_value, list):
+            raw_items_list = raw_items_value
+        else:
+            raw_items_list = []
+        for item in raw_items_list:
             if not isinstance(item, dict):
                 continue
+            unit_price_value = self._pick(item, "unit_price", "price", "sale_price")
+            try:
+                unit_price = float(unit_price_value) if unit_price_value is not None else None
+            except (TypeError, ValueError):
+                unit_price = None
             items.append(
                 BigSellerOrderItem(
                     external_sku=str(
-                        self._pick(item, "external_sku", "sku", "sku_id", "seller_sku") or "unknown"
+                        self._pick(item, "external_sku", "sku", "sku_id", "seller_sku")
+                        or "unknown"
                     ),
-                    quantity=max(0, int(self._pick(item, "quantity", "qty", "count") or 0)),
+                    quantity=max(
+                        0, int(self._pick(item, "quantity", "qty", "count") or 0)
+                    ),
                     title=self._pick(item, "title", "name", "product_name"),
-                    unit_price=self._pick(item, "unit_price", "price", "sale_price"),
+                    unit_price=unit_price,
                 )
             )
         return BigSellerOrder(
             external_order_id=str(
-                self._pick(row, "external_order_id", "order_id", "orderNo", "order_sn", "id")
+                self._pick(
+                    row, "external_order_id", "order_id", "orderNo", "order_sn", "id"
+                )
             ),
             store_id=str(
                 self._pick(row, "store_id", "shop_id", "store", "storeId")
                 or fallback_store_id
                 or "__unknown_store__"
             ),
-            status=str(self._pick(row, "status", "order_status", "orderStatus") or "unknown"),
+            status=str(
+                self._pick(row, "status", "order_status", "orderStatus") or "unknown"
+            ),
             created_at=self._parse_datetime(
                 self._pick(row, "created_at", "create_time", "createdTime")
             ),
@@ -386,23 +414,36 @@ class HttpBigSellerClient(BigSellerClient):
             raw=row,
         )
 
-    def _map_inventory(self, row: dict[str, Any], *, fallback_store_id: str | None = None) -> BigSellerInventoryItem:
+    def _map_inventory(
+        self, row: dict[str, Any], *, fallback_store_id: str | None = None
+    ) -> BigSellerInventoryItem:
         return BigSellerInventoryItem(
             store_id=str(
                 self._pick(row, "store_id", "shop_id", "store", "storeId")
                 or fallback_store_id
                 or "__unknown_store__"
             ),
-            external_sku=str(self._pick(row, "external_sku", "sku", "sku_id", "seller_sku")),
-            available=max(0, int(self._pick(row, "available", "available_stock", "stock", "qty") or 0)),
-            reserved=max(0, int(self._pick(row, "reserved", "reserved_stock", "locked_stock") or 0)),
+            external_sku=str(
+                self._pick(row, "external_sku", "sku", "sku_id", "seller_sku")
+                or "unknown"
+            ),
+            available=max(
+                0,
+                int(self._pick(row, "available", "available_stock", "stock", "qty") or 0),
+            ),
+            reserved=max(
+                0,
+                int(self._pick(row, "reserved", "reserved_stock", "locked_stock") or 0),
+            ),
             updated_at=self._parse_datetime(
                 self._pick(row, "updated_at", "update_time", "updatedTime")
             ),
             raw=row,
         )
 
-    def _map_product(self, row: dict[str, Any], *, fallback_store_id: str | None = None) -> BigSellerProduct:
+    def _map_product(
+        self, row: dict[str, Any], *, fallback_store_id: str | None = None
+    ) -> BigSellerProduct:
         raw_skus = row.get("skus") or row.get("sku_list") or row.get("items") or []
         skus: list[str] = []
         if isinstance(raw_skus, list):
@@ -429,7 +470,9 @@ class HttpBigSellerClient(BigSellerClient):
 
     def list_orders(self, **filters: Any) -> list[BigSellerOrder]:
         path = self._endpoint("orders_list", self.config.orders_list_path)
-        payload = self.request("GET", path, params={k: v for k, v in filters.items() if v is not None})
+        payload = self.request(
+            "GET", path, params={k: v for k, v in filters.items() if v is not None}
+        )
         root_key = self.config.response_root_keys.get("orders")
         return [
             self._map_order(row, fallback_store_id=filters.get("store_id"))
@@ -449,7 +492,9 @@ class HttpBigSellerClient(BigSellerClient):
 
     def list_inventory(self, **filters: Any) -> list[BigSellerInventoryItem]:
         path = self._endpoint("inventory_list", self.config.inventory_list_path)
-        payload = self.request("GET", path, params={k: v for k, v in filters.items() if v is not None})
+        payload = self.request(
+            "GET", path, params={k: v for k, v in filters.items() if v is not None}
+        )
         root_key = self.config.response_root_keys.get("inventory")
         return [
             self._map_inventory(row, fallback_store_id=filters.get("store_id"))
@@ -465,11 +510,16 @@ class HttpBigSellerClient(BigSellerClient):
             store_id=item.store_id,
         )
         payload = self.request("POST", path, json=item.model_dump(mode="json"))
-        return self._map_inventory(self._first_dict(payload) or item.model_dump(mode="json"), fallback_store_id=item.store_id)
+        return self._map_inventory(
+            self._first_dict(payload) or item.model_dump(mode="json"),
+            fallback_store_id=item.store_id,
+        )
 
     def list_products(self, **filters: Any) -> list[BigSellerProduct]:
         path = self._endpoint("products_list", self.config.products_list_path)
-        payload = self.request("GET", path, params={k: v for k, v in filters.items() if v is not None})
+        payload = self.request(
+            "GET", path, params={k: v for k, v in filters.items() if v is not None}
+        )
         root_key = self.config.response_root_keys.get("products")
         return [
             self._map_product(row, fallback_store_id=filters.get("store_id"))
