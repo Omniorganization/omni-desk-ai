@@ -25,6 +25,7 @@
     "desktop_npm_typecheck_test_build": "required",
     "main_post_merge_verification": "required",
     "main_verification_evidence_digest": "required",
+    "main_verification_live_artifact": "required",
     "branch_protection_contract": "required",
     "external_evidence_audit": "required",
     "external_evidence_distribution_gate": "required",
@@ -68,6 +69,8 @@
     "schema": "omnidesk-bigseller-live-smoke/v1",
     "evidence_file": "release/external-evidence/integrations/bigseller-live-smoke.json",
     "contract_check": "scripts/check_external_ga_evidence.py . --audit-only --write-report /tmp/external-ga-evidence-contract.json",
+    "run_script": "scripts/run_bigseller_live_smoke.py --output release/external-evidence/integrations/bigseller-live-smoke.json",
+    "import_script": "scripts/import_bigseller_live_smoke_evidence.py /path/to/operator-produced-bigseller-live-smoke.json",
     "required_for_customer_distribution_ga": true,
     "boundary": "Validates real BigSeller auth/order/inventory/webhook evidence from an approved BigSeller environment; it does not use the mock adapter and does not generate or simulate BigSeller responses."
   },
@@ -81,12 +84,20 @@
     "required_for_customer_distribution_ga": true,
     "policy": "Every protected main merge commit must have a successful main-verification workflow artifact whose evidence digest is bound to the merge commit and workflow run id."
   },
+  "main_verification_live_artifact": {
+    "schema": "omnidesk-main-verification-live-artifact/v1",
+    "contract_check": "scripts/check_main_verification_artifact_live.py --repository $GITHUB_REPOSITORY --commit $GITHUB_SHA --write-report dist/evidence/main-verification-live-artifact.json",
+    "workflow": ".github/workflows/real-ga-readiness.yml",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Live GitHub Actions artifact verification only; it proves the commit-addressed Main Verification evidence artifact exists and has not expired."
+  },
   "external_evidence_required": {
     "native_build": "true Flutter/Rust/Tauri native build evidence with artifact references and sha256 checks",
     "signed_artifacts": "true Android/iOS/Desktop signed artifacts, including macOS notarization and platform signature verification",
     "live_branch_protection_control_plane": "live GitHub branch-protection API report matching .github/branch-protection.required.json",
     "model_live_smoke": "live model Q&A smoke proving non-empty response, trace, audit event, cost ledger, and budget enforcement",
     "bigseller_live_smoke": "true BigSeller staging smoke proving auth, order list, inventory list, webhook signature, replay guard, trace, audit, and no secret leakage",
+    "main_verification_live_artifact": "successful post-merge Main Verification run with unexpired commit-addressed evidence artifact",
     "oci_app_image_digest": "release workflow must capture final registry sha256 digest",
     "oci_sandbox_runner_digest": "release environment must provide final sandbox-runner sha256 digest",
     "helm_locked_values": "scripts/render_locked_helm_values.py must generate dist/values.production.locked.yaml",
@@ -105,5 +116,5 @@
     "desktop_native_signed_artifacts": "must include platform-specific signed macOS/Windows/Linux artifacts before customer distribution",
     "device_signature_live_rollout": "must verify real desktop/mobile challenge verification and signed-request enforcement in staging"
   },
-  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_external_ga_evidence.py to pass against real external signer, registry, store, staging, push, approved integration, and operations evidence."
+  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_external_ga_evidence.py and scripts/check_main_verification_artifact_live.py to pass against real external signer, registry, store, staging, push, approved integration, and operations evidence."
 }
