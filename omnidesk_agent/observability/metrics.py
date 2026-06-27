@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Mapping
+from typing import Any, Mapping
 
 
 @dataclass
@@ -16,7 +16,7 @@ class MetricsRegistry:
     """
 
     _values: dict[str, float] = field(default_factory=dict)
-    _lock: Lock = field(default_factory=Lock)
+    _lock: Any = field(default_factory=Lock)
 
     def inc(self, name: str, amount: float = 1) -> None:
         self._validate_name(name)
