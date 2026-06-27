@@ -144,7 +144,9 @@ def test_webhook_event_id_is_deduplicated_by_worker(tmp_path):
 
     assert first["handled"] == "orders"
     assert second["handled"] == "duplicate"
-    assert context.worker.status()["metrics"]["bigseller_webhook_duplicate_total"] == 1
+    status = context.worker.status()
+    assert status["metrics"]["bigseller_webhook_duplicate_total"] == 1
+    assert status["prometheus_metrics"]["omnidesk_bigseller_webhook_duplicate_total"] == 1
 
 
 def test_worker_dead_letter_metric_is_current_gauge(tmp_path):
@@ -164,6 +166,7 @@ def test_worker_dead_letter_metric_is_current_gauge(tmp_path):
     )
     status = context.worker.status()
     assert status["metrics"]["bigseller_dead_letter_current"] == 0
+    assert status["prometheus_metrics"]["omnidesk_bigseller_dead_letter_current"] == 0
     context.worker.errors.enqueue(
         entity_type="order",
         external_id="BS-1",
@@ -174,6 +177,7 @@ def test_worker_dead_letter_metric_is_current_gauge(tmp_path):
     )
     status = context.worker.status()
     assert status["metrics"]["bigseller_dead_letter_current"] == 1
+    assert status["prometheus_metrics"]["omnidesk_bigseller_dead_letter_current"] == 1
 
 
 def test_webhook_rejects_payload_over_configured_limit(tmp_path):
@@ -196,4 +200,6 @@ def test_webhook_rejects_payload_over_configured_limit(tmp_path):
     )
 
     assert response.status_code == 413
-    assert context.worker.status()["metrics"]["bigseller_webhook_rejected_total"] == 1
+    status = context.worker.status()
+    assert status["metrics"]["bigseller_webhook_rejected_total"] == 1
+    assert status["prometheus_metrics"]["omnidesk_bigseller_webhook_rejected_total"] == 1
