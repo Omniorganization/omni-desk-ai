@@ -10,7 +10,8 @@ from typing import cast
 import weakref
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from omnidesk_agent import __version__
 from omnidesk_agent.appsync import register_appsync_routes
