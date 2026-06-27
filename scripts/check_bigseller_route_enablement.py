@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -37,7 +38,6 @@ WORKER_SNIPPETS = (
 
 DOC_SNIPPETS = (
     "BIGSELLER_REGISTER_ROUTES",
-    "BIGSELLER_ENABLED does not register routes",
     "GET /integrations/bigseller/errors",
     "POST /integrations/bigseller/errors/{error_id}/retry",
     "POST /integrations/bigseller/errors/{error_id}/resolve",
@@ -57,13 +57,34 @@ def _require(snippets: tuple[str, ...], text: str, label: str, failures: list[st
             failures.append(f"{label} missing snippet: {snippet}")
 
 
+def _require_explicit_register_only(server_text: str, failures: list[str]) -> None:
+    compact = re.sub(r"\s+", "", server_text)
+    required = 'if_env_flag("BIGSELLER_REGISTER_ROUTES"):'
+    forbidden = 'if_env_flag("BIGSELLER_ENABLED")or_env_flag("BIGSELLER_REGISTER_ROUTES"):'
+    if required not in compact:
+        failures.append("server route gate must register BigSeller routes only from BIGSELLER_REGISTER_ROUTES")
+    if forbidden in compact:
+        failures.append("server route gate must not register routes from BIGSELLER_ENABLED")
+
+
+def _require_doc_semantics(doc_text: str, failures: list[str]) -> None:
+    normalized = re.sub(r"[`*_]+", "", doc_text)
+    normalized = re.sub(r"\s+", " ", normalized)
+    if "BIGSELLER_ENABLED does not register routes" not in normalized:
+        failures.append("BigSeller docs must state BIGSELLER_ENABLED does not register routes")
+    if "Routes are registered only when BIGSELLER_REGISTER_ROUTES=true" not in normalized:
+        failures.append("BigSeller docs must state routes require BIGSELLER_REGISTER_ROUTES=true")
+
+
 def audit(root: Path) -> dict[str, object]:
     failures: list[str] = []
     for rel in REQUIRED_FILES:
         if not (root / rel).exists():
             failures.append(f"missing required file: {rel}")
     try:
-        _require(SERVER_SNIPPETS, _read(root, "omnidesk_agent/server.py"), "server route gate", failures)
+        server_text = _read(root, "omnidesk_agent/server.py")
+        _require(SERVER_SNIPPETS, server_text, "server route gate", failures)
+        _require_explicit_register_only(server_text, failures)
     except FileNotFoundError:
         pass
     try:
@@ -75,11 +96,13 @@ def audit(root: Path) -> dict[str, object]:
     except FileNotFoundError:
         pass
     try:
-        _require(DOC_SNIPPETS, _read(root, "docs/integrations/bigseller.md"), "BigSeller docs", failures)
+        doc_text = _read(root, "docs/integrations/bigseller.md")
+        _require(DOC_SNIPPETS, doc_text, "BigSeller docs", failures)
+        _require_doc_semantics(doc_text, failures)
     except FileNotFoundError:
         pass
     return {
-        "schema": "omnidesk-bigseller-route-enablement/v2",
+        "schema": "omnidesk-bigseller-route-enablement/v3",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": "This gate verifies explicit route enablement and Admin error operations. It does not validate external BigSeller traffic.",
