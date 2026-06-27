@@ -1,3 +1,4 @@
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportArgumentType=false
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
