@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -43,6 +44,19 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _json_dict_env(name: str) -> dict[str, str]:
+    value = _env(name)
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): str(item) for key, item in parsed.items() if item is not None}
+
+
 def _datetime_env(name: str) -> Optional[datetime]:
     value = _env(name)
     if not value:
@@ -61,9 +75,9 @@ def _datetime_env(name: str) -> Optional[datetime]:
 class BigSellerConfig(BaseModel):
     """Runtime configuration for the BigSeller connector.
 
-    BigSeller API access is private-approval based. This config deliberately
-    stores credentials and transport settings without declaring unverified API
-    endpoints, signature algorithms, or field names.
+    BigSeller API access is private-approval based. Real mode is intentionally
+    fail-closed until official endpoint paths, signing behavior, credentials,
+    durable state, and webhook verification are configured.
     """
 
     enabled: bool = False
@@ -84,6 +98,22 @@ class BigSellerConfig(BaseModel):
     webhook_replay_window_seconds: int = 300
     webhook_event_ttl_seconds: int = 86400
     webhook_max_body_bytes: int = 262144
+
+    auth_code_exchange_path: Optional[str] = None
+    refresh_token_path: Optional[str] = None
+    orders_list_path: Optional[str] = None
+    order_detail_path: Optional[str] = None
+    inventory_list_path: Optional[str] = None
+    inventory_update_path: Optional[str] = None
+    products_list_path: Optional[str] = None
+    product_detail_path: Optional[str] = None
+    fulfillment_sync_path: Optional[str] = None
+    request_signing_enabled: bool = False
+    signature_header: str = "x-bigseller-signature"
+    signature_timestamp_header: str = "x-bigseller-timestamp"
+    signature_app_id_header: str = "x-bigseller-app-id"
+    response_root_keys: dict[str, str] = Field(default_factory=dict)
+
     audit_log_path: Path = Field(
         default_factory=lambda: Path("~/.omnidesk/bigseller_audit.jsonl").expanduser()
     )
@@ -98,6 +128,26 @@ class BigSellerConfig(BaseModel):
             return None
         stripped = value.strip().rstrip("/")
         return stripped or None
+
+    @field_validator(
+        "auth_code_exchange_path",
+        "refresh_token_path",
+        "orders_list_path",
+        "order_detail_path",
+        "inventory_list_path",
+        "inventory_update_path",
+        "products_list_path",
+        "product_detail_path",
+        "fulfillment_sync_path",
+    )
+    @classmethod
+    def _normalize_endpoint_path(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        return normalized if normalized.startswith("/") else f"/{normalized}"
 
     @field_validator("state_backend")
     @classmethod
@@ -157,6 +207,20 @@ class BigSellerConfig(BaseModel):
             webhook_max_body_bytes=max(
                 1024, _int_env("BIGSELLER_WEBHOOK_MAX_BODY_BYTES", 262144)
             ),
+            auth_code_exchange_path=_optional_env("BIGSELLER_AUTH_CODE_EXCHANGE_PATH"),
+            refresh_token_path=_optional_env("BIGSELLER_REFRESH_TOKEN_PATH"),
+            orders_list_path=_optional_env("BIGSELLER_ORDERS_LIST_PATH"),
+            order_detail_path=_optional_env("BIGSELLER_ORDER_DETAIL_PATH"),
+            inventory_list_path=_optional_env("BIGSELLER_INVENTORY_LIST_PATH"),
+            inventory_update_path=_optional_env("BIGSELLER_INVENTORY_UPDATE_PATH"),
+            products_list_path=_optional_env("BIGSELLER_PRODUCTS_LIST_PATH"),
+            product_detail_path=_optional_env("BIGSELLER_PRODUCT_DETAIL_PATH"),
+            fulfillment_sync_path=_optional_env("BIGSELLER_FULFILLMENT_SYNC_PATH"),
+            request_signing_enabled=_bool_env("BIGSELLER_REQUEST_SIGNING_ENABLED", False),
+            signature_header=_env("BIGSELLER_SIGNATURE_HEADER") or "x-bigseller-signature",
+            signature_timestamp_header=_env("BIGSELLER_SIGNATURE_TIMESTAMP_HEADER") or "x-bigseller-timestamp",
+            signature_app_id_header=_env("BIGSELLER_SIGNATURE_APP_ID_HEADER") or "x-bigseller-app-id",
+            response_root_keys=_json_dict_env("BIGSELLER_RESPONSE_ROOT_KEYS"),
             audit_log_path=audit_log,
             state_db_path=state_db,
         )
@@ -181,6 +245,29 @@ class BigSellerConfig(BaseModel):
             issues.append(
                 "BIGSELLER_ACCESS_TOKEN or BIGSELLER_AUTH_CODE is required for BigSeller real mode"
             )
+        for name, value in (
+            ("BIGSELLER_ORDERS_LIST_PATH", self.orders_list_path),
+            ("BIGSELLER_ORDER_DETAIL_PATH", self.order_detail_path),
+            ("BIGSELLER_INVENTORY_LIST_PATH", self.inventory_list_path),
+            ("BIGSELLER_INVENTORY_UPDATE_PATH", self.inventory_update_path),
+            ("BIGSELLER_PRODUCTS_LIST_PATH", self.products_list_path),
+            ("BIGSELLER_PRODUCT_DETAIL_PATH", self.product_detail_path),
+            ("BIGSELLER_FULFILLMENT_SYNC_PATH", self.fulfillment_sync_path),
+        ):
+            if not value:
+                issues.append(f"{name} is required for BigSeller real mode")
+        if self.auth_code and not self.auth_code_exchange_path:
+            issues.append(
+                "BIGSELLER_AUTH_CODE_EXCHANGE_PATH is required when BIGSELLER_AUTH_CODE is configured"
+            )
+        if self.refresh_token and not self.refresh_token_path:
+            issues.append(
+                "BIGSELLER_REFRESH_TOKEN_PATH is required when BIGSELLER_REFRESH_TOKEN is configured"
+            )
+        if self.request_signing_enabled and not self.app_key:
+            issues.append(
+                "BIGSELLER_APP_KEY is required when BIGSELLER_REQUEST_SIGNING_ENABLED=true"
+            )
         if self.state_backend == "memory":
             issues.append(
                 "BIGSELLER_STATE_BACKEND=memory is not allowed for BigSeller real mode"
@@ -201,6 +288,8 @@ class BigSellerConfig(BaseModel):
             "issues": issues,
             "state_backend": self.state_backend,
             "durable_state": self.state_backend in {"sqlite", "postgres"},
+            "real_endpoint_contract_configured": self.use_mock or not issues,
+            "request_signing_enabled": self.request_signing_enabled,
         }
 
     def redacted(self) -> dict[str, object]:
@@ -226,4 +315,20 @@ class BigSellerConfig(BaseModel):
             "webhook_replay_window_seconds": self.webhook_replay_window_seconds,
             "webhook_event_ttl_seconds": self.webhook_event_ttl_seconds,
             "webhook_max_body_bytes": self.webhook_max_body_bytes,
+            "endpoint_paths_configured": {
+                "auth_code_exchange": bool(self.auth_code_exchange_path),
+                "refresh_token": bool(self.refresh_token_path),
+                "orders_list": bool(self.orders_list_path),
+                "order_detail": bool(self.order_detail_path),
+                "inventory_list": bool(self.inventory_list_path),
+                "inventory_update": bool(self.inventory_update_path),
+                "products_list": bool(self.products_list_path),
+                "product_detail": bool(self.product_detail_path),
+                "fulfillment_sync": bool(self.fulfillment_sync_path),
+            },
+            "request_signing_enabled": self.request_signing_enabled,
+            "signature_header": self.signature_header,
+            "signature_timestamp_header": self.signature_timestamp_header,
+            "signature_app_id_header": self.signature_app_id_header,
+            "response_root_keys": dict(self.response_root_keys),
         }
