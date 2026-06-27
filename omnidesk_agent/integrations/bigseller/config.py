@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 FALSE_VALUES = {"0", "false", "no", "n", "off"}
+STATE_BACKENDS = {"memory", "sqlite", "postgres"}
 
 
 def _env(name: str) -> str:
@@ -78,6 +79,10 @@ class BigSellerConfig(BaseModel):
     max_retries: int = 3
     rate_limit_per_minute: int = 60
     use_mock: bool = True
+    state_backend: str = "sqlite"
+    postgres_dsn: Optional[str] = None
+    webhook_replay_window_seconds: int = 300
+    webhook_event_ttl_seconds: int = 86400
     audit_log_path: Path = Field(
         default_factory=lambda: Path("~/.omnidesk/bigseller_audit.jsonl").expanduser()
     )
@@ -92,6 +97,16 @@ class BigSellerConfig(BaseModel):
             return None
         stripped = value.strip().rstrip("/")
         return stripped or None
+
+    @field_validator("state_backend")
+    @classmethod
+    def _normalize_state_backend(cls, value: str) -> str:
+        normalized = (value or "sqlite").strip().lower()
+        if normalized not in STATE_BACKENDS:
+            raise ValueError(
+                "BIGSELLER_STATE_BACKEND must be one of memory, sqlite, postgres"
+            )
+        return normalized
 
     @classmethod
     def from_env(cls, *, workspace_root: Path | None = None) -> "BigSellerConfig":
@@ -130,6 +145,14 @@ class BigSellerConfig(BaseModel):
                 1, _int_env("BIGSELLER_RATE_LIMIT_PER_MINUTE", 60)
             ),
             use_mock=_bool_env("BIGSELLER_USE_MOCK", True),
+            state_backend=(_env("BIGSELLER_STATE_BACKEND") or "sqlite"),
+            postgres_dsn=_optional_env("BIGSELLER_POSTGRES_DSN"),
+            webhook_replay_window_seconds=max(
+                1, _int_env("BIGSELLER_WEBHOOK_REPLAY_WINDOW_SECONDS", 300)
+            ),
+            webhook_event_ttl_seconds=max(
+                60, _int_env("BIGSELLER_WEBHOOK_EVENT_TTL_SECONDS", 86400)
+            ),
             audit_log_path=audit_log,
             state_db_path=state_db,
         )
@@ -146,12 +169,21 @@ class BigSellerConfig(BaseModel):
             ("BIGSELLER_BASE_URL", self.base_url),
             ("BIGSELLER_APP_ID", self.app_id),
             ("BIGSELLER_APP_KEY", self.app_key),
+            ("BIGSELLER_WEBHOOK_SECRET", self.webhook_secret),
         ):
             if not value:
                 issues.append(f"{name} is required for BigSeller real mode")
         if not (self.access_token or self.auth_code):
             issues.append(
                 "BIGSELLER_ACCESS_TOKEN or BIGSELLER_AUTH_CODE is required for BigSeller real mode"
+            )
+        if self.state_backend == "memory":
+            issues.append(
+                "BIGSELLER_STATE_BACKEND=memory is not allowed for BigSeller real mode"
+            )
+        if self.state_backend == "postgres" and not self.postgres_dsn:
+            issues.append(
+                "BIGSELLER_POSTGRES_DSN is required when BIGSELLER_STATE_BACKEND=postgres"
             )
         return issues
 
@@ -163,6 +195,8 @@ class BigSellerConfig(BaseModel):
             "mode": self.mode,
             "ready": ready,
             "issues": issues,
+            "state_backend": self.state_backend,
+            "durable_state": self.state_backend in {"sqlite", "postgres"},
         }
 
     def redacted(self) -> dict[str, object]:
@@ -182,4 +216,9 @@ class BigSellerConfig(BaseModel):
             "sync_interval_seconds": self.sync_interval_seconds,
             "max_retries": self.max_retries,
             "rate_limit_per_minute": self.rate_limit_per_minute,
+            "state_backend": self.state_backend,
+            "postgres_configured": bool(self.postgres_dsn),
+            "state_db_path": str(self.state_db_path),
+            "webhook_replay_window_seconds": self.webhook_replay_window_seconds,
+            "webhook_event_ttl_seconds": self.webhook_event_ttl_seconds,
         }
