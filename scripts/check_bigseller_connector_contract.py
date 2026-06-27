@@ -102,7 +102,7 @@ REQUIRED_SNIPPETS = {
     "scripts/check_bigseller_route_enablement.py": (
         "BIGSELLER_REGISTER_ROUTES",
         "def audit",
-        "omnidesk-bigseller-route-enablement/v1",
+        "omnidesk-bigseller-route-enablement/v2",
     ),
     "scripts/run_bigseller_live_smoke.py": (
         "BIGSELLER_USE_MOCK=false",
@@ -119,6 +119,7 @@ REQUIRED_SNIPPETS = {
     "docs/integrations/bigseller.md": (
         "BIGSELLER_STATE_BACKEND",
         "BIGSELLER_REGISTER_ROUTES",
+        "BIGSELLER_ENABLED does not register routes",
         "BIGSELLER_WEBHOOK_MAX_BODY_BYTES",
         "PostgreSQL",
         "replay protection",
@@ -210,13 +211,13 @@ def audit(root: Path) -> dict[str, object]:
         failures.append("missing production evidence manifest")
 
     return {
-        "schema": "omnidesk-bigseller-connector-contract/v5",
+        "schema": "omnidesk-bigseller-connector-contract/v6",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": (
             "This source contract verifies durable state, replay protection, "
             "body-size enforcement, TTL purge, observability registry wiring, configurable real adapter wiring, "
-            "request signing scaffold, route enablement, Admin retry/dead-letter operations, release-gate wiring, "
+            "request signing scaffold, explicit route enablement, Admin retry/dead-letter operations, release-gate wiring, "
             "live-smoke runner/importer, and BigSeller external evidence gating. "
             "It does not claim live BigSeller production readiness without private API docs and live smoke evidence."
         ),
