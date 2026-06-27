@@ -32,6 +32,13 @@ from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.validation.production import assert_production_config_safe
 
 
+TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in TRUE_VALUES
+
+
 def _register_optional_bigseller_routes(app: FastAPI, cfg: AppConfig, admin_auth):
     """Register optional BigSeller routes without expanding core Pyright scope.
 
@@ -230,5 +237,6 @@ def create_app(cfg: AppConfig) -> FastAPI:
     register_appsync_routes(app, cfg, rt, metrics, _admin)
     register_break_glass_routes(app, cfg, rt, _admin)
     register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
-    _register_optional_bigseller_routes(app, cfg, _admin)
+    if _env_flag("BIGSELLER_ENABLED") or _env_flag("BIGSELLER_REGISTER_ROUTES"):
+        _register_optional_bigseller_routes(app, cfg, _admin)
     return app
