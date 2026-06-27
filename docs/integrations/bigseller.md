@@ -15,8 +15,8 @@ BigSeller Open API / API Integration Service is a private-approval API. Endpoint
 - Durable retry/dead-letter queue with SQLite and PostgreSQL backends.
 - Webhook replay protection using HMAC, timestamp drift, event ID dedupe, TTL purge, and body-size enforcement.
 - Connector-level observability counters in `/integrations/bigseller/sync/status`.
+- Admin API routes under `/integrations/bigseller`, including dead-letter list, retry, and resolve operations.
 - Audit logging for sync start/end and per-entity outcomes.
-- Admin API routes under `/integrations/bigseller`.
 - Offline unit and contract tests.
 
 ## Configuration
@@ -25,6 +25,7 @@ Use `.env.example` as the template and keep real credentials only in the product
 
 ```env
 BIGSELLER_ENABLED=false
+BIGSELLER_REGISTER_ROUTES=false
 BIGSELLER_BASE_URL=
 BIGSELLER_APP_ID=
 BIGSELLER_APP_KEY=
@@ -66,7 +67,7 @@ BIGSELLER_SIGNATURE_APP_ID_HEADER=x-bigseller-app-id
 BIGSELLER_RESPONSE_ROOT_KEYS=
 ```
 
-`BIGSELLER_ENABLED=false` disables sync side effects. To run the scaffold offline, set `BIGSELLER_ENABLED=true` and keep `BIGSELLER_USE_MOCK=true`.
+`BIGSELLER_ENABLED=false` disables sync side effects. `BIGSELLER_REGISTER_ROUTES=false` keeps BigSeller endpoints out of the default gateway attack surface. Routes are registered only when `BIGSELLER_ENABLED=true` or `BIGSELLER_REGISTER_ROUTES=true`.
 
 `BIGSELLER_STATE_BACKEND` accepts:
 
@@ -106,9 +107,12 @@ The configurable adapter maps common response names such as `data`, `items`, `ro
 - `POST /integrations/bigseller/sync/inventory`
 - `POST /integrations/bigseller/sync/fulfillment`
 - `GET /integrations/bigseller/sync/status`
+- `GET /integrations/bigseller/errors`
+- `POST /integrations/bigseller/errors/{error_id}/retry`
+- `POST /integrations/bigseller/errors/{error_id}/resolve`
 - `POST /integrations/bigseller/webhook`
 
-The route registration wires OmniDesk admin auth when the full gateway app is used. The webhook receiver verifies `BIGSELLER_WEBHOOK_SECRET` when configured. In real mode, missing webhook secret fails closed.
+The route registration wires OmniDesk admin auth when the full gateway app is used. Viewer role can inspect health/status/errors. Operator role is required for sync, retry, and resolve side-effect operations. The webhook receiver verifies `BIGSELLER_WEBHOOK_SECRET` when configured. In real mode, missing webhook secret fails closed.
 
 ## Mock Mode
 
@@ -155,7 +159,7 @@ Duplicate webhook events return `ok=true` with `handled=duplicate` and do not tr
 - connector counters for sync, webhook receive/reject/duplicate, and current dead-letter gauge
 - last sync result
 - last operation duration snapshot
-- recent audit events
+- recent audit events and recent retry/dead-letter errors
 - endpoint contract readiness and signing mode in redacted config
 
 Production deployments should export these counters into the shared OmniDesk metrics pipeline after private API behavior is verified.
