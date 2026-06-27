@@ -9,6 +9,8 @@
   "require_codeowners_review": true,
   "dismiss_stale_reviews": true,
   "require_signed_commits": true,
+  "require_enforce_admins": true,
+  "require_linear_history": true,
   "required_approving_review_count": 1,
   "required_status_checks": [
     "Release Policy",
@@ -53,10 +55,13 @@
     "require_conversation_resolution": true,
     "require_code_owner_review": true,
     "dismiss_stale_reviews": true,
-    "require_signed_commits": true
+    "require_signed_commits": true,
+    "require_enforce_admins": true,
+    "require_linear_history": true
   },
   "distribution_ga_policy": {
     "require_main_verification_artifact": true,
+    "require_main_verification_live_artifact": true,
     "require_external_ga_evidence_passed": true,
     "forbid_mock_or_sample_evidence": true
   }
