@@ -1,0 +1,80 @@
+name: Real GA Readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      readiness_channel:
+        description: "candidate audits missing evidence; real-ga fails closed on missing live evidence"
+        type: choice
+        required: true
+        default: candidate
+        options:
+          - candidate
+          - real-ga
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  real-ga-readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python scripts/check_lock_hashes.py requirements.dev.lock
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: mkdir -p dist/evidence release/external-evidence/control-plane release/external-evidence/model
+      - name: Validate source readiness contract
+        run: python scripts/check_real_ga_readiness_contract.py . --write-report dist/evidence/real-ga-readiness-contract.json
+      - name: Verify live branch protection control plane
+        env:
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+        run: |
+          set -euo pipefail
+          audit_flag=""
+          if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
+            audit_flag="--audit-only"
+          fi
+          python scripts/check_live_branch_protection_contract.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            $audit_flag \
+            --write-report release/external-evidence/control-plane/github-branch-protection-live.json
+          cp release/external-evidence/control-plane/github-branch-protection-live.json dist/evidence/github-branch-protection-live.json
+      - name: Validate live model smoke evidence
+        env:
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+        run: |
+          set -euo pipefail
+          audit_flag=""
+          if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
+            audit_flag="--audit-only"
+          fi
+          python scripts/check_model_live_smoke_evidence.py . \
+            $audit_flag \
+            --write-report dist/evidence/model-live-smoke-check.json
+      - name: Validate external GA evidence set
+        env:
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+        run: |
+          set -euo pipefail
+          audit_flag=""
+          if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
+            audit_flag="--audit-only"
+          fi
+          python scripts/check_external_ga_evidence.py . \
+            $audit_flag \
+            --write-report dist/evidence/external-ga-evidence-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-ga-readiness-${{ github.sha }}
+          path: |
+            dist/evidence/real-ga-readiness-contract.json
+            dist/evidence/github-branch-protection-live.json
+            dist/evidence/model-live-smoke-check.json
+            dist/evidence/external-ga-evidence-audit.json
+          if-no-files-found: error
