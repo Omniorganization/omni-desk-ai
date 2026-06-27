@@ -15,6 +15,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python scripts/check_lock_hashes.py requirements.dev.lock
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: python scripts/check_release_channel_policy.py .
       - run: python scripts/check_ci_evidence_contract.py .
       - run: python scripts/check_security_workflow_policy.py .
