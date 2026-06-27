@@ -44,9 +44,11 @@ def _release_governance(root: Path) -> list[tuple[str, bool]]:
     required_jobs = set(branch_policy.get("required_jobs", []))
     return [
         ("release policy workflow runs contract checks", _contains(root, ".github/workflows/release-policy.yml", "check_branch_protection_contract.py .", "check_main_verification_contract.py .")),
+        ("release policy runs attack surface gate", _contains(root, ".github/workflows/release-policy.yml", "check_security_attack_surface.py .")),
         ("main verification emits digest-bound evidence", _contains(root, ".github/workflows/main-verification.yml", "main-verification-evidence-${{ github.sha }}", "hashlib.sha256")),
-        ("branch protection contract requires release governance checks", {"Release Policy", "CI", "Security", "Tri-App Quality Gate", "Source Maturity Closure"}.issubset(required_checks)),
-        ("branch protection contract requires release governance jobs", {"release-policy", "external-ga-evidence-contract", "source-maturity-closure"}.issubset(required_jobs)),
+        ("main verification includes attack surface gate", _contains(root, ".github/workflows/main-verification.yml", "check_security_attack_surface.py .", "security_attack_surface")),
+        ("branch protection contract requires release governance checks", {"Release Policy", "CI", "Security", "Security Attack Surface Gate", "Tri-App Quality Gate", "Source Maturity Closure"}.issubset(required_checks)),
+        ("branch protection contract requires release governance jobs", {"release-policy", "external-ga-evidence-contract", "security-attack-surface", "source-maturity-closure"}.issubset(required_jobs)),
         ("branch protection contract blocks pending checks", (branch_policy.get("merge_policy") or {}).get("block_pending_required_checks") is True),
     ]
 
@@ -54,6 +56,9 @@ def _release_governance(root: Path) -> list[tuple[str, bool]]:
 def _security_supply_chain(root: Path) -> list[tuple[str, bool]]:
     return [
         ("security workflow policy checker exists", _file_exists(root, "scripts/check_security_workflow_policy.py")),
+        ("security attack surface checker exists", _file_exists(root, "scripts/check_security_attack_surface.py")),
+        ("security attack surface workflow exists", _file_exists(root, ".github/workflows/security-attack-surface.yml")),
+        ("security workflow runs attack surface checker", _contains(root, ".github/workflows/security.yml", "check_security_attack_surface.py .")),
         ("supply chain standard checker exists", _file_exists(root, "scripts/check_supply_chain_standard.py")),
         ("production install policy checker exists", _file_exists(root, "scripts/check_production_install_policy.py")),
         ("release workflow uses external evidence gate", _contains(root, ".github/workflows/release.yml", "check_external_ga_evidence.py", "write_real_ga_evidence_summary.py")),

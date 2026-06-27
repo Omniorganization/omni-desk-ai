@@ -7,6 +7,7 @@
     "ga_release_gate": "required",
     "kubernetes_source_contract": "required",
     "docker_production_config_validation": "required",
+    "security_attack_surface_gate": "required",
     "pytest_chunked_full_suite": "required",
     "release_hygiene": "required",
     "tri_app_runtime_evidence": "required",
@@ -37,6 +38,13 @@
     "policy_file": ".github/branch-protection.required.json",
     "contract_check": "scripts/check_branch_protection_contract.py .",
     "required_for_customer_distribution_ga": true
+  },
+  "security_attack_surface_gate": {
+    "schema": "omnidesk-security-attack-surface/v1",
+    "contract_check": "scripts/check_security_attack_surface.py . --write-report dist/evidence/security-attack-surface.json",
+    "workflow": ".github/workflows/security-attack-surface.yml",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Source/config gate only; it does not replace live penetration, signing, push, soak, rollback, backup/restore, or failure-injection evidence."
   },
   "main_verification_evidence": {
     "schema": "omnidesk-main-verification/v1",

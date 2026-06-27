@@ -13,6 +13,8 @@ REQUIRED_WORKFLOW_SNIPPETS = (
     "push:",
     "branches:",
     "- main",
+    "check_security_attack_surface.py .",
+    "security_attack_surface",
     "check_main_verification_contract.py .",
     "main-verification-evidence-${{ github.sha }}",
     "main-verification-evidence.json",
@@ -76,6 +78,13 @@ def main(argv: list[str] | None = None) -> int:
         _assert(str(main_contract.get("artifact_name_pattern", "")).endswith("-${commit_sha}"), "artifact name must be commit-addressed", failures)
         _assert(main_contract.get("evidence_digest_algorithm") == "sha256", "main verification evidence digest must use sha256", failures)
         _assert(main_contract.get("required_for_customer_distribution_ga") is True, "main verification evidence must be required for customer-distribution GA", failures)
+
+    security_contract = evidence_manifest.get("security_attack_surface_gate")
+    _assert(isinstance(security_contract, dict), "production-evidence manifest must declare security_attack_surface_gate", failures)
+    if isinstance(security_contract, dict):
+        _assert(security_contract.get("schema") == "omnidesk-security-attack-surface/v1", "security attack surface schema must match checker report schema", failures)
+        _assert("check_security_attack_surface.py" in str(security_contract.get("contract_check", "")), "security attack surface contract check must be declared", failures)
+        _assert(security_contract.get("required_for_customer_distribution_ga") is True, "security attack surface gate must be required for customer-distribution GA", failures)
 
     if failures:
         print("main verification contract check failed:", file=sys.stderr)

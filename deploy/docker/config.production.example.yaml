@@ -76,6 +76,14 @@ permissions:
   no_tty_mode: deny
   audit_log: /data/audit.log
   shell_backend: remote_docker
+  always_ask_tools:
+    - computer
+    - shell
+    - channels
+    - files
+    - ui_bridge
+    - browser
+    - gmail
   require_dual_approval_for_risks:
     - critical
   break_glass_enabled: true
@@ -88,6 +96,8 @@ gateway:
   allow_local_admin_without_token: false
   require_webhook_signatures: true
   admin_allowed_ips: []
+  shared_secret_env: OMNIDESK_GATEWAY_SECRET
+  admin_token_env: OMNIDESK_ADMIN_TOKEN
 
 sandbox:
   backend: remote_docker
@@ -111,8 +121,10 @@ plugins:
 capabilities:
   plugins:
     enabled: true
+  # High-risk capabilities default to disabled in production templates.
+  # Enable per tenant/actor only after remote approval, sandbox, audit, and budget controls are verified.
   shell:
-    enabled: true
+    enabled: false
   channels:
     enabled: false
   browser:

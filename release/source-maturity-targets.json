@@ -8,6 +8,10 @@
     "tri_app_engineering": 100,
     "offline_sync_reconnect": 100
   },
+  "required_gates": [
+    "scripts/check_source_maturity_closure.py . --write-report dist/evidence/source-maturity-closure.json",
+    "scripts/check_security_attack_surface.py . --write-report dist/evidence/security-attack-surface.json"
+  ],
   "gate": "scripts/check_source_maturity_closure.py . --write-report dist/evidence/source-maturity-closure.json",
   "ga_boundary": "Customer-distribution GA still requires real external signing, store, push, rollback, backup/restore, soak, and failure-injection evidence."
 }
