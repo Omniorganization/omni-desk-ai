@@ -16,6 +16,7 @@ REQUIRED_FILES = (
     "omnidesk_agent/integrations/bigseller/worker.py",
     "omnidesk_agent/observability/metrics.py",
     "omnidesk_agent/api/routes/bigseller.py",
+    "scripts/check_bigseller_route_enablement.py",
     "scripts/run_bigseller_live_smoke.py",
     "scripts/import_bigseller_live_smoke_evidence.py",
     "docs/integrations/bigseller.md",
@@ -80,6 +81,9 @@ REQUIRED_SNIPPETS = {
         "note_webhook_rejected",
         "create_bigseller_idempotency_guard",
         "create_bigseller_error_queue",
+        "def list_errors",
+        "def retry_error",
+        "def resolve_error",
     ),
     "omnidesk_agent/observability/metrics.py": (
         "class MetricsRegistry",
@@ -92,6 +96,13 @@ REQUIRED_SNIPPETS = {
         "status_code=413",
         "note_webhook_rejected",
         "parse_bigseller_webhook",
+        "/errors/{error_id}/retry",
+        "/errors/{error_id}/resolve",
+    ),
+    "scripts/check_bigseller_route_enablement.py": (
+        "BIGSELLER_REGISTER_ROUTES",
+        "def audit",
+        "omnidesk-bigseller-route-enablement/v1",
     ),
     "scripts/run_bigseller_live_smoke.py": (
         "BIGSELLER_USE_MOCK=false",
@@ -107,6 +118,7 @@ REQUIRED_SNIPPETS = {
     ),
     "docs/integrations/bigseller.md": (
         "BIGSELLER_STATE_BACKEND",
+        "BIGSELLER_REGISTER_ROUTES",
         "BIGSELLER_WEBHOOK_MAX_BODY_BYTES",
         "PostgreSQL",
         "replay protection",
@@ -115,6 +127,8 @@ REQUIRED_SNIPPETS = {
         "BIGSELLER_ORDERS_LIST_PATH",
         "BIGSELLER_REQUEST_SIGNING_ENABLED",
         "BIGSELLER_RESPONSE_ROOT_KEYS",
+        "GET /integrations/bigseller/errors",
+        "POST /integrations/bigseller/errors/{error_id}/retry",
     ),
 }
 
@@ -130,6 +144,8 @@ EXTERNAL_EVIDENCE_SNIPPETS = (
 MANIFEST_ONLY_SNIPPETS = (
     "run_bigseller_live_smoke.py",
     "import_bigseller_live_smoke_evidence.py",
+    "bigseller_route_enablement",
+    "bigseller_real_contract_workflow",
 )
 
 
@@ -161,6 +177,7 @@ def audit(root: Path) -> dict[str, object]:
     for workflow in (
         ".github/workflows/release-policy.yml",
         ".github/workflows/main-verification.yml",
+        ".github/workflows/bigseller-real-contract.yml",
     ):
         try:
             text = _read(root, workflow)
@@ -168,6 +185,8 @@ def audit(root: Path) -> dict[str, object]:
             failures.append(f"missing workflow: {workflow}")
             continue
         for snippet in WORKFLOW_SNIPPETS:
+            if workflow.endswith("bigseller-real-contract.yml"):
+                continue
             _check(snippet in text, failures, f"{workflow} missing {snippet}")
 
     for rel in (
@@ -191,13 +210,14 @@ def audit(root: Path) -> dict[str, object]:
         failures.append("missing production evidence manifest")
 
     return {
-        "schema": "omnidesk-bigseller-connector-contract/v4",
+        "schema": "omnidesk-bigseller-connector-contract/v5",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": (
             "This source contract verifies durable state, replay protection, "
             "body-size enforcement, TTL purge, observability registry wiring, configurable real adapter wiring, "
-            "request signing scaffold, release-gate wiring, live-smoke runner/importer, and BigSeller external evidence gating. "
+            "request signing scaffold, route enablement, Admin retry/dead-letter operations, release-gate wiring, "
+            "live-smoke runner/importer, and BigSeller external evidence gating. "
             "It does not claim live BigSeller production readiness without private API docs and live smoke evidence."
         ),
     }
