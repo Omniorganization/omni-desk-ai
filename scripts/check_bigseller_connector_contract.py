@@ -56,7 +56,7 @@ REQUIRED_SNIPPETS = {
     ),
     "omnidesk_agent/api/routes/bigseller.py": (
         "webhook_max_body_bytes",
-        "Payload too large",
+        "payload too large",
         "status_code=413",
         "note_webhook_rejected",
         "parse_bigseller_webhook",
