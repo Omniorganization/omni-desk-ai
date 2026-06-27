@@ -11,7 +11,7 @@ BigSeller Open API / API Integration Service is a private-approval API. Endpoint
 - Webhook receiver with polling/sync fallback behavior.
 - Durable idempotency guard keyed by external ID, store ID, and action type.
 - Durable retry/dead-letter queue with SQLite and PostgreSQL backends.
-- Webhook replay protection using HMAC, timestamp drift, and event ID dedupe.
+- Webhook replay protection using HMAC, timestamp drift, event ID dedupe, TTL purge, and body-size enforcement.
 - Connector-level observability counters in `/integrations/bigseller/sync/status`.
 - Audit logging for sync start/end and per-entity outcomes.
 - Admin API routes under `/integrations/bigseller`.
@@ -40,6 +40,7 @@ BIGSELLER_STATE_DB_PATH=
 BIGSELLER_POSTGRES_DSN=
 BIGSELLER_WEBHOOK_REPLAY_WINDOW_SECONDS=300
 BIGSELLER_WEBHOOK_EVENT_TTL_SECONDS=86400
+BIGSELLER_WEBHOOK_MAX_BODY_BYTES=262144
 ```
 
 `BIGSELLER_ENABLED=false` disables sync side effects. To run the scaffold offline, set `BIGSELLER_ENABLED=true` and keep `BIGSELLER_USE_MOCK=true`.
@@ -49,6 +50,8 @@ BIGSELLER_WEBHOOK_EVENT_TTL_SECONDS=86400
 - `memory`: mock and unit-test only. It is rejected in real mode.
 - `sqlite`: restart-safe local state for single-node staging.
 - `postgres`: required for horizontally scaled production. Requires `BIGSELLER_POSTGRES_DSN`.
+
+`BIGSELLER_WEBHOOK_MAX_BODY_BYTES` limits webhook payload size. Requests above the limit return HTTP 413 before parsing or signature work. The default is 256 KiB.
 
 ## Admin API
 
@@ -92,7 +95,9 @@ Real-mode webhook delivery requires:
 - Timestamp in `x-bigseller-timestamp`, `x-bigseller-request-timestamp`, or `x-request-timestamp`.
 - Timestamp drift within `BIGSELLER_WEBHOOK_REPLAY_WINDOW_SECONDS`.
 - Event ID in `event_id`, `webhook_id`, `id`, `x-bigseller-event-id`, or `x-event-id`.
+- Body size within `BIGSELLER_WEBHOOK_MAX_BODY_BYTES`.
 - Durable event ID dedupe through the configured state backend.
+- TTL purge of expired idempotency records through `BIGSELLER_WEBHOOK_EVENT_TTL_SECONDS`.
 
 Duplicate webhook events return `ok=true` with `handled=duplicate` and do not trigger repeated sync side effects.
 
@@ -102,7 +107,7 @@ Duplicate webhook events return `ok=true` with `handled=duplicate` and do not tr
 
 - idempotency backend and durability state
 - retry/dead-letter queue backend and counts
-- connector counters for sync, webhook receive/reject/duplicate, and dead letters
+- connector counters for sync, webhook receive/reject/duplicate, and current dead-letter gauge
 - last sync result
 - last operation duration snapshot
 - recent audit events
@@ -111,7 +116,7 @@ Production deployments should export these counters into the shared OmniDesk met
 
 ## Live Smoke Evidence
 
-BigSeller customer-distribution readiness requires a live smoke evidence file, for example:
+BigSeller customer-distribution readiness requires a live smoke evidence file:
 
 ```text
 release/external-evidence/integrations/bigseller-live-smoke.json
@@ -124,6 +129,7 @@ Minimum fields:
   "schema": "omnidesk-bigseller-live-smoke/v1",
   "status": "passed",
   "produced_at": "ISO-8601 timestamp from the live run",
+  "producer": "approved BigSeller staging workflow or operator",
   "environment": "staging",
   "store_id": "redacted real store id",
   "auth_success": true,
@@ -131,6 +137,8 @@ Minimum fields:
   "inventory_list_success": true,
   "webhook_signature_verified": true,
   "webhook_replay_guard_verified": true,
+  "secret_leakage_checked": true,
+  "no_secret_leakage": true,
   "trace_id": "distributed trace id",
   "audit_event_id": "audit log event id",
   "p95_latency_ms": 2500,
@@ -147,6 +155,7 @@ Do not commit raw secrets, app keys, access tokens, refresh tokens, auth codes, 
 - `BIGSELLER_APP_KEY` must remain a secret and must not be committed.
 - Webhook verification is mandatory in real mode.
 - `BIGSELLER_STATE_BACKEND=memory` is rejected in real mode.
+- Oversized webhook bodies are rejected with 413.
 - This scaffold does not claim production readiness for live BigSeller traffic until the private API contract is implemented and verified.
 
 ## Known Limitations
