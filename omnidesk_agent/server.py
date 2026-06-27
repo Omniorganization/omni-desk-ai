@@ -27,6 +27,7 @@ from omnidesk_agent.server_routes.agent_routes import register_agent_routes, reg
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
 from omnidesk_agent.appsync import register_appsync_routes
+from omnidesk_agent.api.routes.bigseller import register_bigseller_routes
 from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.validation.production import assert_production_config_safe
 
@@ -215,4 +216,5 @@ def create_app(cfg: AppConfig) -> FastAPI:
     register_appsync_routes(app, cfg, rt, metrics, _admin)
     register_break_glass_routes(app, cfg, rt, _admin)
     register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
+    register_bigseller_routes(app, cfg, _admin)
     return app
