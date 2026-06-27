@@ -8,10 +8,12 @@ from pathlib import Path
 
 REQUIRED_FILES = (
     ".github/workflows/real-ga-readiness.yml",
+    ".github/workflows/bigseller-real-contract.yml",
     "scripts/check_live_branch_protection_contract.py",
     "scripts/check_main_verification_artifact_live.py",
     "scripts/check_model_live_smoke_evidence.py",
     "scripts/check_external_ga_evidence.py",
+    "scripts/check_bigseller_route_enablement.py",
     "scripts/run_bigseller_live_smoke.py",
     "scripts/import_bigseller_live_smoke_evidence.py",
     "docs/REAL_GA_EVIDENCE_RUNBOOK_1.12.7.md",
@@ -23,6 +25,18 @@ WORKFLOW_SNIPPETS = (
     "check_main_verification_artifact_live.py",
     "check_external_ga_evidence.py",
     "check_model_live_smoke_evidence.py",
+    "readiness_channel",
+    "real-ga",
+    "candidate",
+)
+
+BIGSELLER_WORKFLOW_SNIPPETS = (
+    "name: BigSeller Real Contract",
+    "check_bigseller_connector_contract.py",
+    "check_bigseller_route_enablement.py",
+    "run_bigseller_live_smoke.py",
+    "BIGSELLER_REGISTER_ROUTES",
+    "BIGSELLER_USE_MOCK",
     "readiness_channel",
     "real-ga",
     "candidate",
@@ -79,12 +93,22 @@ def audit(root: Path) -> dict[str, object]:
         pass
 
     try:
+        bigseller_workflow = _read(root, ".github/workflows/bigseller-real-contract.yml")
+        for snippet in BIGSELLER_WORKFLOW_SNIPPETS:
+            _check(snippet in bigseller_workflow, failures, f"bigseller-real-contract workflow missing snippet: {snippet}")
+        _check("contents: read" in bigseller_workflow, failures, "bigseller-real-contract workflow must use least-privilege read permissions")
+    except FileNotFoundError:
+        pass
+
+    try:
         manifest = json.loads(_read(root, "release/production-evidence.manifest.json"))
         external = manifest.get("external_evidence_required") or {}
         for key in MANIFEST_REQUIRED_KEYS:
             _check(key in external, failures, f"production evidence manifest missing external requirement: {key}")
         _check(manifest.get("status") == "source_gate_ready_external_evidence_blocked", failures, "manifest must remain external-evidence blocked until real evidence passes")
         _check("main_verification_live_artifact" in manifest, failures, "manifest must declare live main verification artifact gate")
+        _check("bigseller_route_enablement" in manifest, failures, "manifest must declare BigSeller route enablement gate")
+        _check("bigseller_real_contract_workflow" in manifest, failures, "manifest must declare BigSeller real contract workflow")
     except Exception as exc:
         failures.append(f"could not validate production evidence manifest: {exc}")
 
@@ -98,6 +122,7 @@ def audit(root: Path) -> dict[str, object]:
     try:
         release_policy = _read(root, ".github/workflows/release-policy.yml")
         _check("check_real_ga_readiness_contract.py" in release_policy, failures, "release policy must enforce real GA readiness source contract")
+        _check("check_bigseller_route_enablement.py" in release_policy, failures, "release policy must enforce BigSeller route enablement source contract")
     except FileNotFoundError:
         pass
 
@@ -108,7 +133,7 @@ def audit(root: Path) -> dict[str, object]:
         pass
 
     return {
-        "schema": "omnidesk-real-ga-readiness-contract/v2",
+        "schema": "omnidesk-real-ga-readiness-contract/v3",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": "This source contract verifies that real-GA collection and validation gates exist. It does not fabricate or replace external evidence.",
