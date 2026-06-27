@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 
 from omnidesk_agent.integrations.bigseller.config import BigSellerConfig
 from omnidesk_agent.integrations.bigseller.errors import (
@@ -22,6 +22,8 @@ def _status_code_for_error(exc: Exception) -> int:
         return 409
     if isinstance(exc, BigSellerConfigurationError):
         return 503
+    if isinstance(exc, KeyError):
+        return 404
     return 500
 
 
@@ -106,6 +108,38 @@ def create_bigseller_router(
         await authorize(request, "viewer")
         ctx = connector(request)
         return {"ok": True, **ctx.worker.status()}
+
+    @router.get("/errors")
+    async def list_errors(
+        request: Request,
+        status: str | None = Query(default=None, pattern="^(retryable|dead_letter|resolved)$"),
+        limit: int = Query(default=50, ge=1, le=500),
+    ):
+        await authorize(request, "viewer")
+        ctx = connector(request)
+        return {"ok": True, "errors": ctx.worker.list_errors(status=status, limit=limit)}
+
+    @router.post("/errors/{error_id}/retry")
+    async def retry_error(error_id: str, request: Request):
+        await authorize(request, "operator")
+        ctx = connector(request)
+        try:
+            return {"ok": True, **ctx.worker.retry_error(error_id)}
+        except Exception as exc:
+            raise HTTPException(
+                status_code=_status_code_for_error(exc), detail=str(exc)
+            ) from exc
+
+    @router.post("/errors/{error_id}/resolve")
+    async def resolve_error(error_id: str, request: Request):
+        await authorize(request, "operator")
+        ctx = connector(request)
+        try:
+            return {"ok": True, **ctx.worker.resolve_error(error_id)}
+        except Exception as exc:
+            raise HTTPException(
+                status_code=_status_code_for_error(exc), detail=str(exc)
+            ) from exc
 
     @router.post("/webhook")
     async def webhook(request: Request):
