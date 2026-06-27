@@ -34,6 +34,7 @@ from omnidesk_agent.integrations.bigseller.products import (
 )
 from omnidesk_agent.integrations.bigseller.schemas import (
     BigSellerFulfillmentUpdate,
+    BigSellerQueuedError,
     BigSellerSyncResult,
     BigSellerWebhookEvent,
 )
@@ -145,6 +146,53 @@ class BigSellerSyncWorker:
         self._refresh_queue_gauges()
         return result.model_dump(mode="json")
 
+    def list_errors(self, *, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Return redacted retry/dead-letter queue items for Admin operations."""
+
+        items = self.errors.list(status=status, limit=limit)
+        return [item.model_dump(mode="json") for item in items]
+
+    def _find_error(self, error_id: str) -> BigSellerQueuedError:
+        for item in self.errors.list(status=None, limit=1000):
+            if item.id == error_id:
+                return item
+        raise KeyError(error_id)
+
+    def resolve_error(self, error_id: str) -> dict[str, Any]:
+        """Mark a retry/dead-letter item resolved without replaying side effects."""
+
+        item = self._find_error(error_id)
+        self.errors.resolve(
+            entity_type=item.entity_type,
+            external_id=item.external_id,
+            store_id=item.store_id,
+            action=item.action,
+        )
+        self._refresh_queue_gauges()
+        return {"id": item.id, "status": "resolved", "action": item.action}
+
+    def retry_error(self, error_id: str) -> dict[str, Any]:
+        """Replay a queued BigSeller failure through the normal idempotent worker path."""
+
+        item = self._find_error(error_id)
+        if item.action == BigSellerOrderSyncService.action_type:
+            filters = item.payload.get("filters") if isinstance(item.payload, dict) else None
+            if not isinstance(filters, dict):
+                filters = {}
+            result = self.sync_orders(**filters)
+            return {"id": item.id, "retried": True, "action": item.action, "result": result.model_dump(mode="json")}
+        if item.action == BigSellerInventorySyncService.action_type:
+            filters = item.payload.get("filters") if isinstance(item.payload, dict) else None
+            if not isinstance(filters, dict):
+                filters = {}
+            result = self.sync_inventory(**filters)
+            return {"id": item.id, "retried": True, "action": item.action, "result": result.model_dump(mode="json")}
+        if item.action == BigSellerFulfillmentSyncService.action_type:
+            update = BigSellerFulfillmentUpdate.model_validate(item.payload)
+            result = self.sync_fulfillment_status(update)
+            return {"id": item.id, "retried": True, "action": item.action, "result": result}
+        raise BigSellerConfigurationError(f"Unsupported BigSeller queued error action: {item.action}")
+
     def _claim_webhook_event(self, event: BigSellerWebhookEvent) -> bool:
         if not event.event_id:
             return True
@@ -246,6 +294,7 @@ class BigSellerSyncWorker:
             "prometheus_metrics": self.metrics_registry.snapshot(),
             "last_durations_ms": self.last_durations_ms,
             "last_sync": self.last_sync,
+            "recent_errors": self.list_errors(status=None, limit=20),
             "recent_audit": [
                 event.model_dump(mode="json") for event in self.audit.recent(limit=20)
             ],
