@@ -105,6 +105,7 @@ def create_bigseller_router(
             event = parse_bigseller_webhook(body, request.headers, ctx.config)
             return ctx.worker.handle_webhook(event)
         except PermissionError as exc:
+            ctx.worker.note_webhook_rejected()
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(
