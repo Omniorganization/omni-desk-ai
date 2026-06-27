@@ -42,7 +42,7 @@ def test_webhook_verifies_signature_and_triggers_order_sync(tmp_path):
     with TestClient(app) as client:
         response = client.post(
             "/integrations/bigseller/webhook",
-            data=body,
+            content=body,
             headers=_signed_headers(body, secret),
         )
 
