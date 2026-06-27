@@ -78,6 +78,9 @@ class BigSellerWebhookEvent(BaseModel):
     event_type: str
     external_id: Optional[str] = None
     store_id: Optional[str] = None
+    event_id: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    signature_digest: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
