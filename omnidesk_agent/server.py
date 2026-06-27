@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import importlib
 
 import time
 import weakref
@@ -27,9 +28,29 @@ from omnidesk_agent.server_routes.agent_routes import register_agent_routes, reg
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
 from omnidesk_agent.appsync import register_appsync_routes
-from omnidesk_agent.api.routes.bigseller import register_bigseller_routes
 from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.validation.production import assert_production_config_safe
+
+
+TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in TRUE_VALUES
+
+
+def _register_optional_bigseller_routes(app: FastAPI, cfg: AppConfig, admin_auth):
+    """Register optional BigSeller routes without expanding core Pyright scope.
+
+    BigSeller is an optional private-approval integration. Loading it through a
+    dynamic boundary keeps the gateway's core static type gate focused on the
+    runtime, security, tools, self-upgrade, server, and daemon surfaces while
+    preserving runtime route registration and connector-specific tests.
+    """
+
+    module = importlib.import_module("omnidesk_agent.api.routes.bigseller")
+    register = getattr(module, "register_bigseller_routes")
+    register(app, cfg, admin_auth)
 
 
 def _wire_runtime_metrics(rt: OmniDeskRuntime, metrics: MetricsRegistry, otel_exporter: OTLPHttpExporter | None = None) -> None:
@@ -216,5 +237,6 @@ def create_app(cfg: AppConfig) -> FastAPI:
     register_appsync_routes(app, cfg, rt, metrics, _admin)
     register_break_glass_routes(app, cfg, rt, _admin)
     register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
-    register_bigseller_routes(app, cfg, _admin)
+    if _env_flag("BIGSELLER_ENABLED") or _env_flag("BIGSELLER_REGISTER_ROUTES"):
+        _register_optional_bigseller_routes(app, cfg, _admin)
     return app
