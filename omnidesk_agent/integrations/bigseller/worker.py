@@ -74,12 +74,19 @@ class BigSellerSyncWorker:
             "bigseller_webhook_received_total": 0,
             "bigseller_webhook_rejected_total": 0,
             "bigseller_webhook_duplicate_total": 0,
-            "bigseller_dead_letter_total": 0,
+            "bigseller_dead_letter_current": 0,
         }
         self.last_durations_ms: dict[str, int] = {}
 
     def _inc(self, metric: str, amount: int = 1) -> None:
         self.metrics[metric] = self.metrics.get(metric, 0) + amount
+
+    def _set_metric(self, metric: str, value: int) -> None:
+        self.metrics[metric] = value
+
+    def _refresh_queue_gauges(self) -> None:
+        stats = self.errors.stats()
+        self._set_metric("bigseller_dead_letter_current", int(stats.get("dead_letter", 0)))
 
     def _observe_duration(self, name: str, started: float) -> None:
         self.last_durations_ms[name] = int((time.time() - started) * 1000)
@@ -101,7 +108,7 @@ class BigSellerSyncWorker:
         self._inc("bigseller_sync_orders_total")
         self._observe_duration("orders", started)
         self.last_sync["orders"] = result.model_dump(mode="json")
-        self._inc("bigseller_dead_letter_total", self.errors.stats()["dead_letter"])
+        self._refresh_queue_gauges()
         return result
 
     def sync_inventory(self, **filters: Any) -> BigSellerSyncResult:
@@ -111,7 +118,7 @@ class BigSellerSyncWorker:
         self._inc("bigseller_sync_inventory_total")
         self._observe_duration("inventory", started)
         self.last_sync["inventory"] = result.model_dump(mode="json")
-        self._inc("bigseller_dead_letter_total", self.errors.stats()["dead_letter"])
+        self._refresh_queue_gauges()
         return result
 
     def sync_fulfillment_status(
@@ -123,6 +130,7 @@ class BigSellerSyncWorker:
         self._inc("bigseller_sync_fulfillment_total")
         self._observe_duration("fulfillment", started)
         self.last_sync["fulfillment"] = result.model_dump(mode="json")
+        self._refresh_queue_gauges()
         return result.model_dump(mode="json")
 
     def _claim_webhook_event(self, event: BigSellerWebhookEvent) -> bool:
@@ -212,9 +220,11 @@ class BigSellerSyncWorker:
             return {"ok": True, "handled": "ignored", "event_type": event.event_type}
         except Exception:
             self._release_webhook_event(event)
+            self._refresh_queue_gauges()
             raise
 
     def status(self) -> dict[str, Any]:
+        self._refresh_queue_gauges()
         return {
             "config": self.config.redacted(),
             "health": self.config.health(),
