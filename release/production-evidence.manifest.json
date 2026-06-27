@@ -45,11 +45,11 @@
     "required_for_customer_distribution_ga": true
   },
   "live_branch_protection_control_plane": {
-    "schema": "omnidesk-live-branch-protection/v1",
+    "schema": "omnidesk-live-branch-protection/v2",
     "contract_check": "scripts/check_live_branch_protection_contract.py . --repository $GITHUB_REPOSITORY --write-report release/external-evidence/control-plane/github-branch-protection-live.json",
     "workflow": ".github/workflows/real-ga-readiness.yml",
     "required_for_customer_distribution_ga": true,
-    "boundary": "Live GitHub control-plane verification only; it does not replace signed artifacts, push, soak, rollback, backup/restore, or failure-injection evidence."
+    "boundary": "Live GitHub control-plane verification only; it checks required checks, strict status, code owner review, signed commits, linear history, and admin enforcement. It does not replace signed artifacts, push, soak, rollback, backup/restore, or failure-injection evidence."
   },
   "security_attack_surface_gate": {
     "schema": "omnidesk-security-attack-surface/v1",
