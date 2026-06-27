@@ -45,6 +45,20 @@ jobs:
             $audit_flag \
             --write-report release/external-evidence/control-plane/github-branch-protection-live.json
           cp release/external-evidence/control-plane/github-branch-protection-live.json dist/evidence/github-branch-protection-live.json
+      - name: Verify post-merge Main Verification artifact
+        env:
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+        run: |
+          set -euo pipefail
+          audit_flag=""
+          if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
+            audit_flag="--audit-only"
+          fi
+          python scripts/check_main_verification_artifact_live.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            $audit_flag \
+            --write-report dist/evidence/main-verification-live-artifact.json
       - name: Validate live model smoke evidence
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
@@ -75,6 +89,7 @@ jobs:
           path: |
             dist/evidence/real-ga-readiness-contract.json
             dist/evidence/github-branch-protection-live.json
+            dist/evidence/main-verification-live-artifact.json
             dist/evidence/model-live-smoke-check.json
             dist/evidence/external-ga-evidence-audit.json
           if-no-files-found: error

@@ -9,14 +9,18 @@ from pathlib import Path
 REQUIRED_FILES = (
     ".github/workflows/real-ga-readiness.yml",
     "scripts/check_live_branch_protection_contract.py",
+    "scripts/check_main_verification_artifact_live.py",
     "scripts/check_model_live_smoke_evidence.py",
     "scripts/check_external_ga_evidence.py",
+    "scripts/run_bigseller_live_smoke.py",
+    "scripts/import_bigseller_live_smoke_evidence.py",
     "docs/REAL_GA_EVIDENCE_RUNBOOK_1.12.7.md",
 )
 
 WORKFLOW_SNIPPETS = (
     "name: Real GA Readiness",
     "check_live_branch_protection_contract.py",
+    "check_main_verification_artifact_live.py",
     "check_external_ga_evidence.py",
     "check_model_live_smoke_evidence.py",
     "readiness_channel",
@@ -27,6 +31,7 @@ WORKFLOW_SNIPPETS = (
 MANIFEST_REQUIRED_KEYS = (
     "live_branch_protection_control_plane",
     "model_live_smoke",
+    "bigseller_live_smoke",
     "native_build",
     "signed_artifacts",
     "push_delivery",
@@ -39,8 +44,10 @@ MANIFEST_REQUIRED_KEYS = (
 EXTERNAL_CHECK_SNIPPETS = (
     '"live_branch_protection"',
     '"model_live_smoke"',
+    '"bigseller_live_smoke"',
     "github-branch-protection-live.json",
     "model-live-smoke.json",
+    "integrations/bigseller-live-smoke.json",
 )
 
 
@@ -77,6 +84,7 @@ def audit(root: Path) -> dict[str, object]:
         for key in MANIFEST_REQUIRED_KEYS:
             _check(key in external, failures, f"production evidence manifest missing external requirement: {key}")
         _check(manifest.get("status") == "source_gate_ready_external_evidence_blocked", failures, "manifest must remain external-evidence blocked until real evidence passes")
+        _check("main_verification_live_artifact" in manifest, failures, "manifest must declare live main verification artifact gate")
     except Exception as exc:
         failures.append(f"could not validate production evidence manifest: {exc}")
 
@@ -100,10 +108,10 @@ def audit(root: Path) -> dict[str, object]:
         pass
 
     return {
-        "schema": "omnidesk-real-ga-readiness-contract/v1",
+        "schema": "omnidesk-real-ga-readiness-contract/v2",
         "status": "passed" if not failures else "failed",
         "failures": failures,
-        "boundary": "This source contract verifies that P0/P1/P2 real-GA collection gates exist. It does not fabricate or replace external evidence.",
+        "boundary": "This source contract verifies that real-GA collection and validation gates exist. It does not fabricate or replace external evidence.",
     }
 
 

@@ -75,3 +75,30 @@ groups:
         annotations:
           summary: OmniDesk OTLP trace export failures detected
           description: OTLP collector/exporter path is failing; inspect OMNIDESK_OTLP_ENDPOINT, collector health, and network policy.
+
+      - alert: OmniDeskBigSellerWebhookRejected
+        expr: increase(omnidesk_bigseller_webhook_rejected_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: BigSeller webhook requests rejected
+          description: BigSeller webhook requests failed signature, replay, or body-size enforcement.
+
+      - alert: OmniDeskBigSellerWebhookDuplicates
+        expr: increase(omnidesk_bigseller_webhook_duplicate_total[10m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: BigSeller duplicate webhook spike
+          description: BigSeller event-id dedupe is suppressing repeated webhook deliveries.
+
+      - alert: OmniDeskBigSellerDeadLetterCurrent
+        expr: omnidesk_bigseller_dead_letter_current > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: BigSeller sync items in dead letter
+          description: BigSeller sync failures require operator review before retry or reconciliation.

@@ -42,6 +42,8 @@ REQUIRED_BOOLEAN_TRUE = (
     "require_codeowners_review",
     "dismiss_stale_reviews",
     "require_signed_commits",
+    "require_enforce_admins",
+    "require_linear_history",
 )
 
 REQUIRED_BOOLEAN_FALSE = (
@@ -86,9 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     _check(merge_policy.get("require_all_required_checks_success") is True, "merge policy must require successful required checks", failures)
     _check(merge_policy.get("block_pending_required_checks") is True, "merge policy must block pending required checks", failures)
     _check(merge_policy.get("require_branch_up_to_date") is True, "merge policy must require up-to-date branches", failures)
+    _check(merge_policy.get("require_enforce_admins") is True, "merge policy must enforce branch protection for admins", failures)
+    _check(merge_policy.get("require_linear_history") is True, "merge policy must require linear history", failures)
 
     distribution_policy = contract.get("distribution_ga_policy") or {}
     _check(distribution_policy.get("require_main_verification_artifact") is True, "distribution GA must require main verification artifact", failures)
+    _check(distribution_policy.get("require_main_verification_live_artifact") is True, "distribution GA must require live main verification artifact", failures)
     _check(distribution_policy.get("require_external_ga_evidence_passed") is True, "distribution GA must require external evidence to pass", failures)
     _check(distribution_policy.get("forbid_mock_or_sample_evidence") is True, "distribution GA must forbid mock/sample evidence", failures)
 

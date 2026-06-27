@@ -13,7 +13,10 @@ REQUIRED_FILES = (
     "omnidesk_agent/integrations/bigseller/errors.py",
     "omnidesk_agent/integrations/bigseller/webhooks.py",
     "omnidesk_agent/integrations/bigseller/worker.py",
+    "omnidesk_agent/observability/metrics.py",
     "omnidesk_agent/api/routes/bigseller.py",
+    "scripts/run_bigseller_live_smoke.py",
+    "scripts/import_bigseller_live_smoke_evidence.py",
     "docs/integrations/bigseller.md",
 )
 
@@ -48,11 +51,20 @@ REQUIRED_SNIPPETS = {
         "stale BigSeller webhook timestamp",
     ),
     "omnidesk_agent/integrations/bigseller/worker.py": (
+        "MetricsRegistry",
+        "omnidesk_bigseller_webhook_duplicate_total",
+        "omnidesk_bigseller_dead_letter_current",
+        "prometheus_metrics",
         "bigseller_webhook_duplicate_total",
         "bigseller_dead_letter_current",
         "note_webhook_rejected",
         "create_bigseller_idempotency_guard",
         "create_bigseller_error_queue",
+    ),
+    "omnidesk_agent/observability/metrics.py": (
+        "class MetricsRegistry",
+        "render_prometheus",
+        "omnidesk_",
     ),
     "omnidesk_agent/api/routes/bigseller.py": (
         "webhook_max_body_bytes",
@@ -60,6 +72,18 @@ REQUIRED_SNIPPETS = {
         "status_code=413",
         "note_webhook_rejected",
         "parse_bigseller_webhook",
+    ),
+    "scripts/run_bigseller_live_smoke.py": (
+        "BIGSELLER_USE_MOCK=false",
+        "BIGSELLER_LIVE_ORDER_LIST_PATH",
+        "BIGSELLER_LIVE_INVENTORY_LIST_PATH",
+        "validate(evidence)",
+    ),
+    "scripts/import_bigseller_live_smoke_evidence.py": (
+        "omnidesk-bigseller-live-smoke/v1",
+        "no_secret_leakage",
+        "PLACEHOLDER_RE",
+        "SECRET_RE",
     ),
     "docs/integrations/bigseller.md": (
         "BIGSELLER_STATE_BACKEND",
@@ -77,6 +101,11 @@ WORKFLOW_SNIPPETS = (
 EXTERNAL_EVIDENCE_SNIPPETS = (
     "bigseller_live_smoke",
     "integrations/bigseller-live-smoke.json",
+)
+
+MANIFEST_ONLY_SNIPPETS = (
+    "run_bigseller_live_smoke.py",
+    "import_bigseller_live_smoke_evidence.py",
 )
 
 
@@ -130,15 +159,22 @@ def audit(root: Path) -> dict[str, object]:
         for snippet in EXTERNAL_EVIDENCE_SNIPPETS:
             _check(snippet in text, failures, f"{rel} missing {snippet}")
 
+    try:
+        manifest = _read(root, "release/production-evidence.manifest.json")
+        for snippet in MANIFEST_ONLY_SNIPPETS:
+            _check(snippet in manifest, failures, f"production evidence manifest missing {snippet}")
+    except FileNotFoundError:
+        failures.append("missing production evidence manifest")
+
     return {
-        "schema": "omnidesk-bigseller-connector-contract/v2",
+        "schema": "omnidesk-bigseller-connector-contract/v3",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": (
             "This source contract verifies durable state, replay protection, "
-            "body-size enforcement, TTL purge, observability counters, release-gate wiring, "
-            "and BigSeller external evidence gating. It does not claim live BigSeller "
-            "production readiness without private API docs and live smoke evidence."
+            "body-size enforcement, TTL purge, observability registry wiring, release-gate wiring, "
+            "live-smoke runner/importer, and BigSeller external evidence gating. It does not claim "
+            "live BigSeller production readiness without private API docs and live smoke evidence."
         ),
     }
 

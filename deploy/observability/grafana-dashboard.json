@@ -71,6 +71,33 @@
       ],
       "title": "Trace span failures",
       "type": "timeseries"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_bigseller_webhook_rejected_total[10m])"
+        }
+      ],
+      "title": "BigSeller webhook rejected",
+      "type": "timeseries"
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_bigseller_webhook_duplicate_total[10m])"
+        }
+      ],
+      "title": "BigSeller duplicate webhooks",
+      "type": "timeseries"
+    },
+    {
+      "targets": [
+        {
+          "expr": "omnidesk_bigseller_dead_letter_current"
+        }
+      ],
+      "title": "BigSeller current dead letters",
+      "type": "stat"
     }
   ],
   "schemaVersion": 39,

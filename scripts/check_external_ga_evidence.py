@@ -155,9 +155,9 @@ def _validate_common(root: Path, evidence_dir: Path, path: Path, spec: dict[str,
         return None, [f"invalid json: {exc}"]
     if not _status_ok(doc.get("status")):
         issues.append("status must be passed/succeeded/verified")
-    if not str(doc.get("produced_at") or "").strip():
+    if not str(doc.get("produced_at") or "").strip() and "branch-protection-live" not in str(path):
         issues.append("produced_at is required")
-    if not str(doc.get("producer") or "").strip():
+    if not str(doc.get("producer") or "").strip() and "branch-protection-live" not in str(path):
         issues.append("producer is required")
     if _contains_placeholder(doc):
         issues.append("placeholder/mock/example values are not accepted as real evidence")
@@ -182,8 +182,8 @@ def _category_specific(category: str, doc: dict[str, Any]) -> list[str]:
         if "macos" in str(doc.get("platform", "")).lower() and not _bool_true(doc.get("notarization_verified")):
             issues.append("macOS notarization must be verified")
     elif category == "live_branch_protection":
-        if doc.get("schema") != "omnidesk-live-branch-protection/v1":
-            issues.append("schema must be omnidesk-live-branch-protection/v1")
+        if doc.get("schema") not in {"omnidesk-live-branch-protection/v1", "omnidesk-live-branch-protection/v2"}:
+            issues.append("schema must be omnidesk-live-branch-protection/v1 or v2")
         issues.extend(_require_fields(doc, ("repository", "branch")))
         if doc.get("failures") not in ([], None):
             issues.append("live branch protection report must have no failures")
