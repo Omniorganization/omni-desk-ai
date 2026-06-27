@@ -9,6 +9,7 @@ from pathlib import Path
 
 REQUIRED_FILES = (
     "omnidesk_agent/integrations/bigseller/config.py",
+    "omnidesk_agent/integrations/bigseller/client.py",
     "omnidesk_agent/integrations/bigseller/idempotency.py",
     "omnidesk_agent/integrations/bigseller/errors.py",
     "omnidesk_agent/integrations/bigseller/webhooks.py",
@@ -29,6 +30,25 @@ REQUIRED_SNIPPETS = {
         "webhook_max_body_bytes",
         "BIGSELLER_WEBHOOK_MAX_BODY_BYTES",
         "BIGSELLER_STATE_BACKEND=memory is not allowed",
+        "BIGSELLER_ORDERS_LIST_PATH",
+        "BIGSELLER_FULFILLMENT_SYNC_PATH",
+        "BIGSELLER_REQUEST_SIGNING_ENABLED",
+        "response_root_keys",
+        "real_endpoint_contract_configured",
+    ),
+    "omnidesk_agent/integrations/bigseller/client.py": (
+        "class HttpBigSellerClient",
+        "request_signing_enabled",
+        "_signed_headers",
+        "exchange_auth_code",
+        "refresh_access_token",
+        "list_orders",
+        "list_inventory",
+        "sync_fulfillment_status",
+        "_map_order",
+        "_map_inventory",
+        "_map_product",
+        "BigSellerFulfillmentResult",
     ),
     "omnidesk_agent/integrations/bigseller/idempotency.py": (
         "SQLiteBigSellerIdempotencyGuard",
@@ -91,6 +111,10 @@ REQUIRED_SNIPPETS = {
         "PostgreSQL",
         "replay protection",
         "live smoke evidence",
+        "Real Adapter Contract",
+        "BIGSELLER_ORDERS_LIST_PATH",
+        "BIGSELLER_REQUEST_SIGNING_ENABLED",
+        "BIGSELLER_RESPONSE_ROOT_KEYS",
     ),
 }
 
@@ -167,14 +191,14 @@ def audit(root: Path) -> dict[str, object]:
         failures.append("missing production evidence manifest")
 
     return {
-        "schema": "omnidesk-bigseller-connector-contract/v3",
+        "schema": "omnidesk-bigseller-connector-contract/v4",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": (
             "This source contract verifies durable state, replay protection, "
-            "body-size enforcement, TTL purge, observability registry wiring, release-gate wiring, "
-            "live-smoke runner/importer, and BigSeller external evidence gating. It does not claim "
-            "live BigSeller production readiness without private API docs and live smoke evidence."
+            "body-size enforcement, TTL purge, observability registry wiring, configurable real adapter wiring, "
+            "request signing scaffold, release-gate wiring, live-smoke runner/importer, and BigSeller external evidence gating. "
+            "It does not claim live BigSeller production readiness without private API docs and live smoke evidence."
         ),
     }
 
