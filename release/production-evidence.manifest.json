@@ -9,6 +9,7 @@
     "docker_production_config_validation": "required",
     "security_attack_surface_gate": "required",
     "real_ga_readiness_contract": "required",
+    "bigseller_connector_contract": "required",
     "live_branch_protection_contract": "required",
     "model_live_smoke_contract": "required",
     "pytest_chunked_full_suite": "required",
@@ -63,6 +64,13 @@
     "required_for_customer_distribution_ga": true,
     "boundary": "Validates a real model Q&A smoke evidence document; it does not generate or simulate a model response."
   },
+  "bigseller_live_smoke_evidence": {
+    "schema": "omnidesk-bigseller-live-smoke/v1",
+    "evidence_file": "release/external-evidence/integrations/bigseller-live-smoke.json",
+    "contract_check": "scripts/check_external_ga_evidence.py . --audit-only --write-report /tmp/external-ga-evidence-contract.json",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Validates real BigSeller auth/order/inventory/webhook evidence from an approved BigSeller environment; it does not use the mock adapter and does not generate or simulate BigSeller responses."
+  },
   "main_verification_evidence": {
     "schema": "omnidesk-main-verification/v1",
     "artifact_manifest_schema": "omnidesk-main-verification-artifact/v1",
@@ -78,6 +86,7 @@
     "signed_artifacts": "true Android/iOS/Desktop signed artifacts, including macOS notarization and platform signature verification",
     "live_branch_protection_control_plane": "live GitHub branch-protection API report matching .github/branch-protection.required.json",
     "model_live_smoke": "live model Q&A smoke proving non-empty response, trace, audit event, cost ledger, and budget enforcement",
+    "bigseller_live_smoke": "true BigSeller staging smoke proving auth, order list, inventory list, webhook signature, replay guard, trace, audit, and no secret leakage",
     "oci_app_image_digest": "release workflow must capture final registry sha256 digest",
     "oci_sandbox_runner_digest": "release environment must provide final sandbox-runner sha256 digest",
     "helm_locked_values": "scripts/render_locked_helm_values.py must generate dist/values.production.locked.yaml",
@@ -96,5 +105,5 @@
     "desktop_native_signed_artifacts": "must include platform-specific signed macOS/Windows/Linux artifacts before customer distribution",
     "device_signature_live_rollout": "must verify real desktop/mobile challenge verification and signed-request enforcement in staging"
   },
-  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_external_ga_evidence.py to pass against real external signer, registry, store, staging, push, and operations evidence."
+  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_external_ga_evidence.py to pass against real external signer, registry, store, staging, push, approved integration, and operations evidence."
 }

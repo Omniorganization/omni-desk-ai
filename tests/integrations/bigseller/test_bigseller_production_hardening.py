@@ -5,8 +5,11 @@ import hashlib
 import hmac
 import json
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 import pytest
 
+from omnidesk_agent.api.routes.bigseller import create_bigseller_router
 from omnidesk_agent.integrations.bigseller.config import BigSellerConfig
 from omnidesk_agent.integrations.bigseller.errors import SQLiteBigSellerSyncErrorQueue
 from omnidesk_agent.integrations.bigseller.idempotency import (
@@ -38,6 +41,20 @@ def test_sqlite_idempotency_persists_across_instances(tmp_path):
     )
     assert second.stats()["durable"] is True
     assert second.stats()["completed"] == 1
+
+
+def test_sqlite_idempotency_ttl_purges_expired_records(tmp_path):
+    db_path = tmp_path / "bigseller.sqlite3"
+    guard = SQLiteBigSellerIdempotencyGuard(db_path, ttl_seconds=60)
+    assert guard.claim(external_id="evt-ttl", store_id="store-1", action_type="webhook")
+    with guard._connect() as conn:  # noqa: SLF001 - contract-level migration/TTL assertion
+        conn.execute(
+            "UPDATE bigseller_idempotency_records SET expires_at = ? WHERE key = ?",
+            ("1970-01-01T00:00:00+00:00", "store-1:evt-ttl:webhook"),
+        )
+
+    assert guard.purge_expired() == 1
+    assert guard.claim(external_id="evt-ttl", store_id="store-1", action_type="webhook")
 
 
 def test_sqlite_error_queue_persists_and_redacts(tmp_path):
@@ -128,3 +145,55 @@ def test_webhook_event_id_is_deduplicated_by_worker(tmp_path):
     assert first["handled"] == "orders"
     assert second["handled"] == "duplicate"
     assert context.worker.status()["metrics"]["bigseller_webhook_duplicate_total"] == 1
+
+
+def test_worker_dead_letter_metric_is_current_gauge(tmp_path):
+    config = BigSellerConfig(
+        enabled=True,
+        use_mock=True,
+        state_db_path=tmp_path / "bigseller.sqlite3",
+    )
+    context = BigSellerConnectorContext.from_config(config)
+    context.worker.errors.enqueue(
+        entity_type="order",
+        external_id="BS-1",
+        store_id="MY",
+        action="sync",
+        payload={},
+        error="first",
+    )
+    status = context.worker.status()
+    assert status["metrics"]["bigseller_dead_letter_current"] == 0
+    context.worker.errors.enqueue(
+        entity_type="order",
+        external_id="BS-1",
+        store_id="MY",
+        action="sync",
+        payload={},
+        error="second",
+    )
+    status = context.worker.status()
+    assert status["metrics"]["bigseller_dead_letter_current"] == 1
+
+
+def test_webhook_rejects_payload_over_configured_limit(tmp_path):
+    config = BigSellerConfig(
+        enabled=True,
+        use_mock=True,
+        webhook_secret="test-secret",
+        webhook_max_body_bytes=8,
+        state_db_path=tmp_path / "bigseller.sqlite3",
+    )
+    context = BigSellerConnectorContext.from_config(config)
+    app = FastAPI()
+    app.include_router(create_bigseller_router(context=context))
+    client = TestClient(app)
+
+    response = client.post(
+        "/integrations/bigseller/webhook",
+        content=b"0123456789",
+        headers={"content-length": "10"},
+    )
+
+    assert response.status_code == 413
+    assert context.worker.status()["metrics"]["bigseller_webhook_rejected_total"] == 1

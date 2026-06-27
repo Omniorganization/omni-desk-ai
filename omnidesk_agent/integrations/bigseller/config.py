@@ -83,6 +83,7 @@ class BigSellerConfig(BaseModel):
     postgres_dsn: Optional[str] = None
     webhook_replay_window_seconds: int = 300
     webhook_event_ttl_seconds: int = 86400
+    webhook_max_body_bytes: int = 262144
     audit_log_path: Path = Field(
         default_factory=lambda: Path("~/.omnidesk/bigseller_audit.jsonl").expanduser()
     )
@@ -153,6 +154,9 @@ class BigSellerConfig(BaseModel):
             webhook_event_ttl_seconds=max(
                 60, _int_env("BIGSELLER_WEBHOOK_EVENT_TTL_SECONDS", 86400)
             ),
+            webhook_max_body_bytes=max(
+                1024, _int_env("BIGSELLER_WEBHOOK_MAX_BODY_BYTES", 262144)
+            ),
             audit_log_path=audit_log,
             state_db_path=state_db,
         )
@@ -221,4 +225,5 @@ class BigSellerConfig(BaseModel):
             "state_db_path": str(self.state_db_path),
             "webhook_replay_window_seconds": self.webhook_replay_window_seconds,
             "webhook_event_ttl_seconds": self.webhook_event_ttl_seconds,
+            "webhook_max_body_bytes": self.webhook_max_body_bytes,
         }

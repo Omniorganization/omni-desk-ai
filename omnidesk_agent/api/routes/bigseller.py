@@ -25,6 +25,16 @@ def _status_code_for_error(exc: Exception) -> int:
     return 500
 
 
+def _content_length_exceeds(request: Request, max_body_bytes: int) -> bool:
+    raw = request.headers.get("content-length")
+    if not raw:
+        return False
+    try:
+        return int(raw) > max_body_bytes
+    except ValueError:
+        return False
+
+
 def create_bigseller_router(
     *,
     admin: Optional[AdminVerifier] = None,
@@ -100,7 +110,14 @@ def create_bigseller_router(
     @router.post("/webhook")
     async def webhook(request: Request):
         ctx = connector(request)
+        max_body_bytes = ctx.config.webhook_max_body_bytes
+        if _content_length_exceeds(request, max_body_bytes):
+            ctx.worker.note_webhook_rejected()
+            raise HTTPException(status_code=413, detail="BigSeller webhook payload too large")
         body = await request.body()
+        if len(body) > max_body_bytes:
+            ctx.worker.note_webhook_rejected()
+            raise HTTPException(status_code=413, detail="BigSeller webhook payload too large")
         try:
             event = parse_bigseller_webhook(body, request.headers, ctx.config)
             return ctx.worker.handle_webhook(event)
