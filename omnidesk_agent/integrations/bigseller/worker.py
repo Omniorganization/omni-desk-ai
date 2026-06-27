@@ -37,6 +37,18 @@ from omnidesk_agent.integrations.bigseller.schemas import (
     BigSellerSyncResult,
     BigSellerWebhookEvent,
 )
+from omnidesk_agent.observability.metrics import MetricsRegistry
+
+
+METRIC_ALIASES = {
+    "bigseller_sync_orders_total": "omnidesk_bigseller_sync_orders_total",
+    "bigseller_sync_inventory_total": "omnidesk_bigseller_sync_inventory_total",
+    "bigseller_sync_fulfillment_total": "omnidesk_bigseller_sync_fulfillment_total",
+    "bigseller_webhook_received_total": "omnidesk_bigseller_webhook_received_total",
+    "bigseller_webhook_rejected_total": "omnidesk_bigseller_webhook_rejected_total",
+    "bigseller_webhook_duplicate_total": "omnidesk_bigseller_webhook_duplicate_total",
+    "bigseller_dead_letter_current": "omnidesk_bigseller_dead_letter_current",
+}
 
 
 class BigSellerSyncWorker:
@@ -49,6 +61,7 @@ class BigSellerSyncWorker:
         idempotency: Optional[BigSellerIdempotencyGuard] = None,
         audit: Optional[BigSellerAuditLogger] = None,
         errors: Optional[BigSellerSyncErrorQueue] = None,
+        metrics_registry: Optional[MetricsRegistry] = None,
     ):
         self.config = config
         self.client = client
@@ -56,6 +69,7 @@ class BigSellerSyncWorker:
         self.idempotency = idempotency or create_bigseller_idempotency_guard(config)
         self.audit = audit or BigSellerAuditLogger(config.audit_log_path)
         self.errors = errors or create_bigseller_error_queue(config)
+        self.metrics_registry = metrics_registry or MetricsRegistry()
         self.orders = BigSellerOrderSyncService(
             client, self.mapper, self.idempotency, self.audit, self.errors
         )
@@ -67,29 +81,27 @@ class BigSellerSyncWorker:
             client, self.idempotency, self.audit, self.errors
         )
         self.last_sync: dict[str, Any] = {}
-        self.metrics: dict[str, int] = {
-            "bigseller_sync_orders_total": 0,
-            "bigseller_sync_inventory_total": 0,
-            "bigseller_sync_fulfillment_total": 0,
-            "bigseller_webhook_received_total": 0,
-            "bigseller_webhook_rejected_total": 0,
-            "bigseller_webhook_duplicate_total": 0,
-            "bigseller_dead_letter_current": 0,
-        }
+        self.metrics: dict[str, int] = {name: 0 for name in METRIC_ALIASES}
+        for canonical in METRIC_ALIASES.values():
+            self.metrics_registry.set_gauge(canonical, 0)
         self.last_durations_ms: dict[str, int] = {}
 
     def _inc(self, metric: str, amount: int = 1) -> None:
         self.metrics[metric] = self.metrics.get(metric, 0) + amount
+        self.metrics_registry.inc(METRIC_ALIASES[metric], amount)
 
     def _set_metric(self, metric: str, value: int) -> None:
         self.metrics[metric] = value
+        self.metrics_registry.set_gauge(METRIC_ALIASES[metric], value)
 
     def _refresh_queue_gauges(self) -> None:
         stats = self.errors.stats()
         self._set_metric("bigseller_dead_letter_current", int(stats.get("dead_letter", 0)))
 
     def _observe_duration(self, name: str, started: float) -> None:
-        self.last_durations_ms[name] = int((time.time() - started) * 1000)
+        duration_ms = int((time.time() - started) * 1000)
+        self.last_durations_ms[name] = duration_ms
+        self.metrics_registry.set_gauge(f"omnidesk_bigseller_{name}_duration_ms", duration_ms)
 
     def note_webhook_rejected(self) -> None:
         self._inc("bigseller_webhook_rejected_total")
@@ -231,6 +243,7 @@ class BigSellerSyncWorker:
             "idempotency": self.idempotency.stats(),
             "errors": self.errors.stats(),
             "metrics": self.metrics,
+            "prometheus_metrics": self.metrics_registry.snapshot(),
             "last_durations_ms": self.last_durations_ms,
             "last_sync": self.last_sync,
             "recent_audit": [
