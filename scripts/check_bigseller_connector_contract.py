@@ -22,12 +22,17 @@ REQUIRED_SNIPPETS = {
         "state_backend",
         "postgres_dsn",
         "webhook_replay_window_seconds",
+        "webhook_event_ttl_seconds",
+        "webhook_max_body_bytes",
+        "BIGSELLER_WEBHOOK_MAX_BODY_BYTES",
         "BIGSELLER_STATE_BACKEND=memory is not allowed",
     ),
     "omnidesk_agent/integrations/bigseller/idempotency.py": (
         "SQLiteBigSellerIdempotencyGuard",
         "PostgresBigSellerIdempotencyGuard",
         "create_bigseller_idempotency_guard",
+        "purge_expired",
+        "expires_at",
         "FOR UPDATE",
     ),
     "omnidesk_agent/integrations/bigseller/errors.py": (
@@ -44,16 +49,21 @@ REQUIRED_SNIPPETS = {
     ),
     "omnidesk_agent/integrations/bigseller/worker.py": (
         "bigseller_webhook_duplicate_total",
+        "bigseller_dead_letter_current",
         "note_webhook_rejected",
         "create_bigseller_idempotency_guard",
         "create_bigseller_error_queue",
     ),
     "omnidesk_agent/api/routes/bigseller.py": (
+        "webhook_max_body_bytes",
+        "Payload too large",
+        "status_code=413",
         "note_webhook_rejected",
         "parse_bigseller_webhook",
     ),
     "docs/integrations/bigseller.md": (
         "BIGSELLER_STATE_BACKEND",
+        "BIGSELLER_WEBHOOK_MAX_BODY_BYTES",
         "PostgreSQL",
         "replay protection",
         "live smoke evidence",
@@ -62,6 +72,11 @@ REQUIRED_SNIPPETS = {
 
 WORKFLOW_SNIPPETS = (
     "python scripts/check_bigseller_connector_contract.py .",
+)
+
+EXTERNAL_EVIDENCE_SNIPPETS = (
+    "bigseller_live_smoke",
+    "integrations/bigseller-live-smoke.json",
 )
 
 
@@ -102,14 +117,28 @@ def audit(root: Path) -> dict[str, object]:
         for snippet in WORKFLOW_SNIPPETS:
             _check(snippet in text, failures, f"{workflow} missing {snippet}")
 
+    for rel in (
+        "scripts/check_external_ga_evidence.py",
+        "release/production-evidence.manifest.json",
+        "release/external-ga-evidence.required.json",
+    ):
+        try:
+            text = _read(root, rel)
+        except FileNotFoundError:
+            failures.append(f"missing external evidence contract file: {rel}")
+            continue
+        for snippet in EXTERNAL_EVIDENCE_SNIPPETS:
+            _check(snippet in text, failures, f"{rel} missing {snippet}")
+
     return {
-        "schema": "omnidesk-bigseller-connector-contract/v1",
+        "schema": "omnidesk-bigseller-connector-contract/v2",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": (
             "This source contract verifies durable state, replay protection, "
-            "observability counters, and release-gate wiring. It does not claim "
-            "live BigSeller production readiness without private API docs and live smoke evidence."
+            "body-size enforcement, TTL purge, observability counters, release-gate wiring, "
+            "and BigSeller external evidence gating. It does not claim live BigSeller "
+            "production readiness without private API docs and live smoke evidence."
         ),
     }
 
