@@ -14,6 +14,9 @@
       "signed-artifacts/desktop-macos-notarized.json",
       "signed-artifacts/desktop-windows-signed.json"
     ],
+    "bigseller_live_smoke": [
+      "integrations/bigseller-live-smoke.json"
+    ],
     "push_delivery": [
       "push/apns-live-delivery.json",
       "push/fcm-live-delivery.json"
@@ -25,5 +28,5 @@
       "drills/self-healing-failure-injection.json"
     ]
   },
-  "policy": "Every file must be produced by the relevant CI, signer, push provider, staging cluster, or operations drill. Placeholder/mock/example values are rejected."
+  "policy": "Every file must be produced by the relevant CI, signer, push provider, approved integration, staging cluster, or operations drill. Placeholder/mock/example values are rejected. BigSeller live smoke evidence must come from an approved BigSeller staging or production integration, not from the mock adapter."
 }
