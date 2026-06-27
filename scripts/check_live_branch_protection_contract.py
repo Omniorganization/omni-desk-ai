@@ -79,9 +79,11 @@ def audit(root: Path, repository: str, token: str, api_base: str = "https://api.
             warnings.append(f"required signatures endpoint unavailable: HTTP {sig_status} {sig_body[:300]}")
 
     if protection:
+        required_status = protection.get("required_status_checks") or {}
         contexts = _contexts_from_required_status_checks(protection)
         missing_contexts = sorted(required_status_checks - contexts)
         _check(not missing_contexts, failures, f"live required status checks missing: {missing_contexts}")
+        _check(bool(required_status.get("strict")) == bool(policy.get("require_branch_up_to_date")), failures, "live status checks strict/up-to-date setting does not match policy")
 
         pull_request_reviews = protection.get("required_pull_request_reviews") or {}
         _check(bool(pull_request_reviews), failures, "live branch protection must require pull request reviews")
@@ -100,7 +102,8 @@ def audit(root: Path, repository: str, token: str, api_base: str = "https://api.
             failures,
             "live CODEOWNERS review requirement does not match policy",
         )
-        _check(bool(protection.get("required_linear_history")) or True, warnings, "linear history is not required by source policy")
+        _check(bool(protection.get("required_linear_history", {}).get("enabled")) == bool(policy.get("require_linear_history")), failures, "live linear-history requirement does not match policy")
+        _check(bool(protection.get("enforce_admins", {}).get("enabled")) == bool(policy.get("require_enforce_admins")), failures, "live enforce-admins requirement does not match policy")
 
         if signatures is not None:
             _check(bool(signatures.get("enabled")) == bool(policy.get("require_signed_commits")), failures, "live signed commit requirement does not match policy")
@@ -112,7 +115,7 @@ def audit(root: Path, repository: str, token: str, api_base: str = "https://api.
             warnings.append("branch restrictions are not configured; verify this is acceptable for the repository owner model")
 
     return {
-        "schema": "omnidesk-live-branch-protection/v1",
+        "schema": "omnidesk-live-branch-protection/v2",
         "status": "passed" if not failures else "blocked",
         "repository": repository,
         "branch": branch,
