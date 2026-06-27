@@ -67,7 +67,7 @@ BIGSELLER_SIGNATURE_APP_ID_HEADER=x-bigseller-app-id
 BIGSELLER_RESPONSE_ROOT_KEYS=
 ```
 
-`BIGSELLER_ENABLED=false` disables sync side effects. `BIGSELLER_REGISTER_ROUTES=false` keeps BigSeller endpoints out of the default gateway attack surface. Routes are registered only when `BIGSELLER_ENABLED=true` or `BIGSELLER_REGISTER_ROUTES=true`.
+`BIGSELLER_ENABLED=false` disables sync side effects. `BIGSELLER_ENABLED` does not register routes. `BIGSELLER_REGISTER_ROUTES=false` keeps BigSeller endpoints out of the default gateway attack surface. Routes are registered only when `BIGSELLER_REGISTER_ROUTES=true`.
 
 `BIGSELLER_STATE_BACKEND` accepts:
 
@@ -112,7 +112,7 @@ The configurable adapter maps common response names such as `data`, `items`, `ro
 - `POST /integrations/bigseller/errors/{error_id}/resolve`
 - `POST /integrations/bigseller/webhook`
 
-The route registration wires OmniDesk admin auth when the full gateway app is used. Viewer role can inspect health/status/errors. Operator role is required for sync, retry, and resolve side-effect operations. The webhook receiver verifies `BIGSELLER_WEBHOOK_SECRET` when configured. In real mode, missing webhook secret fails closed.
+The route registration wires OmniDesk admin auth when `BIGSELLER_REGISTER_ROUTES=true` is explicitly set. Viewer role can inspect health/status/errors. Operator role is required for sync, retry, and resolve side-effect operations. The webhook receiver verifies `BIGSELLER_WEBHOOK_SECRET` when configured. In real mode, missing webhook secret fails closed.
 
 ## Mock Mode
 
