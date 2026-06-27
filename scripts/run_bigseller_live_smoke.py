@@ -11,7 +11,17 @@ from typing import Any
 
 from omnidesk_agent.integrations.bigseller.client import HttpBigSellerClient
 from omnidesk_agent.integrations.bigseller.config import BigSellerConfig
-from scripts.import_bigseller_live_smoke_evidence import validate
+
+
+REQUIRED_TRUE_FIELDS = (
+    "auth_success",
+    "order_list_success",
+    "inventory_list_success",
+    "webhook_signature_verified",
+    "webhook_replay_guard_verified",
+    "secret_leakage_checked",
+    "no_secret_leakage",
+)
 
 
 def _utc_now() -> str:
@@ -23,6 +33,37 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is required for BigSeller live smoke")
     return value
+
+
+def _bool_true(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in {"true", "yes", "1", "ok", "passed", "verified"}
+
+
+def validate(evidence: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    if evidence.get("schema") != "omnidesk-bigseller-live-smoke/v1":
+        issues.append("schema must be omnidesk-bigseller-live-smoke/v1")
+    if str(evidence.get("status") or "").strip().lower() not in {"passed", "verified", "success", "succeeded", "ok"}:
+        issues.append("status must be passed/verified")
+    for field in ("produced_at", "producer", "environment", "store_id", "trace_id", "audit_event_id"):
+        if not str(evidence.get(field) or "").strip():
+            issues.append(f"{field} is required")
+    for field in REQUIRED_TRUE_FIELDS:
+        if not _bool_true(evidence.get(field)):
+            issues.append(f"{field} must be true")
+    try:
+        latency = float(evidence.get("p95_latency_ms"))
+        if latency <= 0 or latency > 10000:
+            issues.append("p95_latency_ms must be > 0 and <= 10000")
+    except Exception:
+        issues.append("p95_latency_ms must be numeric")
+    try:
+        error_rate = float(evidence.get("error_rate"))
+        if error_rate < 0 or error_rate > 0.01:
+            issues.append("error_rate must be between 0 and 0.01")
+    except Exception:
+        issues.append("error_rate must be numeric")
+    return issues
 
 
 def _probe(client: HttpBigSellerClient, path: str) -> Any:
