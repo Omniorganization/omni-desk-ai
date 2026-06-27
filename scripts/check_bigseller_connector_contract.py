@@ -101,6 +101,9 @@ WORKFLOW_SNIPPETS = (
 EXTERNAL_EVIDENCE_SNIPPETS = (
     "bigseller_live_smoke",
     "integrations/bigseller-live-smoke.json",
+)
+
+MANIFEST_ONLY_SNIPPETS = (
     "run_bigseller_live_smoke.py",
     "import_bigseller_live_smoke_evidence.py",
 )
@@ -155,6 +158,13 @@ def audit(root: Path) -> dict[str, object]:
             continue
         for snippet in EXTERNAL_EVIDENCE_SNIPPETS:
             _check(snippet in text, failures, f"{rel} missing {snippet}")
+
+    try:
+        manifest = _read(root, "release/production-evidence.manifest.json")
+        for snippet in MANIFEST_ONLY_SNIPPETS:
+            _check(snippet in manifest, failures, f"production evidence manifest missing {snippet}")
+    except FileNotFoundError:
+        failures.append("missing production evidence manifest")
 
     return {
         "schema": "omnidesk-bigseller-connector-contract/v3",
