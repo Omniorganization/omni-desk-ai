@@ -14,8 +14,17 @@
       "signed-artifacts/desktop-macos-notarized.json",
       "signed-artifacts/desktop-windows-signed.json"
     ],
+    "live_branch_protection": [
+      "control-plane/github-branch-protection-live.json"
+    ],
+    "model_live_smoke": [
+      "model/model-live-smoke.json"
+    ],
     "bigseller_live_smoke": [
       "integrations/bigseller-live-smoke.json"
+    ],
+    "main_verification_live_artifact": [
+      "dist/evidence/main-verification-live-artifact.json"
     ],
     "push_delivery": [
       "push/apns-live-delivery.json",
@@ -27,6 +36,11 @@
       "drills/backup-restore-drill.json",
       "drills/self-healing-failure-injection.json"
     ]
+  },
+  "source_gates": {
+    "bigseller_route_enablement": "scripts/check_bigseller_route_enablement.py .",
+    "bigseller_real_contract_workflow": ".github/workflows/bigseller-real-contract.yml",
+    "external_ga_evidence": "scripts/check_external_ga_evidence.py ."
   },
   "policy": "Every file must be produced by the relevant CI, signer, push provider, approved integration, staging cluster, or operations drill. Placeholder/mock/example values are rejected. BigSeller live smoke evidence must come from an approved BigSeller staging or production integration, not from the mock adapter."
 }
