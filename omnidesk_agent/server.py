@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 import importlib
-
+import os
 import time
+from types import ModuleType
+from typing import cast
 import weakref
+
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from omnidesk_agent import __version__
+from omnidesk_agent.appsync import register_appsync_routes
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.daemon import OmniDeskRuntime
-import os
-
 from omnidesk_agent.observability import (
     JsonEventLogger,
     MetricsRegistry,
@@ -20,26 +23,34 @@ from omnidesk_agent.observability import (
     new_request_id,
     public_runtime_status,
 )
-from omnidesk_agent.observability_otel import AsyncOTLPHttpExporter, OTLPHttpExporter, make_traceparent, parse_traceparent
+from omnidesk_agent.observability_otel import (
+    AsyncOTLPHttpExporter,
+    OTLPHttpExporter,
+    make_traceparent,
+    parse_traceparent,
+)
 from omnidesk_agent.observability_tracing import trace_span
+from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
 from omnidesk_agent.server_routes.admin_routes import register_admin_routes
 from omnidesk_agent.server_routes.agent_routes import register_agent_routes, register_break_glass_routes
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
-from omnidesk_agent.appsync import register_appsync_routes
-from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.validation.production import assert_production_config_safe
 
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+AdminVerifier = Callable[[Request, str], Awaitable[object]]
+RegisterBigSellerRoutes = Callable[[FastAPI, AppConfig, AdminVerifier], None]
 
 
 def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in TRUE_VALUES
 
 
-def _register_optional_bigseller_routes(app: FastAPI, cfg: AppConfig, admin_auth):
+def _register_optional_bigseller_routes(
+    app: FastAPI, cfg: AppConfig, admin_auth: AdminVerifier
+) -> None:
     """Register optional BigSeller routes without expanding core Pyright scope.
 
     BigSeller is an optional private-approval integration. Loading it through a
@@ -48,12 +59,18 @@ def _register_optional_bigseller_routes(app: FastAPI, cfg: AppConfig, admin_auth
     preserving runtime route registration and connector-specific tests.
     """
 
-    module = importlib.import_module("omnidesk_agent.api.routes.bigseller")
-    register = getattr(module, "register_bigseller_routes")
+    module = cast(
+        ModuleType, importlib.import_module("omnidesk_agent.api.routes.bigseller")
+    )
+    register = cast(RegisterBigSellerRoutes, getattr(module, "register_bigseller_routes"))
     register(app, cfg, admin_auth)
 
 
-def _wire_runtime_metrics(rt: OmniDeskRuntime, metrics: MetricsRegistry, otel_exporter: OTLPHttpExporter | None = None) -> None:
+def _wire_runtime_metrics(
+    rt: OmniDeskRuntime,
+    metrics: MetricsRegistry,
+    otel_exporter: OTLPHttpExporter | None = None,
+) -> None:
     initialize_runtime_metrics(metrics)
     rt.metrics = metrics
     rt.job_queue.metrics = metrics
@@ -73,7 +90,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
     approvals = rt.approval_store
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await rt.start()
         try:
             yield
@@ -90,7 +107,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
     event_logger = JsonEventLogger()
     resource_guard = ApiResourceGuard(cfg.api_resource_guard)
     otel_endpoint = os.getenv(cfg.observability.otlp_endpoint_env, "")
-    otel_exporter = AsyncOTLPHttpExporter(endpoint=otel_endpoint, timeout=cfg.observability.otlp_timeout_seconds) if otel_endpoint else None
+    otel_exporter = (
+        AsyncOTLPHttpExporter(
+            endpoint=otel_endpoint, timeout=cfg.observability.otlp_timeout_seconds
+        )
+        if otel_endpoint
+        else None
+    )
     app.state.metrics = metrics
     app.state.runtime = rt
     app.state.otel_exporter = otel_exporter
@@ -98,7 +121,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
     _wire_runtime_metrics(rt, metrics, otel_exporter)
 
     @app.middleware("http")
-    async def request_context_middleware(request: Request, call_next):
+    async def request_context_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         request_id = request.headers.get(cfg.observability.request_id_header) or new_request_id()
         parsed_trace = parse_traceparent(request.headers.get("traceparent"))
         trace_id = parsed_trace["trace_id"] if parsed_trace else request_id.replace("-", "")[:32].ljust(32, "0")
@@ -109,8 +134,21 @@ def create_app(cfg: AppConfig) -> FastAPI:
             try:
                 release_resource_guard = await resource_guard.before_request(request)
             except HTTPException as exc:
-                metrics.inc("omnidesk_http_resource_guard_denials_total", method=request.method, path=request.url.path, status=exc.status_code)
-                event_logger.event("api_resource_guard_denied", request_id=request_id, trace_id=trace_id, method=request.method, path=request.url.path, status=exc.status_code, reason=str(exc.detail))
+                metrics.inc(
+                    "omnidesk_http_resource_guard_denials_total",
+                    method=request.method,
+                    path=request.url.path,
+                    status=exc.status_code,
+                )
+                event_logger.event(
+                    "api_resource_guard_denied",
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    method=request.method,
+                    path=request.url.path,
+                    status=exc.status_code,
+                    reason=str(exc.detail),
+                )
                 return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
             with trace_span(
                 "http.request",
@@ -123,7 +161,12 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 request_id=request_id,
             ) as span:
                 response = await call_next(request)
-                metrics.inc("omnidesk_http_requests_total", method=request.method, path=request.url.path, status=getattr(response, "status_code", 0))
+                metrics.inc(
+                    "omnidesk_http_requests_total",
+                    method=request.method,
+                    path=request.url.path,
+                    status=getattr(response, "status_code", 0),
+                )
                 response.headers[cfg.observability.request_id_header] = request_id
                 response.headers["traceparent"] = make_traceparent(span.trace_id, span.span_id)
                 return response
@@ -133,19 +176,35 @@ def create_app(cfg: AppConfig) -> FastAPI:
         finally:
             elapsed = time.time() - started
             metrics.set("omnidesk_http_last_latency_seconds", elapsed, path=request.url.path)
-            metrics.observe("omnidesk_http_request_duration_seconds", elapsed, path=request.url.path, method=request.method)
-            event_logger.event("http_request", request_id=request_id, trace_id=trace_id, method=request.method, path=request.url.path, elapsed=elapsed)
+            metrics.observe(
+                "omnidesk_http_request_duration_seconds",
+                elapsed,
+                path=request.url.path,
+                method=request.method,
+            )
+            event_logger.event(
+                "http_request",
+                request_id=request_id,
+                trace_id=trace_id,
+                method=request.method,
+                path=request.url.path,
+                elapsed=elapsed,
+            )
             if release_resource_guard is not None:
                 release_resource_guard()
 
-    async def _admin(request: Request, role: str = "viewer"):
+    async def _admin(request: Request, role: str = "viewer") -> object:
         decision = await rt.admin_auth.verify_request(request, required_role=role)
         if not decision.ok:
             raise HTTPException(status_code=403, detail=decision.reason)
-        resource_guard.check_authenticated(request, actor=getattr(decision, "actor", "unknown"), role=getattr(decision, "role", role))
+        resource_guard.check_authenticated(
+            request,
+            actor=getattr(decision, "actor", "unknown"),
+            role=getattr(decision, "role", role),
+        )
         return decision
 
-    def _readiness_snapshot() -> dict:
+    def _readiness_snapshot() -> dict[str, object]:
         multi_instance_safe = bool(getattr(rt.storage_plan, "multi_instance_safe", False))
         checks: dict[str, object] = {
             "runtime": True,
@@ -172,7 +231,10 @@ def create_app(cfg: AppConfig) -> FastAPI:
             if runner_url and os.getenv("OMNIDESK_STRICT_READINESS_SANDBOX", "1") != "0":
                 try:
                     import urllib.request
-                    with urllib.request.urlopen(runner_url + "/ready", timeout=2) as response:  # nosec B310 - operator-supplied internal runner URL
+
+                    with urllib.request.urlopen(  # nosec B310 - operator-supplied internal runner URL
+                        runner_url + "/ready", timeout=2
+                    ) as response:
                         checks["sandbox_runner"] = response.status < 500
                 except Exception as exc:
                     checks["sandbox_runner"] = False
@@ -186,7 +248,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
         if cfg.memory_privacy.encrypt_at_rest:
             required_secret_envs.append(cfg.memory_privacy.encryption_key_env)
         if cfg.sandbox.backend == "remote_docker":
-            required_secret_envs.extend([cfg.sandbox.runner_token_env, cfg.sandbox.runner_hmac_secret_env])
+            required_secret_envs.extend(
+                [cfg.sandbox.runner_token_env, cfg.sandbox.runner_hmac_secret_env]
+            )
         if cfg.permissions.break_glass_enabled:
             required_secret_envs.append(cfg.permissions.audit_checkpoint_hmac_key_env)
         missing = [name for name in dict.fromkeys(required_secret_envs) if not os.getenv(name, "")]
@@ -214,18 +278,18 @@ def create_app(cfg: AppConfig) -> FastAPI:
         app.include_router(dashboard_router)
 
     @app.get("/health")
-    async def health():
+    async def health() -> dict[str, object]:
         return public_runtime_status(__version__)
 
     @app.get("/ready")
-    async def ready():
+    async def ready() -> dict[str, bool]:
         snapshot = _readiness_snapshot()
         if not snapshot["ok"]:
             raise HTTPException(status_code=503, detail={"ok": False})
         return {"ok": True}
 
     @app.get("/admin/ready")
-    async def admin_ready(request: Request):
+    async def admin_ready(request: Request) -> dict[str, object]:
         await _admin(request, "viewer")
         snapshot = _readiness_snapshot()
         if not snapshot["ok"]:
@@ -237,6 +301,6 @@ def create_app(cfg: AppConfig) -> FastAPI:
     register_appsync_routes(app, cfg, rt, metrics, _admin)
     register_break_glass_routes(app, cfg, rt, _admin)
     register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
-    if _env_flag("BIGSELLER_ENABLED") or _env_flag("BIGSELLER_REGISTER_ROUTES"):
+    if _env_flag("BIGSELLER_REGISTER_ROUTES"):
         _register_optional_bigseller_routes(app, cfg, _admin)
     return app
