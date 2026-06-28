@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -55,19 +56,67 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[`*_]+", "", text)).strip()
 
 
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _string_constants(node: ast.AST) -> set[str]:
+    values: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+            values.add(child.value)
+    return values
+
+
+def _contains_call(node: ast.AST, name: str) -> bool:
+    return any(isinstance(child, ast.Call) and _call_name(child.func) == name for child in ast.walk(node))
+
+
 def _require_explicit_register_only(server_text: str, failures: list[str]) -> None:
-    if "_register_optional_bigseller_routes" not in server_text:
+    try:
+        tree = ast.parse(server_text)
+    except SyntaxError as exc:
+        failures.append(f"server route gate is not valid Python: {exc}")
+        return
+
+    boundary_names = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if "_register_optional_bigseller_routes" not in boundary_names:
         failures.append("server missing optional BigSeller route registration boundary")
-    if "BIGSELLER_REGISTER_ROUTES" not in server_text:
-        failures.append("server missing BIGSELLER_REGISTER_ROUTES gate")
-    forbidden_patterns = (
-        'BIGSELLER_ENABLED") or _env_flag("BIGSELLER_REGISTER_ROUTES',
-        'BIGSELLER_ENABLED")or_env_flag("BIGSELLER_REGISTER_ROUTES',
-        'BIGSELLER_ENABLED") or os.getenv("BIGSELLER_REGISTER_ROUTES',
-    )
-    compact = re.sub(r"\s+", "", server_text)
-    if any(pattern.replace(" ", "") in compact for pattern in forbidden_patterns):
-        failures.append("server route gate must not register routes from BIGSELLER_ENABLED")
+
+    matching_gates: list[ast.If] = []
+    unsafe_gates: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        body_registers = any(
+            isinstance(child, ast.Call)
+            and _call_name(child.func) == "_register_optional_bigseller_routes"
+            for stmt in node.body
+            for child in ast.walk(stmt)
+        )
+        if not body_registers:
+            continue
+        condition_strings = _string_constants(node.test)
+        if "BIGSELLER_ENABLED" in condition_strings:
+            unsafe_gates.append(getattr(node, "lineno", 0))
+        if "BIGSELLER_REGISTER_ROUTES" in condition_strings and _contains_call(node.test, "_env_flag"):
+            matching_gates.append(node)
+
+    if unsafe_gates:
+        failures.append(
+            "server route gate must not register routes from BIGSELLER_ENABLED "
+            f"(lines: {', '.join(str(line) for line in unsafe_gates)})"
+        )
+    if not matching_gates:
+        failures.append("server must register BigSeller routes only behind _env_flag('BIGSELLER_REGISTER_ROUTES')")
 
 
 def _require_doc_semantics(doc_text: str, failures: list[str]) -> None:
@@ -102,7 +151,7 @@ def audit(root: Path) -> dict[str, object]:
     except FileNotFoundError:
         pass
     return {
-        "schema": "omnidesk-bigseller-route-enablement/v4",
+        "schema": "omnidesk-bigseller-route-enablement/v5",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": "This gate verifies explicit route enablement and Admin error operations. It does not validate external BigSeller traffic.",
