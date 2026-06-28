@@ -283,6 +283,18 @@ class BigSellerSyncWorker:
             self._refresh_queue_gauges()
             raise
 
+    def _flat_prometheus_metrics(self) -> dict[str, float]:
+        snapshot = self.metrics_registry.snapshot()
+        values: dict[str, float] = {}
+        for group in ("counters", "gauges"):
+            group_values = snapshot.get(group, {})
+            if isinstance(group_values, dict):
+                for key, value in group_values.items():
+                    values[str(key)] = float(value)
+        for canonical in METRIC_ALIASES.values():
+            values.setdefault(canonical, 0.0)
+        return values
+
     def status(self) -> dict[str, Any]:
         self._refresh_queue_gauges()
         return {
@@ -291,7 +303,7 @@ class BigSellerSyncWorker:
             "idempotency": self.idempotency.stats(),
             "errors": self.errors.stats(),
             "metrics": self.metrics,
-            "prometheus_metrics": self.metrics_registry.snapshot(),
+            "prometheus_metrics": self._flat_prometheus_metrics(),
             "last_durations_ms": self.last_durations_ms,
             "last_sync": self.last_sync,
             "recent_errors": self.list_errors(status=None, limit=20),
