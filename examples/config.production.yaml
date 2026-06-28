@@ -60,6 +60,23 @@ models:
     per_actor_daily_usd_limit: 50.0
     on_exceed: require_approval
     require_persistent_ledger: true
+  routing:
+    planner: {primary: planner, fallback: [fast, local], max_retries: 1}
+    tool_plan: {primary: planner, fallback: [fast], max_retries: 1}
+    chat: {primary: fast, fallback: [local], max_retries: 1}
+    code: {primary: code, fallback: [planner], max_retries: 1}
+    upgrade: {primary: code, fallback: [planner], max_retries: 1}
+    vision: {primary: vision, fallback: [planner], max_retries: 1}
+    private: {primary: local, fallback: [], max_retries: 1}
+    summarize: {primary: fast, fallback: [local], max_retries: 1}
+    profile_acl:
+      roles:
+        viewer: [fast, local]
+        operator: [fast, planner, vision, local]
+        admin: ["*"]
+        owner: ["*"]
+      high_cost_profiles: [code]
+      approval_metadata_key: approved_model_profiles
 
 permissions:
   approval_mode: remote_approval

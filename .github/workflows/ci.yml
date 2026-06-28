@@ -40,6 +40,7 @@ jobs:
       - run: python scripts/check_kubernetes_contract.py .
       - run: python scripts/production_closure_drill.py --root . --contract-only
       - run: python scripts/check_script_executability.py .
+      - run: python scripts/check_global_consistency.py .
       - name: Install workflow semantic linters
         run: |
           python -m pip install yamllint
