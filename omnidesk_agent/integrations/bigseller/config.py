@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
@@ -80,7 +80,8 @@ class BigSellerConfig(BaseModel):
     fail-closed until official endpoint paths, signing behavior, credentials,
     durable state, and webhook verification are configured. Mock mode defaults
     to process-local memory state so CI and local tests cannot cross-contaminate
-    through a user-level SQLite file; production real mode still forbids memory.
+    through a user-level SQLite file; direct real-mode config defaults to SQLite
+    unless the operator explicitly selects another backend.
     """
 
     enabled: bool = False
@@ -123,6 +124,17 @@ class BigSellerConfig(BaseModel):
     state_db_path: Path = Field(
         default_factory=lambda: Path("~/.omnidesk/bigseller_state.sqlite3").expanduser()
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_direct_real_mode_to_sqlite(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("use_mock") is False and "state_backend" not in data:
+            updated = dict(data)
+            updated["state_backend"] = "sqlite"
+            return updated
+        return data
 
     @field_validator("base_url")
     @classmethod
