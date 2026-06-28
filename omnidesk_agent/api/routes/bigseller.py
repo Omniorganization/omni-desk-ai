@@ -22,9 +22,56 @@ def _status_code_for_error(exc: Exception) -> int:
         return 409
     if isinstance(exc, BigSellerConfigurationError):
         return 503
+    if isinstance(exc, PermissionError):
+        return 403
     if isinstance(exc, KeyError):
         return 404
     return 500
+
+
+def _error_code_for_error(exc: Exception) -> str:
+    if isinstance(exc, BigSellerDisabledError):
+        return "BIGSELLER_DISABLED"
+    if isinstance(exc, BigSellerConfigurationError):
+        return "BIGSELLER_CONFIGURATION_ERROR"
+    if isinstance(exc, PermissionError):
+        return "BIGSELLER_REQUEST_REJECTED"
+    if isinstance(exc, KeyError):
+        return "BIGSELLER_NOT_FOUND"
+    return "BIGSELLER_OPERATION_FAILED"
+
+
+def _safe_message_for_error(exc: Exception) -> str:
+    if isinstance(exc, BigSellerDisabledError):
+        return "BigSeller connector is disabled"
+    if isinstance(exc, BigSellerConfigurationError):
+        return "BigSeller connector is not ready"
+    if isinstance(exc, PermissionError):
+        return "BigSeller request was rejected"
+    if isinstance(exc, KeyError):
+        return "BigSeller resource was not found"
+    return "BigSeller operation failed"
+
+
+def _safe_error_detail(request: Request, exc: Exception) -> dict[str, object]:
+    trace_id = (
+        request.headers.get("x-request-id")
+        or getattr(getattr(request, "state", None), "request_id", "")
+        or ""
+    )
+    return {
+        "code": _error_code_for_error(exc),
+        "message": _safe_message_for_error(exc),
+        "trace_id": str(trace_id),
+        "retryable": isinstance(exc, (BigSellerConfigurationError, BigSellerDisabledError)),
+    }
+
+
+def _raise_connector_error(request: Request, exc: Exception) -> None:
+    raise HTTPException(
+        status_code=_status_code_for_error(exc),
+        detail=_safe_error_detail(request, exc),
+    ) from exc
 
 
 def _content_length_exceeds(request: Request, max_body_bytes: int) -> bool:
@@ -76,9 +123,7 @@ def create_bigseller_router(
             result = ctx.worker.sync_orders()
             return {"ok": result.failed == 0, "sync": result.model_dump(mode="json")}
         except Exception as exc:
-            raise HTTPException(
-                status_code=_status_code_for_error(exc), detail=str(exc)
-            ) from exc
+            _raise_connector_error(request, exc)
 
     @router.post("/sync/inventory")
     async def sync_inventory(request: Request):
@@ -88,9 +133,7 @@ def create_bigseller_router(
             result = ctx.worker.sync_inventory()
             return {"ok": result.failed == 0, "sync": result.model_dump(mode="json")}
         except Exception as exc:
-            raise HTTPException(
-                status_code=_status_code_for_error(exc), detail=str(exc)
-            ) from exc
+            _raise_connector_error(request, exc)
 
     @router.post("/sync/fulfillment")
     async def sync_fulfillment(update: BigSellerFulfillmentUpdate, request: Request):
@@ -99,9 +142,7 @@ def create_bigseller_router(
         try:
             return {"ok": True, "result": ctx.worker.sync_fulfillment_status(update)}
         except Exception as exc:
-            raise HTTPException(
-                status_code=_status_code_for_error(exc), detail=str(exc)
-            ) from exc
+            _raise_connector_error(request, exc)
 
     @router.get("/sync/status")
     async def sync_status(request: Request):
@@ -112,7 +153,9 @@ def create_bigseller_router(
     @router.get("/errors")
     async def list_errors(
         request: Request,
-        status: str | None = Query(default=None, pattern="^(retryable|dead_letter|resolved)$"),
+        status: str | None = Query(
+            default=None, pattern="^(retryable|dead_letter|resolved)$"
+        ),
         limit: int = Query(default=50, ge=1, le=500),
     ):
         await authorize(request, "viewer")
@@ -126,9 +169,7 @@ def create_bigseller_router(
         try:
             return {"ok": True, **ctx.worker.retry_error(error_id)}
         except Exception as exc:
-            raise HTTPException(
-                status_code=_status_code_for_error(exc), detail=str(exc)
-            ) from exc
+            _raise_connector_error(request, exc)
 
     @router.post("/errors/{error_id}/resolve")
     async def resolve_error(error_id: str, request: Request):
@@ -137,9 +178,7 @@ def create_bigseller_router(
         try:
             return {"ok": True, **ctx.worker.resolve_error(error_id)}
         except Exception as exc:
-            raise HTTPException(
-                status_code=_status_code_for_error(exc), detail=str(exc)
-            ) from exc
+            _raise_connector_error(request, exc)
 
     @router.post("/webhook")
     async def webhook(request: Request):
@@ -157,11 +196,9 @@ def create_bigseller_router(
             return ctx.worker.handle_webhook(event)
         except PermissionError as exc:
             ctx.worker.note_webhook_rejected()
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            _raise_connector_error(request, exc)
         except Exception as exc:
-            raise HTTPException(
-                status_code=_status_code_for_error(exc), detail=str(exc)
-            ) from exc
+            _raise_connector_error(request, exc)
 
     return router
 
