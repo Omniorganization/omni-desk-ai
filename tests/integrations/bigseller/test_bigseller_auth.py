@@ -55,7 +55,10 @@ def test_unauthorized_response_refreshes_once_and_retries(tmp_path):
 
 def test_real_mode_missing_credentials_fails_closed(tmp_path):
     config = BigSellerConfig(
-        enabled=True, use_mock=False, audit_log_path=tmp_path / "audit.jsonl"
+        enabled=True,
+        use_mock=False,
+        audit_log_path=tmp_path / "audit.jsonl",
+        state_db_path=tmp_path / "bigseller.sqlite3",
     )
     context = BigSellerConnectorContext.from_config(config)
 

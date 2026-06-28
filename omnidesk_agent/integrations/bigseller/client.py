@@ -15,6 +15,7 @@ from omnidesk_agent.integrations.bigseller.auth import BigSellerTokenManager
 from omnidesk_agent.integrations.bigseller.config import BigSellerConfig
 from omnidesk_agent.integrations.bigseller.errors import (
     BigSellerConfigurationError,
+    BigSellerEndpointNotConfigured,
     BigSellerError,
     BigSellerRateLimitError,
     BigSellerUnauthorizedError,
@@ -164,7 +165,7 @@ class HttpBigSellerClient(BigSellerClient):
 
     def _endpoint(self, key: str, path: str | None) -> str:
         if not path:
-            raise BigSellerConfigurationError(
+            raise BigSellerEndpointNotConfigured(
                 f"BigSeller endpoint path for {key} is not configured"
             )
         return path
@@ -177,8 +178,13 @@ class HttpBigSellerClient(BigSellerClient):
                 "HttpBigSellerClient cannot run while BIGSELLER_USE_MOCK=true"
             )
         issues = self.config.real_mode_issues()
-        if issues:
+        if not issues:
+            return
+        endpoint_issues = [issue for issue in issues if "_PATH" in issue]
+        non_endpoint_issues = [issue for issue in issues if "_PATH" not in issue]
+        if non_endpoint_issues:
             raise BigSellerConfigurationError("; ".join(issues))
+        raise BigSellerEndpointNotConfigured("; ".join(endpoint_issues))
 
     def _signed_headers(
         self, *, method: str, path: str, body: bytes, headers: dict[str, str]
@@ -551,9 +557,10 @@ class HttpBigSellerClient(BigSellerClient):
         payload = self.request("POST", path, json=update.model_dump(mode="json"))
         data = self._first_dict(payload)
         return BigSellerFulfillmentResult(
-            external_order_id=update.external_order_id,
-            store_id=update.store_id,
-            status=str(self._pick(data, "status", "fulfillment_status") or update.status),
-            accepted=bool(self._pick(data, "accepted", "success", "ok") if data else True),
+            external_order_id=str(data.get("external_order_id") or update.external_order_id),
+            store_id=str(data.get("store_id") or update.store_id),
+            status=str(data.get("status") or update.status),
+            accepted=bool(data.get("accepted", True)),
+            message=data.get("message"),
             raw=data or update.model_dump(mode="json"),
         )

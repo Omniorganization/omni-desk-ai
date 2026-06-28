@@ -15,6 +15,7 @@ from omnidesk_agent.integrations.bigseller.errors import SQLiteBigSellerSyncErro
 from omnidesk_agent.integrations.bigseller.idempotency import (
     SQLiteBigSellerIdempotencyGuard,
 )
+from omnidesk_agent.integrations.bigseller.orders import BigSellerOrderSyncService
 from omnidesk_agent.integrations.bigseller.schemas import BigSellerWebhookEvent
 from omnidesk_agent.integrations.bigseller.webhooks import parse_bigseller_webhook
 from omnidesk_agent.integrations.bigseller.worker import BigSellerConnectorContext
@@ -121,7 +122,9 @@ def test_real_mode_webhook_rejects_stale_timestamp(tmp_path):
     stale = datetime.now(timezone.utc) - timedelta(hours=1)
 
     with pytest.raises(PermissionError, match="stale"):
-        parse_bigseller_webhook(body, _signed_headers(body, secret, timestamp=stale), config)
+        parse_bigseller_webhook(
+            body, _signed_headers(body, secret, timestamp=stale), config
+        )
 
 
 def test_webhook_event_id_is_deduplicated_by_worker(tmp_path):
@@ -129,6 +132,7 @@ def test_webhook_event_id_is_deduplicated_by_worker(tmp_path):
         enabled=True,
         use_mock=True,
         webhook_secret="test-secret",
+        audit_log_path=tmp_path / "audit.jsonl",
         state_db_path=tmp_path / "bigseller.sqlite3",
     )
     context = BigSellerConnectorContext.from_config(config)
@@ -146,13 +150,16 @@ def test_webhook_event_id_is_deduplicated_by_worker(tmp_path):
     assert second["handled"] == "duplicate"
     status = context.worker.status()
     assert status["metrics"]["bigseller_webhook_duplicate_total"] == 1
-    assert status["prometheus_metrics"]["omnidesk_bigseller_webhook_duplicate_total"] == 1
+    assert (
+        status["prometheus_metrics"]["omnidesk_bigseller_webhook_duplicate_total"] == 1
+    )
 
 
 def test_worker_dead_letter_metric_is_current_gauge(tmp_path):
     config = BigSellerConfig(
         enabled=True,
         use_mock=True,
+        audit_log_path=tmp_path / "audit.jsonl",
         state_db_path=tmp_path / "bigseller.sqlite3",
     )
     context = BigSellerConnectorContext.from_config(config)
@@ -186,20 +193,80 @@ def test_webhook_rejects_payload_over_configured_limit(tmp_path):
         use_mock=True,
         webhook_secret="test-secret",
         webhook_max_body_bytes=8,
+        audit_log_path=tmp_path / "audit.jsonl",
         state_db_path=tmp_path / "bigseller.sqlite3",
     )
     context = BigSellerConnectorContext.from_config(config)
     app = FastAPI()
     app.include_router(create_bigseller_router(context=context))
-    client = TestClient(app)
-
-    response = client.post(
-        "/integrations/bigseller/webhook",
-        content=b"0123456789",
-        headers={"content-length": "10"},
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/integrations/bigseller/webhook",
+            content=b"0123456789",
+            headers={"content-length": "10"},
+        )
 
     assert response.status_code == 413
     status = context.worker.status()
     assert status["metrics"]["bigseller_webhook_rejected_total"] == 1
-    assert status["prometheus_metrics"]["omnidesk_bigseller_webhook_rejected_total"] == 1
+    assert (
+        status["prometheus_metrics"]["omnidesk_bigseller_webhook_rejected_total"] == 1
+    )
+
+
+def test_admin_error_routes_list_retry_and_resolve(tmp_path):
+    config = BigSellerConfig(
+        enabled=True,
+        use_mock=True,
+        audit_log_path=tmp_path / "audit.jsonl",
+        state_db_path=tmp_path / "bigseller.sqlite3",
+        max_retries=0,
+    )
+    context = BigSellerConnectorContext.from_config(config)
+    queued = context.worker.errors.enqueue(
+        entity_type="order",
+        external_id="bulk",
+        store_id="unknown",
+        action=BigSellerOrderSyncService.action_type,
+        payload={"filters": {}},
+        error="operator replay test",
+    )
+    app = FastAPI()
+    app.include_router(create_bigseller_router(context=context))
+    with TestClient(app) as client:
+        errors = client.get(
+            "/integrations/bigseller/errors", params={"status": "dead_letter"}
+        )
+        assert errors.status_code == 200
+        assert errors.json()["errors"][0]["id"] == queued.id
+
+        retry = client.post(f"/integrations/bigseller/errors/{queued.id}/retry")
+        assert retry.status_code == 200
+        assert retry.json()["retried"] is True
+
+        resolved = client.post(f"/integrations/bigseller/errors/{queued.id}/resolve")
+        assert resolved.status_code == 200
+        assert resolved.json()["status"] == "resolved"
+
+
+def test_worker_status_includes_recent_errors(tmp_path):
+    config = BigSellerConfig(
+        enabled=True,
+        use_mock=True,
+        audit_log_path=tmp_path / "audit.jsonl",
+        state_db_path=tmp_path / "bigseller.sqlite3",
+    )
+    context = BigSellerConnectorContext.from_config(config)
+    context.worker.errors.enqueue(
+        entity_type="inventory",
+        external_id="bulk",
+        store_id="unknown",
+        action="inventory.sync",
+        payload={"filters": {}},
+        error="inventory replay test",
+    )
+
+    status = context.worker.status()
+
+    assert status["recent_errors"][0]["entity_type"] == "inventory"
+    assert status["errors"]["total"] == 1

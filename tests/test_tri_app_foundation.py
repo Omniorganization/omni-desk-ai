@@ -29,14 +29,37 @@ def _cfg(tmp_path: Path) -> AppConfig:
 
 def test_tri_app_store_links_desktop_mobile_web_business_line(tmp_path):
     store = AppSyncStore(tmp_path / "app_sync.json")
-    desktop = store.register_device(actor="alice", device_id="desktop-1", device_type="desktop", name="MacBook", platform="macOS", capabilities=["local-runtime"])
-    mobile = store.register_device(actor="alice", device_id="mobile-1", device_type="mobile", name="iPhone", platform="iOS", capabilities=["approval", "chat"])
-    web = store.register_device(actor="alice", device_id="web-1", device_type="web_admin", name="Admin", platform="web", capabilities=["governance"])
+    desktop = store.register_device(
+        actor="alice",
+        device_id="desktop-1",
+        device_type="desktop",
+        name="MacBook",
+        platform="macOS",
+        capabilities=["local-runtime"],
+    )
+    mobile = store.register_device(
+        actor="alice",
+        device_id="mobile-1",
+        device_type="mobile",
+        name="iPhone",
+        platform="iOS",
+        capabilities=["approval", "chat"],
+    )
+    web = store.register_device(
+        actor="alice",
+        device_id="web-1",
+        device_type="web_admin",
+        name="Admin",
+        platform="web",
+        capabilities=["governance"],
+    )
     assert desktop["device_type"] == "desktop"
     assert mobile["device_type"] == "mobile"
     assert web["device_type"] == "web_admin"
 
-    convo = store.create_conversation(actor="alice", title="Cross-device task", source_device_id="mobile-1")
+    convo = store.create_conversation(
+        actor="alice", title="Cross-device task", source_device_id="mobile-1"
+    )
     result = store.add_message_and_task(
         actor="alice",
         conversation_id=convo["conversation_id"],
@@ -48,7 +71,9 @@ def test_tri_app_store_links_desktop_mobile_web_business_line(tmp_path):
     approval = result["approval"]
     assert result["task"]["status"] == "blocked"
     assert approval["status"] == "pending"
-    decided = store.decide_approval(approval_id=approval["approval_id"], actor="owner", decision="approved")
+    decided = store.decide_approval(
+        approval_id=approval["approval_id"], actor="owner", decision="approved"
+    )
     assert decided["status"] == "approved"
     assert store.get_task(result["task"]["task_id"])["status"] == "queued"
     sync = store.sync_since(0)
@@ -57,15 +82,49 @@ def test_tri_app_store_links_desktop_mobile_web_business_line(tmp_path):
 
 def test_appsync_store_filters_cross_organization_objects_and_sync(tmp_path):
     store = AppSyncStore(tmp_path / "app_sync.json")
-    store.register_device(actor="alice", device_id="alice-mobile", device_type="mobile", name="Alice phone", platform="iOS", organization_id="org-a")
-    store.register_device(actor="alice", device_id="alice-desktop", device_type="desktop", name="Alice desktop", platform="macOS", organization_id="org-a")
-    store.register_device(actor="bob", device_id="bob-mobile", device_type="mobile", name="Bob phone", platform="Android", organization_id="org-b")
-    store.register_device(actor="bob", device_id="bob-desktop", device_type="desktop", name="Bob desktop", platform="Linux", organization_id="org-b")
+    store.register_device(
+        actor="alice",
+        device_id="alice-mobile",
+        device_type="mobile",
+        name="Alice phone",
+        platform="iOS",
+        organization_id="org-a",
+    )
+    store.register_device(
+        actor="alice",
+        device_id="alice-desktop",
+        device_type="desktop",
+        name="Alice desktop",
+        platform="macOS",
+        organization_id="org-a",
+    )
+    store.register_device(
+        actor="bob",
+        device_id="bob-mobile",
+        device_type="mobile",
+        name="Bob phone",
+        platform="Android",
+        organization_id="org-b",
+    )
+    store.register_device(
+        actor="bob",
+        device_id="bob-desktop",
+        device_type="desktop",
+        name="Bob desktop",
+        platform="Linux",
+        organization_id="org-b",
+    )
 
-    alice_convo = store.create_conversation(actor="alice", title="Org A task", source_device_id="alice-mobile")
-    bob_convo = store.create_conversation(actor="bob", title="Org B task", source_device_id="bob-mobile")
+    alice_convo = store.create_conversation(
+        actor="alice", title="Org A task", source_device_id="alice-mobile"
+    )
+    bob_convo = store.create_conversation(
+        actor="bob", title="Org B task", source_device_id="bob-mobile"
+    )
     with pytest.raises(PermissionError):
-        store.create_conversation(actor="charlie", title="Hijack org A", source_device_id="alice-mobile")
+        store.create_conversation(
+            actor="charlie", title="Hijack org A", source_device_id="alice-mobile"
+        )
     alice_created = store.add_message_and_task(
         actor="alice",
         conversation_id=alice_convo["conversation_id"],
@@ -82,27 +141,49 @@ def test_appsync_store_filters_cross_organization_objects_and_sync(tmp_path):
         requires_desktop_runtime=True,
         risk="high",
     )
-    store.decide_approval(approval_id=alice_created["approval"]["approval_id"], actor="alice", decision="approved")
-    store.decide_approval(approval_id=bob_created["approval"]["approval_id"], actor="bob", decision="approved")
+    store.decide_approval(
+        approval_id=alice_created["approval"]["approval_id"],
+        actor="alice",
+        decision="approved",
+    )
+    store.decide_approval(
+        approval_id=bob_created["approval"]["approval_id"],
+        actor="bob",
+        decision="approved",
+    )
 
-    assert [item["conversation_id"] for item in store.list_conversations("alice")] == [alice_convo["conversation_id"]]
+    assert [item["conversation_id"] for item in store.list_conversations("alice")] == [
+        alice_convo["conversation_id"]
+    ]
     assert store.list_messages(alice_convo["conversation_id"], actor="bob") == []
     with pytest.raises(KeyError):
         store.get_task(alice_created["task"]["task_id"], actor="bob")
     with pytest.raises(PermissionError):
-        store.add_message_and_task(actor="bob", conversation_id=alice_convo["conversation_id"], content="cross org write")
+        store.add_message_and_task(
+            actor="bob",
+            conversation_id=alice_convo["conversation_id"],
+            content="cross org write",
+        )
 
     alice_approvals = store.list_approvals(actor="alice")
     bob_approvals = store.list_approvals(actor="bob")
     assert {item["organization_id"] for item in alice_approvals} == {"org-a"}
     assert {item["organization_id"] for item in bob_approvals} == {"org-b"}
-    assert {item["organization_id"] for item in store.list_notifications(actor="alice")} == {"org-a"}
-    assert {item["organization_id"] for item in store.list_notifications(actor="bob")} == {"org-b"}
+    assert {
+        item["organization_id"] for item in store.list_notifications(actor="alice")
+    } == {"org-a"}
+    assert {
+        item["organization_id"] for item in store.list_notifications(actor="bob")
+    } == {"org-b"}
 
-    bob_claimed = store.claim_next_task(actor="bob", device_id="bob-desktop", lease_seconds=60)
+    bob_claimed = store.claim_next_task(
+        actor="bob", device_id="bob-desktop", lease_seconds=60
+    )
     assert bob_claimed is not None
     assert bob_claimed["task_id"] == bob_created["task"]["task_id"]
-    alice_claimed = store.claim_next_task(actor="alice", device_id="alice-desktop", lease_seconds=60)
+    alice_claimed = store.claim_next_task(
+        actor="alice", device_id="alice-desktop", lease_seconds=60
+    )
     assert alice_claimed is not None
     assert alice_claimed["task_id"] == alice_created["task"]["task_id"]
 
@@ -124,22 +205,57 @@ def test_appsync_routes_create_task_approval_and_sync(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     app = create_app(cfg)
     with TestClient(app) as client:
-        operator_headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice"}
-        owner_headers = {"authorization": "Bearer owner-token", "x-omnidesk-actor": "owner"}
-        r = client.post("/app/devices/register", headers={**operator_headers, "idempotency-key": "register-desktop-1"}, json={"device_id": "desktop-1", "device_type": "desktop", "name": "Desktop", "platform": "macOS"})
+        operator_headers = {
+            "authorization": "Bearer operator-token",
+            "x-omnidesk-actor": "alice",
+        }
+        owner_headers = {
+            "authorization": "Bearer owner-token",
+            "x-omnidesk-actor": "owner",
+        }
+        r = client.post(
+            "/app/devices/register",
+            headers={**operator_headers, "idempotency-key": "register-desktop-1"},
+            json={
+                "device_id": "desktop-1",
+                "device_type": "desktop",
+                "name": "Desktop",
+                "platform": "macOS",
+            },
+        )
         assert r.status_code == 200, r.text
-        convo = client.post("/app/conversations", headers={**operator_headers, "idempotency-key": "conversation-1"}, json={"title": "Mobile to desktop"}).json()["conversation"]
-        payload = {"content": "Run a desktop workflow", "requires_desktop_runtime": True, "risk": "high"}
-        created = client.post(f"/app/conversations/{convo['conversation_id']}/messages", headers={**operator_headers, "idempotency-key": "message-1"}, json=payload)
+        convo = client.post(
+            "/app/conversations",
+            headers={**operator_headers, "idempotency-key": "conversation-1"},
+            json={"title": "Mobile to desktop"},
+        ).json()["conversation"]
+        payload = {
+            "content": "Run a desktop workflow",
+            "requires_desktop_runtime": True,
+            "risk": "high",
+        }
+        created = client.post(
+            f"/app/conversations/{convo['conversation_id']}/messages",
+            headers={**operator_headers, "idempotency-key": "message-1"},
+            json=payload,
+        )
         assert created.status_code == 200, created.text
         body = created.json()
         assert body["approval"]["status"] == "pending"
-        approvals = client.get("/app/approvals?status=pending", headers=operator_headers).json()["approvals"]
+        approvals = client.get(
+            "/app/approvals?status=pending", headers=operator_headers
+        ).json()["approvals"]
         assert approvals
-        decided = client.post(f"/app/approvals/{approvals[0]['approval_id']}/decide", headers={**owner_headers, "idempotency-key": "approval-1"}, json={"decision": "approved"})
+        decided = client.post(
+            f"/app/approvals/{approvals[0]['approval_id']}/decide",
+            headers={**owner_headers, "idempotency-key": "approval-1"},
+            json={"decision": "approved"},
+        )
         assert decided.status_code == 200, decided.text
         sync = client.get("/app/sync?since_seq=0", headers=operator_headers).json()
-        assert any(event["event_type"] == "approval.decided" for event in sync["events"])
+        assert any(
+            event["event_type"] == "approval.decided" for event in sync["events"]
+        )
 
 
 def test_shared_app_api_contract_matches_backend_routes(tmp_path, monkeypatch):
@@ -148,7 +264,9 @@ def test_shared_app_api_contract_matches_backend_routes(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
     monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "viewer-token")
     root = Path(__file__).resolve().parents[1]
-    contract = json.loads((root / "apps" / "shared" / "omni-app-api.contract.json").read_text())
+    contract = json.loads(
+        (root / "apps" / "shared" / "omni-app-api.contract.json").read_text()
+    )
     app = create_app(_cfg(tmp_path))
     rest_routes = {
         (method, getattr(route, "path", ""))
@@ -188,8 +306,17 @@ def test_tri_app_client_files_are_present():
 
 def test_appsync_idempotency_and_desktop_claim_lease(tmp_path):
     store = AppSyncStore(tmp_path / "app_sync.json")
-    store.register_device(actor="alice", device_id="desktop-1", device_type="desktop", name="MacBook", platform="macOS", capabilities=["local-runtime"])
-    convo = store.create_conversation(actor="alice", title="Idempotent task", source_device_id="mobile-1")
+    store.register_device(
+        actor="alice",
+        device_id="desktop-1",
+        device_type="desktop",
+        name="MacBook",
+        platform="macOS",
+        capabilities=["local-runtime"],
+    )
+    convo = store.create_conversation(
+        actor="alice", title="Idempotent task", source_device_id="mobile-1"
+    )
     first = store.add_message_and_task(
         actor="alice",
         conversation_id=convo["conversation_id"],
@@ -210,8 +337,18 @@ def test_appsync_idempotency_and_desktop_claim_lease(tmp_path):
     )
     assert first["task"]["task_id"] == second["task"]["task_id"]
 
-    store.decide_approval(approval_id=first["approval"]["approval_id"], actor="owner", decision="approved", idempotency_key="approve-001")
-    claimed = store.claim_next_task(actor="desktop", device_id="desktop-1", lease_seconds=60, capabilities=["local-runtime"])
+    store.decide_approval(
+        approval_id=first["approval"]["approval_id"],
+        actor="owner",
+        decision="approved",
+        idempotency_key="approve-001",
+    )
+    claimed = store.claim_next_task(
+        actor="desktop",
+        device_id="desktop-1",
+        lease_seconds=60,
+        capabilities=["local-runtime"],
+    )
     assert claimed is not None
     assert claimed["task_id"] == first["task"]["task_id"]
     assert claimed["status"] == "running"
@@ -221,8 +358,15 @@ def test_appsync_idempotency_and_desktop_claim_lease(tmp_path):
 
 def test_appsync_store_records_audited_chat_turn(tmp_path):
     store = AppSyncStore(tmp_path / "app_sync.json")
-    convo = store.create_conversation(actor="alice", title="Direct model chat", source_device_id="mobile-1")
-    user_message = store.add_chat_user_message(actor="alice", conversation_id=convo["conversation_id"], content="Summarize status", source_device_id="mobile-1")
+    convo = store.create_conversation(
+        actor="alice", title="Direct model chat", source_device_id="mobile-1"
+    )
+    user_message = store.add_chat_user_message(
+        actor="alice",
+        conversation_id=convo["conversation_id"],
+        content="Summarize status",
+        source_device_id="mobile-1",
+    )
     assistant_message = store.add_assistant_message(
         actor="alice",
         conversation_id=convo["conversation_id"],
@@ -240,7 +384,9 @@ def test_appsync_store_records_audited_chat_turn(tmp_path):
     assert assistant_message["usage"]["output_tokens"] == 4
     assert assistant_message["trace_id"].startswith("trace_")
     sync = store.sync_since(0)
-    assert any(event["event_type"] == "conversation.ask.completed" for event in sync["events"])
+    assert any(
+        event["event_type"] == "conversation.ask.completed" for event in sync["events"]
+    )
 
 
 class FakeChatRouter:
@@ -258,7 +404,9 @@ class FakeChatRouter:
         )
 
 
-def test_appsync_ask_route_uses_model_router_and_persists_messages(tmp_path, monkeypatch):
+def test_appsync_ask_route_uses_model_router_and_persists_messages(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
     monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
@@ -267,10 +415,25 @@ def test_appsync_ask_route_uses_model_router_and_persists_messages(tmp_path, mon
     fake_router = FakeChatRouter()
     app.state.runtime.model_router = fake_router
     with TestClient(app) as client:
-        operator_headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice"}
-        convo = client.post("/app/conversations", headers={**operator_headers, "idempotency-key": "conversation-chat-1"}, json={"title": "Ask"}).json()["conversation"]
-        payload = {"content": "What changed?", "model_profile": "fast", "source_device_id": "mobile-1"}
-        asked = client.post(f"/app/conversations/{convo['conversation_id']}/ask", headers={**operator_headers, "idempotency-key": "ask-1"}, json=payload)
+        operator_headers = {
+            "authorization": "Bearer operator-token",
+            "x-omnidesk-actor": "alice",
+        }
+        convo = client.post(
+            "/app/conversations",
+            headers={**operator_headers, "idempotency-key": "conversation-chat-1"},
+            json={"title": "Ask"},
+        ).json()["conversation"]
+        payload = {
+            "content": "What changed?",
+            "model_profile": "fast",
+            "source_device_id": "mobile-1",
+        }
+        asked = client.post(
+            f"/app/conversations/{convo['conversation_id']}/ask",
+            headers={**operator_headers, "idempotency-key": "ask-1"},
+            json=payload,
+        )
         assert asked.status_code == 200, asked.text
         body = asked.json()
         assert body["assistant_message"]["content"] == "assistant:What changed?"
@@ -278,28 +441,69 @@ def test_appsync_ask_route_uses_model_router_and_persists_messages(tmp_path, mon
         assert body["audit_trace_id"].startswith("trace_")
         assert fake_router.requests[0].task == "chat"
         assert fake_router.requests[0].metadata["actor"] == "alice"
-        replay = client.post(f"/app/conversations/{convo['conversation_id']}/ask", headers={**operator_headers, "idempotency-key": "ask-1"}, json=payload)
+        replay = client.post(
+            f"/app/conversations/{convo['conversation_id']}/ask",
+            headers={**operator_headers, "idempotency-key": "ask-1"},
+            json=payload,
+        )
         assert replay.status_code == 200, replay.text
         assert len(fake_router.requests) == 1
-        messages = client.get(f"/app/conversations/{convo['conversation_id']}/messages", headers=operator_headers).json()["messages"]
+        messages = client.get(
+            f"/app/conversations/{convo['conversation_id']}/messages",
+            headers=operator_headers,
+        ).json()["messages"]
         assert [item["role"] for item in messages] == ["user", "assistant"]
 
 
-def test_api_chat_alias_uses_audited_model_router_and_creates_conversation(tmp_path, monkeypatch):
+def test_api_chat_alias_uses_audited_model_router_and_creates_conversation(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
     app = create_app(_cfg(tmp_path))
     fake_router = FakeChatRouter()
     app.state.runtime.model_router = fake_router
     with TestClient(app) as client:
-        operator_headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice", "idempotency-key": "api-chat-1"}
-        asked = client.post("/api/chat", headers=operator_headers, json={"content": "Give me release status", "model_profile": "fast"})
+        operator_headers = {
+            "authorization": "Bearer operator-token",
+            "x-omnidesk-actor": "alice",
+            "idempotency-key": "api-chat-1",
+        }
+        asked = client.post(
+            "/api/chat",
+            headers=operator_headers,
+            json={"content": "Give me release status", "model_profile": "fast"},
+        )
         assert asked.status_code == 200, asked.text
         body = asked.json()
         assert body["conversation_id"]
-        assert body["assistant_message"]["content"] == "assistant:Give me release status"
+        assert (
+            body["assistant_message"]["content"] == "assistant:Give me release status"
+        )
         assert body["audit_trace_id"].startswith("trace_")
         assert fake_router.requests[0].task == "chat"
-        stream = client.post("/api/chat/stream", headers=operator_headers, json={"content": "stream this"})
+        replay = client.post(
+            "/api/chat",
+            headers=operator_headers,
+            json={"content": "Give me release status", "model_profile": "fast"},
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["conversation_id"] == body["conversation_id"]
+        assert (
+            replay.json()["assistant_message"]["message_id"]
+            == body["assistant_message"]["message_id"]
+        )
+        assert len(fake_router.requests) == 1
+        mismatch = client.post(
+            "/api/chat",
+            headers=operator_headers,
+            json={"content": "Changed", "model_profile": "fast"},
+        )
+        assert mismatch.status_code == 409
+        stream = client.post(
+            "/api/chat/stream",
+            headers=operator_headers,
+            json={"content": "stream this"},
+        )
         assert stream.status_code == 501
 
 
@@ -312,10 +516,18 @@ def test_api_chat_actor_rate_limit_blocks_repeated_model_spend(tmp_path, monkeyp
     fake_router = FakeChatRouter()
     app.state.runtime.model_router = fake_router
     with TestClient(app) as client:
-        headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice", "idempotency-key": "chat-limit-1"}
+        headers = {
+            "authorization": "Bearer operator-token",
+            "x-omnidesk-actor": "alice",
+            "idempotency-key": "chat-limit-1",
+        }
         first = client.post("/api/chat", headers=headers, json={"content": "first"})
         assert first.status_code == 200, first.text
-        second = client.post("/api/chat", headers={**headers, "idempotency-key": "chat-limit-2"}, json={"content": "second"})
+        second = client.post(
+            "/api/chat",
+            headers={**headers, "idempotency-key": "chat-limit-2"},
+            json={"content": "second"},
+        )
         assert second.status_code == 429
         assert second.json()["detail"] == "chat rate limit exceeded"
         assert len(fake_router.requests) == 1
@@ -327,10 +539,24 @@ def test_appsync_ask_route_rejects_viewer_role(tmp_path, monkeypatch):
     app = create_app(_cfg(tmp_path))
     app.state.runtime.model_router = FakeChatRouter()
     with TestClient(app) as client:
-        operator_headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice"}
-        viewer_headers = {"authorization": "Bearer viewer-token", "x-omnidesk-actor": "alice"}
-        convo = client.post("/app/conversations", headers={**operator_headers, "idempotency-key": "conversation-chat-2"}, json={"title": "Ask"}).json()["conversation"]
-        denied = client.post(f"/app/conversations/{convo['conversation_id']}/ask", headers={**viewer_headers, "idempotency-key": "ask-viewer"}, json={"content": "hello"})
+        operator_headers = {
+            "authorization": "Bearer operator-token",
+            "x-omnidesk-actor": "alice",
+        }
+        viewer_headers = {
+            "authorization": "Bearer viewer-token",
+            "x-omnidesk-actor": "alice",
+        }
+        convo = client.post(
+            "/app/conversations",
+            headers={**operator_headers, "idempotency-key": "conversation-chat-2"},
+            json={"title": "Ask"},
+        ).json()["conversation"]
+        denied = client.post(
+            f"/app/conversations/{convo['conversation_id']}/ask",
+            headers={**viewer_headers, "idempotency-key": "ask-viewer"},
+            json={"content": "hello"},
+        )
         assert denied.status_code == 403
 
 
@@ -383,12 +609,28 @@ def test_appsync_idempotency_rejects_payload_mismatch(tmp_path):
 
 def test_device_enrollment_and_push_registration(tmp_path):
     store = AppSyncStore(tmp_path / "app_sync.json")
-    enrollment = store.start_device_enrollment(actor="owner", device_type="mobile", pairing_code="12345678")
+    enrollment = store.start_device_enrollment(
+        actor="owner", device_type="mobile", pairing_code="12345678"
+    )
     assert enrollment["status"] == "pending"
-    completed = store.complete_device_enrollment(actor="alice", enrollment_id=enrollment["enrollment_id"], pairing_code="12345678", device_id="mobile-1", public_key="pk")
+    completed = store.complete_device_enrollment(
+        actor="alice",
+        enrollment_id=enrollment["enrollment_id"],
+        pairing_code="12345678",
+        device_id="mobile-1",
+        public_key="pk",
+    )
     assert completed["status"] == "completed"
-    store.register_device(actor="alice", device_id="mobile-1", device_type="mobile", name="Phone", platform="iOS")
-    device = store.register_push_token(actor="alice", device_id="mobile-1", push_token="push-token", platform="ios")
+    store.register_device(
+        actor="alice",
+        device_id="mobile-1",
+        device_type="mobile",
+        name="Phone",
+        platform="iOS",
+    )
+    device = store.register_push_token(
+        actor="alice", device_id="mobile-1", push_token="push-token", platform="ios"
+    )
     assert device["push_token"] == "push-token"
 
 
@@ -429,4 +671,7 @@ def test_postgres_normalized_schema_contract():
         start = NORMALIZED_SCHEMA_SQL.index(f"CREATE TABLE IF NOT EXISTS {table}")
         end = NORMALIZED_SCHEMA_SQL.index(");", start)
         assert "organization_id TEXT NOT NULL" in NORMALIZED_SCHEMA_SQL[start:end]
-    assert "FOR UPDATE SKIP LOCKED" not in NORMALIZED_SCHEMA_SQL or "omnidesk_appsync_tasks_claim_idx" in NORMALIZED_SCHEMA_SQL
+    assert (
+        "FOR UPDATE SKIP LOCKED" not in NORMALIZED_SCHEMA_SQL
+        or "omnidesk_appsync_tasks_claim_idx" in NORMALIZED_SCHEMA_SQL
+    )

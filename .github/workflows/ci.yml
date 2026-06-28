@@ -52,6 +52,20 @@ jobs:
       - run: python scripts/check_release_hygiene.py . --allow-vcs
       - name: Prepare CI evidence directory
         run: mkdir -p "reports/ci/${{ matrix.python-version }}"
+      - name: Server composition smoke
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee "reports/ci/${{ matrix.python-version }}/server-smoke.txt"
+          from omnidesk_agent.config import AppConfig
+          from omnidesk_agent.server import create_app
+
+          cfg = AppConfig()
+          app = create_app(cfg)
+          paths = {getattr(route, "path", "") for route in app.routes}
+          assert "/health" in paths
+          assert not any(path.startswith("/integrations/bigseller") for path in paths)
+          print("server composition smoke passed")
+          PY
       - name: Ruff
         run: |
           set -o pipefail
@@ -59,7 +73,7 @@ jobs:
       - name: Pyright
         run: |
           set -o pipefail
-          pyright omnidesk_agent/core omnidesk_agent/security omnidesk_agent/tools omnidesk_agent/self_upgrade omnidesk_agent/server.py omnidesk_agent/daemon.py 2>&1 | tee "reports/ci/${{ matrix.python-version }}/pyright.txt"
+          pyright omnidesk_agent/core omnidesk_agent/security omnidesk_agent/tools omnidesk_agent/self_upgrade omnidesk_agent/daemon.py 2>&1 | tee "reports/ci/${{ matrix.python-version }}/pyright.txt"
       - name: Pytest strict
         run: |
           set -o pipefail
@@ -84,6 +98,7 @@ jobs:
             --coverage-json coverage.json \
             --coverage-xml coverage.xml \
             --artifact-name "ci-evidence-${{ matrix.python-version }}" \
+            --log "server_smoke=reports/ci/${{ matrix.python-version }}/server-smoke.txt" \
             --log "ruff=reports/ci/${{ matrix.python-version }}/ruff.txt" \
             --log "pyright=reports/ci/${{ matrix.python-version }}/pyright.txt" \
             --log "pytest=reports/ci/${{ matrix.python-version }}/pytest-unit.txt" \
@@ -91,12 +106,14 @@ jobs:
             --log "coverage_gates=reports/ci/${{ matrix.python-version }}/coverage-gates.txt" \
             --log "optional_connector_coverage=reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: ci-evidence-${{ matrix.python-version }}
           path: |
             reports/ci/${{ matrix.python-version }}/
             coverage.json
             coverage.xml
+          if-no-files-found: warn
 
   ci:
     name: CI

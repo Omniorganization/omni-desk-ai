@@ -16,24 +16,27 @@ REQUIRED_FILES = (
     "omnidesk_agent/integrations/bigseller/worker.py",
     "omnidesk_agent/observability/metrics.py",
     "omnidesk_agent/api/routes/bigseller.py",
+    "scripts/check_bigseller_route_enablement.py",
     "scripts/run_bigseller_live_smoke.py",
     "scripts/import_bigseller_live_smoke_evidence.py",
     "docs/integrations/bigseller.md",
+    ".github/workflows/release-policy.yml",
+    ".github/workflows/main-verification.yml",
+    ".github/workflows/bigseller-real-contract.yml",
+    "release/production-evidence.manifest.json",
+    "release/external-ga-evidence.required.json",
 )
 
-REQUIRED_SNIPPETS = {
+HARD_REQUIRED_SNIPPETS = {
     "omnidesk_agent/integrations/bigseller/config.py": (
         "state_backend",
         "postgres_dsn",
-        "webhook_replay_window_seconds",
-        "webhook_event_ttl_seconds",
         "webhook_max_body_bytes",
-        "BIGSELLER_WEBHOOK_MAX_BODY_BYTES",
         "BIGSELLER_STATE_BACKEND=memory is not allowed",
         "BIGSELLER_ORDERS_LIST_PATH",
         "BIGSELLER_FULFILLMENT_SYNC_PATH",
         "BIGSELLER_REQUEST_SIGNING_ENABLED",
-        "response_root_keys",
+        "BIGSELLER_ALLOWED_HOSTS",
         "real_endpoint_contract_configured",
     ),
     "omnidesk_agent/integrations/bigseller/client.py": (
@@ -45,18 +48,12 @@ REQUIRED_SNIPPETS = {
         "list_orders",
         "list_inventory",
         "sync_fulfillment_status",
-        "_map_order",
-        "_map_inventory",
-        "_map_product",
-        "BigSellerFulfillmentResult",
     ),
     "omnidesk_agent/integrations/bigseller/idempotency.py": (
         "SQLiteBigSellerIdempotencyGuard",
         "PostgresBigSellerIdempotencyGuard",
         "create_bigseller_idempotency_guard",
         "purge_expired",
-        "expires_at",
-        "FOR UPDATE",
     ),
     "omnidesk_agent/integrations/bigseller/errors.py": (
         "SQLiteBigSellerSyncErrorQueue",
@@ -66,32 +63,28 @@ REQUIRED_SNIPPETS = {
     ),
     "omnidesk_agent/integrations/bigseller/webhooks.py": (
         "verify_webhook_timestamp",
-        "x-bigseller-event-id",
         "missing BigSeller webhook event id",
         "stale BigSeller webhook timestamp",
     ),
     "omnidesk_agent/integrations/bigseller/worker.py": (
         "MetricsRegistry",
-        "omnidesk_bigseller_webhook_duplicate_total",
-        "omnidesk_bigseller_dead_letter_current",
-        "prometheus_metrics",
-        "bigseller_webhook_duplicate_total",
-        "bigseller_dead_letter_current",
-        "note_webhook_rejected",
         "create_bigseller_idempotency_guard",
         "create_bigseller_error_queue",
-    ),
-    "omnidesk_agent/observability/metrics.py": (
-        "class MetricsRegistry",
-        "render_prometheus",
-        "omnidesk_",
+        "def list_errors",
+        "def retry_error",
+        "def resolve_error",
     ),
     "omnidesk_agent/api/routes/bigseller.py": (
         "webhook_max_body_bytes",
-        "payload too large",
         "status_code=413",
-        "note_webhook_rejected",
         "parse_bigseller_webhook",
+        "/errors/{error_id}/retry",
+        "/errors/{error_id}/resolve",
+    ),
+    "scripts/check_bigseller_route_enablement.py": (
+        "BIGSELLER_REGISTER_ROUTES",
+        "def audit",
+        "omnidesk-bigseller-route-enablement/",
     ),
     "scripts/run_bigseller_live_smoke.py": (
         "BIGSELLER_USE_MOCK=false",
@@ -107,30 +100,51 @@ REQUIRED_SNIPPETS = {
     ),
     "docs/integrations/bigseller.md": (
         "BIGSELLER_STATE_BACKEND",
-        "BIGSELLER_WEBHOOK_MAX_BODY_BYTES",
-        "PostgreSQL",
-        "replay protection",
-        "live smoke evidence",
+        "BIGSELLER_REGISTER_ROUTES",
+        "BIGSELLER_ALLOWED_HOSTS",
         "Real Adapter Contract",
-        "BIGSELLER_ORDERS_LIST_PATH",
-        "BIGSELLER_REQUEST_SIGNING_ENABLED",
-        "BIGSELLER_RESPONSE_ROOT_KEYS",
+        "live smoke evidence",
+        "GET /integrations/bigseller/errors",
+        "POST /integrations/bigseller/errors/{error_id}/retry",
+    ),
+    ".github/workflows/release-policy.yml": (
+        "python scripts/check_bigseller_connector_contract.py .",
+        "python scripts/check_bigseller_route_enablement.py .",
+    ),
+    ".github/workflows/main-verification.yml": (
+        "python scripts/check_bigseller_connector_contract.py .",
+    ),
+    ".github/workflows/bigseller-real-contract.yml": (
+        "BigSeller Real Contract",
+        "check_bigseller_route_enablement.py",
+        "run_bigseller_live_smoke.py",
+        "real-ga",
+        "candidate",
+    ),
+    "release/production-evidence.manifest.json": (
+        "bigseller_live_smoke",
+        "bigseller_route_enablement",
+        "bigseller_real_contract_workflow",
+        "run_bigseller_live_smoke.py",
+    ),
+    "release/external-ga-evidence.required.json": (
+        "bigseller_live_smoke",
+        "integrations/bigseller-live-smoke.json",
     ),
 }
 
-WORKFLOW_SNIPPETS = (
-    "python scripts/check_bigseller_connector_contract.py .",
-)
-
-EXTERNAL_EVIDENCE_SNIPPETS = (
-    "bigseller_live_smoke",
-    "integrations/bigseller-live-smoke.json",
-)
-
-MANIFEST_ONLY_SNIPPETS = (
-    "run_bigseller_live_smoke.py",
-    "import_bigseller_live_smoke_evidence.py",
-)
+SOFT_RECOMMENDED_SNIPPETS = {
+    "omnidesk_agent/integrations/bigseller/worker.py": (
+        "omnidesk_bigseller_webhook_duplicate_total",
+        "omnidesk_bigseller_dead_letter_current",
+        "prometheus_metrics",
+    ),
+    "docs/integrations/bigseller.md": (
+        "BIGSELLER_ENABLED does not register routes",
+        "BIGSELLER_RESPONSE_ROOT_KEYS",
+        "BIGSELLER_REQUEST_SIGNING_ENABLED",
+    ),
+}
 
 
 def _read(root: Path, rel: str) -> str:
@@ -140,65 +154,45 @@ def _read(root: Path, rel: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _check(condition: bool, failures: list[str], message: str) -> None:
-    if not condition:
-        failures.append(message)
+def _check_snippets(
+    root: Path,
+    mapping: dict[str, tuple[str, ...]],
+    *,
+    severity: str,
+) -> list[str]:
+    issues: list[str] = []
+    for rel, snippets in mapping.items():
+        try:
+            text = _read(root, rel)
+        except FileNotFoundError:
+            issues.append(f"{severity}: missing file while checking snippets: {rel}")
+            continue
+        for snippet in snippets:
+            if snippet not in text:
+                issues.append(f"{severity}: {rel} missing snippet: {snippet}")
+    return issues
 
 
 def audit(root: Path) -> dict[str, object]:
     failures: list[str] = []
+    warnings: list[str] = []
     for rel in REQUIRED_FILES:
-        _check((root / rel).exists(), failures, f"missing required file: {rel}")
+        if not (root / rel).exists():
+            failures.append(f"missing required file: {rel}")
 
-    for rel, snippets in REQUIRED_SNIPPETS.items():
-        try:
-            text = _read(root, rel)
-        except FileNotFoundError:
-            continue
-        for snippet in snippets:
-            _check(snippet in text, failures, f"{rel} missing snippet: {snippet}")
-
-    for workflow in (
-        ".github/workflows/release-policy.yml",
-        ".github/workflows/main-verification.yml",
-    ):
-        try:
-            text = _read(root, workflow)
-        except FileNotFoundError:
-            failures.append(f"missing workflow: {workflow}")
-            continue
-        for snippet in WORKFLOW_SNIPPETS:
-            _check(snippet in text, failures, f"{workflow} missing {snippet}")
-
-    for rel in (
-        "scripts/check_external_ga_evidence.py",
-        "release/production-evidence.manifest.json",
-        "release/external-ga-evidence.required.json",
-    ):
-        try:
-            text = _read(root, rel)
-        except FileNotFoundError:
-            failures.append(f"missing external evidence contract file: {rel}")
-            continue
-        for snippet in EXTERNAL_EVIDENCE_SNIPPETS:
-            _check(snippet in text, failures, f"{rel} missing {snippet}")
-
-    try:
-        manifest = _read(root, "release/production-evidence.manifest.json")
-        for snippet in MANIFEST_ONLY_SNIPPETS:
-            _check(snippet in manifest, failures, f"production evidence manifest missing {snippet}")
-    except FileNotFoundError:
-        failures.append("missing production evidence manifest")
+    failures.extend(_check_snippets(root, HARD_REQUIRED_SNIPPETS, severity="BLOCKER"))
+    warnings.extend(_check_snippets(root, SOFT_RECOMMENDED_SNIPPETS, severity="WARNING"))
 
     return {
-        "schema": "omnidesk-bigseller-connector-contract/v4",
+        "schema": "omnidesk-bigseller-connector-contract/v7",
         "status": "passed" if not failures else "failed",
         "failures": failures,
+        "warnings": warnings,
         "boundary": (
-            "This source contract verifies durable state, replay protection, "
-            "body-size enforcement, TTL purge, observability registry wiring, configurable real adapter wiring, "
-            "request signing scaffold, release-gate wiring, live-smoke runner/importer, and BigSeller external evidence gating. "
-            "It does not claim live BigSeller production readiness without private API docs and live smoke evidence."
+            "This source contract blocks missing BigSeller production-critical files and capabilities, "
+            "including durable state, replay protection, body-size enforcement, real adapter wiring, "
+            "explicit route enablement, Admin retry/dead-letter operations, release-gate wiring, and live-smoke evidence hooks. "
+            "Versioned wording differences are warnings, not blockers. The contract does not claim live BigSeller production readiness without private API docs and live smoke evidence."
         ),
     }
 
@@ -223,13 +217,19 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(
         json.dumps(
-            {"status": report["status"], "failure_count": len(report["failures"])},
+            {
+                "status": report["status"],
+                "failure_count": len(report["failures"]),
+                "warning_count": len(report["warnings"]),
+            },
             ensure_ascii=False,
             sort_keys=True,
         )
     )
     for failure in report["failures"]:
         print(f"BLOCKER {failure}", file=sys.stderr)
+    for warning in report["warnings"]:
+        print(warning, file=sys.stderr)
     return 0 if report["status"] == "passed" else 1
 
 

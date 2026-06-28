@@ -19,22 +19,49 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - run: mkdir -p dist/evidence
+      - run: mkdir -p dist/evidence/security-attack-surface-tests
       - run: python scripts/check_security_attack_surface.py . --write-report dist/evidence/security-attack-surface.json
-      - name: Focused attack-surface regression tests
+      - name: Admin auth regression tests
         run: |
-          PYTHONPATH=. python -m pytest -q \
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q --tb=short \
             tests/test_admin_auth.py \
             tests/test_admin_auth_production_default.py \
+            2>&1 | tee dist/evidence/security-attack-surface-tests/admin-auth.txt
+      - name: Self-upgrade route auth regression tests
+        if: always()
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q --tb=short \
             tests/test_self_upgrade_route_auth.py \
+            2>&1 | tee dist/evidence/security-attack-surface-tests/self-upgrade-auth.txt
+      - name: Webhook and device signature regression tests
+        if: always()
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q --tb=short \
             tests/test_webhook_forced_signatures.py \
             tests/test_device_signed_requests.py \
+            2>&1 | tee dist/evidence/security-attack-surface-tests/signatures.txt
+      - name: Abuse and resource guard regression tests
+        if: always()
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q --tb=short \
             tests/test_agent_run_abuse_limits.py \
+            tests/test_api_resource_guard.py \
+            2>&1 | tee dist/evidence/security-attack-surface-tests/abuse-resource-guard.txt
+      - name: File and browser isolation regression tests
+        if: always()
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q --tb=short \
             tests/test_files_path_escape_strict.py \
             tests/test_browser_security.py \
-            tests/test_api_resource_guard.py
+            2>&1 | tee dist/evidence/security-attack-surface-tests/file-browser-isolation.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: security-attack-surface-${{ github.sha }}
-          path: dist/evidence/security-attack-surface.json
+          path: dist/evidence/
           if-no-files-found: error

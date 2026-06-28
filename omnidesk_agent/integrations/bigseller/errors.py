@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any, Optional
 
 from omnidesk_agent.integrations.bigseller.schemas import BigSellerQueuedError, utc_now
+from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
 SECRET_KEY_RE = re.compile(
@@ -188,7 +189,7 @@ class SQLiteBigSellerSyncErrorQueue(BigSellerSyncErrorQueue):
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_sqlite(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -432,7 +433,9 @@ class PostgresBigSellerSyncErrorQueue(BigSellerSyncErrorQueue):
                 )
                 existing = cur.fetchone()
                 retry_count = 1 if existing is None else int(existing[1]) + 1
-                status = "dead_letter" if retry_count > self.max_retries else "retryable"
+                status = (
+                    "dead_letter" if retry_count > self.max_retries else "retryable"
+                )
                 next_retry_at = (
                     now + timedelta(seconds=30 * (2 ** max(0, retry_count - 1)))
                     if status == "retryable"

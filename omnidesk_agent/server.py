@@ -237,6 +237,6 @@ def create_app(cfg: AppConfig) -> FastAPI:
     register_appsync_routes(app, cfg, rt, metrics, _admin)
     register_break_glass_routes(app, cfg, rt, _admin)
     register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
-    if _env_flag("BIGSELLER_ENABLED") or _env_flag("BIGSELLER_REGISTER_ROUTES"):
+    if _env_flag("BIGSELLER_REGISTER_ROUTES"):
         _register_optional_bigseller_routes(app, cfg, _admin)
     return app

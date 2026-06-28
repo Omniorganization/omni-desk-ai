@@ -10,6 +10,8 @@
     "security_attack_surface_gate": "required",
     "real_ga_readiness_contract": "required",
     "bigseller_connector_contract": "required",
+    "bigseller_route_enablement": "required",
+    "bigseller_real_contract_workflow": "required",
     "live_branch_protection_contract": "required",
     "model_live_smoke_contract": "required",
     "pytest_chunked_full_suite": "required",
@@ -64,6 +66,21 @@
     "workflow": ".github/workflows/real-ga-readiness.yml",
     "required_for_customer_distribution_ga": true,
     "boundary": "Validates a real model Q&A smoke evidence document; it does not generate or simulate a model response."
+  },
+  "bigseller_route_enablement": {
+    "schema": "omnidesk-bigseller-route-enablement/v1",
+    "contract_check": "scripts/check_bigseller_route_enablement.py . --write-report dist/evidence/bigseller-route-enablement.json",
+    "workflow": ".github/workflows/release-policy.yml",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Verifies BigSeller routes remain explicitly gated and Admin dead-letter operations exist. It does not prove live BigSeller traffic."
+  },
+  "bigseller_real_contract_workflow": {
+    "schema": "omnidesk-bigseller-real-contract-workflow/v1",
+    "workflow": ".github/workflows/bigseller-real-contract.yml",
+    "candidate_check": "scripts/check_external_ga_evidence.py . --audit-only --write-report dist/evidence/external-ga-evidence-audit.json",
+    "real_ga_check": "scripts/run_bigseller_live_smoke.py --output release/external-evidence/integrations/bigseller-live-smoke.json && scripts/check_external_ga_evidence.py . --write-report dist/evidence/external-ga-evidence-audit.json",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Candidate mode audits source wiring; real-ga mode fails closed unless approved BigSeller live inputs are provided by the operator environment."
   },
   "bigseller_live_smoke_evidence": {
     "schema": "omnidesk-bigseller-live-smoke/v1",

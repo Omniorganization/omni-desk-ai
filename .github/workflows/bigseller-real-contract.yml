@@ -1,0 +1,59 @@
+name: BigSeller Real Contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      readiness_channel:
+        description: "candidate validates source wiring; real-ga requires approved live smoke inputs configured in the runner environment"
+        type: choice
+        required: true
+        default: candidate
+        options:
+          - candidate
+          - real-ga
+
+permissions:
+  contents: read
+
+jobs:
+  bigseller-real-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python scripts/check_lock_hashes.py requirements.dev.lock
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: mkdir -p dist/evidence release/external-evidence/integrations
+      - name: Validate source contract
+        run: |
+          python scripts/check_bigseller_connector_contract.py .
+          python scripts/check_bigseller_route_enablement.py . --write-report dist/evidence/bigseller-route-enablement.json
+      - name: Candidate evidence audit
+        if: ${{ inputs.readiness_channel == 'candidate' }}
+        run: |
+          python scripts/check_external_ga_evidence.py . --audit-only --write-report dist/evidence/external-ga-evidence-audit.json
+      - name: Real BigSeller live smoke
+        if: ${{ inputs.readiness_channel == 'real-ga' }}
+        env:
+          BIGSELLER_REGISTER_ROUTES: "true"
+          BIGSELLER_ENABLED: "true"
+          BIGSELLER_USE_MOCK: "false"
+          BIGSELLER_STATE_BACKEND: postgres
+          BIGSELLER_LIVE_SMOKE_ENVIRONMENT: staging
+          BIGSELLER_LIVE_SMOKE_TRACE_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          BIGSELLER_LIVE_SMOKE_AUDIT_EVENT_ID: ${{ github.run_id }}-${{ github.sha }}
+        run: |
+          python scripts/run_bigseller_live_smoke.py --output release/external-evidence/integrations/bigseller-live-smoke.json
+          python scripts/check_external_ga_evidence.py . --write-report dist/evidence/external-ga-evidence-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bigseller-real-contract-${{ github.sha }}
+          path: |
+            dist/evidence/bigseller-route-enablement.json
+            dist/evidence/external-ga-evidence-audit.json
+            release/external-evidence/integrations/bigseller-live-smoke.json
+          if-no-files-found: warn
