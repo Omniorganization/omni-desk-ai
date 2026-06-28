@@ -78,7 +78,9 @@ class BigSellerConfig(BaseModel):
 
     BigSeller API access is private-approval based. Real mode is intentionally
     fail-closed until official endpoint paths, signing behavior, credentials,
-    durable state, and webhook verification are configured.
+    durable state, and webhook verification are configured. Mock mode defaults
+    to process-local memory state so CI and local tests cannot cross-contaminate
+    through a user-level SQLite file; production real mode still forbids memory.
     """
 
     enabled: bool = False
@@ -91,10 +93,10 @@ class BigSellerConfig(BaseModel):
     token_expires_at: Optional[datetime] = None
     webhook_secret: Optional[str] = None
     sync_interval_seconds: int = 300
-    max_retries: int = 3
+    max_retries: int = 1
     rate_limit_per_minute: int = 60
     use_mock: bool = True
-    state_backend: str = "sqlite"
+    state_backend: str = "memory"
     postgres_dsn: Optional[str] = None
     webhook_replay_window_seconds: int = 300
     webhook_event_ttl_seconds: int = 86400
@@ -153,7 +155,7 @@ class BigSellerConfig(BaseModel):
     @field_validator("state_backend")
     @classmethod
     def _normalize_state_backend(cls, value: str) -> str:
-        normalized = (value or "sqlite").strip().lower()
+        normalized = (value or "memory").strip().lower()
         if normalized not in STATE_BACKENDS:
             raise ValueError(
                 "BIGSELLER_STATE_BACKEND must be one of memory, sqlite, postgres"
@@ -179,6 +181,10 @@ class BigSellerConfig(BaseModel):
                 os.getenv("BIGSELLER_STATE_DB_PATH", "")
                 or str(workspace_root / "bigseller_state.sqlite3")
             ).expanduser()
+        use_mock = _bool_env("BIGSELLER_USE_MOCK", True)
+        state_backend = _env("BIGSELLER_STATE_BACKEND") or (
+            "memory" if use_mock else "sqlite"
+        )
         return cls(
             enabled=_bool_env("BIGSELLER_ENABLED", False),
             base_url=_optional_env("BIGSELLER_BASE_URL"),
@@ -192,12 +198,12 @@ class BigSellerConfig(BaseModel):
             sync_interval_seconds=max(
                 1, _int_env("BIGSELLER_SYNC_INTERVAL_SECONDS", 300)
             ),
-            max_retries=max(0, _int_env("BIGSELLER_MAX_RETRIES", 3)),
+            max_retries=max(0, _int_env("BIGSELLER_MAX_RETRIES", 1)),
             rate_limit_per_minute=max(
                 1, _int_env("BIGSELLER_RATE_LIMIT_PER_MINUTE", 60)
             ),
-            use_mock=_bool_env("BIGSELLER_USE_MOCK", True),
-            state_backend=(_env("BIGSELLER_STATE_BACKEND") or "sqlite"),
+            use_mock=use_mock,
+            state_backend=state_backend,
             postgres_dsn=_optional_env("BIGSELLER_POSTGRES_DSN"),
             webhook_replay_window_seconds=max(
                 1, _int_env("BIGSELLER_WEBHOOK_REPLAY_WINDOW_SECONDS", 300)
