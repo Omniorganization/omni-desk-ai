@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import ipaddress
 import json
 import os
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -58,6 +60,21 @@ def _json_dict_env(name: str) -> dict[str, str]:
     return {str(key): str(item) for key, item in parsed.items() if item is not None}
 
 
+def _list_env(name: str) -> list[str]:
+    value = _env(name)
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, list):
+        values = parsed
+    else:
+        values = value.split(",")
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
 def _datetime_env(name: str) -> Optional[datetime]:
     value = _env(name)
     if not value:
@@ -102,6 +119,7 @@ class BigSellerConfig(BaseModel):
     webhook_replay_window_seconds: int = 300
     webhook_event_ttl_seconds: int = 86400
     webhook_max_body_bytes: int = 262144
+    allowed_hosts: list[str] = Field(default_factory=list)
 
     auth_code_exchange_path: Optional[str] = None
     refresh_token_path: Optional[str] = None
@@ -174,6 +192,33 @@ class BigSellerConfig(BaseModel):
             )
         return normalized
 
+    @field_validator("allowed_hosts", mode="before")
+    @classmethod
+    def _normalize_allowed_hosts(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_values = (
+                _list_env("BIGSELLER_ALLOWED_HOSTS")
+                if value == ""
+                else value.split(",")
+            )
+        elif isinstance(value, (list, tuple, set)):
+            raw_values = list(value)
+        else:
+            raw_values = [value]
+        normalized: list[str] = []
+        for item in raw_values:
+            host = str(item).strip().lower()
+            if not host:
+                continue
+            if "://" in host:
+                host = urlparse(host).hostname or ""
+            host = host.strip().strip("/")
+            if host:
+                normalized.append(host)
+        return sorted(set(normalized))
+
     @classmethod
     def from_env(cls, *, workspace_root: Path | None = None) -> "BigSellerConfig":
         audit_log = Path(
@@ -226,6 +271,7 @@ class BigSellerConfig(BaseModel):
             webhook_max_body_bytes=max(
                 1024, _int_env("BIGSELLER_WEBHOOK_MAX_BODY_BYTES", 262144)
             ),
+            allowed_hosts=_list_env("BIGSELLER_ALLOWED_HOSTS"),
             auth_code_exchange_path=_optional_env("BIGSELLER_AUTH_CODE_EXCHANGE_PATH"),
             refresh_token_path=_optional_env("BIGSELLER_REFRESH_TOKEN_PATH"),
             orders_list_path=_optional_env("BIGSELLER_ORDERS_LIST_PATH"),
@@ -235,10 +281,15 @@ class BigSellerConfig(BaseModel):
             products_list_path=_optional_env("BIGSELLER_PRODUCTS_LIST_PATH"),
             product_detail_path=_optional_env("BIGSELLER_PRODUCT_DETAIL_PATH"),
             fulfillment_sync_path=_optional_env("BIGSELLER_FULFILLMENT_SYNC_PATH"),
-            request_signing_enabled=_bool_env("BIGSELLER_REQUEST_SIGNING_ENABLED", False),
-            signature_header=_env("BIGSELLER_SIGNATURE_HEADER") or "x-bigseller-signature",
-            signature_timestamp_header=_env("BIGSELLER_SIGNATURE_TIMESTAMP_HEADER") or "x-bigseller-timestamp",
-            signature_app_id_header=_env("BIGSELLER_SIGNATURE_APP_ID_HEADER") or "x-bigseller-app-id",
+            request_signing_enabled=_bool_env(
+                "BIGSELLER_REQUEST_SIGNING_ENABLED", False
+            ),
+            signature_header=_env("BIGSELLER_SIGNATURE_HEADER")
+            or "x-bigseller-signature",
+            signature_timestamp_header=_env("BIGSELLER_SIGNATURE_TIMESTAMP_HEADER")
+            or "x-bigseller-timestamp",
+            signature_app_id_header=_env("BIGSELLER_SIGNATURE_APP_ID_HEADER")
+            or "x-bigseller-app-id",
             response_root_keys=_json_dict_env("BIGSELLER_RESPONSE_ROOT_KEYS"),
             audit_log_path=audit_log,
             state_db_path=state_db,
@@ -247,6 +298,62 @@ class BigSellerConfig(BaseModel):
     @property
     def mode(self) -> str:
         return "mock" if self.use_mock else "real"
+
+    @staticmethod
+    def _host_matches_allowed(host: str, allowed_host: str) -> bool:
+        host = host.lower().strip(".")
+        allowed = allowed_host.lower().strip(".")
+        if not host or not allowed:
+            return False
+        if allowed.startswith("*."):
+            suffix = allowed[2:]
+            return host.endswith(f".{suffix}") and host != suffix
+        if allowed.startswith("."):
+            suffix = allowed[1:]
+            return host == suffix or host.endswith(f".{suffix}")
+        return host == allowed
+
+    @staticmethod
+    def _is_forbidden_host(host: str) -> bool:
+        lowered = host.lower().strip("[]")
+        if lowered in {"localhost", "localhost.localdomain"}:
+            return True
+        try:
+            ip = ipaddress.ip_address(lowered)
+        except ValueError:
+            return False
+        return bool(
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
+
+    def _base_url_security_issues(self) -> list[str]:
+        if not self.base_url:
+            return []
+        parsed = urlparse(self.base_url)
+        host = (parsed.hostname or "").lower()
+        issues: list[str] = []
+        if parsed.scheme != "https":
+            issues.append("BIGSELLER_BASE_URL must use https:// in BigSeller real mode")
+        if not host:
+            issues.append("BIGSELLER_BASE_URL must include a host")
+        elif self._is_forbidden_host(host):
+            issues.append(
+                "BIGSELLER_BASE_URL host must not be localhost, private, loopback, link-local, reserved, multicast, or unspecified"
+            )
+        if not self.allowed_hosts:
+            issues.append(
+                "BIGSELLER_ALLOWED_HOSTS must include the approved official BigSeller API host(s) for real mode"
+            )
+        elif host and not any(
+            self._host_matches_allowed(host, allowed) for allowed in self.allowed_hosts
+        ):
+            issues.append("BIGSELLER_BASE_URL host is not in BIGSELLER_ALLOWED_HOSTS")
+        return issues
 
     def real_mode_issues(self) -> list[str]:
         if self.use_mock or not self.enabled:
@@ -260,6 +367,7 @@ class BigSellerConfig(BaseModel):
         ):
             if not value:
                 issues.append(f"{name} is required for BigSeller real mode")
+        issues.extend(self._base_url_security_issues())
         if not (self.access_token or self.auth_code):
             issues.append(
                 "BIGSELLER_ACCESS_TOKEN or BIGSELLER_AUTH_CODE is required for BigSeller real mode"
@@ -283,7 +391,11 @@ class BigSellerConfig(BaseModel):
             issues.append(
                 "BIGSELLER_REFRESH_TOKEN_PATH is required when BIGSELLER_REFRESH_TOKEN is configured"
             )
-        if self.request_signing_enabled and not self.app_key:
+        if not self.request_signing_enabled:
+            issues.append(
+                "BIGSELLER_REQUEST_SIGNING_ENABLED=true is required for BigSeller real mode"
+            )
+        elif not self.app_key:
             issues.append(
                 "BIGSELLER_APP_KEY is required when BIGSELLER_REQUEST_SIGNING_ENABLED=true"
             )
@@ -309,6 +421,7 @@ class BigSellerConfig(BaseModel):
             "durable_state": self.state_backend in {"sqlite", "postgres"},
             "real_endpoint_contract_configured": self.use_mock or not issues,
             "request_signing_enabled": self.request_signing_enabled,
+            "allowed_hosts_configured": bool(self.allowed_hosts),
         }
 
     def redacted(self) -> dict[str, object]:
@@ -334,6 +447,7 @@ class BigSellerConfig(BaseModel):
             "webhook_replay_window_seconds": self.webhook_replay_window_seconds,
             "webhook_event_ttl_seconds": self.webhook_event_ttl_seconds,
             "webhook_max_body_bytes": self.webhook_max_body_bytes,
+            "allowed_hosts": list(self.allowed_hosts),
             "endpoint_paths_configured": {
                 "auth_code_exchange": bool(self.auth_code_exchange_path),
                 "refresh_token": bool(self.refresh_token_path),

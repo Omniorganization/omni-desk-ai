@@ -36,6 +36,7 @@ HARD_REQUIRED_SNIPPETS = {
         "BIGSELLER_ORDERS_LIST_PATH",
         "BIGSELLER_FULFILLMENT_SYNC_PATH",
         "BIGSELLER_REQUEST_SIGNING_ENABLED",
+        "BIGSELLER_ALLOWED_HOSTS",
         "real_endpoint_contract_configured",
     ),
     "omnidesk_agent/integrations/bigseller/client.py": (
@@ -100,6 +101,7 @@ HARD_REQUIRED_SNIPPETS = {
     "docs/integrations/bigseller.md": (
         "BIGSELLER_STATE_BACKEND",
         "BIGSELLER_REGISTER_ROUTES",
+        "BIGSELLER_ALLOWED_HOSTS",
         "Real Adapter Contract",
         "live smoke evidence",
         "GET /integrations/bigseller/errors",

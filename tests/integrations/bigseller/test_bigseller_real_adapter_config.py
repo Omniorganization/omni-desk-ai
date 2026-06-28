@@ -27,6 +27,7 @@ def real_config(**overrides: Any) -> BigSellerConfig:
         "enabled": True,
         "use_mock": False,
         "base_url": "https://bigseller.example.test",
+        "allowed_hosts": ["bigseller.example.test"],
         "app_id": "app-id",
         "app_key": "app-key",
         "access_token": "access-token",
@@ -34,6 +35,7 @@ def real_config(**overrides: Any) -> BigSellerConfig:
         "token_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
         "webhook_secret": "webhook-secret",
         "state_backend": "sqlite",
+        "request_signing_enabled": True,
         **ALL_ENDPOINTS,
     }
     values.update(overrides)
@@ -52,7 +54,35 @@ def test_real_mode_requires_configured_business_endpoints() -> None:
 def test_real_mode_rejects_memory_state_backend() -> None:
     config = real_config(state_backend="memory")
 
-    assert any("BIGSELLER_STATE_BACKEND=memory" in issue for issue in config.real_mode_issues())
+    assert any(
+        "BIGSELLER_STATE_BACKEND=memory" in issue for issue in config.real_mode_issues()
+    )
+
+
+def test_real_mode_requires_https_allowed_host_and_signing() -> None:
+    config = real_config(
+        base_url="http://127.0.0.1:8080",
+        allowed_hosts=[],
+        request_signing_enabled=False,
+    )
+
+    issues = config.real_mode_issues()
+
+    assert any("BIGSELLER_BASE_URL must use https://" in issue for issue in issues)
+    assert any("host must not be localhost" in issue for issue in issues)
+    assert any("BIGSELLER_ALLOWED_HOSTS" in issue for issue in issues)
+    assert any("BIGSELLER_REQUEST_SIGNING_ENABLED=true" in issue for issue in issues)
+
+
+def test_real_mode_rejects_base_url_host_outside_allowlist() -> None:
+    config = real_config(
+        base_url="https://evil.example.test",
+        allowed_hosts=["bigseller.example.test"],
+    )
+
+    assert any(
+        "not in BIGSELLER_ALLOWED_HOSTS" in issue for issue in config.real_mode_issues()
+    )
 
 
 def test_real_adapter_maps_order_list_response(monkeypatch) -> None:

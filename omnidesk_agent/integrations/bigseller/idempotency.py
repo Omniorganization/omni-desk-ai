@@ -10,6 +10,7 @@ from typing import Any
 from omnidesk_agent.integrations.bigseller.config import BigSellerConfig
 from omnidesk_agent.integrations.bigseller.errors import BigSellerConfigurationError
 from omnidesk_agent.integrations.bigseller.schemas import utc_now
+from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,7 @@ class SQLiteBigSellerIdempotencyGuard(BigSellerIdempotencyGuard):
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_sqlite(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -161,7 +162,9 @@ class SQLiteBigSellerIdempotencyGuard(BigSellerIdempotencyGuard):
             )
             columns = {
                 row["name"]
-                for row in conn.execute("PRAGMA table_info(bigseller_idempotency_records)")
+                for row in conn.execute(
+                    "PRAGMA table_info(bigseller_idempotency_records)"
+                )
             }
             if "expires_at" not in columns:
                 conn.execute(
@@ -242,7 +245,9 @@ class SQLiteBigSellerIdempotencyGuard(BigSellerIdempotencyGuard):
             external_id=external_id, store_id=store_id, action_type=action_type
         ).value
         with self._lock, self._connect() as conn:
-            conn.execute("DELETE FROM bigseller_idempotency_records WHERE key = ?", (key,))
+            conn.execute(
+                "DELETE FROM bigseller_idempotency_records WHERE key = ?", (key,)
+            )
 
     def _set_status(
         self, *, external_id: str, store_id: str, action_type: str, status: str
@@ -450,7 +455,16 @@ class PostgresBigSellerIdempotencyGuard(BigSellerIdempotencyGuard):
                         updated_at=EXCLUDED.updated_at,
                         expires_at=EXCLUDED.expires_at
                     """,
-                    (key, external_id, store_id, action_type, status, now, now, self._expiry()),
+                    (
+                        key,
+                        external_id,
+                        store_id,
+                        action_type,
+                        status,
+                        now,
+                        now,
+                        self._expiry(),
+                    ),
                 )
 
     def stats(self) -> dict[str, int | str | bool]:

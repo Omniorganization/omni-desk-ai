@@ -8,7 +8,8 @@ BigSeller Open API / API Integration Service is a private-approval API. Endpoint
 - Access-token state, auth-code exchange, and refresh flow hooks.
 - `BigSellerClient` abstraction with deterministic `MockBigSellerAdapter` and configurable `HttpBigSellerClient`.
 - Environment-supplied real endpoint paths for orders, inventory, products, fulfillment, auth exchange, and token refresh.
-- Optional HMAC-SHA256 request signing headers for approved environments where BigSeller's private docs require signed API calls.
+- HMAC-SHA256 request signing scaffold for approved environments, with real mode fail-closed until official canonical signing behavior is configured.
+- Real-mode outbound URL hardening: HTTPS-only base URL, explicit official host allowlist, and rejection of localhost/private/link-local literal hosts.
 - Order, inventory, product/SKU mapping, and fulfillment sync services.
 - Webhook receiver with polling/sync fallback behavior.
 - Durable idempotency guard keyed by external ID, store ID, and action type.
@@ -27,6 +28,7 @@ Use `.env.example` as the template and keep real credentials only in the product
 BIGSELLER_ENABLED=false
 BIGSELLER_REGISTER_ROUTES=false
 BIGSELLER_BASE_URL=
+BIGSELLER_ALLOWED_HOSTS=
 BIGSELLER_APP_ID=
 BIGSELLER_APP_KEY=
 BIGSELLER_AUTH_CODE=
@@ -56,7 +58,8 @@ BIGSELLER_PRODUCTS_LIST_PATH=
 BIGSELLER_PRODUCT_DETAIL_PATH=
 BIGSELLER_FULFILLMENT_SYNC_PATH=
 
-# Optional generic signing scaffold. Header names must match official docs.
+# Generic signing scaffold. Real mode requires this to be true only after
+# canonicalization and header names match official docs.
 BIGSELLER_REQUEST_SIGNING_ENABLED=false
 BIGSELLER_SIGNATURE_HEADER=x-bigseller-signature
 BIGSELLER_SIGNATURE_TIMESTAMP_HEADER=x-bigseller-timestamp
@@ -67,7 +70,7 @@ BIGSELLER_SIGNATURE_APP_ID_HEADER=x-bigseller-app-id
 BIGSELLER_RESPONSE_ROOT_KEYS=
 ```
 
-`BIGSELLER_ENABLED=false` disables sync side effects. `BIGSELLER_ENABLED` does not register routes. `BIGSELLER_REGISTER_ROUTES=false` keeps BigSeller endpoints out of the default gateway attack surface. Routes are registered only when `BIGSELLER_REGISTER_ROUTES=true`.
+`BIGSELLER_ENABLED=false` disables sync side effects. BIGSELLER_ENABLED does not register routes. `BIGSELLER_REGISTER_ROUTES=false` keeps BigSeller endpoints out of the default gateway attack surface. Routes are registered only when `BIGSELLER_REGISTER_ROUTES=true`.
 
 `BIGSELLER_STATE_BACKEND` accepts:
 
@@ -82,12 +85,15 @@ BIGSELLER_RESPONSE_ROOT_KEYS=
 Real mode now fails closed unless the following are all configured:
 
 1. `BIGSELLER_BASE_URL`, `BIGSELLER_APP_ID`, `BIGSELLER_APP_KEY`, and `BIGSELLER_WEBHOOK_SECRET`.
-2. `BIGSELLER_ACCESS_TOKEN` or `BIGSELLER_AUTH_CODE`.
-3. Every real sync endpoint path: orders list/detail, inventory list/update, products list/detail, and fulfillment sync.
-4. `BIGSELLER_AUTH_CODE_EXCHANGE_PATH` when `BIGSELLER_AUTH_CODE` is provided.
-5. `BIGSELLER_REFRESH_TOKEN_PATH` when `BIGSELLER_REFRESH_TOKEN` is provided.
-6. `BIGSELLER_STATE_BACKEND=postgres` for horizontally scaled production.
-7. Official BigSeller field mappings validated through sanitized contract fixtures.
+2. `BIGSELLER_BASE_URL` uses `https://`, uses the approved BigSeller API host, and that host is listed in `BIGSELLER_ALLOWED_HOSTS`.
+3. `BIGSELLER_BASE_URL` is not localhost, loopback, private, link-local, reserved, multicast, or unspecified when a literal host is supplied.
+4. `BIGSELLER_REQUEST_SIGNING_ENABLED=true` after the canonical request string and header names have been updated from BigSeller private docs.
+5. `BIGSELLER_ACCESS_TOKEN` or `BIGSELLER_AUTH_CODE`.
+6. Every real sync endpoint path: orders list/detail, inventory list/update, products list/detail, and fulfillment sync.
+7. `BIGSELLER_AUTH_CODE_EXCHANGE_PATH` when `BIGSELLER_AUTH_CODE` is provided.
+8. `BIGSELLER_REFRESH_TOKEN_PATH` when `BIGSELLER_REFRESH_TOKEN` is provided.
+9. `BIGSELLER_STATE_BACKEND=postgres` for horizontally scaled production.
+10. Official BigSeller field mappings validated through sanitized contract fixtures.
 
 Endpoint paths may include these placeholders where official docs require path parameters:
 
@@ -131,10 +137,11 @@ After BigSeller approves API access and provides private docs:
 
 1. Configure the official endpoint paths through `BIGSELLER_*_PATH` variables.
 2. Configure `BIGSELLER_RESPONSE_ROOT_KEYS` if BigSeller wraps arrays under custom keys.
-3. Enable `BIGSELLER_REQUEST_SIGNING_ENABLED=true` only after confirming the exact canonical signing string and header names.
-4. Update webhook signature header parsing if BigSeller's private docs specify different names or payload canonicalization.
-5. Add sanitized contract fixtures from the private docs without committing raw credentials, app keys, access tokens, refresh tokens, customer PII, or order payloads.
-6. Run mock-mode tests, real-mode contract tests, and one approved staging live smoke.
+3. Set `BIGSELLER_ALLOWED_HOSTS` to the official BigSeller API host(s) from the private docs.
+4. Enable `BIGSELLER_REQUEST_SIGNING_ENABLED=true` only after confirming the exact canonical signing string and header names.
+5. Update webhook signature header parsing if BigSeller's private docs specify different names or payload canonicalization.
+6. Add sanitized contract fixtures from the private docs without committing raw credentials, app keys, access tokens, refresh tokens, customer PII, or order payloads.
+7. Run mock-mode tests, real-mode contract tests, and one approved staging live smoke.
 
 ## Webhook Replay Protection
 
@@ -217,6 +224,7 @@ Do not commit raw secrets, app keys, access tokens, refresh tokens, auth codes, 
 - The real adapter does not log request headers or credential values.
 - `BIGSELLER_APP_KEY` must remain a secret and must not be committed.
 - Webhook verification is mandatory in real mode.
+- Request signing and explicit official API host allowlisting are mandatory in real mode.
 - `BIGSELLER_STATE_BACKEND=memory` is rejected in real mode.
 - Oversized webhook bodies are rejected with 413.
 - Real-mode endpoint paths and signing must come from approved BigSeller documentation.

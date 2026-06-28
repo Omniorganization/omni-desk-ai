@@ -9,7 +9,10 @@ from omnidesk_agent.config import AppConfig
 from omnidesk_agent.server import create_app
 from omnidesk_agent.validation.production import validate_production_config
 
-PINNED = "python:3.11-slim@sha256:" + "66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5"
+PINNED = (
+    "python:3.11-slim@sha256:"
+    + "66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5"
+)
 
 
 def _native_version(project_version: str) -> str:
@@ -34,9 +37,13 @@ def _cfg(tmp_path: Path) -> AppConfig:
 
 
 def test_web_admin_csp_and_session_cookie_are_ga_hardened() -> None:
-    next_config = Path("apps/web-admin-next/next.config.mjs").read_text(encoding="utf-8")
+    next_config = Path("apps/web-admin-next/next.config.mjs").read_text(
+        encoding="utf-8"
+    )
     session = Path("apps/web-admin-next/lib/session.ts").read_text(encoding="utf-8")
-    login = Path("apps/web-admin-next/app/api/session/login/route.ts").read_text(encoding="utf-8")
+    login = Path("apps/web-admin-next/app/api/session/login/route.ts").read_text(
+        encoding="utf-8"
+    )
     assert "unsafe-eval" not in next_config
     assert "unsafe-inline" not in next_config
     assert "object-src 'none'" in next_config
@@ -56,10 +63,18 @@ def test_helm_chart_requires_pipeline_injected_app_digest() -> None:
     assert version_match
     version = version_match.group(1)
     chart_version = _native_version(version)
-    chart = Path("deploy/kubernetes/helm/omnidesk/Chart.yaml").read_text(encoding="utf-8")
-    values = Path("deploy/kubernetes/helm/omnidesk/values.yaml").read_text(encoding="utf-8")
-    deployment = Path("deploy/kubernetes/helm/omnidesk/templates/deployment.yaml").read_text(encoding="utf-8")
-    configmap = Path("deploy/kubernetes/helm/omnidesk/templates/configmap.yaml").read_text(encoding="utf-8")
+    chart = Path("deploy/kubernetes/helm/omnidesk/Chart.yaml").read_text(
+        encoding="utf-8"
+    )
+    values = Path("deploy/kubernetes/helm/omnidesk/values.yaml").read_text(
+        encoding="utf-8"
+    )
+    deployment = Path(
+        "deploy/kubernetes/helm/omnidesk/templates/deployment.yaml"
+    ).read_text(encoding="utf-8")
+    configmap = Path(
+        "deploy/kubernetes/helm/omnidesk/templates/configmap.yaml"
+    ).read_text(encoding="utf-8")
     assert f"version: {chart_version}" in chart
     assert f"appVersion: {version}" in chart
     assert 'digest: "" # required' in values
@@ -68,7 +83,9 @@ def test_helm_chart_requires_pipeline_injected_app_digest() -> None:
     assert "backend: postgres" in configmap
 
 
-def test_production_validator_blocks_query_token_and_non_postgres_appsync(monkeypatch) -> None:
+def test_production_validator_blocks_query_token_and_non_postgres_appsync(
+    monkeypatch,
+) -> None:
     cfg = AppConfig()
     cfg.gateway.public_base_url = "https://omnidesk.example.test"
     cfg.plugins.enabled = False
@@ -92,11 +109,19 @@ def test_production_validator_blocks_query_token_and_non_postgres_appsync(monkey
         "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omni",
     }
     result = validate_production_config(cfg, env)
-    assert "app_sync.allow_websocket_query_auth must be false in production" in result["issues"]
-    assert "app_sync.backend must be postgres when storage.require_multi_instance_safe=true" in result["issues"]
+    assert (
+        "app_sync.allow_websocket_query_auth must be false in production"
+        in result["issues"]
+    )
+    assert (
+        "app_sync.backend must be postgres when storage.require_multi_instance_safe=true"
+        in result["issues"]
+    )
 
 
-def test_production_device_registration_requires_public_key_and_random_device_id(tmp_path, monkeypatch) -> None:
+def test_production_device_registration_requires_public_key_and_random_device_id(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("OMNIDESK_ENV", "production")
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
     monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
@@ -107,20 +132,97 @@ def test_production_device_registration_requires_public_key_and_random_device_id
     cfg = _cfg(tmp_path)
     cfg.memory_privacy.encrypt_at_rest = True
     denied = validate_production_config(cfg)
-    assert "api_resource_guard.backend must be postgres in production" in denied["issues"]
-    monkeypatch.setattr("omnidesk_agent.server.assert_production_config_safe", lambda _cfg: None)
+    assert (
+        "api_resource_guard.backend must be postgres in production" in denied["issues"]
+    )
+    monkeypatch.setattr(
+        "omnidesk_agent.server.assert_production_config_safe", lambda _cfg: None
+    )
     app = create_app(cfg)
-    headers = {"authorization": "Bearer operator-token", "x-omnidesk-actor": "alice", "idempotency-key": "device-reg"}
+    headers = {
+        "authorization": "Bearer operator-token",
+        "x-omnidesk-actor": "alice",
+        "idempotency-key": "device-reg",
+    }
     with TestClient(app) as client:
-        missing = client.post("/app/devices/register", headers=headers, json={"device_id": "desktop-1", "device_type": "desktop", "name": "Desktop", "platform": "macOS"})
+        missing = client.post(
+            "/app/devices/register",
+            headers=headers,
+            json={
+                "device_id": "desktop-1",
+                "device_type": "desktop",
+                "name": "Desktop",
+                "platform": "macOS",
+            },
+        )
         assert missing.status_code == 422
-        predictable = client.post("/app/devices/register", headers={**headers, "idempotency-key": "device-reg-2"}, json={"device_id": "desktop-1", "device_type": "desktop", "name": "Desktop", "platform": "macOS", "public_key": "base64:" + "a" * 44})
+        predictable = client.post(
+            "/app/devices/register",
+            headers={**headers, "idempotency-key": "device-reg-2"},
+            json={
+                "device_id": "desktop-1",
+                "device_type": "desktop",
+                "name": "Desktop",
+                "platform": "macOS",
+                "public_key": "base64:" + "a" * 44,
+            },
+        )
         assert predictable.status_code == 422
-        ok = client.post("/app/devices/register", headers={**headers, "idempotency-key": "device-reg-3"}, json={"device_id": "desk_1234567890abcdef1234567890abcdef", "device_type": "desktop", "name": "Desktop", "platform": "macOS", "public_key": "base64:" + "a" * 44})
+        ok = client.post(
+            "/app/devices/register",
+            headers={**headers, "idempotency-key": "device-reg-3"},
+            json={
+                "device_id": "desk_1234567890abcdef1234567890abcdef",
+                "device_type": "desktop",
+                "name": "Desktop",
+                "platform": "macOS",
+                "public_key": "base64:" + "a" * 44,
+            },
+        )
         assert ok.status_code == 200, ok.text
 
 
-def test_admin_session_identity_returns_token_bound_actor(tmp_path, monkeypatch) -> None:
+def test_appsync_device_registration_uses_unified_production_detection(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("OMNIDESK_ENV", raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
+    monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "viewer-token")
+    monkeypatch.setenv("OMNIDESK_GATEWAY_SECRET", "g" * 40)
+    monkeypatch.setenv("OMNIDESK_ADMIN_TOKEN", "a" * 40)
+    monkeypatch.setenv("OMNIDESK_MEMORY_ENCRYPTION_KEY", "m" * 40)
+    cfg = _cfg(tmp_path)
+    cfg.memory_privacy.encrypt_at_rest = True
+    monkeypatch.setattr(
+        "omnidesk_agent.server.assert_production_config_safe", lambda _cfg: None
+    )
+    app = create_app(cfg)
+    headers = {
+        "authorization": "Bearer operator-token",
+        "idempotency-key": "app-env-device-reg",
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/app/devices/register",
+            headers=headers,
+            json={
+                "device_id": "desktop-1",
+                "device_type": "desktop",
+                "name": "Desktop",
+                "platform": "macOS",
+            },
+        )
+
+    assert response.status_code == 422
+    assert "public_key is required" in response.text
+
+
+def test_admin_session_identity_returns_token_bound_actor(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
     monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
     app = create_app(_cfg(tmp_path))
@@ -128,7 +230,10 @@ def test_admin_session_identity_returns_token_bound_actor(tmp_path, monkeypatch)
     with TestClient(app) as client:
         response = client.get(
             "/admin/session/identity",
-            headers={"authorization": "Bearer operator-token", "x-omnidesk-actor": "system"},
+            headers={
+                "authorization": "Bearer operator-token",
+                "x-omnidesk-actor": "system",
+            },
         )
 
     assert response.status_code == 200
@@ -137,9 +242,15 @@ def test_admin_session_identity_returns_token_bound_actor(tmp_path, monkeypatch)
 
 
 def test_native_apps_generate_per_install_device_identity() -> None:
-    desktop = Path("apps/desktop-tauri/src/deviceIdentity.ts").read_text(encoding="utf-8")
-    mobile = Path("apps/mobile-flutter/lib/device_identity.dart").read_text(encoding="utf-8")
-    mobile_pubspec = Path("apps/mobile-flutter/pubspec.yaml").read_text(encoding="utf-8")
+    desktop = Path("apps/desktop-tauri/src/deviceIdentity.ts").read_text(
+        encoding="utf-8"
+    )
+    mobile = Path("apps/mobile-flutter/lib/device_identity.dart").read_text(
+        encoding="utf-8"
+    )
+    mobile_pubspec = Path("apps/mobile-flutter/pubspec.yaml").read_text(
+        encoding="utf-8"
+    )
     assert "crypto.subtle.generateKey" in desktop
     assert "omni.devicePrivateKeyJwk.v2" in desktop
     assert "Ed25519" in mobile
