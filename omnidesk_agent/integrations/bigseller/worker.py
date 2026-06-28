@@ -286,7 +286,7 @@ class BigSellerSyncWorker:
     def _flat_prometheus_metrics(self) -> dict[str, float]:
         snapshot = self.metrics_registry.snapshot()
         values: dict[str, float] = {}
-        for group in ("counters", "gauges"):
+        for group in ("gauges", "counters"):
             group_values = snapshot.get(group, {})
             if isinstance(group_values, dict):
                 for key, value in group_values.items():
