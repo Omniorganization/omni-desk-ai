@@ -22,28 +22,28 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: python scripts/check_lock_hashes.py requirements.bootstrap.lock
       - name: Prepare tri-app evidence directory
-        run: mkdir -p dist/evidence/tri-app-backend
+        run: mkdir -p "$RUNNER_TEMP/tri-app-backend-evidence"
       - name: Tri-app backend foundation tests
         run: |
           set -o pipefail
           PYTHONPATH=. python -m pytest -vv --tb=short tests/test_tri_app_foundation.py \
-            2>&1 | tee dist/evidence/tri-app-backend/foundation.txt
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/foundation.txt"
       - name: Tri-app source release readiness
         run: |
           set -o pipefail
           python scripts/check_tri_app_release_readiness.py . --mode source \
-            2>&1 | tee dist/evidence/tri-app-backend/source-readiness.txt
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/source-readiness.txt"
       - run: find . -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
       - name: GA release gate
         run: |
           set -o pipefail
           python scripts/check_ga_release_gate.py . \
-            2>&1 | tee dist/evidence/tri-app-backend/ga-release-gate.txt
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/ga-release-gate.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: tri-app-backend-${{ github.sha }}
-          path: dist/evidence/tri-app-backend/
+          path: ${{ runner.temp }}/tri-app-backend-evidence/
           if-no-files-found: warn
 
   web-admin:
