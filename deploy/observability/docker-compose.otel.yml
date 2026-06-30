@@ -1,0 +1,94 @@
+services:
+  otel-collector:
+    image: ${OMNIDESK_OTEL_COLLECTOR_IMAGE:?set OMNIDESK_OTEL_COLLECTOR_IMAGE to otel/opentelemetry-collector-contrib digest-pinned image, e.g. otel/opentelemetry-collector-contrib@sha256:...}
+    command: ["--config=/etc/otelcol-contrib/otel-collector.yaml"]
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/otel-collector.yaml:ro
+    depends_on:
+      - tempo
+    networks:
+      - omnidesk-observability
+
+  tempo:
+    image: ${OMNIDESK_TEMPO_IMAGE:?set OMNIDESK_TEMPO_IMAGE to grafana/tempo digest-pinned image, e.g. grafana/tempo@sha256:...}
+    command: ["-config.file=/etc/tempo.yaml"]
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - tempo-data:/var/tempo
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+    expose:
+      - "4317"
+      - "3200"
+    networks:
+      - omnidesk-observability
+
+  prometheus:
+    image: ${OMNIDESK_PROMETHEUS_IMAGE:?set OMNIDESK_PROMETHEUS_IMAGE to prom/prometheus digest-pinned image, e.g. prom/prometheus@sha256:...}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
+    networks:
+      - omnidesk-observability
+
+  grafana:
+    image: ${OMNIDESK_GRAFANA_IMAGE:?set OMNIDESK_GRAFANA_IMAGE to grafana/grafana digest-pinned image, e.g. grafana/grafana@sha256:...}
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${OMNIDESK_GRAFANA_ADMIN_USER:?required}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-dashboard.json:/var/lib/grafana/dashboards/omnidesk-runtime.json:ro
+    networks:
+      - omnidesk-observability
+
+secrets:
+  grafana_admin_password:
+    file: ${OMNIDESK_GRAFANA_ADMIN_PASSWORD_FILE:?path to grafana admin password file}
+
+networks:
+  omnidesk-observability:
+    driver: bridge
+    internal: true
+
+volumes:
+  tempo-data:
+  prometheus-data:
+  grafana-data:
