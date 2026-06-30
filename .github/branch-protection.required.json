@@ -24,7 +24,8 @@
     "Main Verification",
     "Self Upgrade Gate",
     "Source Maturity Closure",
-    "P0 P1 P2 Feasible Closure"
+    "P0 P1 P2 Feasible Closure",
+    "Remaining Real GA Source Fixes"
   ],
   "required_jobs": [
     "release-policy",
@@ -41,7 +42,8 @@
     "main-verification",
     "security-attack-surface",
     "source-maturity-closure",
-    "feasible-closure"
+    "feasible-closure",
+    "remaining-real-evidence-source-fixes"
   ],
   "restricted_paths": [
     ".github/",
