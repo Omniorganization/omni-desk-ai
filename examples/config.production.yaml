@@ -148,3 +148,5 @@ observability:
   expose_public_metrics: false
   structured_json_logs: true
   trace_http_requests: true
+  otlp_endpoint_env: OMNIDESK_OTLP_ENDPOINT
+  otlp_timeout_seconds: 2.0
