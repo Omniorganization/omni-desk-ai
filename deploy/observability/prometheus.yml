@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/prometheus-rules.yml
+
+scrape_configs:
+  - job_name: omnidesk-agent
+    metrics_path: /admin/metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - omnidesk:18789
+    authorization:
+      credentials_file: /run/secrets/omnidesk_metrics_token
