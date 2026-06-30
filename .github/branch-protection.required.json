@@ -23,7 +23,9 @@
     "Tri-App Quality Gate",
     "Main Verification",
     "Self Upgrade Gate",
-    "Source Maturity Closure"
+    "Source Maturity Closure",
+    "P0 P1 P2 Feasible Closure",
+    "Remaining Real GA Source Fixes"
   ],
   "required_jobs": [
     "release-policy",
@@ -39,7 +41,9 @@
     "backend-and-contract",
     "main-verification",
     "security-attack-surface",
-    "source-maturity-closure"
+    "source-maturity-closure",
+    "feasible-closure",
+    "remaining-real-evidence-source-fixes"
   ],
   "restricted_paths": [
     ".github/",

@@ -1,0 +1,11 @@
+services:
+  omnidesk:
+    environment:
+      OMNIDESK_OTLP_ENDPOINT: ${OMNIDESK_OTLP_ENDPOINT:-http://otel-collector:4318/v1/traces}
+    networks:
+      - omnidesk-observability
+
+networks:
+  omnidesk-observability:
+    external: true
+    name: ${OMNIDESK_OBSERVABILITY_NETWORK:-omnidesk-observability}
