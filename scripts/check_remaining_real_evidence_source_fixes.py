@@ -11,6 +11,7 @@ REQUIRED_FILES = [
     "docs/REAL_EXTERNAL_EVIDENCE_COMPLETION_GUIDE_1.12.7.md",
     "deploy/docker/docker-compose.observability.override.yml",
     "scripts/check_remaining_real_evidence_source_fixes.py",
+    ".github/workflows/remaining-real-evidence-source-fixes.yml",
 ]
 
 
@@ -34,10 +35,15 @@ def main(argv: list[str] | None = None) -> int:
     branch_protection = json.loads((root / ".github" / "branch-protection.required.json").read_text(encoding="utf-8"))
     status_checks = set(branch_protection.get("required_status_checks") or [])
     required_jobs = set(branch_protection.get("required_jobs") or [])
-    if "P0 P1 P2 Feasible Closure" not in status_checks:
-        issues.append("branch protection must require P0 P1 P2 Feasible Closure")
-    if "feasible-closure" not in required_jobs:
-        issues.append("branch protection must require feasible-closure job")
+    expected_checks = {
+        "P0 P1 P2 Feasible Closure": "feasible-closure",
+        "Remaining Real GA Source Fixes": "remaining-real-evidence-source-fixes",
+    }
+    for check_name, job_name in expected_checks.items():
+        if check_name not in status_checks:
+            issues.append(f"branch protection must require {check_name}")
+        if job_name not in required_jobs:
+            issues.append(f"branch protection must require {job_name} job")
 
     override_text = _read(root / "deploy" / "docker" / "docker-compose.observability.override.yml", issues)
     for term in ("OMNIDESK_OTLP_ENDPOINT", "otel-collector:4318/v1/traces", "omnidesk-observability"):
@@ -60,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     workflow_text = _read(workflow, issues)
     if "check_remaining_real_evidence_source_fixes.py" not in workflow_text:
         issues.append("remaining real evidence source fixes workflow must run this gate")
+    if "check_external_ga_evidence.py" not in workflow_text or "--audit-only" not in workflow_text:
+        issues.append("workflow must write a candidate external evidence audit without claiming Real GA")
 
     if issues:
         for issue in issues:
