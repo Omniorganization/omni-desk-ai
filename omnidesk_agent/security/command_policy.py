@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Iterable, Sequence
 
 # Shared command allowlist used by ShellTool and the remote sandbox runner.
@@ -38,28 +38,31 @@ READONLY_PREFIXES: list[list[str]] = [
     ["git", "ls-tree"],
 ]
 
+_FORBIDDEN_GIT_PATHSPEC_CHARS = frozenset("\0*?[]{}")
+
 
 def argv_matches_prefix(argv: Sequence[str], prefix: Sequence[str]) -> bool:
     return len(argv) >= len(prefix) and list(argv[: len(prefix)]) == list(prefix)
 
 
+def _safe_git_path_arg(value: str) -> bool:
+    if value in {"", ".", "--all", "-A"} or value.startswith("-") or value.startswith(":"):
+        return False
+    if any(char in value for char in _FORBIDDEN_GIT_PATHSPEC_CHARS):
+        return False
+    path = PurePath(value)
+    if path.is_absolute():
+        return False
+    return bool(path.parts) and all(part not in {"", ".", ".."} for part in path.parts)
+
+
 def _safe_git_add_args(argv: Sequence[str], workspace_root: Path | None = None) -> bool:
     if len(argv) <= 2:
         return False
-    root = workspace_root.expanduser().resolve() if workspace_root else None
+    del workspace_root
     for raw in argv[2:]:
-        value = str(raw)
-        path = Path(value)
-        if value in {"", ".", "--all", "-A"} or value.startswith("-"):
+        if not _safe_git_path_arg(str(raw)):
             return False
-        if path.is_absolute() or ".." in path.parts:
-            return False
-        if root is not None:
-            candidate = (root / path).resolve(strict=False)
-            if candidate != root and root not in candidate.parents:
-                return False
-            if candidate.exists() and candidate.is_symlink():
-                return False
     return True
 
 

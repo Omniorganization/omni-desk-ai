@@ -55,6 +55,8 @@ def test_shell_upgrade_git_add_and_push_are_scoped(monkeypatch, tmp_path: Path):
     assert not tool._allowed(["git", "add", "../outside.py"])
     assert not tool._allowed(["git", "add", "/tmp/outside.py"])
     assert not tool._allowed(["git", "add", "."])
+    assert not tool._allowed(["git", "add", "*.py"])
+    assert not tool._allowed(["git", "add", ":(top)safe.py"])
     assert tool._allowed(["git", "push", "origin", "HEAD:codex/source-fix"])
     assert not tool._allowed(["git", "push", "upstream", "main"])
     assert not tool._allowed(["git", "push", "origin", "main"])
