@@ -34,6 +34,21 @@ def _all_regex(path: Path, pattern: str, label: str) -> list[str]:
     return list(values)
 
 
+def _cargo_lock_package_version(path: Path, package_name: str) -> str:
+    text = _read(path)
+    pattern = (
+        r'^\[\[package\]\]\n'
+        r'(?:(?!^\[\[package\]\]).)*?'
+        rf'^name\s*=\s*"{re.escape(package_name)}"\n'
+        r'(?:(?!^\[\[package\]\]).)*?'
+        r'^version\s*=\s*"([^"]+)"'
+    )
+    match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+    if not match:
+        raise RuntimeError(f"could not find {package_name} package version in {path}")
+    return match.group(1)
+
+
 def _native_version(app_version: str) -> str:
     parts = app_version.split(".")
     if len(parts) == 2:
@@ -91,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     chart_sources["Helm chart version"] = _regex(root / "deploy" / "kubernetes" / "helm" / "omnidesk" / "Chart.yaml", r'^version:\s*([^\s]+)', "Helm chart version")
     chart_sources["apps/desktop-tauri/src-tauri/tauri.conf.json"] = _json(root / "apps" / "desktop-tauri" / "src-tauri" / "tauri.conf.json").get("version", "")
     chart_sources["apps/desktop-tauri/src-tauri/Cargo.toml"] = _regex(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.toml", r'^version\s*=\s*"([^"]+)"', "desktop Cargo version")
-    chart_sources["apps/desktop-tauri/src-tauri/Cargo.lock package"] = _regex(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.lock", r'^version\s*=\s*"([^"]+)"', "desktop Cargo.lock package version")
+    chart_sources["apps/desktop-tauri/src-tauri/Cargo.lock package"] = _cargo_lock_package_version(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.lock", "omnidesk_desktop")
     chart_sources["apps/mobile-flutter/pubspec.yaml"] = _regex(root / "apps" / "mobile-flutter" / "pubspec.yaml", r'^version:\s*([0-9.]+)\+\d+', "mobile pubspec version")
     chart_sources["apps/mobile-flutter/android/app/build.gradle"] = _regex(root / "apps" / "mobile-flutter" / "android" / "app" / "build.gradle", r'versionName\s+"([^"]+)"', "Android versionName")
     chart_sources["apps/mobile-flutter/ios/Flutter/Generated.xcconfig"] = _regex(root / "apps" / "mobile-flutter" / "ios" / "Flutter" / "Generated.xcconfig", r'^FLUTTER_BUILD_NAME=([^\s]+)', "iOS Flutter build name")

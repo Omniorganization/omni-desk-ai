@@ -10,7 +10,7 @@ This changeset closes the source-level P0/P1 gaps identified after PR #26 merged
 - Added PostgreSQL `expires_at` column and purge query.
 - Converted dead-letter reporting to a current gauge: `bigseller_dead_letter_current`.
 - Added BigSeller live smoke as a required external GA evidence category.
-- Added `release/external-evidence/templates/integrations/bigseller-live-smoke.template.json`.
+- BigSeller live-smoke evidence templates are generated into `dist/external-evidence-templates/`; `release/external-evidence/` is reserved for real imported evidence only.
 - Added enterprise dependency contract verification for `requirements.enterprise.lock`, `psycopg`, `psycopg-binary`, and Dockerfile production install wiring.
 - Wired enterprise dependency verification into Release Policy and Main Verification.
 - Expanded BigSeller production hardening tests.

@@ -43,6 +43,27 @@ def _replace_regex(path: Path, pattern: str, repl: str) -> None:
     _write(path, updated)
 
 
+def _replace_cargo_lock_package_version(path: Path, package_name: str, version: str) -> None:
+    text = _read(path)
+    pattern = (
+        r'(^\[\[package\]\]\n'
+        r'(?:(?!^\[\[package\]\]).)*?'
+        rf'^name\s*=\s*"{re.escape(package_name)}"\n'
+        r'(?:(?!^\[\[package\]\]).)*?'
+        r'^version\s*=\s*")([^"]+)(")'
+    )
+    updated, count = re.subn(
+        pattern,
+        lambda match: f"{match.group(1)}{version}{match.group(3)}",
+        text,
+        count=1,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if count == 0:
+        raise RuntimeError(f"could not find {package_name} package version in {path}")
+    _write(path, updated)
+
+
 def _update_package_lock(path: Path, app_version: str) -> None:
     payload = _json(path)
     payload["version"] = app_version
@@ -98,7 +119,7 @@ def bump(root: Path, *, full_version: str, android_version_code: int, ios_build_
     tauri_conf["version"] = app_version
     _write_json(root / "apps" / "desktop-tauri" / "src-tauri" / "tauri.conf.json", tauri_conf)
     _replace_regex(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.toml", r'^version\s*=\s*"[^"]+"', f'version = "{app_version}"')
-    _replace_regex(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.lock", r'^version\s*=\s*"[^"]+"', f'version = "{app_version}"')
+    _replace_cargo_lock_package_version(root / "apps" / "desktop-tauri" / "src-tauri" / "Cargo.lock", "omnidesk_desktop", app_version)
 
     _replace_regex(root / "deploy" / "kubernetes" / "helm" / "omnidesk" / "Chart.yaml", r'^version:\s*[^\s]+', f"version: {app_version}")
     _replace_regex(root / "deploy" / "kubernetes" / "helm" / "omnidesk" / "Chart.yaml", r'^appVersion:\s*[^\s]+', f"appVersion: {full_version}")
