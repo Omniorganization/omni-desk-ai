@@ -92,6 +92,7 @@ def test_production_config_requires_critical_dual_approval_and_break_glass_hmac(
         "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
         "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
     }
     result = validate_production_config(cfg, env)
     assert "permissions.require_dual_approval_for_risks must include critical in production" in result["issues"]

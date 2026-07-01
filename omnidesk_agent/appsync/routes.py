@@ -291,14 +291,14 @@ def register_appsync_routes(
         app_sync_cfg = getattr(cfg, "app_sync", None)
         public_key = str(payload.get("public_key") or "").strip()
         supplied_device_id = str(payload.get("device_id") or "").strip() or None
-        if _is_production(cfg) and device_type in {"desktop", "mobile"}:
+        if _is_production(cfg) and device_type in {"desktop", "mobile", "web_admin"}:
             if (
                 getattr(app_sync_cfg, "require_device_public_key_in_production", True)
                 and not public_key
             ):
                 raise HTTPException(
                     422,
-                    "public_key is required for desktop/mobile device enrollment in production",
+                    "public_key is required for desktop/mobile/web_admin device enrollment in production",
                 )
             if (
                 getattr(

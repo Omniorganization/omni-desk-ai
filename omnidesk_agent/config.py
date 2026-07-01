@@ -8,13 +8,18 @@ try:
 except ModuleNotFoundError:  # allow config models to import before optional deps are installed
     yaml = None
 try:
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel as PydanticBaseModel, ConfigDict, Field
 except ModuleNotFoundError as exc:
     raise ModuleNotFoundError("pydantic is required. Install with: python3 -m pip install pydantic") from exc
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 PermissionMode = Literal["ask", "allow", "deny", "dry_run"]
 DEFAULT_SANDBOX_IMAGE = "python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457"
+
+
+class BaseModel(PydanticBaseModel):
+    model_config = ConfigDict(extra="forbid")
+
 
 class LLMConfig(BaseModel):
     provider: str = "openai"
@@ -131,6 +136,7 @@ class GatewayConfig(BaseModel):
     port: int = 18789
     public_base_url: Optional[str] = None
     shared_secret_env: str = "OMNIDESK_GATEWAY_SECRET"
+    allow_legacy_gateway_secret_auth: bool = False
     admin_token_env: str = "OMNIDESK_ADMIN_TOKEN"
     viewer_token_env: str = "OMNIDESK_VIEWER_TOKEN"
     operator_token_env: str = "OMNIDESK_OPERATOR_TOKEN"
@@ -174,6 +180,7 @@ class AppSyncConfig(BaseModel):
     device_request_nonce_ttl_seconds: int = 600
     json_path: Optional[Path] = None
     postgres_dsn_env: str = "OMNIDESK_APPSYNC_POSTGRES_DSN"
+    secret_pepper_env: str = "OMNIDESK_APPSYNC_SECRET_PEPPER"
     namespace: str = "default"
     require_idempotency: bool = True
     task_lease_seconds: int = 60

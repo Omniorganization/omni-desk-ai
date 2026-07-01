@@ -43,7 +43,9 @@ class ChannelSendTool:
             cfg = getattr(adapter, "cfg", None)
             if cfg is not None and (getattr(cfg, "readonly", True) or not getattr(cfg, "allow_send", False)):
                 raise PermissionError("Gmail send is disabled by configuration")
-            to = str(args["to"]); subject = str(args.get("subject", "")); body = str(args.get("body", ""))
+            to = str(args["to"])
+            subject = str(args.get("subject", ""))
+            body = str(args.get("body", ""))
             decision = ctx.permissions.verify(proposal("channels", "send_email", {"to": to, "subject": subject, "body_preview": body[:200], "length": len(body)}, "high", "发送邮件前必须确认", ctx))
             if decision.mode == "dry_run":
                 return ToolResult(False, summary=f"dry-run: email to {to}")

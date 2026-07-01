@@ -65,7 +65,7 @@ def build_report(root: Path, audit_path: Path, output_path: Path, dist_dir: Path
     ga_ready = status == OK_STATUS
 
     body: list[str] = []
-    body.append(f"# OmniDesk Customer Distribution GA Report")
+    body.append("# OmniDesk Customer Distribution GA Report")
     body.append("")
     body.append(f"Generated at: `{generated_at}`")
     body.append(f"Version: `{version}`")

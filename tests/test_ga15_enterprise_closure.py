@@ -133,6 +133,7 @@ def test_production_example_config_passes_with_required_env(monkeypatch) -> None
         "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET": "x" * 40,
         "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
         "OMNIDESK_POSTGRES_DSN": "postgresql://omnidesk:secret@postgres:5432/omnidesk",
+        "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
     }
     cfg = load_config("deploy/docker/config.production.example.yaml", ensure_dirs=False)
     result = validate_production_config(cfg, env)
@@ -152,6 +153,7 @@ def test_cli_production_check_reports_shared_backends(monkeypatch, capsys) -> No
         "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET": "x" * 40,
         "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
         "OMNIDESK_POSTGRES_DSN": "postgresql://omnidesk:secret@postgres:5432/omnidesk",
+        "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)

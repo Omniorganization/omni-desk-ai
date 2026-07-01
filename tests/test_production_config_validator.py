@@ -39,6 +39,7 @@ def test_require_production_guards_env_is_production_signal():
             "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
             "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
         },
     )
 
@@ -84,6 +85,7 @@ def test_production_config_accepts_hardened_minimal_runtime():
             "OMNIDESK_MEMORY_ENCRYPTION_KEY": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
         },
     )
 
@@ -237,6 +239,7 @@ def test_production_config_rejects_gmail_compose_without_human_approval():
             "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
             "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
             "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY": "x" * 40,
         },
     )
@@ -289,3 +292,72 @@ def test_production_config_rejects_weak_secrets_and_placeholder_public_url():
     assert "gateway admin token uses placeholder value: OMNIDESK_ADMIN_TOKEN" in result["issues"]
     assert "gateway shared secret must be at least 32 chars: OMNIDESK_GATEWAY_SECRET" in result["issues"]
     assert "memory encryption key must be at least 32 chars: OMNIDESK_MEMORY_ENCRYPTION_KEY" in result["issues"]
+
+
+def test_production_config_rejects_legacy_gateway_secret_auth_and_missing_appsync_pepper():
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.channels.chrome.enabled = False
+    cfg.memory_privacy.encrypt_at_rest = True
+    cfg.gateway.allow_legacy_gateway_secret_auth = True
+    _enable_postgres_production_state(cfg)
+
+    result = validate_production_config(
+        cfg,
+        {
+            "OMNIDESK_ENV": "production",
+            "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+            "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+            "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+            "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        },
+    )
+
+    assert (
+        "gateway.allow_legacy_gateway_secret_auth must be false in production; use role-bound admin tokens"
+        in result["issues"]
+    )
+    assert (
+        "app_sync secret pepper is not configured: OMNIDESK_APPSYNC_SECRET_PEPPER"
+        in result["issues"]
+    )
+
+
+def test_production_config_requires_channel_allowlists_and_narrow_ui_bridge():
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.channels.chrome.enabled = False
+    cfg.channels.telegram.enabled = True
+    cfg.channels.ui_bridge.enabled = True
+    cfg.capabilities.ui_bridge.enabled = True
+    cfg.memory_privacy.encrypt_at_rest = True
+    _enable_postgres_production_state(cfg)
+
+    result = validate_production_config(
+        cfg,
+        {
+            "OMNIDESK_ENV": "production",
+            "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+            "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+            "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+            "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+            "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
+            "TELEGRAM_BOT_TOKEN": "x" * 40,
+            "TELEGRAM_WEBHOOK_SECRET": "x" * 40,
+        },
+    )
+
+    assert (
+        "channels.telegram must configure at least one production allowlist: allowed_user_ids"
+        in result["issues"]
+    )
+    assert (
+        "channels.ui_bridge.allowed_apps must be narrowed from the broad default list in production"
+        in result["issues"]
+    )
+    assert any(
+        "channels.ui_bridge.allowed_apps must not include browser apps" in issue
+        for issue in result["issues"]
+    )

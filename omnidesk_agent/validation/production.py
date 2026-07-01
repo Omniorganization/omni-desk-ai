@@ -54,6 +54,8 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
     _require_env(env, cfg.gateway.admin_token_env, "gateway admin token", issues, min_length=STRONG_SECRET_MIN_LENGTH)
     _require_env(env, cfg.gateway.shared_secret_env, "gateway shared secret", issues, min_length=STRONG_SECRET_MIN_LENGTH)
 
+    if getattr(cfg.gateway, "allow_legacy_gateway_secret_auth", False):
+        issues.append("gateway.allow_legacy_gateway_secret_auth must be false in production; use role-bound admin tokens")
     if cfg.gateway.allow_local_admin_without_token:
         issues.append("gateway.allow_local_admin_without_token must be false in production")
     if cfg.gateway.public_base_url and not cfg.gateway.require_webhook_signatures:
@@ -119,6 +121,7 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
         issues.append("app_sync.device_signature_max_skew_seconds must be <= 300 in production")
     if not getattr(cfg.app_sync, "reject_predictable_device_ids_in_production", True):
         issues.append("app_sync.reject_predictable_device_ids_in_production must be true in production")
+    _require_env(env, getattr(cfg.app_sync, "secret_pepper_env", "OMNIDESK_APPSYNC_SECRET_PEPPER"), "app_sync secret pepper", issues, min_length=STRONG_SECRET_MIN_LENGTH)
     if cfg.storage.require_multi_instance_safe and cfg.app_sync.backend != "postgres":
         issues.append("app_sync.backend must be postgres when storage.require_multi_instance_safe=true")
     if cfg.app_sync.backend == "postgres":
@@ -151,6 +154,8 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
             issues.append("plugins.production_forbid_subprocess must be true in production")
 
     _validate_enabled_channel_envs(cfg, env, issues)
+    _validate_channel_allowlists(cfg, issues)
+    _validate_ui_bridge_policy(cfg, issues)
     _validate_high_risk_approval_policy(cfg, issues)
     _validate_emergency_access_policy(cfg, env, issues)
 
@@ -273,6 +278,58 @@ def _validate_enabled_channel_envs(cfg: AppConfig, env: Mapping[str, str], issue
         for field_name in type(channel_cfg).model_fields:
             if field_name.endswith("_env"):
                 _require_env(env, str(getattr(channel_cfg, field_name)), f"{channel_name}.{field_name}", issues)
+
+
+CHANNEL_ALLOWLIST_FIELDS: dict[str, tuple[str, ...]] = {
+    "telegram": ("allowed_user_ids",),
+    "whatsapp_cloud": ("allowed_wa_ids",),
+    "wechat_official": ("allowed_open_ids",),
+    "meta_graph": ("allowed_psids",),
+    "lark": ("allowed_open_ids",),
+    "feishu": ("allowed_open_ids",),
+    "line": ("allowed_user_ids",),
+    "x": ("allowed_user_ids",),
+    "slack": ("allowed_user_ids", "allowed_channel_ids"),
+    "discord": ("allowed_user_ids", "allowed_channel_ids"),
+    "google_chat": ("allowed_user_names", "allowed_space_names"),
+    "signal": ("allowed_senders",),
+    "imessage": ("allowed_handles",),
+    "microsoft_teams": ("allowed_user_ids", "allowed_conversation_ids"),
+    "matrix": ("allowed_user_ids", "allowed_room_ids"),
+    "qq": ("allowed_user_ids", "allowed_source_ids"),
+}
+
+
+def _validate_channel_allowlists(cfg: AppConfig, issues: list[str]) -> None:
+    for channel_name, field_names in CHANNEL_ALLOWLIST_FIELDS.items():
+        channel_cfg = getattr(cfg.channels, channel_name)
+        if not bool(getattr(channel_cfg, "enabled", False)):
+            continue
+        populated = [
+            field_name
+            for field_name in field_names
+            if bool(getattr(channel_cfg, field_name, None))
+        ]
+        if not populated:
+            joined = ", ".join(field_names)
+            issues.append(f"channels.{channel_name} must configure at least one production allowlist: {joined}")
+
+
+def _validate_ui_bridge_policy(cfg: AppConfig, issues: list[str]) -> None:
+    if not bool(getattr(cfg.channels.ui_bridge, "enabled", False)):
+        return
+    if not bool(getattr(cfg.channels.ui_bridge, "require_foreground_confirmation", True)):
+        issues.append("channels.ui_bridge.require_foreground_confirmation must be true in production")
+    configured = list(getattr(cfg.channels.ui_bridge, "allowed_apps", []) or [])
+    defaults = list(type(cfg.channels.ui_bridge).model_fields["allowed_apps"].default_factory())  # type: ignore[misc]
+    if not configured:
+        issues.append("channels.ui_bridge.allowed_apps must be explicitly configured in production")
+    elif set(configured) == set(defaults):
+        issues.append("channels.ui_bridge.allowed_apps must be narrowed from the broad default list in production")
+    browser_apps = {"Google Chrome", "Chrome", "Safari", "Edge", "Firefox", "Brave"}
+    overlap = sorted(browser_apps & set(configured))
+    if overlap:
+        issues.append("channels.ui_bridge.allowed_apps must not include browser apps in production; use channels.chrome/browser controls: " + ", ".join(overlap))
 
 
 def _validate_high_risk_approval_policy(cfg: AppConfig, issues: list[str]) -> None:

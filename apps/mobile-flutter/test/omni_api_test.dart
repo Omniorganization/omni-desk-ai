@@ -35,7 +35,7 @@ void main() {
     client.close();
   });
 
-  test('sendMessage uses the shared conversation message endpoint', () async {
+  test('sendMessage encodes path segments and uses the shared conversation endpoint', () async {
     final client = OmniApiClient(
       baseUrl: 'https://gateway.example.test',
       token: 'operator-token',
@@ -43,7 +43,7 @@ void main() {
       httpClient: MockClient((http.Request request) async {
         expect(
           request.url.toString(),
-          'https://gateway.example.test/app/conversations/conv-1/messages',
+          'https://gateway.example.test/app/conversations/conv-1%2Fwith%20space/messages',
         );
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['content'], 'Run desktop task');
@@ -54,7 +54,7 @@ void main() {
     );
 
     await client.sendMessage(
-      'conv-1',
+      'conv-1/with space',
       'Run desktop task',
       requiresDesktopRuntime: true,
       risk: 'high',
@@ -93,7 +93,7 @@ void main() {
     client.close();
   });
 
-  test('non-2xx responses throw with status and body', () async {
+  test('non-2xx responses throw with status and safe error code only', () async {
     final client = OmniApiClient(
       baseUrl: 'https://gateway.example.test',
       token: 'bad-token',
@@ -107,11 +107,38 @@ void main() {
       () => client.bootstrap(),
       throwsA(
         predicate((Object error) {
-          return error.toString().contains('401: bad token');
+          return error.toString().contains(
+                'Omni API request failed (401, request_failed)',
+              ) &&
+              !error.toString().contains('bad token');
         }),
       ),
     );
     client.close();
+  });
+
+  test('baseUrl must use https unless loopback', () async {
+    expect(
+      () => OmniApiClient(
+        baseUrl: 'http://gateway.example.test',
+        token: 'token',
+        actor: 'actor',
+        httpClient: MockClient((http.Request request) async {
+          return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+        }),
+      ),
+      throwsArgumentError,
+    );
+    final loopback = OmniApiClient(
+      baseUrl: 'http://127.0.0.1:18789',
+      token: 'token',
+      actor: 'actor',
+      httpClient: MockClient((http.Request request) async {
+        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+      }),
+    );
+    await loopback.bootstrap();
+    loopback.close();
   });
 
   test('registerPushToken posts to device push endpoint', () async {

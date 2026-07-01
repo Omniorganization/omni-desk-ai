@@ -47,6 +47,8 @@ def test_web_admin_csp_and_session_cookie_are_ga_hardened() -> None:
     assert "unsafe-eval" not in next_config
     assert "unsafe-inline" not in next_config
     assert "object-src 'none'" in next_config
+    assert "require-trusted-types-for 'script'" in next_config
+    assert "trusted-types default" in next_config
     assert "connect-src 'self' https:" not in next_config
     assert "connect-src 'self';" in next_config
     assert "img-src 'self' data:" not in next_config
@@ -55,6 +57,10 @@ def test_web_admin_csp_and_session_cookie_are_ga_hardened() -> None:
     assert "verifyGatewayIdentity" in login
     assert "payload.actor" not in login
     assert "payload.role" not in login
+    page = Path("apps/web-admin-next/app/page.tsx").read_text(encoding="utf-8")
+    api = Path("apps/web-admin-next/lib/api.ts").read_text(encoding="utf-8")
+    assert "web-admin-console" not in page
+    assert "web-admin-console" not in api
 
 
 def test_helm_chart_requires_pipeline_injected_app_digest() -> None:
@@ -156,6 +162,29 @@ def test_production_device_registration_requires_public_key_and_random_device_id
             },
         )
         assert missing.status_code == 422
+        web_missing = client.post(
+            "/app/devices/register",
+            headers={**headers, "idempotency-key": "web-device-reg"},
+            json={
+                "device_id": "web-admin-console",
+                "device_type": "web_admin",
+                "name": "Web Admin",
+                "platform": "nextjs",
+            },
+        )
+        assert web_missing.status_code == 422
+        web_predictable = client.post(
+            "/app/devices/register",
+            headers={**headers, "idempotency-key": "web-device-reg-2"},
+            json={
+                "device_id": "web-admin-console",
+                "device_type": "web_admin",
+                "name": "Web Admin",
+                "platform": "nextjs",
+                "public_key": "base64:" + "a" * 44,
+            },
+        )
+        assert web_predictable.status_code == 422
         predictable = client.post(
             "/app/devices/register",
             headers={**headers, "idempotency-key": "device-reg-2"},
@@ -245,6 +274,9 @@ def test_native_apps_generate_per_install_device_identity() -> None:
     desktop = Path("apps/desktop-tauri/src/deviceIdentity.ts").read_text(
         encoding="utf-8"
     )
+    web_admin = Path("apps/web-admin-next/lib/device-identity.ts").read_text(
+        encoding="utf-8"
+    )
     mobile = Path("apps/mobile-flutter/lib/device_identity.dart").read_text(
         encoding="utf-8"
     )
@@ -253,9 +285,20 @@ def test_native_apps_generate_per_install_device_identity() -> None:
     )
     assert "crypto.subtle.generateKey" in desktop
     assert "omni.devicePrivateKeyJwk.v2" in desktop
+    assert "crypto.subtle.generateKey" in web_admin
+    assert "signWebAdminDeviceRequest" in web_admin
+    assert "web-admin-console" not in web_admin
     assert "Ed25519" in mobile
     assert "omni.device_private_key.v2" in mobile
     assert "cryptography:" in mobile_pubspec
+
+
+def test_desktop_release_workflows_use_committed_cargo_lockfile() -> None:
+    tri_app = Path(".github/workflows/tri-app-quality.yml").read_text(encoding="utf-8")
+    release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    combined = tri_app + release
+    assert "cargo generate-lockfile" not in combined
+    assert "cargo check --locked --manifest-path src-tauri/Cargo.toml" in combined
 
 
 def test_ga_release_gate_script_is_wired_into_release_workflows() -> None:

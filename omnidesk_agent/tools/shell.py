@@ -30,7 +30,7 @@ class ShellTool:
         self.sandbox_cfg = sandbox_cfg
         self.backend = getattr(sandbox_cfg, "backend", getattr(cfg, 'shell_backend', 'argv'))
         self.allowed_prefixes = list(getattr(cfg, "shell_allowed_commands", None) or self.DEFAULT_ALLOWED_PREFIXES)
-        if getattr(cfg, "shell_upgrade_enabled", False):
+        if getattr(cfg, "shell_upgrade_enabled", False) and self._upgrade_runner_isolated():
             self.allowed_prefixes.extend(UPGRADE_ALLOWED_PREFIXES)
 
     def spec(self) -> ToolSpec:
@@ -53,7 +53,7 @@ class ShellTool:
         return argv
 
     def _allowed(self, argv: list[str]) -> bool:
-        return argv_allowed(argv, self.allowed_prefixes)
+        return argv_allowed(argv, self.allowed_prefixes, workspace_root=self.cwd)
 
     def _is_readonly_command(self, argv: list[str]) -> bool:
         return readonly_command(argv)
@@ -61,6 +61,9 @@ class ShellTool:
     def _is_production_runtime(self) -> bool:
         mode = (os.environ.get("OMNIDESK_ENV") or os.environ.get("APP_ENV") or os.environ.get("ENV") or "").strip().lower()
         return mode in {"prod", "production", "live"}
+
+    def _upgrade_runner_isolated(self) -> bool:
+        return os.environ.get("OMNIDESK_UPGRADE_RUNNER_ISOLATED", "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _runtime_backend_allowed(self, argv: list[str]) -> tuple[bool, str | None]:
         if not self._is_production_runtime():

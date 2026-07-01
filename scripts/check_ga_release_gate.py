@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     _check("OMNIDESK_REQUIRE_PRODUCTION_GUARDS" in production_validator and "OMNIDESK_REQUIRE_PRODUCTION_GUARDS" in _read(root / "deploy/systemd/omnidesk-agent.production.service") and "OMNIDESK_REQUIRE_PRODUCTION_GUARDS" in _read(root / "deploy/docker/docker-compose.full.yml"), "Production profiles include explicit production guard enforcement switch", failures, ok)
     _check("per_task_max_llm_calls: Optional[int] = 16" in config and "per-task model call limit exceeded" in _read(root / "omnidesk_agent/core/token_budget.py"), "Token budget enforces per-task model call hard limits", failures, ok)
     _check("token and \"authorization\" not in headers and allow_query_auth" in routes, "WebSocket query-token compatibility is gated outside production", failures, ok)
-    _check("public_key is required for desktop/mobile device enrollment in production" in routes, "Production device registration requires a public key", failures, ok)
+    _check("public_key is required for desktop/mobile/web_admin device enrollment in production" in routes, "Production device registration requires a public key", failures, ok)
     _check("predictable device_id values are forbidden" in routes, "Production device registration rejects predictable IDs", failures, ok)
     _check("loadOrCreateDesktopIdentity" in desktop_app and "crypto.subtle.generateKey" in desktop_identity and "omni.devicePrivateKeyJwk.v2" in desktop_identity, "Desktop generates and stores per-install keypair", failures, ok)
     _check("DeviceIdentityStore" in mobile_main and "Ed25519" in mobile_identity and "omni.device_private_key.v2" in mobile_identity, "Mobile generates and stores per-install keypair", failures, ok)

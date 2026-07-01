@@ -88,6 +88,7 @@ gateway:
   port: 18789
   public_base_url: null
   shared_secret_env: OMNIDESK_GATEWAY_SECRET
+  allow_legacy_gateway_secret_auth: false
 
 permissions:
   default_mode: ask
@@ -109,6 +110,7 @@ app_sync:
   backend: json  # use postgres for controlled staging / production
   json_path: null
   postgres_dsn_env: OMNIDESK_APPSYNC_POSTGRES_DSN
+  secret_pepper_env: OMNIDESK_APPSYNC_SECRET_PEPPER
   namespace: default
   require_idempotency: true
   task_lease_seconds: 60

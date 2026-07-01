@@ -1,6 +1,6 @@
 # This file is part of the 1.11 OpenClaw-Codex aligned enterprise agent source package.
-# Native release CI must regenerate and verify this lockfile with:
-#   cargo generate-lockfile && cargo metadata --locked
+# Native release CI must verify this committed lockfile with:
+#   cargo metadata --locked
 # It is included so release gates fail closed when a Rust lockfile is absent.
 version = 4
 

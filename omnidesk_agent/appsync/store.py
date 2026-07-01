@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import base64
+import os
 import secrets
 import threading
 import time
@@ -30,8 +31,26 @@ def _fingerprint(payload: dict[str, Any] | None) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _hash_secret(value: str) -> str:
-    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+def _secret_pepper() -> str:
+    return (
+        os.getenv("OMNIDESK_APPSYNC_SECRET_PEPPER")
+        or os.getenv("OMNIDESK_GATEWAY_SECRET")
+        or "omnidesk-dev-only-appsync-pepper"
+    )
+
+
+def _hash_secret(value: str, *, purpose: str = "appsync") -> str:
+    message = f"{purpose}:{str(value or '')}".encode("utf-8")
+    digest = hmac.new(_secret_pepper().encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return f"hmac-sha256:{purpose}:{digest}"
+
+
+def _secret_matches(stored: str, value: str, *, purpose: str = "appsync") -> bool:
+    current = _hash_secret(value, purpose=purpose)
+    if hmac.compare_digest(stored or "", current):
+        return True
+    legacy = hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+    return bool(stored) and hmac.compare_digest(stored, legacy)
 
 
 def _device_signing_message(*, challenge_id: str, nonce_hash: str) -> bytes:
@@ -1111,7 +1130,7 @@ class AppSyncStore:
                 enrollment_id=enrollment_id,
                 device_type=device_type,
                 requested_by=actor or "unknown",
-                pairing_code_hash=_hash_secret(pairing_code),
+                pairing_code_hash=_hash_secret(pairing_code, purpose="pairing_code"),
                 organization_id=organization_id,
             )
             self.device_enrollments[enrollment_id] = record
@@ -1133,7 +1152,7 @@ class AppSyncStore:
                 record.status = "expired"
                 self._persist()
                 raise ValueError("enrollment expired")
-            if record.pairing_code_hash != _hash_secret(pairing_code):
+            if not _secret_matches(record.pairing_code_hash, pairing_code, purpose="pairing_code"):
                 raise ValueError("pairing code mismatch")
             record.status = "completed"
             record.device_id = device_id
@@ -1157,7 +1176,7 @@ class AppSyncStore:
                 raise ValueError("enrollment is not active")
             nonce = secrets.token_urlsafe(32)
             challenge_id = _id("chal")
-            nonce_hash = _hash_secret(nonce)
+            nonce_hash = _hash_secret(nonce, purpose="device_challenge_nonce")
             challenge = DeviceChallengeRecord(challenge_id=challenge_id, enrollment_id=enrollment_id, device_id=device_id, nonce_hash=nonce_hash, organization_id=record.organization_id)
             self.device_challenges[challenge_id] = challenge
             self._event("device.challenge_issued", actor, {"challenge_id": challenge_id, "enrollment_id": enrollment_id, "device_id": device_id, "organization_id": record.organization_id})
@@ -1196,7 +1215,7 @@ class AppSyncStore:
             challenge.status = "verified"
             challenge.verified_at = _now()
             token = secrets.token_urlsafe(32)
-            token_hash = _hash_secret(token)
+            token_hash = _hash_secret(token, purpose="device_token")
             if device:
                 device.credential_status = "verified"
                 device.trust_level = "challenge_verified"
@@ -1214,17 +1233,38 @@ class AppSyncStore:
     def rotate_device_token(self, *, actor: str, device_id: str) -> dict[str, Any]:
         with self._lock:
             device = self.devices.get(device_id)
-            if not device: raise KeyError("device not found")
+            if not device:
+                raise KeyError("device not found")
             self._require_actor_org(actor, device.organization_id)
-            if device.credential_status == "revoked": raise ValueError("device revoked")
-            token = secrets.token_urlsafe(32); device.token_hash = _hash_secret(token); device.updated_at = _now(); self._event("device.token_rotated", actor, {"device_id": device_id, "organization_id": device.organization_id}); self._persist(); result = self._record(device); result["device_token"] = token; return result
+            if device.credential_status == "revoked":
+                raise ValueError("device revoked")
+            token = secrets.token_urlsafe(32)
+            device.token_hash = _hash_secret(token, purpose="device_token")
+            device.updated_at = _now()
+            self._event("device.token_rotated", actor, {"device_id": device_id, "organization_id": device.organization_id})
+            self._persist()
+            result = self._record(device)
+            result["device_token"] = token
+            return result
 
     def revoke_device(self, *, actor: str, device_id: str, reason: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             device = self.devices.get(device_id)
-            if not device: raise KeyError("device not found")
+            if not device:
+                raise KeyError("device not found")
             self._require_actor_org(actor, device.organization_id)
-            device.credential_status = "revoked"; device.trust_level = "revoked"; device.revoked_at = _now(); device.online = False; device.updated_at = device.revoked_at; self._event("device.revoked", actor, {"device_id": device_id, "reason": reason, "organization_id": device.organization_id}); self._persist(); return self._record(device)
+            device.credential_status = "revoked"
+            device.trust_level = "revoked"
+            device.revoked_at = _now()
+            device.online = False
+            device.updated_at = device.revoked_at
+            self._event(
+                "device.revoked",
+                actor,
+                {"device_id": device_id, "reason": reason, "organization_id": device.organization_id},
+            )
+            self._persist()
+            return self._record(device)
 
     def pending_push_outbox(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
@@ -1234,8 +1274,19 @@ class AppSyncStore:
     def mark_push_delivery(self, *, push_id: str, status: Literal["sent", "failed"], error: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             item = self.push_outbox.get(push_id)
-            if not item: raise KeyError("push outbox item not found")
-            item.status = status; item.attempt_count += 1; item.last_error = error; item.updated_at = _now(); self._event("push.delivery", "push-provider", {"push_id": push_id, "status": status, "organization_id": item.organization_id}); self._persist(); return self._record(item)
+            if not item:
+                raise KeyError("push outbox item not found")
+            item.status = status
+            item.attempt_count += 1
+            item.last_error = error
+            item.updated_at = _now()
+            self._event(
+                "push.delivery",
+                "push-provider",
+                {"push_id": push_id, "status": status, "organization_id": item.organization_id},
+            )
+            self._persist()
+            return self._record(item)
 
     def verify_device_request_signature(
         self,

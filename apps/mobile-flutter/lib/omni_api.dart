@@ -4,12 +4,13 @@ import 'device_identity.dart';
 
 class OmniApiClient {
   OmniApiClient({
-    required this.baseUrl,
+    required String baseUrl,
     required this.token,
     required this.actor,
     http.Client? httpClient,
     DeviceIdentityStore? deviceIdentityStore,
-  })  : _httpClient = httpClient ?? http.Client(),
+  })  : baseUrl = _normalizeBaseUrl(baseUrl),
+        _httpClient = httpClient ?? http.Client(),
         _deviceIdentityStore = deviceIdentityStore;
 
   final String baseUrl;
@@ -62,7 +63,7 @@ class OmniApiClient {
       );
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('${response.statusCode}: ${response.body}');
+      throw Exception(_safeApiError(response));
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
@@ -96,7 +97,7 @@ class OmniApiClient {
       );
 
   Future<Map<String, dynamic>> listMessages(String conversationId) =>
-      _request('GET', '/app/conversations/$conversationId/messages');
+      _request('GET', '/app/conversations/${_pathSegment(conversationId)}/messages');
 
   Future<Map<String, dynamic>> askConversation(
     String conversationId,
@@ -107,7 +108,7 @@ class OmniApiClient {
   }) =>
       _request(
         'POST',
-        '/app/conversations/$conversationId/ask',
+        '/app/conversations/${_pathSegment(conversationId)}/ask',
         <String, dynamic>{
           'content': content,
           'model_profile': modelProfile,
@@ -128,7 +129,7 @@ class OmniApiClient {
   }) =>
       _request(
         'POST',
-        '/app/conversations/$conversationId/messages',
+        '/app/conversations/${_pathSegment(conversationId)}/messages',
         <String, dynamic>{
           'content': content,
           'requires_desktop_runtime': requiresDesktopRuntime,
@@ -146,7 +147,7 @@ class OmniApiClient {
   }) =>
       _request(
         'POST',
-        '/app/approvals/$approvalId/decide',
+        '/app/approvals/${_pathSegment(approvalId)}/decide',
         <String, dynamic>{
           'decision': decision,
           'reason': reason,
@@ -161,7 +162,7 @@ class OmniApiClient {
     String pushToken, {
     String platform = 'flutter',
   }) =>
-      _request('POST', '/app/devices/$deviceId/push-token', <String, dynamic>{
+      _request('POST', '/app/devices/${_pathSegment(deviceId)}/push-token', <String, dynamic>{
         'push_token': pushToken,
         'platform': platform,
       });
@@ -170,4 +171,45 @@ class OmniApiClient {
       _request('GET', '/app/notifications?audience=mobile');
 
   void close() => _httpClient.close();
+}
+
+String _normalizeBaseUrl(String value) {
+  final uri = Uri.parse(value.trim());
+  if (!uri.hasScheme || !uri.hasAuthority) {
+    throw ArgumentError('Omni API baseUrl must be an absolute URL');
+  }
+  final loopback = _isLoopbackHost(uri.host);
+  if (uri.scheme != 'https' && !(uri.scheme == 'http' && loopback)) {
+    throw ArgumentError('Omni API baseUrl must use https unless it targets loopback');
+  }
+  if (uri.hasQuery || uri.hasFragment || uri.userInfo.isNotEmpty) {
+    throw ArgumentError('Omni API baseUrl must not include credentials, query, or fragment');
+  }
+  return value.replaceAll(RegExp(r'/$'), '');
+}
+
+bool _isLoopbackHost(String host) {
+  final normalized = host.toLowerCase();
+  return normalized == 'localhost' ||
+      normalized == '127.0.0.1' ||
+      normalized == '::1';
+}
+
+String _pathSegment(String value) => Uri.encodeComponent(value);
+
+String _safeApiError(http.Response response) {
+  var code = 'request_failed';
+  try {
+    final decoded = jsonDecode(response.body);
+    if (decoded is Map<String, dynamic>) {
+      final candidate = decoded['code'] ?? decoded['error'] ?? decoded['detail'];
+      if (candidate is String &&
+          RegExp(r'^[A-Za-z0-9_.:-]{1,80}$').hasMatch(candidate)) {
+        code = candidate;
+      }
+    }
+  } catch (_) {
+    // Keep mobile UI/log errors body-free even when the gateway returns text.
+  }
+  return 'Omni API request failed (${response.statusCode}, $code)';
 }
