@@ -14,3 +14,10 @@ def test_load_config_rejects_non_mapping(tmp_path):
     p.write_text("- not\n- mapping\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_config(p)
+
+
+def test_load_config_rejects_unknown_fields(tmp_path):
+    p = tmp_path / "unknown.yaml"
+    p.write_text("gateway:\n  admin_tokne_env: typo\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="admin_tokne_env"):
+        load_config(p, ensure_dirs=False)

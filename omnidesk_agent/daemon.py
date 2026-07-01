@@ -89,7 +89,7 @@ class OmniDeskRuntime:
             viewer_token_env=cfg.gateway.viewer_token_env,
             operator_token_env=cfg.gateway.operator_token_env,
             owner_token_env=cfg.gateway.owner_token_env,
-            legacy_secret_env=cfg.gateway.shared_secret_env,
+            legacy_secret_env=cfg.gateway.shared_secret_env if cfg.gateway.allow_legacy_gateway_secret_auth else None,
             allow_local_without_token=cfg.gateway.allow_local_admin_without_token,
             allowed_ips=cfg.gateway.admin_allowed_ips,
             audit_log=cfg.workspace.root / "admin_auth_audit.jsonl",

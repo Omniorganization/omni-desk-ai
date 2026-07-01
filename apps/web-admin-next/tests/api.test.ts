@@ -10,7 +10,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-test('registerAdminDevice uses the server-side proxy and a stable web_admin payload', async () => {
+test('registerAdminDevice uses the server-side proxy and per-install web_admin identity', async () => {
   let requestUrl = '';
   let requestInit: RequestInit | undefined;
   globalThis.fetch = async (input, init) => {
@@ -19,23 +19,29 @@ test('registerAdminDevice uses the server-side proxy and a stable web_admin payl
     return new Response(JSON.stringify({ ok: true, device: { device_type: 'web_admin' } }), { status: 200 });
   };
 
+  const identity = {
+    deviceId: 'web_1234567890abcdef1234567890abcdef1234',
+    publicKeyPem: '-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----',
+  };
   const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'owner' });
-  const result = await api.registerAdminDevice();
+  const result = await api.registerAdminDevice(identity);
 
   assert.equal(requestUrl, '/api/omni/devices/register');
   assert.equal(result.device.device_type, 'web_admin');
   assert.equal((requestInit?.headers as Record<string, string>)['x-csrf-token'], 'csrf-token');
-  assert.equal((requestInit?.headers as Record<string, string>)['idempotency-key'], 'web-admin-device-registration');
+  assert.equal((requestInit?.headers as Record<string, string>)['idempotency-key'], `web-admin-device-registration-${identity.deviceId}`);
   assert.equal((requestInit?.headers as Record<string, string>).authorization, undefined);
 
   const body = JSON.parse(requestInit?.body as string);
-  assert.equal(body.device_id, 'web-admin-console');
+  assert.equal(body.device_id, identity.deviceId);
   assert.equal(body.device_type, 'web_admin');
+  assert.equal(body.public_key, identity.publicKeyPem);
   assert.deepEqual(body.capabilities, ['governance', 'channels', 'audit', 'approval', 'role:owner']);
 });
 
 test('decide posts the owner approval decision and surfaces gateway errors', async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const signed: Array<{ method: string; path: string; body: string }> = [];
   globalThis.fetch = async (input, init) => {
     calls.push({ url: input.toString(), init });
     if (calls.length === 1) {
@@ -44,17 +50,34 @@ test('decide posts the owner approval decision and surfaces gateway errors', asy
     return new Response('forbidden', { status: 403 });
   };
 
-  const api = new OmniAdminApi({ csrfToken: 'csrf-token' });
+  const api = new OmniAdminApi({
+    csrfToken: 'csrf-token',
+    deviceId: 'web_signed_device',
+    deviceSigner: async (method, path, body) => {
+      signed.push({ method, path, body });
+      return {
+        'x-omnidesk-device-id': 'web_signed_device',
+        'x-omnidesk-timestamp': '123',
+        'x-omnidesk-nonce': 'nonce-1234567890abcdef',
+        'x-omnidesk-device-signature': 'base64:sig',
+      };
+    },
+  });
   await api.decide('appr-1', 'approved');
 
   assert.equal(calls[0].url, '/api/omni/approvals/appr-1/decide');
   assert.match((calls[0].init?.headers as Record<string, string>)['idempotency-key'], /^web-admin-appr-1-approved-/);
+  assert.equal((calls[0].init?.headers as Record<string, string>)['x-omnidesk-device-id'], 'web_signed_device');
+  assert.deepEqual(signed.map(({ method, path }) => ({ method, path })), [
+    { method: 'POST', path: '/app/approvals/appr-1/decide' },
+  ]);
   assert.deepEqual(JSON.parse(calls[0].init?.body as string), {
     decision: 'approved',
     reason: 'Web Admin decision',
+    source_device_id: 'web_signed_device',
   });
 
-  await assert.rejects(() => api.bootstrap(), /403: forbidden/);
+  await assert.rejects(() => api.bootstrap(), /403: request failed/);
 });
 
 test('askConversation posts through the server-side chat proxy with csrf only', async () => {
@@ -66,7 +89,7 @@ test('askConversation posts through the server-side chat proxy with csrf only', 
     return new Response(JSON.stringify({ ok: true, assistant_message: { content: 'answer' } }), { status: 200 });
   };
 
-  const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'operator' });
+  const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'operator', deviceId: 'web_signed_device' });
   await api.askConversation('conv-1', 'hello', 'fast');
 
   assert.equal(requestUrl, '/api/omni/conversations/conv-1/ask');
@@ -77,7 +100,7 @@ test('askConversation posts through the server-side chat proxy with csrf only', 
     content: 'hello',
     model_profile: 'fast',
     stream: false,
-    source_device_id: 'web-admin-console',
+    source_device_id: 'web_signed_device',
   });
 });
 

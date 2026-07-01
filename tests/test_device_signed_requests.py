@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from omnidesk_agent.config import AppConfig
+from omnidesk_agent.appsync.store import _hash_secret, _secret_matches
 from omnidesk_agent.server import create_app
 
 
@@ -66,3 +67,14 @@ def test_production_desktop_claim_requires_verified_device_signature(tmp_path, m
         replay = client.post(path, headers=headers, content=body)
         assert replay.status_code == 401
         assert "nonce_replay" in replay.text
+
+
+def test_appsync_secret_hashes_use_hmac_with_legacy_read_compatibility(monkeypatch) -> None:
+    monkeypatch.setenv("OMNIDESK_APPSYNC_SECRET_PEPPER", "pepper-" + "x" * 40)
+    value = "pairing-code-123"
+    hashed = _hash_secret(value, purpose="pairing_code")
+    assert hashed.startswith("hmac-sha256:pairing_code:")
+    assert hashlib.sha256(value.encode("utf-8")).hexdigest() not in hashed
+    assert _secret_matches(hashed, value, purpose="pairing_code")
+    legacy = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    assert _secret_matches(legacy, value, purpose="pairing_code")

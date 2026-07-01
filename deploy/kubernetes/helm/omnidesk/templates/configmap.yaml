@@ -75,6 +75,7 @@ data:
     app_sync:
       backend: postgres
       postgres_dsn_env: OMNIDESK_APPSYNC_POSTGRES_DSN
+      secret_pepper_env: OMNIDESK_APPSYNC_SECRET_PEPPER
       namespace: production
       require_idempotency: true
       allow_websocket_query_auth: false

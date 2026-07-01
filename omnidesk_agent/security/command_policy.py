@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path, PurePath
 from typing import Iterable, Sequence
 
 # Shared command allowlist used by ShellTool and the remote sandbox runner.
@@ -37,13 +38,74 @@ READONLY_PREFIXES: list[list[str]] = [
     ["git", "ls-tree"],
 ]
 
+_FORBIDDEN_GIT_PATHSPEC_CHARS = frozenset("\0*?[]{}")
+
 
 def argv_matches_prefix(argv: Sequence[str], prefix: Sequence[str]) -> bool:
     return len(argv) >= len(prefix) and list(argv[: len(prefix)]) == list(prefix)
 
 
-def argv_allowed(argv: Sequence[str], prefixes: Iterable[Sequence[str]] = SAFE_CI_ALLOWED_PREFIXES) -> bool:
-    return any(argv_matches_prefix(argv, prefix) for prefix in prefixes)
+def _safe_git_path_arg(value: str) -> bool:
+    if value in {"", ".", "--all", "-A"} or value.startswith("-") or value.startswith(":"):
+        return False
+    if any(char in value for char in _FORBIDDEN_GIT_PATHSPEC_CHARS):
+        return False
+    path = PurePath(value)
+    if path.is_absolute():
+        return False
+    return bool(path.parts) and all(part not in {"", ".", ".."} for part in path.parts)
+
+
+def _safe_git_add_args(argv: Sequence[str], workspace_root: Path | None = None) -> bool:
+    if len(argv) <= 2:
+        return False
+    del workspace_root
+    for raw in argv[2:]:
+        if not _safe_git_path_arg(str(raw)):
+            return False
+    return True
+
+
+def _safe_git_push_args(argv: Sequence[str]) -> bool:
+    if len(argv) != 4:
+        return False
+    remote = str(argv[2])
+    refspec = str(argv[3])
+    return remote == "origin" and (
+        refspec.startswith("HEAD:codex/")
+        or refspec.startswith("HEAD:repair/")
+        or refspec.startswith("HEAD:self-upgrade/")
+    )
+
+
+def _safe_editable_install_args(argv: Sequence[str], workspace_root: Path | None = None) -> bool:
+    target = str(argv[-1]) if argv else ""
+    if target != ".":
+        return False
+    return workspace_root is not None and workspace_root.expanduser().resolve().exists()
+
+
+def _prefix_args_safe(argv: Sequence[str], prefix: Sequence[str], workspace_root: Path | None = None) -> bool:
+    prefix_list = list(prefix)
+    if prefix_list == ["git", "add"]:
+        return _safe_git_add_args(argv, workspace_root)
+    if prefix_list == ["git", "push"]:
+        return _safe_git_push_args(argv)
+    if prefix_list in (["pip", "install", "-e"], ["python3", "-m", "pip", "install", "-e"]):
+        return _safe_editable_install_args(argv, workspace_root)
+    return True
+
+
+def argv_allowed(
+    argv: Sequence[str],
+    prefixes: Iterable[Sequence[str]] = SAFE_CI_ALLOWED_PREFIXES,
+    *,
+    workspace_root: Path | None = None,
+) -> bool:
+    return any(
+        argv_matches_prefix(argv, prefix) and _prefix_args_safe(argv, prefix, workspace_root)
+        for prefix in prefixes
+    )
 
 
 def readonly_command(argv: Sequence[str]) -> bool:

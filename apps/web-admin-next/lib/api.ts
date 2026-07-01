@@ -1,4 +1,14 @@
 export type AdminRole = 'viewer' | 'operator' | 'owner';
+export type DeviceRequestSigner = (
+  method: string,
+  path: string,
+  body: string,
+) => Promise<Record<string, string>>;
+
+export interface WebAdminDeviceRegistration {
+  deviceId: string;
+  publicKeyPem: string;
+}
 
 export interface SessionOptions {
   baseUrl?: string;
@@ -6,13 +16,40 @@ export interface SessionOptions {
   csrfToken?: string;
   actor?: string;
   role?: AdminRole;
+  deviceId?: string;
+  publicKeyPem?: string;
+  deviceSigner?: DeviceRequestSigner;
 }
 
 export class OmniAdminApi {
   constructor(private options: SessionOptions = {}) {}
 
-  private get session(): Required<SessionOptions> {
-    return { baseUrl: this.options.baseUrl || '', token: '', csrfToken: this.options.csrfToken || '', actor: this.options.actor || 'web-admin', role: this.options.role || 'viewer' };
+  private get session(): SessionOptions & { csrfToken: string; actor: string; role: AdminRole } {
+    return {
+      ...this.options,
+      baseUrl: this.options.baseUrl || '',
+      token: '',
+      csrfToken: this.options.csrfToken || '',
+      actor: this.options.actor || 'web-admin',
+      role: this.options.role || 'viewer',
+    };
+  }
+
+  private async safeErrorMessage(response: Response): Promise<string> {
+    let payload: unknown = {};
+    try {
+      payload = await response.clone().json();
+    } catch {
+      payload = {};
+    }
+    if (payload && typeof payload === 'object') {
+      const record = payload as Record<string, unknown>;
+      const detail = record.detail || record.error || record.code;
+      if (typeof detail === 'string' && detail.length <= 160) {
+        return `${response.status}: ${detail}`;
+      }
+    }
+    return `${response.status}: request failed`;
   }
 
   private async request<T>(path: string, init: RequestInit = {}, idempotencyKey?: string): Promise<T> {
@@ -27,7 +64,7 @@ export class OmniAdminApi {
         ...(init.headers || {})
       }
     });
-    if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
+    if (!response.ok) throw new Error(await this.safeErrorMessage(response));
     return response.json() as Promise<T>;
   }
 
@@ -47,30 +84,48 @@ export class OmniAdminApi {
     return this.request<any>(`/api/omni/conversations/${encodeURIComponent(conversationId)}/messages`);
   }
   askConversation(conversationId: string, content: string, modelProfile = 'fast') {
+    const session = this.session;
     return this.request<any>(`/api/omni/conversations/${encodeURIComponent(conversationId)}/ask`, {
       method: 'POST',
-      body: JSON.stringify({ content, model_profile: modelProfile, stream: false, source_device_id: 'web-admin-console' })
+      body: JSON.stringify({
+        content,
+        model_profile: modelProfile,
+        stream: false,
+        ...(session.deviceId ? { source_device_id: session.deviceId } : {})
+      })
     }, `web-admin-ask-${conversationId}-${content.length}-${Date.now()}`);
   }
-  registerAdminDevice() {
+  registerAdminDevice(identity: WebAdminDeviceRegistration) {
     const session = this.session;
     return this.request<any>('/api/omni/devices/register', {
       method: 'POST',
       body: JSON.stringify({
-        device_id: 'web-admin-console',
+        device_id: identity.deviceId,
         device_type: 'web_admin',
         name: 'Omni Web Admin',
         platform: 'nextjs',
+        public_key: identity.publicKeyPem,
         organization_id: 'org_default',
         capabilities: ['governance', 'channels', 'audit', 'approval', `role:${session.role}`]
       })
-    }, 'web-admin-device-registration');
+    }, `web-admin-device-registration-${identity.deviceId}`);
   }
-  decide(approvalId: string, decision: 'approved' | 'rejected', reason = 'Web Admin decision') {
+  async decide(approvalId: string, decision: 'approved' | 'rejected', reason = 'Web Admin decision') {
     const key = `web-admin-${approvalId}-${decision}-${Date.now()}`;
-    return this.request<any>(`/api/omni/approvals/${approvalId}/decide`, {
+    const session = this.session;
+    const gatewayPath = `/app/approvals/${encodeURIComponent(approvalId)}/decide`;
+    const body = JSON.stringify({
+      decision,
+      reason,
+      ...(session.deviceId ? { source_device_id: session.deviceId } : {})
+    });
+    const signedHeaders = session.deviceSigner
+      ? await session.deviceSigner('POST', gatewayPath, body)
+      : {};
+    return this.request<any>(`/api/omni/approvals/${encodeURIComponent(approvalId)}/decide`, {
       method: 'POST',
-      body: JSON.stringify({ decision, reason })
+      body,
+      headers: signedHeaders,
     }, key);
   }
 
@@ -79,5 +134,43 @@ export class OmniAdminApi {
       method: 'POST',
       body: JSON.stringify({ device_type: deviceType, pairing_code: pairingCode })
     }, `web-admin-enroll-${deviceType}-${Date.now()}`);
+  }
+
+  completeDeviceEnrollment(
+    enrollmentId: string,
+    pairingCode: string,
+    identity: WebAdminDeviceRegistration,
+  ) {
+    return this.request<any>(`/api/omni/devices/enrollment/${encodeURIComponent(enrollmentId)}/complete`, {
+      method: 'POST',
+      body: JSON.stringify({
+        pairing_code: pairingCode,
+        device_id: identity.deviceId,
+        public_key: identity.publicKeyPem,
+      }),
+    }, `web-admin-enroll-complete-${identity.deviceId}-${Date.now()}`);
+  }
+
+  issueDeviceChallenge(enrollmentId: string, deviceId: string) {
+    return this.request<any>(`/api/omni/devices/enrollment/${encodeURIComponent(enrollmentId)}/challenge`, {
+      method: 'POST',
+      body: JSON.stringify({ device_id: deviceId }),
+    }, `web-admin-enroll-challenge-${deviceId}-${Date.now()}`);
+  }
+
+  verifyDeviceChallenge(
+    enrollmentId: string,
+    challengeId: string,
+    deviceId: string,
+    signature: string,
+  ) {
+    return this.request<any>(`/api/omni/devices/enrollment/${encodeURIComponent(enrollmentId)}/verify`, {
+      method: 'POST',
+      body: JSON.stringify({
+        challenge_id: challengeId,
+        device_id: deviceId,
+        signature,
+      }),
+    }, `web-admin-enroll-verify-${deviceId}-${Date.now()}`);
   }
 }

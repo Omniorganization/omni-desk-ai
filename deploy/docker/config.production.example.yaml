@@ -97,6 +97,7 @@ gateway:
   require_webhook_signatures: true
   admin_allowed_ips: []
   shared_secret_env: OMNIDESK_GATEWAY_SECRET
+  allow_legacy_gateway_secret_auth: false
   admin_token_env: OMNIDESK_ADMIN_TOKEN
 
 sandbox:
@@ -150,6 +151,7 @@ app_sync:
   # Production HA deployments must use Postgres as the AppSync source of truth.
   backend: postgres
   postgres_dsn_env: OMNIDESK_POSTGRES_DSN
+  secret_pepper_env: OMNIDESK_APPSYNC_SECRET_PEPPER
   namespace: production
   require_idempotency: true
   allow_websocket_query_auth: false

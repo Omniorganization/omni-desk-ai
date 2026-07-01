@@ -65,3 +65,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
+        with:
+          # Tauri 2.11's current Linux GTK stack pulls glib <0.20 through
+          # target-specific transitive deps. Keep this narrow until upstream
+          # Tauri/wry moves to the patched glib line.
+          allow-ghsas: GHSA-wrw7-89jp-8q8g

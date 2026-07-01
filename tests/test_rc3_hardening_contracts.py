@@ -100,6 +100,7 @@ def test_production_requires_remote_runner_or_digest_pinned_local_docker(monkeyp
         "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET": "x" * 40,
         "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
     }
     assert validate_production_config(cfg, env)["ok"] is True
     cfg.sandbox.runner_url = None

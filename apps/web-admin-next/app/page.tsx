@@ -1,7 +1,12 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { AdminRole, OmniAdminApi } from '../lib/api';
+import { useState } from 'react';
+import { AdminRole, OmniAdminApi, WebAdminDeviceRegistration } from '../lib/api';
+import {
+  loadOrCreateWebAdminIdentity,
+  signWebAdminChallenge,
+  signWebAdminDeviceRequest,
+} from '../lib/device-identity';
 
 const ROLE_HELP: Record<AdminRole, string> = {
   viewer: '只读查看设备、运行器、通知与审计状态。',
@@ -15,6 +20,7 @@ export default function Page() {
   const [actor, setActor] = useState('web-admin');
   const [role, setRole] = useState<AdminRole>('viewer');
   const [csrfToken, setCsrfToken] = useState('');
+  const [deviceIdentity, setDeviceIdentity] = useState<WebAdminDeviceRegistration | null>(null);
   const [decisionReason, setDecisionReason] = useState('Reviewed in Web Admin controlled-staging console');
   const [snapshot, setSnapshot] = useState<any>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<any>(null);
@@ -24,7 +30,6 @@ export default function Page() {
   const [chatProfile, setChatProfile] = useState('fast');
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [error, setError] = useState('');
-  const api = useMemo(() => new OmniAdminApi({ csrfToken, actor, role }), [csrfToken, actor, role]);
   const canApprove = role === 'owner';
   const canAsk = role === 'operator' || role === 'owner';
 
@@ -36,16 +41,72 @@ export default function Page() {
     });
     if (!response.ok) throw new Error(await response.text());
     const body = await response.json();
+    const verifiedRole = (body.role || role) as AdminRole;
+    const verifiedActor = body.actor || actor;
     setCsrfToken(body.csrfToken || '');
-    return body.csrfToken || '';
+    setActor(verifiedActor);
+    setRole(verifiedRole);
+    return {
+      csrfToken: body.csrfToken || '',
+      actor: verifiedActor,
+      role: verifiedRole,
+    };
+  }
+
+  function webAdminApiFor(
+    identity: WebAdminDeviceRegistration,
+    activeCsrf = csrfToken,
+    activeActor = actor,
+    activeRole = role,
+  ) {
+    return new OmniAdminApi({
+      csrfToken: activeCsrf,
+      actor: activeActor,
+      role: activeRole,
+      deviceId: identity.deviceId,
+      publicKeyPem: identity.publicKeyPem,
+      deviceSigner: signWebAdminDeviceRequest,
+    });
+  }
+
+  function randomPairingCode() {
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return `web-${Array.from(bytes).map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+  }
+
+  async function ensureWebAdminDevice(
+    activeCsrf = csrfToken,
+    activeActor = actor,
+    activeRole = role,
+  ) {
+    const identity = await loadOrCreateWebAdminIdentity();
+    setDeviceIdentity(identity);
+    const activeApi = webAdminApiFor(identity, activeCsrf, activeActor, activeRole);
+    await activeApi.registerAdminDevice(identity);
+
+    const pairingCode = randomPairingCode();
+    const started = await activeApi.startDeviceEnrollment('web_admin', pairingCode);
+    const enrollmentId = started.enrollment.enrollment_id;
+    await activeApi.completeDeviceEnrollment(enrollmentId, pairingCode, identity);
+    const challenged = await activeApi.issueDeviceChallenge(enrollmentId, identity.deviceId);
+    const challenge = challenged.challenge;
+    const signature = await signWebAdminChallenge(challenge.signing_message);
+    await activeApi.verifyDeviceChallenge(
+      enrollmentId,
+      challenge.challenge_id,
+      identity.deviceId,
+      signature,
+    );
+    return identity;
   }
 
   async function load() {
     setError('');
     try {
-      const activeCsrf = csrfToken || await establishSession();
-      const activeApi = new OmniAdminApi({ csrfToken: activeCsrf, actor, role });
-      await activeApi.registerAdminDevice();
+      const session = csrfToken ? { csrfToken, actor, role } : await establishSession();
+      const identity = await ensureWebAdminDevice(session.csrfToken, session.actor, session.role);
+      const activeApi = webAdminApiFor(identity, session.csrfToken, session.actor, session.role);
       setSnapshot(await activeApi.bootstrap());
       setRuntimeStatus(await activeApi.runtime());
       setEcosystem(await activeApi.ecosystem());
@@ -60,8 +121,11 @@ export default function Page() {
       return;
     }
     try {
-      await api.decide(id, decision, decisionReason);
-      setSnapshot(await api.bootstrap());
+      const session = csrfToken ? { csrfToken, actor, role } : await establishSession();
+      const identity = deviceIdentity || await ensureWebAdminDevice(session.csrfToken, session.actor, session.role);
+      const activeApi = webAdminApiFor(identity, session.csrfToken, session.actor, session.role);
+      await activeApi.decide(id, decision, decisionReason);
+      setSnapshot(await activeApi.bootstrap());
     } catch (e: any) {
       setError(e.message || String(e));
     }
@@ -76,8 +140,8 @@ export default function Page() {
     if (!content) return;
     setError('');
     try {
-      const activeCsrf = csrfToken || await establishSession();
-      const activeApi = new OmniAdminApi({ csrfToken: activeCsrf, actor, role });
+      const session = csrfToken ? { csrfToken, actor, role } : await establishSession();
+      const activeApi = new OmniAdminApi({ csrfToken: session.csrfToken, actor: session.actor, role: session.role });
       let conversationId = chatConversationId;
       if (!conversationId) {
         const created = await activeApi.createConversation('Web Admin Chat');

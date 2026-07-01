@@ -80,6 +80,12 @@ def test_security_workflow_dependency_review_and_all_python_locks_are_blocking()
     workflow = Path(".github/workflows/security.yml").read_text(encoding="utf-8")
     dependency_review = workflow[workflow.index("actions/dependency-review-action@"):workflow.index("actions/dependency-review-action@") + 300]
     assert "continue-on-error: true" not in dependency_review
+    allow_ghsa_lines = [
+        line.strip()
+        for line in workflow.splitlines()
+        if line.strip().startswith("allow-ghsas:")
+    ]
+    assert allow_ghsa_lines == ["allow-ghsas: GHSA-wrw7-89jp-8q8g"]
     for lockfile in [
         "requirements.lock",
         "requirements.runtime.lock",

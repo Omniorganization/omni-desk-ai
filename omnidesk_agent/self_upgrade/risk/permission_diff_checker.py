@@ -18,13 +18,21 @@ class PermissionDiffChecker:
         added, removed = sorted(new - old), sorted(old - new)
         risk = self.calculate_permission_risk(added)
         notes = []
-        if added: notes.append(f"permissions expanded: {', '.join(added)}")
-        if removed: notes.append(f"permissions reduced: {', '.join(removed)}")
-        if risk in {"high", "critical"}: notes.append("permission expansion requires human approval")
+        if added:
+            notes.append(f"permissions expanded: {', '.join(added)}")
+        if removed:
+            notes.append(f"permissions reduced: {', '.join(removed)}")
+        if risk in {"high", "critical"}:
+            notes.append("permission expansion requires human approval")
         return PermissionDiff(added, removed, risk, bool(added and risk in {"medium", "high", "critical"}), notes)
+
     def calculate_permission_risk(self, added: list[str]) -> str:
-        if not added: return "low"
-        if any(p.startswith("permissions.") or p.startswith("security.") or p.startswith("self_upgrade.") for p in added): return "critical"
-        if any(p.startswith(prefix) for p in added for prefix in self.HIGH_RISK_PREFIXES): return "high"
-        if any(p.endswith(".write") or p.endswith(".send") or p.endswith(".modify") for p in added): return "medium"
+        if not added:
+            return "low"
+        if any(p.startswith("permissions.") or p.startswith("security.") or p.startswith("self_upgrade.") for p in added):
+            return "critical"
+        if any(p.startswith(prefix) for p in added for prefix in self.HIGH_RISK_PREFIXES):
+            return "high"
+        if any(p.endswith(".write") or p.endswith(".send") or p.endswith(".modify") for p in added):
+            return "medium"
         return "low"

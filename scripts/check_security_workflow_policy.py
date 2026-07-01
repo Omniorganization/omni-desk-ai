@@ -17,6 +17,7 @@ SECURITY_SNIPPETS = [
     "scripts/check_security_attack_surface.py .",
     "security-events: write",
     "pull-requests: read",
+    "allow-ghsas: GHSA-wrw7-89jp-8q8g",
 ]
 
 ATTACK_SURFACE_WORKFLOW_SNIPPETS = [
@@ -86,6 +87,13 @@ def check(root: Path) -> list[str]:
         dependency_review_block = security_text[dependency_review_index:dependency_review_index + 300]
         if "continue-on-error: true" in dependency_review_block:
             issues.append("dependency-review must be blocking; remove continue-on-error: true")
+    allow_ghsa_lines = [
+        line.strip()
+        for line in security_text.splitlines()
+        if line.strip().startswith("allow-ghsas:")
+    ]
+    if allow_ghsa_lines != ["allow-ghsas: GHSA-wrw7-89jp-8q8g"]:
+        issues.append("dependency-review allow-ghsas must stay limited to GHSA-wrw7-89jp-8q8g")
     missing_docker = _missing_snippets(root / ".github" / "workflows" / "docker-scan.yml", DOCKER_SCAN_SNIPPETS)
     if missing_docker:
         issues.append("docker-scan.yml missing snippets: " + ", ".join(missing_docker))

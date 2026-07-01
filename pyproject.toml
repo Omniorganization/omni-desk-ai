@@ -53,9 +53,6 @@ security = ["bandit>=1.7", "pip-audit>=2.7"]
 [tool.setuptools.packages.find]
 include = ["omnidesk_agent*"]
 
-[tool.ruff.lint]
-ignore = ["E701", "E702"]
-
 [tool.pytest.ini_options]
 addopts = "-p no:ddtrace"
 markers = [

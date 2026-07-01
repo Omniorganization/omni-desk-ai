@@ -650,11 +650,15 @@ class PostgresJobQueue:
         def pred(row: dict[str, Any]) -> bool:
             return row.get("status") in {"pending", "retry"} and float(row.get("next_retry_at") or 0) <= now
         def upd(row: dict[str, Any]) -> dict[str, Any]:
-            row["status"] = "running"; row["locked_at"] = now; row["updated_at"] = now; return row
+            row["status"] = "running"
+            row["locked_at"] = now
+            row["updated_at"] = now
+            return row
         return self.state.claim_one(self.namespace, pred, upd)
 
     def recover_stale_running(self, *, lease_seconds: int = 300) -> int:
-        cutoff = time.time() - max(0, int(lease_seconds)); recovered = 0
+        cutoff = time.time() - max(0, int(lease_seconds))
+        recovered = 0
         for row in self.state.list(self.namespace, status="running", limit=1000):
             if row.get("locked_at") is not None and float(row.get("locked_at") or 0) <= cutoff:
                 self.fail(row["id"], f"stale running job recovered after {lease_seconds}s lease")
@@ -663,7 +667,11 @@ class PostgresJobQueue:
 
     def complete(self, job_id: str, result: Any = None) -> None:
         def upd(row: dict[str, Any]) -> dict[str, Any]:
-            row["status"] = "completed"; row["result_json"] = json.dumps(result, ensure_ascii=False, default=str); row["locked_at"] = None; row["updated_at"] = time.time(); return row
+            row["status"] = "completed"
+            row["result_json"] = json.dumps(result, ensure_ascii=False, default=str)
+            row["locked_at"] = None
+            row["updated_at"] = time.time()
+            return row
         self.state.update_locked_by_field(self.namespace, "id", job_id, upd)
 
     def fail(self, job_id: str, error: Union[BaseException, str]) -> dict[str, Any]:
@@ -684,15 +692,21 @@ class PostgresJobQueue:
         return self.list(status="dead_letter", limit=limit)
     def requeue_dead_letter(self, job_id: str) -> dict[str, Any]:
         def upd(row: dict[str, Any]) -> dict[str, Any]:
-            if row.get("status") != "dead_letter": raise ValueError(f"job is not dead_letter: {job_id}")
-            row.update({"status": "pending", "retry_count": 0, "next_retry_at": 0, "locked_at": None, "last_error": None, "updated_at": time.time()}); return row
-        self.state.update_locked_by_field(self.namespace, "id", job_id, upd); return {"job_id": job_id, "status": "pending"}
+            if row.get("status") != "dead_letter":
+                raise ValueError(f"job is not dead_letter: {job_id}")
+            row.update({"status": "pending", "retry_count": 0, "next_retry_at": 0, "locked_at": None, "last_error": None, "updated_at": time.time()})
+            return row
+        self.state.update_locked_by_field(self.namespace, "id", job_id, upd)
+        return {"job_id": job_id, "status": "pending"}
     def purge_dead_letter(self, job_id: str) -> dict[str, Any]:
         row = self.get(job_id)
-        if not row: raise KeyError(job_id)
-        if row.get("status") != "dead_letter": raise ValueError(f"job is not dead_letter: {job_id}")
+        if not row:
+            raise KeyError(job_id)
+        if row.get("status") != "dead_letter":
+            raise ValueError(f"job is not dead_letter: {job_id}")
         # The generic state table is keyed by UUID job id for jobs.
-        self.state.delete(self.namespace, job_id); return {"job_id": job_id, "purged": True}
+        self.state.delete(self.namespace, job_id)
+        return {"job_id": job_id, "purged": True}
     def stats(self) -> dict[str, int]:
         return self.state.stats_by_status(self.namespace)
 
@@ -700,9 +714,14 @@ class PostgresJobQueue:
 class PostgresOutboundMessageStore:
     namespace = "outbound_messages"
     def __init__(self, state: _PostgresJsonState, *, max_retries: int = 3, base_retry_seconds: int = 30):
-        self.state = state; self.max_retries = max(0, int(max_retries)); self.base_retry_seconds = max(1, int(base_retry_seconds)); self.metrics: Any = None
+        self.state = state
+        self.max_retries = max(0, int(max_retries))
+        self.base_retry_seconds = max(1, int(base_retry_seconds))
+        self.metrics: Any = None
     def create(self, *, channel: str, recipient: str, payload: dict[str, Any], max_retries: Optional[int] = None, delivery_deadline_at: Optional[float] = None, idempotency_key: Optional[str] = None) -> str:
-        now = time.time(); message_id = str(uuid.uuid4()); idem_key = str(idempotency_key or message_id)
+        now = time.time()
+        message_id = str(uuid.uuid4())
+        idem_key = str(idempotency_key or message_id)
         row = {"id": message_id, "idempotency_key": idem_key, "channel": channel, "recipient": recipient, "payload_json": json.dumps(payload, ensure_ascii=False, default=str), "status": "pending", "provider_message_id": None, "provider_request_id": None, "retry_count": 0, "max_retries": self.max_retries if max_retries is None else max(0, int(max_retries)), "next_retry_at": 0.0, "locked_at": None, "delivery_deadline_at": delivery_deadline_at, "last_error": None, "error_category": None, "created_at": now, "updated_at": now}
         existing = self.state.find_by_field(self.namespace, "idempotency_key", idem_key)
         if existing:
@@ -720,7 +739,10 @@ class PostgresOutboundMessageStore:
         def pred(row: dict[str, Any]) -> bool:
             return row.get("status") in {"pending", "retry"} and float(row.get("next_retry_at") or 0) <= now and (row.get("delivery_deadline_at") is None or float(row.get("delivery_deadline_at") or 0) >= now)
         def upd(row: dict[str, Any]) -> dict[str, Any]:
-            row["status"] = "running"; row["locked_at"] = now; row["updated_at"] = now; return row
+            row["status"] = "running"
+            row["locked_at"] = now
+            row["updated_at"] = now
+            return row
         return self.state.claim_one(self.namespace, pred, upd)
     def mark_sent(self, message_id: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None) -> None:
         self._update_by_id(message_id, lambda row: {**row, "status": "sent", "provider_message_id": provider_message_id, "provider_request_id": provider_request_id, "locked_at": None, "updated_at": time.time(), "last_error": None})
@@ -728,32 +750,44 @@ class PostgresOutboundMessageStore:
         self.state.update_locked(self.namespace, idempotency_key, lambda row: {**row, "status": "sent", "provider_message_id": provider_message_id, "provider_request_id": provider_request_id, "locked_at": None, "updated_at": time.time(), "last_error": None})
     def mark_failed(self, message_id: str, error: str, *, dead_letter: bool = False, category: str = "unknown") -> dict[str, Any]:
         def upd(row: dict[str, Any]) -> dict[str, Any]:
-            retry_count = int(row.get("retry_count") or 0) + 1; max_retries = int(row.get("max_retries") or self.max_retries)
+            retry_count = int(row.get("retry_count") or 0) + 1
+            max_retries = int(row.get("max_retries") or self.max_retries)
             status = "dead_letter" if dead_letter or retry_count > max_retries else "retry"
-            row.update({"status": status, "retry_count": retry_count, "next_retry_at": 0 if status == "dead_letter" else time.time() + self.base_retry_seconds * (2 ** max(0, retry_count - 1)), "locked_at": None, "last_error": str(error)[:4000], "error_category": category, "updated_at": time.time()}); return row
-        row = self._update_by_id(message_id, upd); return {"id": message_id, "status": row["status"], "retry_count": row["retry_count"], "next_retry_at": row["next_retry_at"]}
+            row.update({"status": status, "retry_count": retry_count, "next_retry_at": 0 if status == "dead_letter" else time.time() + self.base_retry_seconds * (2 ** max(0, retry_count - 1)), "locked_at": None, "last_error": str(error)[:4000], "error_category": category, "updated_at": time.time()})
+            return row
+        row = self._update_by_id(message_id, upd)
+        return {"id": message_id, "status": row["status"], "retry_count": row["retry_count"], "next_retry_at": row["next_retry_at"]}
     def mark_ambiguous(self, message_id: str, error: str, *, category: str = "ambiguous_send", provider_request_id: Optional[str] = None) -> dict[str, Any]:
         row = self._update_by_id(message_id, lambda r: {**r, "status": "ambiguous", "provider_request_id": provider_request_id or r.get("provider_request_id"), "locked_at": None, "next_retry_at": 0, "last_error": str(error)[:4000], "error_category": category, "updated_at": time.time()})
         return {"id": message_id, "status": "ambiguous", "retry_count": int(row.get("retry_count") or 0), "requires_reconciliation": True}
     def requeue(self, message_id: str) -> dict[str, Any]:
         row = self.get(message_id)
-        if not row: raise KeyError(message_id)
-        if row.get("status") == "sent": raise ValueError(f"sent outbound message cannot be retried: {message_id}")
-        self._update_by_id(message_id, lambda r: {**r, "status": "pending", "retry_count": 0, "next_retry_at": 0, "locked_at": None, "last_error": None, "error_category": None, "updated_at": time.time()}); return {"id": message_id, "status": "pending"}
+        if not row:
+            raise KeyError(message_id)
+        if row.get("status") == "sent":
+            raise ValueError(f"sent outbound message cannot be retried: {message_id}")
+        self._update_by_id(message_id, lambda r: {**r, "status": "pending", "retry_count": 0, "next_retry_at": 0, "locked_at": None, "last_error": None, "error_category": None, "updated_at": time.time()})
+        return {"id": message_id, "status": "pending"}
     def cancel(self, message_id: str) -> dict[str, Any]:
         row = self.get(message_id)
-        if not row: raise KeyError(message_id)
-        if row.get("status") in {"sent", "cancelled"}: raise ValueError(f"outbound message cannot be cancelled from status {row.get('status')}: {message_id}")
-        self._update_by_id(message_id, lambda r: {**r, "status": "cancelled", "locked_at": None, "updated_at": time.time(), "last_error": None, "error_category": None}); return {"id": message_id, "status": "cancelled"}
+        if not row:
+            raise KeyError(message_id)
+        if row.get("status") in {"sent", "cancelled"}:
+            raise ValueError(f"outbound message cannot be cancelled from status {row.get('status')}: {message_id}")
+        self._update_by_id(message_id, lambda r: {**r, "status": "cancelled", "locked_at": None, "updated_at": time.time(), "last_error": None, "error_category": None})
+        return {"id": message_id, "status": "cancelled"}
     def recover_stale_running(self, *, lease_seconds: int = 300) -> int:
-        cutoff = time.time() - max(0, int(lease_seconds)); count = 0
+        cutoff = time.time() - max(0, int(lease_seconds))
+        count = 0
         for row in self.state.list(self.namespace, status="running", limit=1000):
             if row.get("locked_at") is not None and float(row.get("locked_at") or 0) <= cutoff:
-                self.mark_failed(row["id"], f"stale running outbound recovered after {lease_seconds}s lease"); count += 1
+                self.mark_failed(row["id"], f"stale running outbound recovered after {lease_seconds}s lease")
+                count += 1
         return count
     def get(self, message_id: str) -> Optional[dict[str, Any]]:
         for row in self.state.list(self.namespace, limit=1000):
-            if row.get("id") == message_id: return row
+            if row.get("id") == message_id:
+                return row
         return None
     def find_by_idempotency_key(self, idempotency_key: str) -> Optional[dict[str, Any]]:
         return self.state.get(self.namespace, idempotency_key)
@@ -765,7 +799,8 @@ class PostgresOutboundMessageStore:
         return self.state.stats_by_status(self.namespace)
     def _update_by_id(self, message_id: str, updater) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         row = self.get(message_id)
-        if not row: raise KeyError(message_id)
+        if not row:
+            raise KeyError(message_id)
         return self.state.update_locked(self.namespace, row["idempotency_key"], updater)
 
 
