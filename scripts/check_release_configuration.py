@@ -181,6 +181,11 @@ TRI_APP_LIVE_SMOKE_VARS = [
     "TRI_APP_LIVE_SMOKE_REPORT_PATH",
 ]
 
+EXTERNAL_GA_EVIDENCE_VARS = [
+    "EXTERNAL_GA_EVIDENCE_RAW_DIR",
+    "EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION",
+]
+
 ALL_KNOWN_NAMES = sorted(
     set(RELEASE_SECRETS)
     | set(RELEASE_VARS)
@@ -204,6 +209,7 @@ ALL_KNOWN_NAMES = sorted(
     | set(MOBILE_REAL_DEVICE_VARS)
     | set(TRI_APP_LIVE_SMOKE_SECRETS)
     | set(TRI_APP_LIVE_SMOKE_VARS)
+    | set(EXTERNAL_GA_EVIDENCE_VARS)
     | {"EXPECTED_VERSION"}
 )
 
@@ -219,7 +225,9 @@ class Issue:
         return self.message
 
 
-def _issue(issues: list[Issue], *, severity: str, kind: str, name: str, message: str) -> None:
+def _issue(
+    issues: list[Issue], *, severity: str, kind: str, name: str, message: str
+) -> None:
     issues.append(Issue(severity=severity, kind=kind, name=name, message=message))
 
 
@@ -274,7 +282,12 @@ def _is_origin(value: str) -> bool:
     parsed = _parse_url(value)
     if not _is_https_or_local_http_url(value):
         return False
-    return parsed.path in {"", "/"} and not parsed.params and not parsed.query and not parsed.fragment
+    return (
+        parsed.path in {"", "/"}
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def _validate_url_var(
@@ -287,14 +300,24 @@ def _validate_url_var(
     value = _value(name)
     if not value:
         return
-    ok = _is_origin(value) if origin_only else (_is_https_or_local_http_url(value) if https_or_local else _is_http_url(value))
+    ok = (
+        _is_origin(value)
+        if origin_only
+        else (
+            _is_https_or_local_http_url(value)
+            if https_or_local
+            else _is_http_url(value)
+        )
+    )
     if not ok:
         message = f"invalid var: {name} must be an http(s) URL with a host"
         if origin_only:
             message = f"invalid var: {name} must be an https origin or localhost http origin without path/query"
         elif https_or_local:
             message = f"invalid var: {name} must be https or localhost http with a host"
-        _issue(issues, severity="blocker", kind="invalid_var", name=name, message=message)
+        _issue(
+            issues, severity="blocker", kind="invalid_var", name=name, message=message
+        )
 
 
 def _is_digest_pinned_image_ref(value: str) -> bool:
@@ -310,7 +333,9 @@ def _is_digest_pinned_image_ref(value: str) -> bool:
     return bool(IMAGE_NAME_RE.fullmatch(image_name))
 
 
-def _validate_digest_pinned_image_var(name: str, issues: list[Issue], *, context: str) -> None:
+def _validate_digest_pinned_image_var(
+    name: str, issues: list[Issue], *, context: str
+) -> None:
     value = _value(name)
     if value and not _is_digest_pinned_image_ref(value):
         _issue(
@@ -370,7 +395,11 @@ def _validate_systemd_remote_script(value: str, issues: list[Issue]) -> None:
         )
         return
     normalized = posixpath.normpath(value)
-    if normalized != value or ".." in PurePosixPath(value).parts or "." in PurePosixPath(value).parts:
+    if (
+        normalized != value
+        or ".." in PurePosixPath(value).parts
+        or "." in PurePosixPath(value).parts
+    ):
         _issue(
             issues,
             severity="blocker",
@@ -500,7 +529,9 @@ def _validate_ios_evidence_raw_dir(issues: list[Issue]) -> None:
     try:
         from scripts.import_ios_real_device_evidence import validate_raw_dir
 
-        report = validate_raw_dir(raw_path, expected_version=_value("IOS_EVIDENCE_EXPECTED_VERSION") or None)
+        report = validate_raw_dir(
+            raw_path, expected_version=_value("IOS_EVIDENCE_EXPECTED_VERSION") or None
+        )
         for rel, result in report.get("files", {}).items():
             for detail in result.get("issues", []):
                 _issue(
@@ -602,6 +633,61 @@ def _validate_tri_app_live_smoke_shapes(issues: list[Issue]) -> None:
             )
 
 
+def _validate_external_ga_evidence_raw_dir(issues: list[Issue]) -> None:
+    raw = _value("EXTERNAL_GA_EVIDENCE_RAW_DIR")
+    if not raw:
+        return
+    raw_path = Path(raw).expanduser()
+    if not raw_path.exists() or not raw_path.is_dir():
+        _issue(
+            issues,
+            severity="blocker",
+            kind="invalid_var",
+            name="EXTERNAL_GA_EVIDENCE_RAW_DIR",
+            message="invalid var: EXTERNAL_GA_EVIDENCE_RAW_DIR must point to an existing directory",
+        )
+        return
+    try:
+        try:
+            from scripts.import_external_ga_evidence import validate_raw_dir
+        except (
+            ModuleNotFoundError
+        ):  # pragma: no cover - supports direct script execution
+            from import_external_ga_evidence import validate_raw_dir  # type: ignore[no-redef]
+
+        report = validate_raw_dir(
+            Path.cwd(),
+            raw_path,
+            expected_version=_value("EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION") or None,
+        )
+        for detail in report.get("issues", []):
+            _issue(
+                issues,
+                severity="blocker",
+                kind="invalid_evidence",
+                name="EXTERNAL_GA_EVIDENCE_RAW_DIR",
+                message=f"invalid external GA evidence bundle: {detail}",
+            )
+        categories = (report.get("validation") or {}).get("categories") or {}
+        for category, result in categories.items():
+            for detail in result.get("issues", []):
+                _issue(
+                    issues,
+                    severity="blocker",
+                    kind="invalid_evidence",
+                    name="EXTERNAL_GA_EVIDENCE_RAW_DIR",
+                    message=f"invalid external GA evidence {category}: {detail}",
+                )
+    except Exception as exc:  # noqa: BLE001 - preflight must fail closed when semantic validation cannot run
+        _issue(
+            issues,
+            severity="blocker",
+            kind="invalid_evidence",
+            name="EXTERNAL_GA_EVIDENCE_RAW_DIR",
+            message=f"invalid external GA evidence validation failed: {exc}",
+        )
+
+
 def check_release() -> list[Issue]:
     issues: list[Issue] = []
     _require(RELEASE_SECRETS, "secret", issues)
@@ -610,7 +696,9 @@ def check_release() -> list[Issue]:
     return issues
 
 
-def check_downstream(scope: str, deploy_mode: str, *, require_sandbox_smoke: bool) -> list[Issue]:
+def check_downstream(
+    scope: str, deploy_mode: str, *, require_sandbox_smoke: bool
+) -> list[Issue]:
     issues: list[Issue] = []
     if scope == "production" and deploy_mode == "noop":
         _issue(
@@ -687,7 +775,16 @@ def check_tri_app_live_smoke() -> list[Issue]:
     return issues
 
 
-def _result_payload(scope: str, deploy_mode: str, issues: list[Issue]) -> dict[str, object]:
+def check_external_ga_evidence() -> list[Issue]:
+    issues: list[Issue] = []
+    _require(EXTERNAL_GA_EVIDENCE_VARS, "var", issues)
+    _validate_external_ga_evidence_raw_dir(issues)
+    return issues
+
+
+def _result_payload(
+    scope: str, deploy_mode: str, issues: list[Issue]
+) -> dict[str, object]:
     return {
         "scope": scope,
         "deploy_mode": deploy_mode,
@@ -703,7 +800,10 @@ def _write_report(report_path: str | None, payload: dict[str, object]) -> None:
     path = os.fspath(report_path)
     target = __import__("pathlib").Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _emit_text(scope: str, issues: list[Issue]) -> None:
@@ -720,22 +820,45 @@ def _emit_json(payload: dict[str, object], *, stream) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Fail fast when release, downstream, or tri-app GitHub configuration is incomplete.")
+    parser = argparse.ArgumentParser(
+        description="Fail fast when release, downstream, or tri-app GitHub configuration is incomplete."
+    )
     parser.add_argument(
         "--scope",
-        choices=["release", "staging", "production", "rollback", "web-admin", "desktop", "mobile", "tri-app", "ios-evidence", "mobile-real-device", "tri-app-live-smoke"],
+        choices=[
+            "release",
+            "staging",
+            "production",
+            "rollback",
+            "web-admin",
+            "desktop",
+            "mobile",
+            "tri-app",
+            "ios-evidence",
+            "mobile-real-device",
+            "tri-app-live-smoke",
+            "external-ga-evidence",
+        ],
         required=True,
     )
-    parser.add_argument("--deploy-mode", choices=sorted(DEPLOY_MODE_VARS), default="noop")
+    parser.add_argument(
+        "--deploy-mode", choices=sorted(DEPLOY_MODE_VARS), default="noop"
+    )
     parser.add_argument("--require-sandbox-smoke", action="store_true")
     parser.add_argument("--format", choices=["text", "json"], default="text")
-    parser.add_argument("--report-path", help="Write a JSON preflight report to this path.")
+    parser.add_argument(
+        "--report-path", help="Write a JSON preflight report to this path."
+    )
     args = parser.parse_args(argv)
 
     if args.scope == "release":
         issues = check_release()
     elif args.scope in {"staging", "production", "rollback"}:
-        issues = check_downstream(args.scope, args.deploy_mode, require_sandbox_smoke=args.require_sandbox_smoke)
+        issues = check_downstream(
+            args.scope,
+            args.deploy_mode,
+            require_sandbox_smoke=args.require_sandbox_smoke,
+        )
     elif args.scope == "web-admin":
         issues = check_web_admin()
     elif args.scope == "desktop":
@@ -748,8 +871,10 @@ def main(argv: list[str] | None = None) -> int:
         issues = check_ios_evidence()
     elif args.scope == "mobile-real-device":
         issues = check_mobile_real_device()
-    else:
+    elif args.scope == "tri-app-live-smoke":
         issues = check_tri_app_live_smoke()
+    else:
+        issues = check_external_ga_evidence()
 
     payload = _result_payload(args.scope, args.deploy_mode, issues)
     _write_report(args.report_path, payload)

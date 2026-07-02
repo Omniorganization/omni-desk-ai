@@ -11,6 +11,14 @@ on:
         options:
           - candidate
           - real-ga
+      external_evidence_run_id:
+        description: "Optional Remote Evidence Pipeline run id that uploaded an external-ga-evidence artifact"
+        required: false
+        default: ""
+      external_evidence_artifact_name:
+        description: "External evidence artifact name from the Remote Evidence Pipeline"
+        required: false
+        default: external-ga-evidence
 
 permissions:
   contents: write
@@ -155,17 +163,51 @@ jobs:
           python scripts/check_release_configuration.py --scope desktop --format json --report-path dist/desktop-preflight.json
           python scripts/check_release_configuration.py --scope mobile --format json --report-path dist/mobile-preflight.json
           python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+      - name: Download complete external evidence artifact
+        if: ${{ inputs.external_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release/external-evidence
+          gh run download "${{ inputs.external_evidence_run_id }}" \
+            --name "${{ inputs.external_evidence_artifact_name }}" \
+            --dir release/external-evidence
+      - name: Import complete external GA evidence raw directory
+        env:
+          EXTERNAL_GA_EVIDENCE_RAW_DIR: ${{ vars.EXTERNAL_GA_EVIDENCE_RAW_DIR }}
+          EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION: 1.12.7+root-monorepo-production-ga-candidate
+        run: |
+          set -euo pipefail
+          if [[ -n "${EXTERNAL_GA_EVIDENCE_RAW_DIR:-}" ]]; then
+            python scripts/check_release_configuration.py \
+              --scope external-ga-evidence \
+              --format json \
+              --report-path dist/external-ga-evidence-preflight.json
+            python scripts/import_external_ga_evidence.py \
+              --raw-dir "$EXTERNAL_GA_EVIDENCE_RAW_DIR" \
+              --expected-version "$EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION" \
+              --copy \
+              --write-report release/external-ga-evidence-import-report.json
+          else
+            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"EXTERNAL_GA_EVIDENCE_RAW_DIR is not set; use external_evidence_run_id or specialized importers"}; Path("dist/external-ga-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/external-ga-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+          fi
       - name: Import iOS real-device evidence
         env:
           IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
           IOS_EVIDENCE_EXPECTED_VERSION: 1.12.7+root-monorepo-production-ga-candidate
         run: |
-          python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
-          python scripts/import_ios_real_device_evidence.py \
-            --raw-dir "$IOS_EVIDENCE_RAW_DIR" \
-            --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" \
-            --copy \
-            --write-report release/ios-real-device-evidence-import-report.json
+          set -euo pipefail
+          if [[ -n "${IOS_EVIDENCE_RAW_DIR:-}" ]]; then
+            python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
+            python scripts/import_ios_real_device_evidence.py \
+              --raw-dir "$IOS_EVIDENCE_RAW_DIR" \
+              --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" \
+              --copy \
+              --write-report release/ios-real-device-evidence-import-report.json
+          else
+            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"IOS_EVIDENCE_RAW_DIR is not set"}; Path("dist/ios-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/ios-real-device-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+          fi
       - name: Import tri-app live smoke evidence
         env:
           TRI_APP_ADMIN_TOKEN: ${{ secrets.TRI_APP_ADMIN_TOKEN }}
@@ -180,13 +222,18 @@ jobs:
           TRI_APP_LIVE_SMOKE_SCENARIO_ID: ${{ vars.TRI_APP_LIVE_SMOKE_SCENARIO_ID }}
           TRI_APP_LIVE_SMOKE_REPORT_PATH: ${{ vars.TRI_APP_LIVE_SMOKE_REPORT_PATH }}
         run: |
-          python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
-          python scripts/import_tri_app_live_smoke_evidence.py \
-            --report "$TRI_APP_LIVE_SMOKE_REPORT_PATH" \
-            --expected-org-id "$TRI_APP_ORG_ID" \
-            --expected-scenario-id "$TRI_APP_LIVE_SMOKE_SCENARIO_ID" \
-            --copy \
-            --write-report release/tri-app-live-smoke-evidence-import-report.json
+          set -euo pipefail
+          if [[ -n "${TRI_APP_LIVE_SMOKE_REPORT_PATH:-}" ]]; then
+            python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+            python scripts/import_tri_app_live_smoke_evidence.py \
+              --report "$TRI_APP_LIVE_SMOKE_REPORT_PATH" \
+              --expected-org-id "$TRI_APP_ORG_ID" \
+              --expected-scenario-id "$TRI_APP_LIVE_SMOKE_SCENARIO_ID" \
+              --copy \
+              --write-report release/tri-app-live-smoke-evidence-import-report.json
+          else
+            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"TRI_APP_LIVE_SMOKE_REPORT_PATH is not set"}; Path("dist/tri-app-live-smoke-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/tri-app-live-smoke-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+          fi
       - run: python scripts/check_workflow_governance.py . --require-real-workflows
       - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
       - run: |
@@ -321,7 +368,9 @@ jobs:
           path: |
             release/real-ga-evidence-audit-1.12.7.json
             release/real-ga-evidence-summary-1.12.7.json
+            release/external-ga-evidence-import-report.json
             release/ios-real-device-evidence-import-report.json
             release/tri-app-live-smoke-evidence-import-report.json
+            dist/external-ga-evidence-preflight.json
             dist/ios-evidence-preflight.json
             dist/tri-app-live-smoke-preflight.json

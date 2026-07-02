@@ -10,12 +10,16 @@ REQUIRED_SNIPPETS = [
     "--scope desktop",
     "--scope mobile",
     "--scope tri-app",
+    "--scope external-ga-evidence",
     "--scope ios-evidence",
     "--scope tri-app-live-smoke",
+    "EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION",
+    "import_external_ga_evidence.py",
     "IOS_EVIDENCE_EXPECTED_VERSION",
     "import_ios_real_device_evidence.py",
     "import_tri_app_live_smoke_evidence.py",
     "real-ga-evidence-audit-1.12.7.json",
+    "external-ga-evidence-import-report.json",
     "tri-app-live-smoke-evidence-import-report.json",
 ]
 
@@ -23,18 +27,23 @@ REPORT_UPLOAD_SNIPPETS = [
     "upload-artifact",
     "dist/",
     "release/real-ga-evidence-audit-1.12.7.json",
+    "release/external-ga-evidence-import-report.json",
     "release/ios-real-device-evidence-import-report.json",
     "release/tri-app-live-smoke-evidence-import-report.json",
 ]
 
 
 def _read_existing(paths: list[Path]) -> str:
-    return "\n".join(p.read_text(encoding="utf-8") for p in paths if p.exists() and p.is_file())
+    return "\n".join(
+        p.read_text(encoding="utf-8") for p in paths if p.exists() and p.is_file()
+    )
 
 
 def check(root: Path, *, require_real_workflows: bool = False) -> list[str]:
     issues: list[str] = []
-    workflow_paths = sorted((root / ".github" / "workflows").glob("*.yml")) + sorted((root / ".github" / "workflows").glob("*.yaml"))
+    workflow_paths = sorted((root / ".github" / "workflows").glob("*.yml")) + sorted(
+        (root / ".github" / "workflows").glob("*.yaml")
+    )
     release_workflow = root / ".github" / "workflows" / "release.yml"
     fallback_paths = [root / "patches" / "v1.12.7-apply.patch", root / "Makefile"]
     if require_real_workflows:
@@ -44,7 +53,9 @@ def check(root: Path, *, require_real_workflows: bool = False) -> list[str]:
     else:
         text = _read_existing(workflow_paths + fallback_paths)
     if not text:
-        issues.append("no workflow, Makefile, or v1.12.7 patch content found for governance validation")
+        issues.append(
+            "no workflow, Makefile, or v1.12.7 patch content found for governance validation"
+        )
         return issues
     for snippet in REQUIRED_SNIPPETS:
         if snippet not in text:
@@ -57,12 +68,16 @@ def check(root: Path, *, require_real_workflows: bool = False) -> list[str]:
     if require_real_workflows:
         for snippet in ("release_metadata", "attestation", "write_slsa_provenance.py"):
             if snippet not in text:
-                issues.append(f"real workflow governance missing release metadata/attestation snippet: {snippet}")
+                issues.append(
+                    f"real workflow governance missing release metadata/attestation snippet: {snippet}"
+                )
     return issues
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify release workflows wire tri-app and real-device GA evidence gates.")
+    parser = argparse.ArgumentParser(
+        description="Verify release workflows wire tri-app and real-device GA evidence gates."
+    )
     parser.add_argument("root", nargs="?", default=".")
     parser.add_argument("--require-real-workflows", action="store_true")
     args = parser.parse_args(argv)

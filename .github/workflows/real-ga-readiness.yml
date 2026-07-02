@@ -11,6 +11,14 @@ on:
         options:
           - candidate
           - real-ga
+      external_evidence_run_id:
+        description: "Optional Remote Evidence Pipeline run id that uploaded an external-ga-evidence artifact"
+        required: false
+        default: ""
+      external_evidence_artifact_name:
+        description: "External evidence artifact name from the Remote Evidence Pipeline"
+        required: false
+        default: external-ga-evidence
 
 permissions:
   contents: read
@@ -29,6 +37,15 @@ jobs:
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: mkdir -p dist/evidence release/external-evidence/control-plane release/external-evidence/model
+      - name: Download imported external evidence bundle
+        if: ${{ inputs.external_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "${{ inputs.external_evidence_run_id }}" \
+            --name "${{ inputs.external_evidence_artifact_name }}" \
+            --dir release/external-evidence
       - name: Validate source readiness contract
         run: python scripts/check_real_ga_readiness_contract.py . --write-report dist/evidence/real-ga-readiness-contract.json
       - name: Verify live branch protection control plane
