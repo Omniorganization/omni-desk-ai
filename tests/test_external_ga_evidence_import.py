@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
+from scripts.assemble_external_ga_evidence_bundle import main as assemble_main
 from scripts.check_release_configuration import main as config_main
 from scripts.import_external_ga_evidence import main
 from scripts.import_ios_real_device_evidence import VERSION
@@ -248,6 +250,92 @@ def test_import_external_ga_evidence_accepts_complete_bundle(tmp_path, capsys) -
     assert (dest / "drills" / "rollback-drill.json").exists()
     assert (dest / "artifacts" / "signed" / "android.aab").exists()
     assert '"status": "passed"' in capsys.readouterr().out
+
+
+def test_assemble_external_ga_evidence_bundle_accepts_provider_artifact(
+    tmp_path, capsys
+) -> None:
+    raw = tmp_path / "raw"
+    provider = tmp_path / "provider-artifact" / "release" / "external-evidence"
+    dest = tmp_path / "assembled"
+    report = tmp_path / "assembly.json"
+    _write_complete_raw_evidence(raw)
+    shutil.copytree(raw, provider)
+
+    assert (
+        assemble_main(
+            [
+                "--root",
+                ".",
+                "--source-dir",
+                str(provider.parent.parent),
+                "--dest-dir",
+                str(dest),
+                "--expected-version",
+                VERSION,
+                "--write-report",
+                str(report),
+            ]
+        )
+        == 0
+    )
+
+    assert (dest / "drills" / "rollback-drill.json").exists()
+    assert (dest / "artifacts" / "signed" / "android.aab").exists()
+    assert '"status": "passed"' in capsys.readouterr().out
+
+
+def test_assemble_external_ga_evidence_bundle_rejects_conflicting_provider_files(
+    tmp_path, capsys
+) -> None:
+    raw = tmp_path / "raw"
+    provider_a = tmp_path / "provider-a" / "release" / "external-evidence"
+    provider_b = tmp_path / "provider-b" / "release" / "external-evidence"
+    dest = tmp_path / "assembled"
+    _write_complete_raw_evidence(raw)
+    shutil.copytree(raw, provider_a)
+    shutil.copytree(raw, provider_b)
+    (provider_b / "model" / "model-live-smoke.json").write_text(
+        json.dumps(
+            _base_doc(
+                schema="omnidesk-model-live-smoke/v1",
+                backend_base_url="https://staging.omnidesk.internal",
+                scenario_id="model-smoke-conflict",
+                model_request_id="model-request-conflict",
+                trace_id="trace-real-conflict",
+                audit_event_id="audit-event-conflict",
+                cost_ledger_entry_id="ledger-entry-conflict",
+                response_non_empty=True,
+                audit_logged=True,
+                cost_ledger_recorded=True,
+                budget_enforced=True,
+                approval_required_on_budget_exceeded=True,
+                p95_latency_ms=1300,
+                error_rate=0,
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        assemble_main(
+            [
+                "--root",
+                ".",
+                "--source-dir",
+                str(provider_a.parent.parent),
+                "--source-dir",
+                str(provider_b.parent.parent),
+                "--dest-dir",
+                str(dest),
+                "--expected-version",
+                VERSION,
+            ]
+        )
+        == 1
+    )
+
+    assert "conflicting evidence file" in capsys.readouterr().out
 
 
 def test_import_external_ga_evidence_rejects_incomplete_bundle_without_copy(

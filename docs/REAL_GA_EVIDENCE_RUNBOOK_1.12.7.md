@@ -10,6 +10,12 @@ Status after this runbook is added: source-ready, external evidence still requir
 
 ## P0: Customer-distribution Real GA blockers
 
+Preferred control-plane run:
+
+1. Produce real-device evidence from BrowserStack and/or AWS Device Farm controller workflows. The uploaded artifact must be named `external-ga-evidence-raw` by default and must contain `release/external-evidence` shaped files, including any referenced artifacts.
+2. Produce staging operations evidence from the approved Kubernetes or systemd staging environment. This artifact must include the Postgres soak, rollback, backup/restore, and self-healing failure-injection JSON files under `release/external-evidence/drills/`.
+3. Run `.github/workflows/real-ga-evidence-control-plane.yml` with the provider run ids and `staging_operations_evidence_run_id`. All producer runs should upload the shared artifact name from `provider_evidence_artifact_name`, which defaults to `external-ga-evidence-raw`. This workflow assembles provider artifacts, validates the complete bundle, uploads `external-ga-evidence`, and invokes `real-ga-readiness.yml`.
+
 Run `.github/workflows/real-ga-readiness.yml` manually.
 
 - Use `readiness_channel=candidate` to collect an audit report without blocking on missing evidence.
