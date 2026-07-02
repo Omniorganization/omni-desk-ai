@@ -80,6 +80,12 @@ def test_real_ga_evidence_control_plane_wires_external_providers_to_readiness():
     assert "browserstack_evidence_run_id" in workflow
     assert "aws_device_farm_evidence_run_id" in workflow
     assert "staging_operations_evidence_run_id" in workflow
+    assert "provider_evidence_artifact_name" in workflow
+    assert "release_artifacts_evidence_artifact_name" not in workflow
+    assert "browserstack_evidence_artifact_name" not in workflow
+    assert "aws_device_farm_evidence_artifact_name" not in workflow
+    assert "live_services_evidence_artifact_name" not in workflow
+    assert "staging_operations_evidence_artifact_name" not in workflow
     assert "scripts/assemble_external_ga_evidence_bundle.py" in workflow
     assert "scripts/import_external_ga_evidence.py" in workflow
     assert "scripts/check_external_ga_evidence.py" in workflow

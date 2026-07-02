@@ -68,7 +68,7 @@ release/external-evidence/drills/self-healing-failure-injection.json
 4. Run real-device smoke on BrowserStack and/or AWS Device Farm and upload a raw `release/external-evidence` shaped artifact.
 5. Run model, push, and integration live smoke checks and upload their raw evidence artifact.
 6. Run Postgres soak, rollback, backup/restore, and self-healing drills in the approved Kubernetes or systemd staging environment.
-7. Run `Real GA Evidence Control Plane` with the BrowserStack/AWS Device Farm run id, the staging operations run id, and any release/live-services evidence run ids. It assembles the raw evidence, validates it, uploads `external-ga-evidence`, and calls `Real GA Readiness`.
+7. Run `Real GA Evidence Control Plane` with the BrowserStack/AWS Device Farm run id, the staging operations run id, and any release/live-services evidence run ids. Producer runs should use the shared `provider_evidence_artifact_name` artifact name, defaulting to `external-ga-evidence-raw`. The control plane assembles the raw evidence, validates it, uploads `external-ga-evidence`, and calls `Real GA Readiness`.
 8. If a single complete raw bundle was produced outside the control-plane flow, run `Remote Evidence Pipeline` with that raw artifact run id, then run `Real GA Readiness` with `external_evidence_run_id` set to the Remote Evidence Pipeline run id.
 9. Run the Real GA gate without `--audit-only`.
 10. Regenerate the customer distribution report.

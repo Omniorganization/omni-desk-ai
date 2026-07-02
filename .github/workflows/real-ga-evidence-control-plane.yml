@@ -19,42 +19,26 @@ on:
         description: Optional GitHub Actions run id containing native/signed artifact evidence
         required: false
         default: ""
-      release_artifacts_evidence_artifact_name:
-        description: Artifact name from the release/signing evidence run
+      provider_evidence_artifact_name:
+        description: Shared artifact name uploaded by provider/staging evidence producer runs
         required: false
         default: external-ga-evidence-raw
       browserstack_evidence_run_id:
         description: Optional BrowserStack controller run id containing real-device evidence
         required: false
         default: ""
-      browserstack_evidence_artifact_name:
-        description: BrowserStack evidence artifact name
-        required: false
-        default: external-ga-evidence-raw
       aws_device_farm_evidence_run_id:
         description: Optional AWS Device Farm controller run id containing real-device evidence
         required: false
         default: ""
-      aws_device_farm_evidence_artifact_name:
-        description: AWS Device Farm evidence artifact name
-        required: false
-        default: external-ga-evidence-raw
       live_services_evidence_run_id:
         description: Optional run id containing model, BigSeller, APNS, and FCM live evidence
         required: false
         default: ""
-      live_services_evidence_artifact_name:
-        description: Live services evidence artifact name
-        required: false
-        default: external-ga-evidence-raw
       staging_operations_evidence_run_id:
         description: Optional Kubernetes/systemd staging operations drill evidence run id
         required: false
         default: ""
-      staging_operations_evidence_artifact_name:
-        description: Staging operations evidence artifact name
-        required: false
-        default: external-ga-evidence-raw
 
 permissions:
   contents: read
@@ -91,7 +75,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/provider-evidence/release-artifacts
           gh run download "${{ inputs.release_artifacts_evidence_run_id }}" \
-            --name "${{ inputs.release_artifacts_evidence_artifact_name }}" \
+            --name "${{ inputs.provider_evidence_artifact_name }}" \
             --dir dist/provider-evidence/release-artifacts
       - name: Download BrowserStack real-device evidence
         if: ${{ inputs.browserstack_evidence_run_id != '' }}
@@ -101,7 +85,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/provider-evidence/browserstack
           gh run download "${{ inputs.browserstack_evidence_run_id }}" \
-            --name "${{ inputs.browserstack_evidence_artifact_name }}" \
+            --name "${{ inputs.provider_evidence_artifact_name }}" \
             --dir dist/provider-evidence/browserstack
       - name: Download AWS Device Farm real-device evidence
         if: ${{ inputs.aws_device_farm_evidence_run_id != '' }}
@@ -111,7 +95,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/provider-evidence/aws-device-farm
           gh run download "${{ inputs.aws_device_farm_evidence_run_id }}" \
-            --name "${{ inputs.aws_device_farm_evidence_artifact_name }}" \
+            --name "${{ inputs.provider_evidence_artifact_name }}" \
             --dir dist/provider-evidence/aws-device-farm
       - name: Download live services evidence
         if: ${{ inputs.live_services_evidence_run_id != '' }}
@@ -121,7 +105,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/provider-evidence/live-services
           gh run download "${{ inputs.live_services_evidence_run_id }}" \
-            --name "${{ inputs.live_services_evidence_artifact_name }}" \
+            --name "${{ inputs.provider_evidence_artifact_name }}" \
             --dir dist/provider-evidence/live-services
       - name: Download Kubernetes/systemd staging operations evidence
         if: ${{ inputs.staging_operations_evidence_run_id != '' }}
@@ -131,7 +115,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/provider-evidence/staging-operations
           gh run download "${{ inputs.staging_operations_evidence_run_id }}" \
-            --name "${{ inputs.staging_operations_evidence_artifact_name }}" \
+            --name "${{ inputs.provider_evidence_artifact_name }}" \
             --dir dist/provider-evidence/staging-operations
       - name: Assemble external evidence bundle
         run: |
