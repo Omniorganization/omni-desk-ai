@@ -1,0 +1,92 @@
+name: Remote Evidence Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      raw_evidence_run_id:
+        description: "GitHub Actions run id that uploaded the raw external GA evidence bundle"
+        required: true
+      raw_evidence_artifact_name:
+        description: "Artifact name containing release/external-evidence-shaped raw files"
+        required: true
+        default: external-ga-evidence-raw
+      readiness_channel:
+        description: "candidate audits the imported bundle; real-ga fails closed"
+        type: choice
+        required: true
+        default: candidate
+        options:
+          - candidate
+          - real-ga
+      expected_version:
+        description: "Expected OmniDesk release version for versioned evidence files"
+        required: true
+        default: 1.12.7+root-monorepo-production-ga-candidate
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  import-remote-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Download raw remote evidence artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/external-ga-evidence-raw
+          gh run download "${{ inputs.raw_evidence_run_id }}" \
+            --name "${{ inputs.raw_evidence_artifact_name }}" \
+            --dir dist/external-ga-evidence-raw
+      - name: Preflight complete external evidence bundle
+        env:
+          EXTERNAL_GA_EVIDENCE_RAW_DIR: dist/external-ga-evidence-raw
+          EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: |
+          python scripts/check_release_configuration.py \
+            --scope external-ga-evidence \
+            --format json \
+            --report-path dist/external-ga-evidence-preflight.json
+      - name: Import complete external evidence bundle
+        run: |
+          python scripts/import_external_ga_evidence.py \
+            --raw-dir dist/external-ga-evidence-raw \
+            --expected-version "${{ inputs.expected_version }}" \
+            --copy \
+            --write-report release/external-ga-evidence-import-report.json
+      - name: Validate imported external evidence gate
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.readiness_channel }}" == "real-ga" ]]; then
+            python scripts/check_external_ga_evidence.py . \
+              --write-report dist/external-ga-evidence-audit.json
+          else
+            python scripts/check_external_ga_evidence.py . \
+              --audit-only \
+              --write-report dist/external-ga-evidence-audit.json
+          fi
+      - name: Build reusable external evidence artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist/external-ga-evidence-bundle
+          cp -R release/external-evidence/. dist/external-ga-evidence-bundle/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: external-ga-evidence
+          path: dist/external-ga-evidence-bundle
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: remote-evidence-pipeline-${{ github.sha }}
+          path: |
+            dist/external-ga-evidence-preflight.json
+            dist/external-ga-evidence-audit.json
+            release/external-ga-evidence-import-report.json
+          if-no-files-found: warn

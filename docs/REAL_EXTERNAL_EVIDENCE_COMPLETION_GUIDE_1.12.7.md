@@ -68,5 +68,11 @@ release/external-evidence/drills/self-healing-failure-injection.json
 4. Run Web, Desktop, and Mobile smoke checks against staging.
 5. Run model, push, and integration live smoke checks.
 6. Run Postgres soak and operations drills.
-7. Run the Real GA gate without `--audit-only`.
-8. Regenerate the customer distribution report.
+7. Upload the raw evidence directory as an Actions artifact, then run `Remote Evidence Pipeline` with that raw artifact run id.
+8. Run `Real GA Readiness` with `external_evidence_run_id` set to the Remote Evidence Pipeline run id.
+9. Run the Real GA gate without `--audit-only`.
+10. Regenerate the customer distribution report.
+
+## Remote evidence handoff
+
+The raw artifact must contain the same relative paths listed above, plus any artifact files referenced by `artifacts[].path`. The importer validates the complete bundle before copying it into `release/external-evidence/`; partial bundles, wrong versions, placeholders, mock values, and missing artifact hashes stay blocked.

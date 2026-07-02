@@ -14,6 +14,8 @@ Run `.github/workflows/real-ga-readiness.yml` manually.
 
 - Use `readiness_channel=candidate` to collect an audit report without blocking on missing evidence.
 - Use `readiness_channel=real-ga` only when all evidence exists under `release/external-evidence/` and the live control-plane token is available to the workflow environment.
+- When evidence is produced outside the repository runner, first upload a raw `release/external-evidence` shaped bundle as a GitHub Actions artifact, then run `.github/workflows/remote-evidence-pipeline.yml`. That workflow validates the complete bundle with `scripts/import_external_ga_evidence.py`, uploads a clean `external-ga-evidence` artifact, and does not create or soften evidence.
+- To consume the clean bundle, pass the Remote Evidence Pipeline run id to `real-ga-readiness.yml` or `release.yml` through `external_evidence_run_id` and keep `external_evidence_artifact_name=external-ga-evidence`.
 
 Required external evidence files:
 

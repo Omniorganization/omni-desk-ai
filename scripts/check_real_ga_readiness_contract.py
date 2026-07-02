@@ -8,11 +8,13 @@ from pathlib import Path
 
 REQUIRED_FILES = (
     ".github/workflows/real-ga-readiness.yml",
+    ".github/workflows/remote-evidence-pipeline.yml",
     ".github/workflows/bigseller-real-contract.yml",
     "scripts/check_live_branch_protection_contract.py",
     "scripts/check_main_verification_artifact_live.py",
     "scripts/check_model_live_smoke_evidence.py",
     "scripts/check_external_ga_evidence.py",
+    "scripts/import_external_ga_evidence.py",
     "scripts/check_bigseller_route_enablement.py",
     "scripts/run_bigseller_live_smoke.py",
     "scripts/import_bigseller_live_smoke_evidence.py",
@@ -26,8 +28,22 @@ WORKFLOW_SNIPPETS = (
     "check_external_ga_evidence.py",
     "check_model_live_smoke_evidence.py",
     "readiness_channel",
+    "external_evidence_run_id",
+    "external_evidence_artifact_name",
+    "gh run download",
     "real-ga",
     "candidate",
+)
+
+REMOTE_EVIDENCE_WORKFLOW_SNIPPETS = (
+    "name: Remote Evidence Pipeline",
+    "raw_evidence_run_id",
+    "raw_evidence_artifact_name",
+    "check_release_configuration.py",
+    "--scope external-ga-evidence",
+    "import_external_ga_evidence.py",
+    "check_external_ga_evidence.py",
+    "external-ga-evidence",
 )
 
 BIGSELLER_WORKFLOW_SNIPPETS = (
@@ -86,17 +102,58 @@ def audit(root: Path) -> dict[str, object]:
     try:
         workflow = _read(root, ".github/workflows/real-ga-readiness.yml")
         for snippet in WORKFLOW_SNIPPETS:
-            _check(snippet in workflow, failures, f"real-ga-readiness workflow missing snippet: {snippet}")
-        _check("--audit-only" in workflow, failures, "real-ga-readiness workflow must support audit-only candidate runs")
-        _check("contents: read" in workflow and "actions: read" in workflow, failures, "real-ga-readiness workflow must use least-privilege read permissions")
+            _check(
+                snippet in workflow,
+                failures,
+                f"real-ga-readiness workflow missing snippet: {snippet}",
+            )
+        _check(
+            "--audit-only" in workflow,
+            failures,
+            "real-ga-readiness workflow must support audit-only candidate runs",
+        )
+        _check(
+            "contents: read" in workflow and "actions: read" in workflow,
+            failures,
+            "real-ga-readiness workflow must use least-privilege read permissions",
+        )
     except FileNotFoundError:
         pass
 
     try:
-        bigseller_workflow = _read(root, ".github/workflows/bigseller-real-contract.yml")
+        remote_evidence_workflow = _read(
+            root, ".github/workflows/remote-evidence-pipeline.yml"
+        )
+        for snippet in REMOTE_EVIDENCE_WORKFLOW_SNIPPETS:
+            _check(
+                snippet in remote_evidence_workflow,
+                failures,
+                f"remote-evidence-pipeline workflow missing snippet: {snippet}",
+            )
+        _check(
+            "contents: read" in remote_evidence_workflow
+            and "actions: read" in remote_evidence_workflow,
+            failures,
+            "remote-evidence-pipeline workflow must use least-privilege read permissions",
+        )
+    except FileNotFoundError:
+        pass
+
+    try:
+        bigseller_workflow = _read(
+            root, ".github/workflows/bigseller-real-contract.yml"
+        )
         for snippet in BIGSELLER_WORKFLOW_SNIPPETS:
-            _check(snippet in bigseller_workflow, failures, f"bigseller-real-contract workflow missing snippet: {snippet}")
-        _check("contents: read" in bigseller_workflow, failures, "bigseller-real-contract workflow must use least-privilege read permissions")
+            _check(
+                snippet in bigseller_workflow,
+                failures,
+                f"bigseller-real-contract workflow missing snippet: {snippet}",
+            )
+        _check(
+            "contents: read" in bigseller_workflow,
+            failures,
+            "bigseller-real-contract workflow must use least-privilege read permissions",
+        )
     except FileNotFoundError:
         pass
 
@@ -104,31 +161,67 @@ def audit(root: Path) -> dict[str, object]:
         manifest = json.loads(_read(root, "release/production-evidence.manifest.json"))
         external = manifest.get("external_evidence_required") or {}
         for key in MANIFEST_REQUIRED_KEYS:
-            _check(key in external, failures, f"production evidence manifest missing external requirement: {key}")
-        _check(manifest.get("status") == "source_gate_ready_external_evidence_blocked", failures, "manifest must remain external-evidence blocked until real evidence passes")
-        _check("main_verification_live_artifact" in manifest, failures, "manifest must declare live main verification artifact gate")
-        _check("bigseller_route_enablement" in manifest, failures, "manifest must declare BigSeller route enablement gate")
-        _check("bigseller_real_contract_workflow" in manifest, failures, "manifest must declare BigSeller real contract workflow")
+            _check(
+                key in external,
+                failures,
+                f"production evidence manifest missing external requirement: {key}",
+            )
+        _check(
+            manifest.get("status") == "source_gate_ready_external_evidence_blocked",
+            failures,
+            "manifest must remain external-evidence blocked until real evidence passes",
+        )
+        _check(
+            "main_verification_live_artifact" in manifest,
+            failures,
+            "manifest must declare live main verification artifact gate",
+        )
+        _check(
+            "bigseller_route_enablement" in manifest,
+            failures,
+            "manifest must declare BigSeller route enablement gate",
+        )
+        _check(
+            "bigseller_real_contract_workflow" in manifest,
+            failures,
+            "manifest must declare BigSeller real contract workflow",
+        )
     except Exception as exc:
         failures.append(f"could not validate production evidence manifest: {exc}")
 
     try:
         external_check = _read(root, "scripts/check_external_ga_evidence.py")
         for snippet in EXTERNAL_CHECK_SNIPPETS:
-            _check(snippet in external_check, failures, f"external evidence checker missing snippet: {snippet}")
+            _check(
+                snippet in external_check,
+                failures,
+                f"external evidence checker missing snippet: {snippet}",
+            )
     except FileNotFoundError:
         pass
 
     try:
         release_policy = _read(root, ".github/workflows/release-policy.yml")
-        _check("check_real_ga_readiness_contract.py" in release_policy, failures, "release policy must enforce real GA readiness source contract")
-        _check("check_bigseller_route_enablement.py" in release_policy, failures, "release policy must enforce BigSeller route enablement source contract")
+        _check(
+            "check_real_ga_readiness_contract.py" in release_policy,
+            failures,
+            "release policy must enforce real GA readiness source contract",
+        )
+        _check(
+            "check_bigseller_route_enablement.py" in release_policy,
+            failures,
+            "release policy must enforce BigSeller route enablement source contract",
+        )
     except FileNotFoundError:
         pass
 
     try:
         main_verification = _read(root, ".github/workflows/main-verification.yml")
-        _check("check_real_ga_readiness_contract.py" in main_verification, failures, "main verification must enforce real GA readiness source contract")
+        _check(
+            "check_real_ga_readiness_contract.py" in main_verification,
+            failures,
+            "main verification must enforce real GA readiness source contract",
+        )
     except FileNotFoundError:
         pass
 
@@ -141,7 +234,9 @@ def audit(root: Path) -> dict[str, object]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate Real GA readiness source contracts.")
+    parser = argparse.ArgumentParser(
+        description="Validate Real GA readiness source contracts."
+    )
     parser.add_argument("root", nargs="?", default=".")
     parser.add_argument("--write-report", default="")
     args = parser.parse_args(argv)
@@ -152,8 +247,17 @@ def main(argv: list[str] | None = None) -> int:
         if not out.is_absolute():
             out = root / out
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"status": report["status"], "failure_count": len(report["failures"])}, ensure_ascii=False, sort_keys=True))
+        out.write_text(
+            json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    print(
+        json.dumps(
+            {"status": report["status"], "failure_count": len(report["failures"])},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
     for failure in report["failures"]:
         print(f"BLOCKER {failure}", file=sys.stderr)
     return 0 if report["status"] == "passed" else 1
