@@ -19,6 +19,23 @@ on:
         description: "External evidence artifact name from the Remote Evidence Pipeline"
         required: false
         default: external-ga-evidence
+  workflow_call:
+    inputs:
+      readiness_channel:
+        description: "candidate audits missing evidence; real-ga fails closed on missing live evidence"
+        type: string
+        required: true
+        default: candidate
+      external_evidence_run_id:
+        description: "Remote Evidence Pipeline or Real GA Evidence Control Plane run id that uploaded an external-ga-evidence artifact"
+        type: string
+        required: false
+        default: ""
+      external_evidence_artifact_name:
+        description: "External evidence artifact name from the producing workflow"
+        type: string
+        required: false
+        default: external-ga-evidence
 
 permissions:
   contents: read

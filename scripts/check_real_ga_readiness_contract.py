@@ -9,12 +9,14 @@ from pathlib import Path
 REQUIRED_FILES = (
     ".github/workflows/real-ga-readiness.yml",
     ".github/workflows/remote-evidence-pipeline.yml",
+    ".github/workflows/real-ga-evidence-control-plane.yml",
     ".github/workflows/bigseller-real-contract.yml",
     "scripts/check_live_branch_protection_contract.py",
     "scripts/check_main_verification_artifact_live.py",
     "scripts/check_model_live_smoke_evidence.py",
     "scripts/check_external_ga_evidence.py",
     "scripts/import_external_ga_evidence.py",
+    "scripts/assemble_external_ga_evidence_bundle.py",
     "scripts/check_bigseller_route_enablement.py",
     "scripts/run_bigseller_live_smoke.py",
     "scripts/import_bigseller_live_smoke_evidence.py",
@@ -43,6 +45,19 @@ REMOTE_EVIDENCE_WORKFLOW_SNIPPETS = (
     "--scope external-ga-evidence",
     "import_external_ga_evidence.py",
     "check_external_ga_evidence.py",
+    "external-ga-evidence",
+)
+
+CONTROL_PLANE_WORKFLOW_SNIPPETS = (
+    "name: Real GA Evidence Control Plane",
+    "browserstack_evidence_run_id",
+    "aws_device_farm_evidence_run_id",
+    "staging_operations_evidence_run_id",
+    "Kubernetes/systemd",
+    "assemble_external_ga_evidence_bundle.py",
+    "import_external_ga_evidence.py",
+    "check_external_ga_evidence.py",
+    "real-ga-readiness.yml",
     "external-ga-evidence",
 )
 
@@ -113,6 +128,11 @@ def audit(root: Path) -> dict[str, object]:
             "real-ga-readiness workflow must support audit-only candidate runs",
         )
         _check(
+            "workflow_call" in workflow,
+            failures,
+            "real-ga-readiness workflow must support control-plane workflow_call reuse",
+        )
+        _check(
             "contents: read" in workflow and "actions: read" in workflow,
             failures,
             "real-ga-readiness workflow must use least-privilege read permissions",
@@ -135,6 +155,25 @@ def audit(root: Path) -> dict[str, object]:
             and "actions: read" in remote_evidence_workflow,
             failures,
             "remote-evidence-pipeline workflow must use least-privilege read permissions",
+        )
+    except FileNotFoundError:
+        pass
+
+    try:
+        control_plane_workflow = _read(
+            root, ".github/workflows/real-ga-evidence-control-plane.yml"
+        )
+        for snippet in CONTROL_PLANE_WORKFLOW_SNIPPETS:
+            _check(
+                snippet in control_plane_workflow,
+                failures,
+                f"real-ga-evidence-control-plane workflow missing snippet: {snippet}",
+            )
+        _check(
+            "contents: read" in control_plane_workflow
+            and "actions: read" in control_plane_workflow,
+            failures,
+            "real-ga-evidence-control-plane workflow must use least-privilege read permissions",
         )
     except FileNotFoundError:
         pass

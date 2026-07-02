@@ -27,6 +27,7 @@ def test_release_governance_assets_exist():
     assert Path("scripts/write_ci_evidence_manifest.py").exists()
     assert Path("scripts/write_real_ga_evidence_summary.py").exists()
     assert Path("scripts/import_external_ga_evidence.py").exists()
+    assert Path("scripts/assemble_external_ga_evidence_bundle.py").exists()
     assert Path("scripts/check_security_workflow_policy.py").exists()
     assert Path("scripts/check_license_policy.py").exists()
     assert Path("scripts/docker_scan.sh").exists()
@@ -36,6 +37,7 @@ def test_release_governance_assets_exist():
     assert Path("docs/SRE_RUNBOOK.md").exists()
     assert Path(".github/workflows/promote-production.yml").exists()
     assert Path(".github/workflows/remote-evidence-pipeline.yml").exists()
+    assert Path(".github/workflows/real-ga-evidence-control-plane.yml").exists()
     assert Path(".github/workflows/release-policy.yml").exists()
     assert Path(".github/branch-protection.required.json").exists()
     assert Path(".gitleaks.toml").exists()
@@ -68,6 +70,25 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "write_real_ga_evidence_summary.py" in workflow
     assert "dist/external-ga-evidence-summary.json" in workflow
     assert "scripts/check_production_install_policy.py ." in workflow
+
+
+def test_real_ga_evidence_control_plane_wires_external_providers_to_readiness():
+    workflow = Path(".github/workflows/real-ga-evidence-control-plane.yml").read_text(encoding="utf-8")
+    assert "BrowserStack" in workflow
+    assert "AWS Device Farm" in workflow
+    assert "Kubernetes/systemd" in workflow
+    assert "browserstack_evidence_run_id" in workflow
+    assert "aws_device_farm_evidence_run_id" in workflow
+    assert "staging_operations_evidence_run_id" in workflow
+    assert "scripts/assemble_external_ga_evidence_bundle.py" in workflow
+    assert "scripts/import_external_ga_evidence.py" in workflow
+    assert "scripts/check_external_ga_evidence.py" in workflow
+    assert "uses: ./.github/workflows/real-ga-readiness.yml" in workflow
+    assert "external_evidence_run_id: ${{ github.run_id }}" in workflow
+
+    readiness = Path(".github/workflows/real-ga-readiness.yml").read_text(encoding="utf-8")
+    assert "workflow_call" in readiness
+    assert "external_evidence_run_id" in readiness
 
 
 def test_release_sbom_is_generated_from_lockfiles():

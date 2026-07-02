@@ -1,0 +1,197 @@
+name: Real GA Evidence Control Plane
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: Expected OmniDesk release version for versioned evidence files
+        required: true
+        default: 1.12.7+root-monorepo-production-ga-candidate
+      readiness_channel:
+        description: candidate audits the imported bundle; real-ga fails closed
+        type: choice
+        required: true
+        default: candidate
+        options:
+          - candidate
+          - real-ga
+      release_artifacts_evidence_run_id:
+        description: Optional GitHub Actions run id containing native/signed artifact evidence
+        required: false
+        default: ""
+      release_artifacts_evidence_artifact_name:
+        description: Artifact name from the release/signing evidence run
+        required: false
+        default: external-ga-evidence-raw
+      browserstack_evidence_run_id:
+        description: Optional BrowserStack controller run id containing real-device evidence
+        required: false
+        default: ""
+      browserstack_evidence_artifact_name:
+        description: BrowserStack evidence artifact name
+        required: false
+        default: external-ga-evidence-raw
+      aws_device_farm_evidence_run_id:
+        description: Optional AWS Device Farm controller run id containing real-device evidence
+        required: false
+        default: ""
+      aws_device_farm_evidence_artifact_name:
+        description: AWS Device Farm evidence artifact name
+        required: false
+        default: external-ga-evidence-raw
+      live_services_evidence_run_id:
+        description: Optional run id containing model, BigSeller, APNS, and FCM live evidence
+        required: false
+        default: ""
+      live_services_evidence_artifact_name:
+        description: Live services evidence artifact name
+        required: false
+        default: external-ga-evidence-raw
+      staging_operations_evidence_run_id:
+        description: Optional Kubernetes/systemd staging operations drill evidence run id
+        required: false
+        default: ""
+      staging_operations_evidence_artifact_name:
+        description: Staging operations evidence artifact name
+        required: false
+        default: external-ga-evidence-raw
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  assemble-external-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Require real-device and staging evidence producers
+        env:
+          BROWSERSTACK_RUN_ID: ${{ inputs.browserstack_evidence_run_id }}
+          AWS_DEVICE_FARM_RUN_ID: ${{ inputs.aws_device_farm_evidence_run_id }}
+          STAGING_OPERATIONS_RUN_ID: ${{ inputs.staging_operations_evidence_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BROWSERSTACK_RUN_ID" && -z "$AWS_DEVICE_FARM_RUN_ID" ]]; then
+            echo "BrowserStack or AWS Device Farm evidence run id is required." >&2
+            exit 1
+          fi
+          if [[ -z "$STAGING_OPERATIONS_RUN_ID" ]]; then
+            echo "Kubernetes/systemd staging operations evidence run id is required." >&2
+            exit 1
+          fi
+      - name: Download release artifact evidence
+        if: ${{ inputs.release_artifacts_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/provider-evidence/release-artifacts
+          gh run download "${{ inputs.release_artifacts_evidence_run_id }}" \
+            --name "${{ inputs.release_artifacts_evidence_artifact_name }}" \
+            --dir dist/provider-evidence/release-artifacts
+      - name: Download BrowserStack real-device evidence
+        if: ${{ inputs.browserstack_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/provider-evidence/browserstack
+          gh run download "${{ inputs.browserstack_evidence_run_id }}" \
+            --name "${{ inputs.browserstack_evidence_artifact_name }}" \
+            --dir dist/provider-evidence/browserstack
+      - name: Download AWS Device Farm real-device evidence
+        if: ${{ inputs.aws_device_farm_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/provider-evidence/aws-device-farm
+          gh run download "${{ inputs.aws_device_farm_evidence_run_id }}" \
+            --name "${{ inputs.aws_device_farm_evidence_artifact_name }}" \
+            --dir dist/provider-evidence/aws-device-farm
+      - name: Download live services evidence
+        if: ${{ inputs.live_services_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/provider-evidence/live-services
+          gh run download "${{ inputs.live_services_evidence_run_id }}" \
+            --name "${{ inputs.live_services_evidence_artifact_name }}" \
+            --dir dist/provider-evidence/live-services
+      - name: Download Kubernetes/systemd staging operations evidence
+        if: ${{ inputs.staging_operations_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/provider-evidence/staging-operations
+          gh run download "${{ inputs.staging_operations_evidence_run_id }}" \
+            --name "${{ inputs.staging_operations_evidence_artifact_name }}" \
+            --dir dist/provider-evidence/staging-operations
+      - name: Assemble external evidence bundle
+        run: |
+          set -euo pipefail
+          source_args=()
+          for source_dir in dist/provider-evidence/*; do
+            if [[ -d "$source_dir" ]]; then
+              source_args+=(--source-dir "$source_dir")
+            fi
+          done
+          python scripts/assemble_external_ga_evidence_bundle.py \
+            "${source_args[@]}" \
+            --dest-dir dist/external-ga-evidence-raw \
+            --expected-version "${{ inputs.expected_version }}" \
+            --write-report dist/external-ga-evidence-assembly.json
+      - name: Import complete external evidence bundle
+        run: |
+          python scripts/import_external_ga_evidence.py \
+            --raw-dir dist/external-ga-evidence-raw \
+            --expected-version "${{ inputs.expected_version }}" \
+            --copy \
+            --write-report release/external-ga-evidence-import-report.json
+      - name: Validate external GA evidence gate
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.readiness_channel }}" == "real-ga" ]]; then
+            python scripts/check_external_ga_evidence.py . \
+              --write-report dist/external-ga-evidence-audit.json
+          else
+            python scripts/check_external_ga_evidence.py . \
+              --audit-only \
+              --write-report dist/external-ga-evidence-audit.json
+          fi
+      - name: Build reusable external evidence artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist/external-ga-evidence-bundle
+          cp -R release/external-evidence/. dist/external-ga-evidence-bundle/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: external-ga-evidence
+          path: dist/external-ga-evidence-bundle
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: real-ga-evidence-control-plane-${{ github.sha }}
+          path: |
+            dist/external-ga-evidence-assembly.json
+            dist/external-ga-evidence-audit.json
+            release/external-ga-evidence-import-report.json
+          if-no-files-found: warn
+
+  real-ga-readiness:
+    needs: assemble-external-evidence
+    uses: ./.github/workflows/real-ga-readiness.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      readiness_channel: ${{ inputs.readiness_channel }}
+      external_evidence_run_id: ${{ github.run_id }}
+      external_evidence_artifact_name: external-ga-evidence
