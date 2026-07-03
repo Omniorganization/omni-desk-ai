@@ -1,0 +1,144 @@
+name: BrowserStack Android Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: Expected OmniDesk release version for evidence files
+        required: true
+        default: 1.12.7+root-monorepo-production-ga-candidate
+      device_name:
+        description: BrowserStack Android device name
+        required: true
+        default: Google Pixel 8
+      platform_version:
+        description: BrowserStack Android platform version
+        required: true
+        default: "14.0"
+      project_name:
+        description: BrowserStack project name
+        required: true
+        default: OmniDesk
+      build_name:
+        description: BrowserStack build name
+        required: true
+        default: OmniDesk BrowserStack Android Smoke
+      session_name:
+        description: BrowserStack session name
+        required: true
+        default: OmniDesk mobile launch smoke
+      custom_id:
+        description: Optional BrowserStack app custom_id
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_VERSION: ${{ inputs.expected_version }}
+
+jobs:
+  android-browserstack-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.35.x"
+          cache: true
+
+      - name: Flutter dependencies and source checks
+        working-directory: apps/mobile-flutter
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Prepare Android release SDK packages
+        working-directory: apps/mobile-flutter
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$sdkmanager" --licenses >/dev/null
+          license_status=$?
+          set -o pipefail
+          test "$license_status" -eq 0
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+
+      - name: Generate non-production Android signing key
+        working-directory: apps/mobile-flutter
+        env:
+          OMNI_ANDROID_KEYSTORE_PASSWORD: omnidesk-browserstack-store-password
+          OMNI_ANDROID_KEY_ALIAS: omnidesk-browserstack
+          OMNI_ANDROID_KEY_PASSWORD: omnidesk-browserstack-store-password
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/omnidesk-browserstack.keystore"
+          keytool -genkeypair -v \
+            -storetype PKCS12 \
+            -keystore "$keystore" \
+            -storepass "$OMNI_ANDROID_KEYSTORE_PASSWORD" \
+            -keypass "$OMNI_ANDROID_KEY_PASSWORD" \
+            -alias "$OMNI_ANDROID_KEY_ALIAS" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 1 \
+            -dname "CN=OmniDesk BrowserStack,O=OmniDesk,L=CI,C=US" \
+            -noprompt
+          {
+            echo "OMNI_ANDROID_KEYSTORE=$keystore"
+            echo "OMNI_ANDROID_KEYSTORE_PASSWORD=$OMNI_ANDROID_KEYSTORE_PASSWORD"
+            echo "OMNI_ANDROID_KEY_ALIAS=$OMNI_ANDROID_KEY_ALIAS"
+            echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Android APK for BrowserStack
+        working-directory: apps/mobile-flutter
+        run: |
+          set -euo pipefail
+          flutter build apk --release
+
+      - name: Run BrowserStack Android smoke
+        env:
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          BROWSERSTACK_DEVICE_NAME: ${{ inputs.device_name }}
+          BROWSERSTACK_PLATFORM_VERSION: ${{ inputs.platform_version }}
+          BROWSERSTACK_PROJECT_NAME: ${{ inputs.project_name }}
+          BROWSERSTACK_BUILD_NAME: ${{ inputs.build_name }}
+          BROWSERSTACK_SESSION_NAME: ${{ inputs.session_name }}
+          BROWSERSTACK_CUSTOM_ID_INPUT: ${{ inputs.custom_id }}
+        run: |
+          set -euo pipefail
+          custom_id="$BROWSERSTACK_CUSTOM_ID_INPUT"
+          if [[ -z "$custom_id" ]]; then
+            custom_id="omnidesk-android-smoke-${GITHUB_RUN_ID}"
+          fi
+          python scripts/browserstack_android_smoke.py \
+            --app-path apps/mobile-flutter/build/app/outputs/flutter-apk/app-release.apk \
+            --expected-version "$EXPECTED_VERSION" \
+            --output-dir dist/browserstack-evidence/release/external-evidence \
+            --device-name "$BROWSERSTACK_DEVICE_NAME" \
+            --platform-version "$BROWSERSTACK_PLATFORM_VERSION" \
+            --project-name "$BROWSERSTACK_PROJECT_NAME" \
+            --build-name "$BROWSERSTACK_BUILD_NAME" \
+            --session-name "$BROWSERSTACK_SESSION_NAME" \
+            --custom-id "$custom_id" \
+            --write-native-build-evidence
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: external-ga-evidence-raw
+          path: dist/browserstack-evidence
+          if-no-files-found: warn
