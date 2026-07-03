@@ -53,7 +53,7 @@ jobs:
       - run: python scripts/check_lock_hashes.py requirements.dev.lock
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - run: mkdir -p dist/evidence release/external-evidence/control-plane release/external-evidence/model
+      - run: mkdir -p dist/evidence dist/imported-external-evidence release/external-evidence/control-plane release/external-evidence/model
       - name: Download imported external evidence bundle
         if: ${{ inputs.external_evidence_run_id != '' }}
         env:
@@ -62,12 +62,39 @@ jobs:
           set -euo pipefail
           gh run download "${{ inputs.external_evidence_run_id }}" \
             --name "${{ inputs.external_evidence_artifact_name }}" \
-            --dir release/external-evidence
+            --dir dist/imported-external-evidence
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          raw_root = Path("dist/imported-external-evidence")
+          candidates = [
+              raw_root / "release" / "external-evidence",
+              raw_root,
+          ]
+          evidence_root = next(
+              (
+                  path
+                  for path in candidates
+                  if any((path / marker).exists() for marker in ("native-build", "mobile-real-device", "signed-artifacts", "drills"))
+              ),
+              raw_root,
+          )
+          dest = Path("release/external-evidence")
+          dest.mkdir(parents=True, exist_ok=True)
+          for source in sorted(evidence_root.rglob("*")):
+              if not source.is_file():
+                  continue
+              target = dest / source.relative_to(evidence_root)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(source, target)
+          PY
       - name: Validate source readiness contract
         run: python scripts/check_real_ga_readiness_contract.py . --write-report dist/evidence/real-ga-readiness-contract.json
       - name: Verify live branch protection control plane
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           audit_flag=""
@@ -82,6 +109,7 @@ jobs:
       - name: Verify post-merge Main Verification artifact
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           audit_flag=""

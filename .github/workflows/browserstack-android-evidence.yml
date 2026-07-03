@@ -140,5 +140,5 @@ jobs:
         if: always()
         with:
           name: external-ga-evidence-raw
-          path: dist/browserstack-evidence
+          path: dist/browserstack-evidence/release/external-evidence
           if-no-files-found: warn
