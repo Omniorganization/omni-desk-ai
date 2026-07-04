@@ -81,12 +81,12 @@ def _backend_paths(root: Path) -> set[tuple[str, str]]:
     return paths
 
 
-def _is_executable_client_line(line: str, value: str) -> bool:
-    if "omniProxy(" in line and value.startswith(("/app", "/api/chat")):
+def _is_executable_client_context(context: str, value: str) -> bool:
+    if "omniProxy(" in context and value.startswith(("/app", "/api/chat")):
         return True
-    if "gatewayPath" in line and value.startswith("/app/"):
+    if "gatewayPath" in context and value.startswith("/app/"):
         return True
-    return any(token in line for token in EXECUTABLE_CALL_TOKENS)
+    return any(token in context for token in EXECUTABLE_CALL_TOKENS)
 
 
 def _client_paths(root: Path) -> set[str]:
@@ -99,9 +99,11 @@ def _client_paths(root: Path) -> set[str]:
     for base in bases:
         for suffix in ("*.ts", "*.tsx", "*.dart"):
             for path in sorted(base.rglob(suffix)):
-                for line in path.read_text(encoding="utf-8").splitlines():
+                lines = path.read_text(encoding="utf-8").splitlines()
+                for index, line in enumerate(lines):
+                    context = "\n".join(lines[max(0, index - 3) : index + 1])
                     for value in PATH_LITERAL_RE.findall(line):
-                        if not _is_executable_client_line(line, value):
+                        if not _is_executable_client_context(context, value):
                             continue
                         normalized = _normalize_path(value)
                         if normalized:
