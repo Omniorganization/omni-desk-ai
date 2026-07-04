@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-METHOD_RE = re.compile(r'@app\.(get|post|put|patch|delete|websocket)\("([^"]+)"\)')
+METHOD_RE = re.compile(r'@app\.(get|post|put|patch|websocket)\("([^"]+)"\)')
 PATH_LITERAL_RE = re.compile(r"['\"`](/(?:app|api/chat)[^'\"`]*)['\"`]")
 OMNI_PROXY_RE = re.compile(r"omniProxy\(['\"`]([^'\"`]+)['\"`]")
 
@@ -25,25 +25,26 @@ CLIENT_REQUIRED_PATHS = {
     "/app/devices/{device_id}/push-token",
 }
 
+SUBSTITUTIONS = {
+    "${encodeURIComponent(conversationId)}": "{conversation_id}",
+    "${_pathSegment(conversationId)}": "{conversation_id}",
+    "${conversationId}": "{conversation_id}",
+    "${encodeURIComponent(approvalId)}": "{approval_id}",
+    "${_pathSegment(approvalId)}": "{approval_id}",
+    "${approvalId}": "{approval_id}",
+    "${encodeURIComponent(deviceId)}": "{device_id}",
+    "${_pathSegment(deviceId)}": "{device_id}",
+    "${deviceId}": "{device_id}",
+    "${taskId}": "{task_id}",
+    "${encodeURIComponent(enrollmentId)}": "{enrollment_id}",
+    "${enrollmentId}": "{enrollment_id}",
+}
+
 
 def _normalize_path(value: str) -> str:
     path = value.split("?", 1)[0]
-    replacements = [
-        (r"\$\{encodeURIComponent\(conversationId\)\}", "{conversation_id}"),
-        (r"\$\{_pathSegment\(conversationId\)\}", "{conversation_id}"),
-        (r"\$\{conversationId\}", "{conversation_id}"),
-        (r"\$\{encodeURIComponent\(approvalId\)\}", "{approval_id}"),
-        (r"\$\{_pathSegment\(approvalId\)\}", "{approval_id}"),
-        (r"\$\{approvalId\}", "{approval_id}"),
-        (r"\$\{encodeURIComponent\(deviceId\)\}", "{device_id}"),
-        (r"\$\{_pathSegment\(deviceId\)\}", "{device_id}"),
-        (r"\$\{deviceId\}", "{device_id}"),
-        (r"\$\{taskId\}", "{task_id}"),
-        (r"\$\{encodeURIComponent\(enrollmentId\)\}", "{enrollment_id}"),
-        (r"\$\{enrollmentId\}", "{enrollment_id}"),
-    ]
-    for pattern, replacement in replacements:
-        path = re.sub(pattern, replacement, path)
+    for needle, replacement in SUBSTITUTIONS.items():
+        path = path.replace(needle, replacement)
     return path
 
 
@@ -53,11 +54,7 @@ def _contract_paths(root: Path) -> set[tuple[str, str]]:
             encoding="utf-8"
         )
     )
-    return {
-        (item["method"], item["path"])
-        for item in contract.get("endpoints", [])
-        if item.get("method") != "WS"
-    }
+    return {(item["method"], item["path"]) for item in contract.get("endpoints", [])}
 
 
 def _backend_paths(root: Path) -> set[tuple[str, str]]:
@@ -71,13 +68,13 @@ def _backend_paths(root: Path) -> set[tuple[str, str]]:
 
 
 def _client_paths(root: Path) -> set[str]:
-    candidates = [
+    bases = [
         root / "apps" / "web-admin-next",
         root / "apps" / "desktop-tauri" / "src",
         root / "apps" / "mobile-flutter" / "lib",
     ]
     paths: set[str] = set()
-    for base in candidates:
+    for base in bases:
         for suffix in ("*.ts", "*.tsx", "*.dart"):
             for path in sorted(base.rglob(suffix)):
                 text = path.read_text(encoding="utf-8")
@@ -97,16 +94,15 @@ def main(argv: list[str] | None = None) -> int:
     contract = _contract_paths(root)
     backend = _backend_paths(root)
     client = _client_paths(root)
+    rest_contract = {item for item in contract if item[0] != "WS"}
 
     issues: list[str] = []
     missing_backend = sorted(contract - backend)
     if missing_backend:
         issues.append(f"contract endpoints missing backend routes: {missing_backend}")
 
-    contract_path_set = {path for _, path in contract}
-    client_outside_contract = sorted(
-        path for path in client if path not in contract_path_set
-    )
+    contract_path_set = {path for _, path in rest_contract}
+    client_outside_contract = sorted(path for path in client if path not in contract_path_set)
     if client_outside_contract:
         issues.append(f"client paths missing from shared contract: {client_outside_contract}")
 
