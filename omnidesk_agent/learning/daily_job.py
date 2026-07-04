@@ -12,12 +12,22 @@ from omnidesk_agent.self_upgrade.approval_gate import UpgradeApprovalGate
 from omnidesk_agent.self_upgrade.models import UpgradeRequest
 from omnidesk_agent.self_upgrade.proposal.proposal_generator import UpgradeProposalGenerator
 from omnidesk_agent.self_upgrade.proposal.proposal_store import UpgradeProposalStore
+from omnidesk_agent.self_learning.analyzer import LearningAnalyzer
+from omnidesk_agent.self_learning.approval import HumanApprovalGate
+from omnidesk_agent.self_learning.collector import LearningDataCollector
 from omnidesk_agent.self_learning.drift import DriftDetectionSuite
 from omnidesk_agent.self_learning.governance import MemoryCurator
+from omnidesk_agent.self_learning.knowledge_builder import KnowledgeBuilder
 from omnidesk_agent.self_learning.observability.audit import LearningAuditLog
 from omnidesk_agent.self_learning.observability.schema import LearningEvent
+from omnidesk_agent.self_learning.policy import SelfLearningBoundaryPolicy
+from omnidesk_agent.self_learning.proposal_generator import ControlledProposalGenerator
+from omnidesk_agent.self_learning.rollback import RollbackManager
+from omnidesk_agent.self_learning.schemas import ControlledLearningReport
 from omnidesk_agent.self_learning.replay import ReplayReportBuilder
 from omnidesk_agent.self_learning.skill_learning import SkillLearningPipeline
+from omnidesk_agent.self_learning.store import SelfLearningStore
+from omnidesk_agent.self_learning.validator import SandboxValidator
 
 
 class DailySelfLearningJob:
@@ -40,6 +50,15 @@ class DailySelfLearningJob:
         self.drift = DriftDetectionSuite()
         self.audit = LearningAuditLog(self.workspace_root / "learning_audit.jsonl")
         self.skill_learning = SkillLearningPipeline(self.workspace_root / "skill_candidates")
+        self.self_learning_store = SelfLearningStore(self.workspace_root / "self_learning.sqlite3")
+        self.data_collector = LearningDataCollector()
+        self.learning_analyzer = LearningAnalyzer()
+        self.knowledge_builder = KnowledgeBuilder()
+        self.controlled_proposals = ControlledProposalGenerator()
+        self.learning_policy = SelfLearningBoundaryPolicy()
+        self.human_approval_gate = HumanApprovalGate(self.self_learning_store)
+        self.sandbox_validator = SandboxValidator(self.workspace_root)
+        self.rollback_manager = RollbackManager(self.self_learning_store)
 
     def run(self, days: int = 7) -> dict[str, Any]:
         growth_plan = GrowthPlan.load(self.workspace_root / "growth_plan.json")
@@ -128,6 +147,8 @@ class DailySelfLearningJob:
             except Exception:
                 pass
 
+        controlled_self_learning = self._run_controlled_self_learning(days=days)
+
         report = {
             "generated_at": time.time(),
             "days": days,
@@ -141,10 +162,80 @@ class DailySelfLearningJob:
             "skill_candidates": skill_candidates,
             "proposals": safe_proposals,
             "persisted_upgrade_proposals": persisted_proposals,
+            "controlled_self_learning": controlled_self_learning,
         }
         out_dir = self.workspace_root / "learning_reports"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"learning_report_{time.strftime('%Y%m%d')}.json"
         out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report["report_path"] = str(out_path)
+        return report
+
+    def _run_controlled_self_learning(self, *, days: int) -> dict[str, Any]:
+        source_records = self.data_collector.collect(memory=self.memory, audit_log=self.audit, days=days, limit=200)
+        for record in source_records:
+            self.self_learning_store.record_event(record)
+
+        findings = self.learning_analyzer.analyze(source_records)
+        for finding in findings:
+            self.self_learning_store.save_finding(finding)
+
+        drafts = self.knowledge_builder.build_drafts(findings)
+        draft_paths = self.knowledge_builder.write_pending_drafts(drafts, self.workspace_root)
+
+        proposals = self.controlled_proposals.from_findings(findings, drafts=drafts)
+        approvals = []
+        validations = []
+        rollback_plans = []
+        policy_decisions = []
+        pr_drafts = []
+
+        for proposal in proposals:
+            decision = self.learning_policy.evaluate(proposal)
+            proposal.requires_human_approval = decision.requires_human_approval
+            proposal.metadata["policy_decision"] = decision.to_dict()
+            policy_decisions.append({"proposal_id": proposal.proposal_id, **decision.to_dict()})
+
+            if decision.allowed and decision.requires_human_approval:
+                approval = self.human_approval_gate.submit(proposal, reason=decision.reason)
+                approvals.append(approval)
+
+            validation = self.sandbox_validator.validate(proposal, commands=[])
+            proposal.validation_id = validation.validation_id
+            validations.append(validation)
+            self.self_learning_store.save_validation(validation)
+
+            if decision.allowed and decision.requires_pr:
+                pr_draft = self.controlled_proposals.draft_code_repair_pr(proposal)
+                pr_drafts.append(pr_draft.to_dict())
+
+            rollback = self.rollback_manager.plan(proposal)
+            rollback_plans.append(rollback)
+            self.self_learning_store.save_proposal(proposal)
+
+        report = ControlledLearningReport(
+            phase_1={
+                "mode": "observe_analyze_draft_only",
+                "source_record_count": len(source_records),
+                "findings": [finding.to_dict() for finding in findings],
+                "system_changes_applied": False,
+            },
+            phase_2={
+                "mode": "knowledge_prompt_workflow_pending_approval",
+                "pending_updates": [draft.to_dict() for draft in drafts],
+                "pending_update_paths": [str(path) for path in draft_paths],
+                "approvals": [approval.to_dict() for approval in approvals if approval.approval_type in {"knowledge_update", "prompt_template", "workflow_rule"}],
+                "production_updates_applied": False,
+            },
+            phase_3={
+                "mode": "code_repair_pr_only_no_merge",
+                "pr_drafts": pr_drafts,
+                "approvals": [approval.to_dict() for approval in approvals if approval.approval_type in {"code_fix", "test_improvement"}],
+                "prs_opened": False,
+                "auto_merge": False,
+            },
+        ).to_dict()
+        report["policy_decisions"] = policy_decisions
+        report["validations"] = [validation.to_dict() for validation in validations]
+        report["rollback_plans"] = [rollback.to_dict() for rollback in rollback_plans]
         return report

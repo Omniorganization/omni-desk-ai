@@ -34,5 +34,13 @@ def test_daily_learning_job_runs_curator_replay_drift_and_skill_pipeline(tmp_pat
         assert report["replay_report"]["trace_count"] >= 1
         assert any(signal["drift_type"] == "ui_drift" for signal in report["drift_signals"])
         assert report["skill_candidates"]
+        controlled = report["controlled_self_learning"]
+        assert controlled["phase_1"]["system_changes_applied"] is False
+        assert controlled["phase_1"]["findings"]
+        assert controlled["phase_2"]["production_updates_applied"] is False
+        assert controlled["phase_2"]["pending_updates"]
+        assert controlled["phase_3"]["auto_merge"] is False
+        assert controlled["phase_3"]["pr_drafts"]
         assert Path(report["report_path"]).exists()
         assert (tmp_path / "learning_audit.jsonl").exists()
+        assert (tmp_path / "self_learning.sqlite3").exists()
