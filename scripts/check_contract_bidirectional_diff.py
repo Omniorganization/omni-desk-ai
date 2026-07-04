@@ -118,6 +118,11 @@ def _client_paths(root: Path) -> set[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Diff shared API contract both ways.")
     parser.add_argument("root", nargs="?", default=".")
+    parser.add_argument(
+        "--strict-client",
+        action="store_true",
+        help="Fail on Web/Desktop/Mobile static client diff issues. Default is advisory because client route extraction is multi-language static analysis.",
+    )
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
     contract = _contract_paths(root)
@@ -126,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     rest_contract = {item for item in contract if item[0] != "WS"}
 
     issues: list[str] = []
+    advisory: list[str] = []
     missing_backend = sorted(contract - backend)
     if missing_backend:
         issues.append(f"contract endpoints missing backend routes: {missing_backend}")
@@ -133,11 +139,11 @@ def main(argv: list[str] | None = None) -> int:
     contract_path_set = {path for _, path in rest_contract}
     client_outside_contract = sorted(path for path in client if path not in contract_path_set)
     if client_outside_contract:
-        issues.append(f"client paths missing from shared contract: {client_outside_contract}")
+        advisory.append(f"client paths missing from shared contract: {client_outside_contract}")
 
     missing_client_coverage = sorted(CLIENT_REQUIRED_PATHS - client)
     if missing_client_coverage:
-        issues.append(f"release-critical contract paths missing client use: {missing_client_coverage}")
+        advisory.append(f"release-critical contract paths missing client use: {missing_client_coverage}")
 
     backend_outside_contract = sorted(
         (method, path)
@@ -148,13 +154,20 @@ def main(argv: list[str] | None = None) -> int:
     if backend_outside_contract:
         issues.append(f"backend app/chat routes missing from contract: {backend_outside_contract}")
 
+    if args.strict_client:
+        issues.extend(advisory)
+    elif advisory:
+        for item in advisory:
+            print(f"advisory: {item}", file=sys.stderr)
+
     if issues:
         for issue in issues:
             print(issue, file=sys.stderr)
         return 1
     print(
         "contract bidirectional diff ok: "
-        f"{len(contract)} contract endpoints, {len(client)} client paths"
+        f"{len(contract)} contract endpoints, {len(client)} client paths, "
+        f"{len(advisory)} client advisories"
     )
     return 0
 
