@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel>=0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnidesk-policy-engine"
+version = "1.12.7"
+description = "OmniDesk policy engine boundary package"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["omnidesk_policy_engine*"]
