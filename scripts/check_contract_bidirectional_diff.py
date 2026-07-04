@@ -10,6 +10,14 @@ from pathlib import Path
 METHOD_RE = re.compile(r'@app\.(get|post|put|patch|websocket)\("([^"]+)"\)')
 PATH_LITERAL_RE = re.compile(r"['\"`](/(?:app|api/chat)[^'\"`]*)['\"`]")
 OMNI_PROXY_RE = re.compile(r"omniProxy\(['\"`]([^'\"`]+)['\"`]")
+EXECUTABLE_CALL_TOKENS = (
+    "this.request",
+    "_request",
+    "fetch(",
+    "omniProxy(",
+    "gatewayPath",
+    "signRequest(",
+)
 
 CLIENT_REQUIRED_PATHS = {
     "/app/bootstrap",
@@ -41,10 +49,16 @@ SUBSTITUTIONS = {
 }
 
 
-def _normalize_path(value: str) -> str:
-    path = value.split("?", 1)[0]
+def _normalize_path(value: str) -> str | None:
+    if any(ch.isspace() for ch in value) or ";" in value:
+        return None
+    path = value.split("?", 1)[0].rstrip(".,)")
     for needle, replacement in SUBSTITUTIONS.items():
         path = path.replace(needle, replacement)
+    if path == "/app/conversations/{id}/ask":
+        path = "/app/conversations/{conversation_id}/ask"
+    if not path.startswith(("/app", "/api/chat")):
+        return None
     return path
 
 
@@ -67,6 +81,14 @@ def _backend_paths(root: Path) -> set[tuple[str, str]]:
     return paths
 
 
+def _is_executable_client_line(line: str, value: str) -> bool:
+    if "omniProxy(" in line and value.startswith(("/app", "/api/chat")):
+        return True
+    if "gatewayPath" in line and value.startswith("/app/"):
+        return True
+    return any(token in line for token in EXECUTABLE_CALL_TOKENS)
+
+
 def _client_paths(root: Path) -> set[str]:
     bases = [
         root / "apps" / "web-admin-next",
@@ -77,12 +99,17 @@ def _client_paths(root: Path) -> set[str]:
     for base in bases:
         for suffix in ("*.ts", "*.tsx", "*.dart"):
             for path in sorted(base.rglob(suffix)):
-                text = path.read_text(encoding="utf-8")
-                for value in PATH_LITERAL_RE.findall(text):
-                    paths.add(_normalize_path(value))
-                for value in OMNI_PROXY_RE.findall(text):
-                    if value.startswith("/app") or value.startswith("/api/chat"):
-                        paths.add(_normalize_path(value))
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    for value in PATH_LITERAL_RE.findall(line):
+                        if not _is_executable_client_line(line, value):
+                            continue
+                        normalized = _normalize_path(value)
+                        if normalized:
+                            paths.add(normalized)
+                    for value in OMNI_PROXY_RE.findall(line):
+                        normalized = _normalize_path(value)
+                        if normalized:
+                            paths.add(normalized)
     return paths
 
 
