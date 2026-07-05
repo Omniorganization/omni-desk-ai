@@ -41,6 +41,17 @@ jobs:
       - run: python scripts/production_closure_drill.py --root . --contract-only
       - run: python scripts/check_script_executability.py .
       - run: python scripts/check_global_consistency.py .
+      - name: Prepare coordination evidence directory
+        run: mkdir -p "reports/ci/${{ matrix.python-version }}"
+      - run: python scripts/check_feature_stack_boundaries.py .
+      - run: python scripts/check_physical_packages.py .
+      - run: python scripts/check_contract_bidirectional_diff.py .
+      - name: Import graph governance
+        run: |
+          set -o pipefail
+          python scripts/check_import_graph.py . \
+            --write-report "reports/ci/${{ matrix.python-version }}/import-graph.json" \
+            2>&1 | tee "reports/ci/${{ matrix.python-version }}/import-graph.txt"
       - name: Install workflow semantic linters
         run: |
           python -m pip install yamllint
@@ -105,7 +116,8 @@ jobs:
             --log "pytest=reports/ci/${{ matrix.python-version }}/pytest-unit.txt" \
             --log "coverage=reports/ci/${{ matrix.python-version }}/pytest-coverage.txt" \
             --log "coverage_gates=reports/ci/${{ matrix.python-version }}/coverage-gates.txt" \
-            --log "optional_connector_coverage=reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt"
+            --log "optional_connector_coverage=reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt" \
+            --log "import_graph=reports/ci/${{ matrix.python-version }}/import-graph.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

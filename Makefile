@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout release-channel-policy tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate release-external-ga-evidence distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout release-channel-policy global-coordination import-graph physical-packages contract-bidirectional-diff latest-main-ci-evidence tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate release-external-ga-evidence distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
@@ -12,6 +12,7 @@ DISTRIBUTION_PACKAGE_VERSION ?= 1.12.7+root-monorepo-production-ga-candidate
 DISTRIBUTION_PACKAGE_SLUG ?= Omni-desk-AI-1.12.7-root-monorepo-production-ga-candidate
 DISTRIBUTION_SOURCE_COMMIT ?= unknown
 RELEASE_CHANNEL ?= candidate
+
 
 test:
 	PYTHONPATH=. $(PYTEST) -q
@@ -30,12 +31,14 @@ readiness:
 	PYTHONPATH=. $(PYTHON) scripts/check_deployment_readiness.py --compose-file deploy/docker/docker-compose.full.yml
 	PYTHONPATH=. $(PYTHON) scripts/check_supply_chain_standard.py .
 	PYTHONPATH=. $(PYTHON) scripts/check_observability_contract.py .
+	$(MAKE) global-coordination
 
 test-ci:
 	$(PYTHON) -m pip install --require-hashes -r requirements.dev.lock
 	PYTHONPATH=. $(PYTEST) -q -W error --timeout=60 --timeout-method=thread
 	PYTHONPATH=. $(PYTEST) --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json --cov-fail-under=80 -q --timeout=60 --timeout-method=thread
 	PYTHONPATH=. $(PYTHON) scripts/check_coverage_gates.py
+	$(MAKE) global-coordination
 
 init-production-config:
 	$(PYTHON) scripts/init_production_config.py --public-base-url "$(PUBLIC_BASE_URL)" --sandbox-image "$(SANDBOX_IMAGE)" --runner-url "$(RUNNER_URL)"
@@ -53,6 +56,22 @@ monorepo-layout:
 
 release-channel-policy:
 	$(PYTHON) scripts/check_release_channel_policy.py .
+
+global-coordination: import-graph physical-packages contract-bidirectional-diff
+	$(PYTHON) scripts/check_feature_stack_boundaries.py .
+
+import-graph:
+	mkdir -p reports/import-graph
+	$(PYTHON) scripts/check_import_graph.py . --write-report reports/import-graph/import-graph.json
+
+physical-packages:
+	$(PYTHON) scripts/check_physical_packages.py .
+
+contract-bidirectional-diff:
+	$(PYTHON) scripts/check_contract_bidirectional_diff.py .
+
+latest-main-ci-evidence:
+	$(PYTHON) scripts/write_latest_main_ci_evidence.py --output reports/ci/latest-main-ci-evidence.json
 
 production-closure:
 	python scripts/check_kubernetes_contract.py .

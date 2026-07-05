@@ -2,24 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
+from omnidesk_agent.repair_contracts import RepairEvidenceBundle
 
-@dataclass(frozen=True)
-class EvidenceBundle:
-    incident_id: str
-    branch: str
-    tests: tuple[str, ...]
-    gates: tuple[str, ...]
-    rollback_plan: str
-    artifacts: tuple[str, ...] = ()
-    external_evidence_status: str = "blocked_until_attached"
-    artifact_hashes: dict[str, str] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+EvidenceBundle = RepairEvidenceBundle
 
 
 def sha256_file(path: Path) -> str:

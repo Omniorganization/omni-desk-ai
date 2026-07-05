@@ -1,23 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Any
-
+from omnidesk_agent.repair_contracts import PullRequestDraft
 from omnidesk_agent.self_upgrade.evidence_bundle import EvidenceBundle
 from omnidesk_agent.self_upgrade.review_policy import evaluate_repair_policy
-
-
-@dataclass(frozen=True)
-class PullRequestDraft:
-    title: str
-    body: str
-    base: str
-    head: str
-    labels: tuple[str, ...]
-    ready_for_review: bool
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 class PRGenerator:
