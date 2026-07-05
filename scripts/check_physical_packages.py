@@ -14,6 +14,13 @@ PACKAGES = {
     "memory-core": "omnidesk_memory_core",
 }
 
+REQUIRED_BOUNDARY_OWNERS = {
+    "audit-core": (
+        "omnidesk_agent/security/audit_worm.py",
+        "release/production-evidence.manifest.json",
+    ),
+}
+
 REQUIRED_PYPROJECT_TOKENS = [
     "[build-system]",
     "setuptools.build_meta",
@@ -48,6 +55,9 @@ def _check_package(root: Path, slug: str, module: str) -> list[str]:
         for token in ["BOUNDARY_NAME", "OWNED_SOURCE_PATHS", "FORBIDDEN_IMPORT_PREFIXES"]:
             if token not in text:
                 issues.append(f"packages/{slug}: boundary.py missing {token}")
+        for owned_path in REQUIRED_BOUNDARY_OWNERS.get(slug, ()):
+            if owned_path not in text:
+                issues.append(f"packages/{slug}: boundary.py missing owner {owned_path}")
     return issues
 
 

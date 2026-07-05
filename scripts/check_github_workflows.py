@@ -52,6 +52,31 @@ def _check_workflow_call_required_defaults(path: Path, triggers: object) -> bool
     return ok
 
 
+def _check_latest_main_dispatch_guard(path: Path, data: dict, triggers: object) -> bool:
+    if path.name != "latest-main-ci-evidence.yml":
+        return True
+    if not isinstance(triggers, dict) or "workflow_dispatch" not in triggers:
+        return True
+
+    jobs = data.get("jobs")
+    job = jobs.get("latest-main-ci-evidence") if isinstance(jobs, dict) else None
+    if not isinstance(job, dict):
+        print(
+            f"{path}: latest-main-ci-evidence job is missing",
+            file=sys.stderr,
+        )
+        return False
+
+    guard = str(job.get("if", "")).replace(" ", "")
+    if "github.ref_name=='main'" in guard or "github.ref=='refs/heads/main'" in guard:
+        return True
+    print(
+        f"{path}: workflow_dispatch must be guarded to run only on main",
+        file=sys.stderr,
+    )
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     root = Path(argv[0]) if argv else Path(".github/workflows")
     if not root.exists():
@@ -79,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         if not _check_dispatch_input_limit(path, triggers):
             ok = False
         if not _check_workflow_call_required_defaults(path, triggers):
+            ok = False
+        if not _check_latest_main_dispatch_guard(path, data, triggers):
             ok = False
     return 0 if ok else 1
 
