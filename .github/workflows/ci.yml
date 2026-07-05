@@ -45,6 +45,11 @@ jobs:
         run: mkdir -p "reports/ci/${{ matrix.python-version }}"
       - run: python scripts/check_feature_stack_boundaries.py .
       - run: python scripts/check_physical_packages.py .
+      - name: Typed client contract tests
+        run: |
+          set -o pipefail
+          python scripts/check_typed_client_contracts.py . \
+            2>&1 | tee "reports/ci/${{ matrix.python-version }}/typed-client-contracts.txt"
       - run: python scripts/check_contract_bidirectional_diff.py .
       - name: Import graph governance
         run: |
@@ -117,6 +122,7 @@ jobs:
             --log "coverage=reports/ci/${{ matrix.python-version }}/pytest-coverage.txt" \
             --log "coverage_gates=reports/ci/${{ matrix.python-version }}/coverage-gates.txt" \
             --log "optional_connector_coverage=reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt" \
+            --log "typed_client_contracts=reports/ci/${{ matrix.python-version }}/typed-client-contracts.txt" \
             --log "import_graph=reports/ci/${{ matrix.python-version }}/import-graph.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
