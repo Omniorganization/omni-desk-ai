@@ -16,6 +16,9 @@ FOCUS_AREAS = {
         "omnidesk_agent/self_learning/promotion/engine.py",
         "tests/test_controlled_self_learning.py",
     ],
+    "repair_contracts": [
+        "omnidesk_agent/repair_contracts.py",
+    ],
     "ga_evidence": [
         "release/external-ga-evidence.required.json",
         "scripts/check_external_ga_evidence.py",
@@ -48,6 +51,12 @@ FORBIDDEN_SELF_LEARNING_TEXT = {
     "production_updates_applied = True",
 }
 
+FORBIDDEN_LOCAL_REPAIR_DTO_TEXT = {
+    "class SelfLearningEvidenceBundle",
+    "class EvidenceBundle",
+    "class PullRequestDraft",
+}
+
 REQUIRED_SELF_LEARNING_TEXT = {
     "omnidesk_agent/self_learning/policy.py": [
         "stage_1_cannot_apply_system_change",
@@ -59,6 +68,26 @@ REQUIRED_SELF_LEARNING_TEXT = {
     ],
     "omnidesk_agent/self_learning/validator.py": [
         "code repair proposals require regression commands",
+    ],
+}
+
+REQUIRED_REPAIR_CONTRACT_TEXT = {
+    "omnidesk_agent/repair_contracts.py": [
+        "class RepairEvidenceBundle",
+        "class PullRequestDraft",
+        "external_evidence_status",
+        "artifact_hashes",
+        "ready_for_review",
+    ],
+    "omnidesk_agent/self_learning/proposal_generator.py": [
+        "from omnidesk_agent.repair_contracts import PullRequestDraft, RepairEvidenceBundle",
+    ],
+    "omnidesk_agent/self_upgrade/evidence_bundle.py": [
+        "from omnidesk_agent.repair_contracts import RepairEvidenceBundle",
+        "EvidenceBundle = RepairEvidenceBundle",
+    ],
+    "omnidesk_agent/self_upgrade/pr_generator.py": [
+        "from omnidesk_agent.repair_contracts import PullRequestDraft",
     ],
 }
 
@@ -94,6 +123,25 @@ def _check_self_learning(root: Path) -> list[str]:
         for token in tokens:
             if token not in text:
                 issues.append(f"self_learning: missing guard token in {rel}: {token}")
+    return issues
+
+
+def _check_repair_contracts(root: Path) -> list[str]:
+    issues: list[str] = []
+    for rel, tokens in REQUIRED_REPAIR_CONTRACT_TEXT.items():
+        text = _read(root, rel)
+        for token in tokens:
+            if token not in text:
+                issues.append(f"repair_contracts: missing neutral contract token in {rel}: {token}")
+    for rel in [
+        "omnidesk_agent/self_learning/proposal_generator.py",
+        "omnidesk_agent/self_upgrade/evidence_bundle.py",
+        "omnidesk_agent/self_upgrade/pr_generator.py",
+    ]:
+        text = _read(root, rel)
+        for token in FORBIDDEN_LOCAL_REPAIR_DTO_TEXT:
+            if token in text:
+                issues.append(f"repair_contracts: local DTO drift in {rel}: {token}")
     return issues
 
 
@@ -139,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     issues: list[str] = []
     issues.extend(_check_required_paths(root))
     issues.extend(_check_self_learning(root))
+    issues.extend(_check_repair_contracts(root))
     issues.extend(_check_ga_evidence(root))
     issues.extend(_check_tri_app(root))
     if issues:
