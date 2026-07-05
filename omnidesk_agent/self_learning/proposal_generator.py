@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Iterable, Optional
 
+from omnidesk_agent.repair_contracts import PullRequestDraft, RepairEvidenceBundle
 from omnidesk_agent.self_learning.policy import (
     STAGE_CODE_PR,
     STAGE_KNOWLEDGE_PROMPT,
@@ -15,34 +15,6 @@ from omnidesk_agent.self_learning.schemas import (
     LearningFinding,
     LearningProposal,
 )
-
-
-@dataclass(frozen=True)
-class SelfLearningEvidenceBundle:
-    incident_id: str
-    branch: str
-    tests: tuple[str, ...]
-    gates: tuple[str, ...]
-    rollback_plan: str
-    artifacts: tuple[str, ...] = ()
-    external_evidence_status: str = "not_required_for_source_pr"
-    artifact_hashes: dict[str, str] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class PullRequestDraft:
-    title: str
-    body: str
-    base: str
-    head: str
-    labels: tuple[str, ...]
-    ready_for_review: bool
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 class ControlledProposalGenerator:
@@ -76,7 +48,7 @@ class ControlledProposalGenerator:
         branch = proposal.branch_name or ""
         if not branch.startswith("ai/"):
             raise PermissionError("self-learning code repair PRs must use ai/* branches")
-        bundle = SelfLearningEvidenceBundle(
+        bundle = RepairEvidenceBundle(
             incident_id=proposal.proposal_id,
             branch=branch,
             tests=tuple(proposal.test_plan),
@@ -102,7 +74,7 @@ class ControlledProposalGenerator:
         incident_id: str,
         branch: str,
         summary: str,
-        bundle: SelfLearningEvidenceBundle,
+        bundle: RepairEvidenceBundle,
         base: str,
     ) -> PullRequestDraft:
         body = "\n".join(
