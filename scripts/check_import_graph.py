@@ -51,12 +51,35 @@ def _module_name(root: Path, path: Path) -> str:
     return ".".join(parts)
 
 
-def _resolve_relative(module: str, level: int, imported: str | None) -> str:
-    parts = module.split(".")
-    base = parts[: max(0, len(parts) - level)]
+def _package_context(path: Path, module: str) -> str:
+    """Return the package context used by relative imports in this file."""
+    if path.name == "__init__.py":
+        return module
+    return module.rsplit(".", 1)[0]
+
+
+def _resolve_relative(package: str, level: int, imported: str | None) -> str:
+    parts = package.split(".") if package else []
+    if level > 1:
+        parts = parts[: max(0, len(parts) - (level - 1))]
     if imported:
-        base.extend(imported.split("."))
-    return ".".join(base)
+        parts.extend(imported.split("."))
+    return ".".join(parts)
+
+
+def _import_from_targets(node: ast.ImportFrom, path: Path, module: str) -> set[str]:
+    if node.level:
+        base = _resolve_relative(_package_context(path, module), node.level, node.module)
+    else:
+        base = node.module or ""
+    if not base:
+        return set()
+    targets = {base}
+    for alias in node.names:
+        if alias.name == "*":
+            continue
+        targets.add(f"{base}.{alias.name}")
+    return targets
 
 
 def _imports_for(path: Path, module: str) -> set[str]:
@@ -67,10 +90,7 @@ def _imports_for(path: Path, module: str) -> set[str]:
             for alias in node.names:
                 imports.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                imports.add(_resolve_relative(module, node.level, node.module))
-            elif node.module:
-                imports.add(node.module)
+            imports.update(_import_from_targets(node, path, module))
     return {item for item in imports if item.startswith("omnidesk_agent")}
 
 
