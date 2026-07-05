@@ -1,12 +1,48 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Iterable, Optional
 
-from omnidesk_agent.self_learning.policy import STAGE_CODE_PR, STAGE_KNOWLEDGE_PROMPT, STAGE_OBSERVE, SelfLearningBoundaryPolicy
-from omnidesk_agent.self_learning.schemas import LearningDraftArtifact, LearningFinding, LearningProposal
-from omnidesk_agent.self_upgrade.evidence_bundle import EvidenceBundle
-from omnidesk_agent.self_upgrade.pr_generator import PRGenerator, PullRequestDraft
+from omnidesk_agent.self_learning.policy import (
+    STAGE_CODE_PR,
+    STAGE_KNOWLEDGE_PROMPT,
+    STAGE_OBSERVE,
+    SelfLearningBoundaryPolicy,
+)
+from omnidesk_agent.self_learning.schemas import (
+    LearningDraftArtifact,
+    LearningFinding,
+    LearningProposal,
+)
+
+
+@dataclass(frozen=True)
+class SelfLearningEvidenceBundle:
+    incident_id: str
+    branch: str
+    tests: tuple[str, ...]
+    gates: tuple[str, ...]
+    rollback_plan: str
+    artifacts: tuple[str, ...] = ()
+    external_evidence_status: str = "not_required_for_source_pr"
+    artifact_hashes: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PullRequestDraft:
+    title: str
+    body: str
+    base: str
+    head: str
+    labels: tuple[str, ...]
+    ready_for_review: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class ControlledProposalGenerator:
@@ -40,7 +76,7 @@ class ControlledProposalGenerator:
         branch = proposal.branch_name or ""
         if not branch.startswith("ai/"):
             raise PermissionError("self-learning code repair PRs must use ai/* branches")
-        bundle = EvidenceBundle(
+        bundle = SelfLearningEvidenceBundle(
             incident_id=proposal.proposal_id,
             branch=branch,
             tests=tuple(proposal.test_plan),
@@ -48,18 +84,61 @@ class ControlledProposalGenerator:
             rollback_plan=proposal.rollback_plan,
             external_evidence_status="not_required_for_source_pr",
         )
-        draft = PRGenerator().draft(
+        draft = self._draft_pr(
             incident_id=proposal.proposal_id,
             branch=branch,
             summary=proposal.title,
             bundle=bundle,
-            change_types=("code_fix",),
             base=base,
         )
         proposal.pr_draft = draft.to_dict()
         proposal.metadata.setdefault("auto_merge", False)
         proposal.metadata["pr_only"] = True
         return draft
+
+    def _draft_pr(
+        self,
+        *,
+        incident_id: str,
+        branch: str,
+        summary: str,
+        bundle: SelfLearningEvidenceBundle,
+        base: str,
+    ) -> PullRequestDraft:
+        body = "\n".join(
+            [
+                "## Incident",
+                incident_id,
+                "",
+                "## Summary",
+                summary,
+                "",
+                "## Tests",
+                "\n".join(f"- {test}" for test in bundle.tests) or "- Not provided",
+                "",
+                "## Gates",
+                "\n".join(f"- {gate}" for gate in bundle.gates) or "- Not provided",
+                "",
+                "## Rollback Plan",
+                bundle.rollback_plan,
+                "",
+                "## Evidence",
+                f"- External evidence status: {bundle.external_evidence_status}",
+                f"- Artifact hashes: {bundle.artifact_hashes}",
+                "",
+                "## Review Policy",
+                "- Allowed: True",
+                "- Blockers: none",
+            ]
+        )
+        return PullRequestDraft(
+            title=f"[agent-repair] {incident_id}: {summary[:72]}",
+            body=body,
+            base=base,
+            head=branch,
+            labels=("agent-repair", "needs-owner-review"),
+            ready_for_review=True,
+        )
 
     def _knowledge_update(self, finding: LearningFinding, draft: Optional[LearningDraftArtifact]) -> LearningProposal:
         return LearningProposal(
