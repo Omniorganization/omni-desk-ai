@@ -33,6 +33,11 @@ jobs:
           set -o pipefail
           python scripts/check_tri_app_release_readiness.py . --mode source \
             2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/source-readiness.txt"
+      - name: Typed client contract coverage
+        run: |
+          set -o pipefail
+          python scripts/check_typed_client_contracts.py . \
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/typed-client-contracts.txt"
       - run: find . -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
       - name: GA release gate
         run: |

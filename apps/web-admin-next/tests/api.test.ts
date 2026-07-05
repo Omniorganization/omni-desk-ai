@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { OmniAdminApi } from '../lib/api';
 import { resolveGatewayBaseUrl } from '../lib/gateway';
@@ -8,6 +10,105 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+});
+
+type ContractMethod = 'GET' | 'POST';
+type SharedContractEntry = { role: string; signed: readonly string[] };
+type BaseTypedContractCase = {
+  readonly surface: 'web_admin';
+  readonly method: ContractMethod;
+  readonly contractPath: string;
+  readonly clientPath: string;
+  readonly invoke: (api: OmniAdminApi) => Promise<unknown>;
+};
+
+type UnsignedTypedContractCase = BaseTypedContractCase & {
+  readonly signedInProduction?: false;
+  readonly signedPath?: never;
+};
+
+type SignedTypedContractCase = BaseTypedContractCase & {
+  readonly signedInProduction: true;
+  readonly signedPath: string;
+};
+
+type TypedContractCase = UnsignedTypedContractCase | SignedTypedContractCase;
+
+const WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES: readonly TypedContractCase[] = [
+  { surface: 'web_admin', method: 'GET', contractPath: '/app/bootstrap', clientPath: '/api/omni/bootstrap', invoke: (api) => api.bootstrap() },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/devices/register', clientPath: '/api/omni/devices/register', invoke: (api) => api.registerAdminDevice({ deviceId: 'web_1234567890abcdef1234567890abcdef1234', publicKeyPem: '-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----' }) },
+  { surface: 'web_admin', method: 'GET', contractPath: '/app/conversations', clientPath: '/api/omni/conversations', invoke: (api) => api.conversations() },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/conversations', clientPath: '/api/omni/conversations', invoke: (api) => api.createConversation('Typed contract conversation') },
+  { surface: 'web_admin', method: 'GET', contractPath: '/app/conversations/{conversation_id}/messages', clientPath: '/api/omni/conversations/conv-1/messages', invoke: (api) => api.listMessages('conv-1') },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/conversations/{conversation_id}/ask', clientPath: '/api/omni/conversations/conv-1/ask', invoke: (api) => api.askConversation('conv-1', 'hello', 'fast') },
+  { surface: 'web_admin', method: 'GET', contractPath: '/app/approvals', clientPath: '/api/omni/approvals', invoke: (api) => api.approvals() },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/approvals/{approval_id}/decide', clientPath: '/api/omni/approvals/appr-1/decide', signedPath: '/app/approvals/appr-1/decide', signedInProduction: true, invoke: (api) => api.decide('appr-1', 'approved') },
+  { surface: 'web_admin', method: 'GET', contractPath: '/app/notifications', clientPath: '/api/omni/notifications', invoke: (api) => api.notifications() },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/devices/enrollment/start', clientPath: '/api/omni/devices/enrollment/start', invoke: (api) => api.startDeviceEnrollment('web_admin', 'pair-123') },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/devices/enrollment/{enrollment_id}/complete', clientPath: '/api/omni/devices/enrollment/enroll-1/complete', invoke: (api) => api.completeDeviceEnrollment('enroll-1', 'pair-123', { deviceId: 'web_1234567890abcdef1234567890abcdef1234', publicKeyPem: '-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----' }) },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/devices/enrollment/{enrollment_id}/challenge', clientPath: '/api/omni/devices/enrollment/enroll-1/challenge', invoke: (api) => api.issueDeviceChallenge('enroll-1', 'web_1234567890abcdef1234567890abcdef1234') },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/devices/enrollment/{enrollment_id}/verify', clientPath: '/api/omni/devices/enrollment/enroll-1/verify', invoke: (api) => api.verifyDeviceChallenge('enroll-1', 'challenge-1', 'web_1234567890abcdef1234567890abcdef1234', 'base64:sig') },
+];
+
+function loadSharedContractIndex(): Map<string, SharedContractEntry> {
+  const contractPath = join(process.cwd(), '..', 'shared', 'omni-app-api.contract.json');
+  const contract = JSON.parse(readFileSync(contractPath, 'utf8')) as { endpoints: Array<Record<string, unknown>> };
+  return new Map(contract.endpoints.map((endpoint) => [
+    `${String(endpoint.method)} ${String(endpoint.path)}`,
+    {
+      role: String(endpoint.role),
+      signed: Array.isArray(endpoint.signed_device_required_in_production)
+        ? endpoint.signed_device_required_in_production.map(String)
+        : [],
+    },
+  ]));
+}
+
+test('web admin typed client contract cases match shared contract and emitted requests', async () => {
+  const contract = loadSharedContractIndex();
+
+  for (const contractCase of WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES) {
+    const sharedEntry = contract.get(`${contractCase.method} ${contractCase.contractPath}`);
+    assert.ok(sharedEntry, `${contractCase.method} ${contractCase.contractPath} must exist in shared contract`);
+    assert.ok(sharedEntry.role.length > 0, `${contractCase.contractPath} must declare a role`);
+    if (sharedEntry.signed.includes(contractCase.surface)) {
+      assert.equal(contractCase.signedInProduction, true, `${contractCase.contractPath} must be tested as signed in production`);
+      assert.ok(contractCase.signedPath, `${contractCase.contractPath} must expose the canonical signed gateway path`);
+    }
+
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const signedCalls: Array<{ method: string; path: string; body: string }> = [];
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: input.toString(), init });
+      return new Response(JSON.stringify({ ok: true, device: { device_type: 'web_admin' }, approval: { status: 'approved' }, runtime: {}, assistant_message: { content: 'ok' } }), { status: 200 });
+    };
+
+    const api = new OmniAdminApi({
+      csrfToken: 'csrf-token',
+      role: 'owner',
+      deviceId: 'web_signed_device',
+      deviceSigner: async (method, path, body) => {
+        signedCalls.push({ method, path, body });
+        return {
+          'x-omnidesk-device-id': 'web_signed_device',
+          'x-omnidesk-timestamp': '123',
+          'x-omnidesk-nonce': 'nonce-1234567890abcdef',
+          'x-omnidesk-device-signature': 'base64:sig',
+        };
+      },
+    });
+
+    await contractCase.invoke(api);
+    assert.equal(calls.length, 1, `${contractCase.contractPath} should issue one request`);
+    assert.equal(calls[0].url.split('?', 1)[0], contractCase.clientPath);
+    assert.equal(String(calls[0].init?.method ?? 'GET').toUpperCase(), contractCase.method);
+    assert.equal((calls[0].init?.headers as Record<string, string>)['x-csrf-token'], 'csrf-token');
+    if (contractCase.signedInProduction) {
+      assert.deepEqual(signedCalls.map(({ method, path }) => ({ method, path })), [
+        { method: contractCase.method, path: contractCase.signedPath },
+      ]);
+    }
+  }
 });
 
 test('registerAdminDevice uses the server-side proxy and per-install web_admin identity', async () => {

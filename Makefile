@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout release-channel-policy global-coordination import-graph physical-packages contract-bidirectional-diff latest-main-ci-evidence tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate release-external-ga-evidence distribution-ga-preflight
+.PHONY: test test-fast test-security test-strict test-ci readiness init-production-config compose-smoke strict-sandbox-smoke monorepo-layout release-channel-policy global-coordination import-graph physical-packages typed-client-contracts contract-bidirectional-diff latest-main-ci-evidence tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop tri-app-test-flutter tri-app-rust-check tri-app-quality tri-app-release-web tri-app-release-desktop tri-app-release-mobile tri-app-release-builds tri-app-release-preflight ios-real-device-evidence-import tri-app-live-smoke-preflight workflow-governance-preflight distribution-package-manifest package-final-gate external-ga-evidence-audit external-ga-evidence-gate release-external-ga-evidence distribution-ga-preflight
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
@@ -57,7 +57,7 @@ monorepo-layout:
 release-channel-policy:
 	$(PYTHON) scripts/check_release_channel_policy.py .
 
-global-coordination: import-graph physical-packages contract-bidirectional-diff
+global-coordination: import-graph physical-packages typed-client-contracts contract-bidirectional-diff
 	$(PYTHON) scripts/check_feature_stack_boundaries.py .
 
 import-graph:
@@ -66,6 +66,9 @@ import-graph:
 
 physical-packages:
 	$(PYTHON) scripts/check_physical_packages.py .
+
+typed-client-contracts:
+	$(PYTHON) scripts/check_typed_client_contracts.py .
 
 contract-bidirectional-diff:
 	$(PYTHON) scripts/check_contract_bidirectional_diff.py .
@@ -100,7 +103,7 @@ tri-app-test-flutter:
 tri-app-rust-check:
 	cd apps/desktop-tauri/src-tauri && cargo check --locked
 
-tri-app-quality: tri-app-contract tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop
+tri-app-quality: tri-app-contract typed-client-contracts tri-app-test-web tri-app-build-web tri-app-test-desktop tri-app-build-desktop
 	@if command -v flutter >/dev/null; then $(MAKE) tri-app-test-flutter; else echo "flutter not found; skipping Flutter tests"; fi
 	@if command -v cargo >/dev/null; then $(MAKE) tri-app-rust-check; else echo "cargo not found; skipping Tauri Rust check"; fi
 

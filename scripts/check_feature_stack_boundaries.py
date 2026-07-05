@@ -36,6 +36,10 @@ FOCUS_AREAS = {
         "apps/web-admin-next/package.json",
         "apps/desktop-tauri/package.json",
         "apps/mobile-flutter/pubspec.yaml",
+        "apps/web-admin-next/tests/api.test.ts",
+        "apps/desktop-tauri/tests/api.test.ts",
+        "apps/mobile-flutter/test/omni_api_test.dart",
+        "scripts/check_typed_client_contracts.py",
         "tests/test_tri_app_foundation.py",
         ".github/workflows/tri-app-quality.yml",
     ],
@@ -88,6 +92,38 @@ REQUIRED_REPAIR_CONTRACT_TEXT = {
     ],
     "omnidesk_agent/self_upgrade/pr_generator.py": [
         "from omnidesk_agent.repair_contracts import PullRequestDraft",
+    ],
+}
+
+REQUIRED_TYPED_CLIENT_CONTRACT_TEXT = {
+    "scripts/check_typed_client_contracts.py": [
+        "REQUIRED_SURFACE_ROUTES",
+        "TYPED_TEST_FILES",
+        "typed client contract tests verified",
+    ],
+    "apps/web-admin-next/tests/api.test.ts": [
+        "WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES",
+        "readonly TypedContractCase[]",
+    ],
+    "apps/desktop-tauri/tests/api.test.ts": [
+        "DESKTOP_TYPED_CLIENT_CONTRACT_CASES",
+        "readonly TypedContractCase[]",
+    ],
+    "apps/mobile-flutter/test/omni_api_test.dart": [
+        "mobileTypedClientContractCases",
+        "TypedClientContractCase",
+    ],
+    "Makefile": [
+        "typed-client-contracts",
+        "scripts/check_typed_client_contracts.py .",
+    ],
+    ".github/workflows/ci.yml": [
+        "Typed client contract tests",
+        "scripts/check_typed_client_contracts.py .",
+    ],
+    ".github/workflows/tri-app-quality.yml": [
+        "Typed client contract coverage",
+        "scripts/check_typed_client_contracts.py .",
     ],
 }
 
@@ -145,6 +181,16 @@ def _check_repair_contracts(root: Path) -> list[str]:
     return issues
 
 
+def _check_typed_client_contracts(root: Path) -> list[str]:
+    issues: list[str] = []
+    for rel, tokens in REQUIRED_TYPED_CLIENT_CONTRACT_TEXT.items():
+        text = _read(root, rel)
+        for token in tokens:
+            if token not in text:
+                issues.append(f"typed_client_contracts: missing token in {rel}: {token}")
+    return issues
+
+
 def _check_ga_evidence(root: Path) -> list[str]:
     issues: list[str] = []
     required = _read(root, "release/external-ga-evidence.required.json")
@@ -188,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     issues.extend(_check_required_paths(root))
     issues.extend(_check_self_learning(root))
     issues.extend(_check_repair_contracts(root))
+    issues.extend(_check_typed_client_contracts(root))
     issues.extend(_check_ga_evidence(root))
     issues.extend(_check_tri_app(root))
     if issues:
