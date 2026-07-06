@@ -25,64 +25,102 @@
     "mobile",
     "web_admin"
   ],
+  "client_surface_policy": "Each endpoint declares client_surfaces. Typed client contract tests are generated from this field; endpoints with an empty list are server/API-only and must not be required by tri-app clients.",
   "endpoints": [
     {
       "method": "GET",
       "path": "/app/bootstrap",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/devices/register",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
     },
     {
       "method": "GET",
       "path": "/app/conversations",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": [
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/conversations",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/messages",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": [
+        "mobile"
+      ]
     },
     {
       "method": "GET",
       "path": "/app/conversations/{conversation_id}/messages",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/ask",
       "description": "Create a Gateway-audited chat turn, call the configured ModelRouter with task=chat, persist user and assistant messages, and return model metadata without exposing provider credentials to clients.",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/api/chat",
       "description": "Unified non-streaming chat entrypoint for Web, Desktop, Mobile, and API clients. Creates or reuses a conversation, calls the governed ModelRouter with task=chat, persists user/assistant messages, and returns audit trace metadata.",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": []
     },
     {
       "method": "POST",
       "path": "/api/chat/stream",
       "description": "Reserved streaming chat entrypoint. This source-gated candidate fails closed with 501 until streaming transport, audit chunking, and client handling are production-gated.",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": []
     },
     {
       "method": "GET",
       "path": "/app/tasks/{task_id}",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": []
     },
     {
       "method": "POST",
       "path": "/app/tasks/{task_id}/status",
       "role": "operator",
+      "client_surfaces": [
+        "desktop"
+      ],
       "signed_device_required_in_production": [
         "desktop"
       ]
@@ -90,12 +128,19 @@
     {
       "method": "GET",
       "path": "/app/approvals",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": [
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/approvals/{approval_id}/decide",
       "role": "owner",
+      "client_surfaces": [
+        "mobile",
+        "web_admin"
+      ],
       "signed_device_required_in_production": [
         "mobile",
         "web_admin"
@@ -104,12 +149,19 @@
     {
       "method": "GET",
       "path": "/app/notifications",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": [
+        "mobile",
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/runtime/desktop/heartbeat",
       "role": "operator",
+      "client_surfaces": [
+        "desktop"
+      ],
       "signed_device_required_in_production": [
         "desktop"
       ]
@@ -118,6 +170,9 @@
       "method": "POST",
       "path": "/app/runtime/desktop/claim",
       "role": "operator",
+      "client_surfaces": [
+        "desktop"
+      ],
       "signed_device_required_in_production": [
         "desktop"
       ]
@@ -125,27 +180,37 @@
     {
       "method": "GET",
       "path": "/app/sync",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": [
+        "desktop"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/sync",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": []
     },
     {
       "method": "GET",
       "path": "/app/sync/state",
-      "role": "viewer"
+      "role": "viewer",
+      "client_surfaces": []
     },
     {
       "method": "WS",
       "path": "/app/ws",
-      "role": "gateway-protected"
+      "role": "gateway-protected",
+      "client_surfaces": []
     },
     {
       "method": "POST",
       "path": "/app/devices/{device_id}/push-token",
       "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "mobile"
+      ],
       "signed_device_required_in_production": [
         "desktop",
         "mobile"
@@ -154,30 +219,44 @@
     {
       "method": "POST",
       "path": "/app/devices/enrollment/start",
-      "role": "owner"
+      "role": "owner",
+      "client_surfaces": [
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/complete",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/challenge",
       "description": "Issue a nonce challenge for device credential verification.",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": [
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/verify",
       "description": "Verify a signed device challenge and mint a device credential.",
-      "role": "operator"
+      "role": "operator",
+      "client_surfaces": [
+        "web_admin"
+      ]
     },
     {
       "method": "POST",
       "path": "/app/devices/{device_id}/rotate-token",
       "description": "Rotate a device token hash after successful device authentication.",
       "role": "operator",
+      "client_surfaces": [],
       "signed_device_required_in_production": [
         "desktop",
         "mobile",
@@ -189,6 +268,7 @@
       "path": "/app/devices/{device_id}/revoke",
       "description": "Revoke a desktop/mobile/web_admin device credential.",
       "role": "owner",
+      "client_surfaces": [],
       "signed_device_required_in_production": [
         "mobile",
         "web_admin"
@@ -198,7 +278,8 @@
       "method": "POST",
       "path": "/app/push/dispatch",
       "description": "Dispatch pending push outbox items through the configured provider.",
-      "role": "owner"
+      "role": "owner",
+      "client_surfaces": []
     }
   ],
   "shared_objects": [

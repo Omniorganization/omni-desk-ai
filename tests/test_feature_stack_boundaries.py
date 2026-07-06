@@ -15,7 +15,12 @@ def test_typed_client_boundary_accepts_explicit_case_array_annotation(tmp_path: 
     _write(
         tmp_path,
         "scripts/check_typed_client_contracts.py",
-        "REQUIRED_SURFACE_ROUTES\nTYPED_TEST_FILES\ntyped client contract tests verified\n",
+        "TYPED_TEST_FILES\nclient_surfaces\ncontract-declared\ntyped client contract tests verified from contract client_surfaces\n",
+    )
+    _write(
+        tmp_path,
+        "apps/shared/omni-app-api.contract.json",
+        '{"client_surface_policy": "fixture", "endpoints": [{"client_surfaces": []}]}\n',
     )
     _write(
         tmp_path,

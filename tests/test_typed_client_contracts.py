@@ -16,16 +16,11 @@ def _write_contract(root: Path, endpoints: list[dict[str, object]]) -> None:
     _write(
         root,
         "apps/shared/omni-app-api.contract.json",
-        json.dumps({"endpoints": endpoints}),
+        json.dumps({"surfaces": ["desktop", "mobile", "web_admin"], "endpoints": endpoints}),
     )
 
 
 def test_typed_client_contract_coverage_is_method_specific(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        checker,
-        "REQUIRED_SURFACE_ROUTES",
-        {"web_admin": (("GET", "/app/conversations"), ("POST", "/app/conversations"))},
-    )
     monkeypatch.setattr(
         checker,
         "TYPED_TEST_FILES",
@@ -34,8 +29,8 @@ def test_typed_client_contract_coverage_is_method_specific(tmp_path: Path, monke
     _write_contract(
         tmp_path,
         [
-            {"method": "GET", "path": "/app/conversations", "role": "operator"},
-            {"method": "POST", "path": "/app/conversations", "role": "operator"},
+            {"method": "GET", "path": "/app/conversations", "role": "operator", "client_surfaces": ["web_admin"]},
+            {"method": "POST", "path": "/app/conversations", "role": "operator", "client_surfaces": ["web_admin"]},
         ],
     )
     _write(
@@ -47,21 +42,11 @@ def test_typed_client_contract_coverage_is_method_specific(tmp_path: Path, monke
     )
 
     assert checker._check_contract_coverage(tmp_path) == [
-        "typed client contract: web_admin test does not cover POST /app/conversations"
+        "typed client contract: web_admin test does not cover contract-declared POST /app/conversations"
     ]
 
 
 def test_typed_client_contract_signed_coverage_is_endpoint_specific(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        checker,
-        "REQUIRED_SURFACE_ROUTES",
-        {
-            "mobile": (
-                ("POST", "/app/approvals/{approval_id}/decide"),
-                ("POST", "/app/devices/{device_id}/push-token"),
-            )
-        },
-    )
     monkeypatch.setattr(
         checker,
         "TYPED_TEST_FILES",
@@ -74,12 +59,14 @@ def test_typed_client_contract_signed_coverage_is_endpoint_specific(tmp_path: Pa
                 "method": "POST",
                 "path": "/app/approvals/{approval_id}/decide",
                 "role": "operator",
+                "client_surfaces": ["mobile"],
                 "signed_device_required_in_production": ["mobile"],
             },
             {
                 "method": "POST",
                 "path": "/app/devices/{device_id}/push-token",
                 "role": "operator",
+                "client_surfaces": ["mobile"],
                 "signed_device_required_in_production": ["mobile"],
             },
         ],

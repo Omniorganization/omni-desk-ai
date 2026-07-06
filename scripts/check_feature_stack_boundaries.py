@@ -96,10 +96,15 @@ REQUIRED_REPAIR_CONTRACT_TEXT = {
 }
 
 REQUIRED_TYPED_CLIENT_CONTRACT_TEXT = {
+    "apps/shared/omni-app-api.contract.json": [
+        "client_surface_policy",
+        "client_surfaces",
+    ],
     "scripts/check_typed_client_contracts.py": [
-        "REQUIRED_SURFACE_ROUTES",
         "TYPED_TEST_FILES",
-        "typed client contract tests verified",
+        "client_surfaces",
+        "contract-declared",
+        "typed client contract tests verified from contract client_surfaces",
     ],
     "apps/web-admin-next/tests/api.test.ts": [
         "WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES",
@@ -216,9 +221,9 @@ def _check_tri_app(root: Path) -> list[str]:
     issues: list[str] = []
     readiness = _read(root, "scripts/check_tri_app_release_readiness.py")
     contract = _read(root, "apps/shared/omni-app-api.contract.json")
-    for token in ["desktop", "mobile", "web_admin"]:
+    for token in ["desktop", "mobile", "web_admin", "client_surface_policy", "client_surfaces"]:
         if token not in contract:
-            issues.append(f"tri_app: shared contract misses surface {token}")
+            issues.append(f"tri_app: shared contract misses token {token}")
     for token in ["flutter build appbundle --release", "cargo check --locked", "npm ci"]:
         if token not in readiness:
             issues.append(f"tri_app: readiness checker misses release gate {token}")

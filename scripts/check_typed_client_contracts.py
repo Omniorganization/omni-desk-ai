@@ -6,48 +6,7 @@ import json
 import re
 import sys
 from pathlib import Path
-
-REQUIRED_SURFACE_ROUTES: dict[str, tuple[tuple[str, str], ...]] = {
-    "web_admin": (
-        ("GET", "/app/bootstrap"),
-        ("POST", "/app/devices/register"),
-        ("GET", "/app/conversations"),
-        ("POST", "/app/conversations"),
-        ("GET", "/app/conversations/{conversation_id}/messages"),
-        ("POST", "/app/conversations/{conversation_id}/ask"),
-        ("GET", "/app/approvals"),
-        ("POST", "/app/approvals/{approval_id}/decide"),
-        ("GET", "/app/notifications"),
-        ("POST", "/app/devices/enrollment/start"),
-        ("POST", "/app/devices/enrollment/{enrollment_id}/complete"),
-        ("POST", "/app/devices/enrollment/{enrollment_id}/challenge"),
-        ("POST", "/app/devices/enrollment/{enrollment_id}/verify"),
-    ),
-    "desktop": (
-        ("GET", "/app/bootstrap"),
-        ("POST", "/app/devices/register"),
-        ("POST", "/app/conversations"),
-        ("GET", "/app/conversations/{conversation_id}/messages"),
-        ("POST", "/app/conversations/{conversation_id}/ask"),
-        ("POST", "/app/runtime/desktop/heartbeat"),
-        ("POST", "/app/runtime/desktop/claim"),
-        ("POST", "/app/tasks/{task_id}/status"),
-        ("GET", "/app/sync"),
-        ("POST", "/app/devices/{device_id}/push-token"),
-        ("POST", "/app/devices/enrollment/{enrollment_id}/complete"),
-    ),
-    "mobile": (
-        ("GET", "/app/bootstrap"),
-        ("POST", "/app/devices/register"),
-        ("POST", "/app/conversations"),
-        ("GET", "/app/conversations/{conversation_id}/messages"),
-        ("POST", "/app/conversations/{conversation_id}/messages"),
-        ("POST", "/app/conversations/{conversation_id}/ask"),
-        ("POST", "/app/approvals/{approval_id}/decide"),
-        ("POST", "/app/devices/{device_id}/push-token"),
-        ("GET", "/app/notifications"),
-    ),
-}
+from typing import Any
 
 TYPED_TEST_FILES = {
     "web_admin": {
@@ -69,9 +28,15 @@ FIELD_RE = re.compile(
 )
 
 
-def _load_contract(root: Path) -> dict[tuple[str, str], dict]:
+def _load_contract(root: Path) -> tuple[set[str], list[dict[str, Any]]]:
     contract = json.loads((root / "apps/shared/omni-app-api.contract.json").read_text(encoding="utf-8"))
-    return {(item["method"], item["path"]): item for item in contract.get("endpoints", [])}
+    surfaces = contract.get("surfaces") or []
+    endpoints = contract.get("endpoints") or []
+    if not isinstance(surfaces, list) or not all(isinstance(item, str) for item in surfaces):
+        raise ValueError("apps/shared/omni-app-api.contract.json surfaces must be a list of strings")
+    if not isinstance(endpoints, list) or not all(isinstance(item, dict) for item in endpoints):
+        raise ValueError("apps/shared/omni-app-api.contract.json endpoints must be a list of objects")
+    return set(surfaces), endpoints
 
 
 def _case_blocks(text: str) -> list[str]:
@@ -90,7 +55,10 @@ def _case_blocks(text: str) -> list[str]:
         index += 1
         while index < len(lines):
             block.append(lines[index])
-            if lines[index].strip() in {"),", ");"}:
+            if lines[index].strip() in {
+                "),",
+                ");",
+            }:
                 break
             index += 1
         blocks.append("\n".join(block))
@@ -124,11 +92,29 @@ def _extract_typed_cases(text: str) -> dict[tuple[str, str], dict[str, str | boo
     return cases
 
 
+def _endpoint_key(endpoint: dict[str, Any]) -> tuple[str, str] | None:
+    method = endpoint.get("method")
+    path = endpoint.get("path")
+    if not isinstance(method, str) or not isinstance(path, str):
+        return None
+    return method, path
+
+
+def _string_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return value
+
+
 def _check_contract_coverage(root: Path) -> list[str]:
     issues: list[str] = []
-    contract = _load_contract(root)
-    for surface, routes in REQUIRED_SURFACE_ROUTES.items():
-        test_spec = TYPED_TEST_FILES[surface]
+    declared_surfaces, endpoints = _load_contract(root)
+    unknown_test_surfaces = set(TYPED_TEST_FILES) - declared_surfaces
+    if unknown_test_surfaces:
+        issues.append(f"typed client contract: test config references unknown surfaces {sorted(unknown_test_surfaces)}")
+
+    typed_cases_by_surface: dict[str, dict[tuple[str, str], dict[str, str | bool]]] = {}
+    for surface, test_spec in TYPED_TEST_FILES.items():
         test_path = root / test_spec["path"]
         if not test_path.exists():
             issues.append(f"typed client contract: missing {test_spec['path']}")
@@ -136,24 +122,51 @@ def _check_contract_coverage(root: Path) -> list[str]:
         text = test_path.read_text(encoding="utf-8")
         if test_spec["marker"] not in text:
             issues.append(f"typed client contract: missing marker {test_spec['marker']} in {test_spec['path']}")
-        typed_cases = _extract_typed_cases(text)
-        for method, path in routes:
-            if (method, path) not in contract:
-                issues.append(f"typed client contract: shared contract missing {method} {path}")
+        typed_cases_by_surface[surface] = _extract_typed_cases(text)
+
+    contract_required: dict[str, set[tuple[str, str]]] = {surface: set() for surface in TYPED_TEST_FILES}
+    signed_required: dict[str, set[tuple[str, str]]] = {surface: set() for surface in TYPED_TEST_FILES}
+    for endpoint in endpoints:
+        key = _endpoint_key(endpoint)
+        if key is None:
+            issues.append(f"typed client contract: endpoint must declare string method/path: {endpoint}")
+            continue
+        client_surfaces = _string_list(endpoint.get("client_surfaces"))
+        if client_surfaces is None:
+            issues.append(f"typed client contract: {key[0]} {key[1]} must declare client_surfaces list")
+            continue
+        unknown_client_surfaces = set(client_surfaces) - declared_surfaces
+        if unknown_client_surfaces:
+            issues.append(f"typed client contract: {key[0]} {key[1]} has unknown client_surfaces {sorted(unknown_client_surfaces)}")
+        signed_surfaces = _string_list(endpoint.get("signed_device_required_in_production") or [])
+        if signed_surfaces is None:
+            issues.append(f"typed client contract: {key[0]} {key[1]} signed_device_required_in_production must be a list when present")
+            signed_surfaces = []
+        unknown_signed_surfaces = set(signed_surfaces) - declared_surfaces
+        if unknown_signed_surfaces:
+            issues.append(f"typed client contract: {key[0]} {key[1]} has unknown signed surfaces {sorted(unknown_signed_surfaces)}")
+        for surface in client_surfaces:
+            if surface in contract_required:
+                contract_required[surface].add(key)
+                if surface in signed_surfaces:
+                    signed_required[surface].add(key)
+
+    for surface, required_cases in contract_required.items():
+        typed_cases = typed_cases_by_surface.get(surface, {})
+        for method, path in sorted(required_cases):
             if (method, path) not in typed_cases:
-                issues.append(f"typed client contract: {surface} test does not cover {method} {path}")
-        for (method, path), entry in contract.items():
-            signed_surfaces = set(entry.get("signed_device_required_in_production") or [])
-            if surface in signed_surfaces and (method, path) in routes:
-                if typed_cases.get((method, path), {}).get("signedInProduction") is not True:
-                    issues.append(
-                        f"typed client contract: {surface} must assert signed production route {method} {path}"
-                    )
+                issues.append(f"typed client contract: {surface} test does not cover contract-declared {method} {path}")
+        for method, path in sorted(signed_required[surface]):
+            if typed_cases.get((method, path), {}).get("signedInProduction") is not True:
+                issues.append(f"typed client contract: {surface} must assert signed production route {method} {path}")
+        for method, path in sorted(typed_cases):
+            if (method, path) not in required_cases:
+                issues.append(f"typed client contract: {surface} has typed test for route not declared in client_surfaces: {method} {path}")
     return issues
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify typed Web/Desktop/Mobile client contract tests cover shared API routes.")
+    parser = argparse.ArgumentParser(description="Verify typed Web/Desktop/Mobile client contract tests cover contract-declared API routes.")
     parser.add_argument("root", nargs="?", default=".")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
@@ -162,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
         for issue in issues:
             print(issue, file=sys.stderr)
         return 1
-    print("typed client contract tests verified")
+    print("typed client contract tests verified from contract client_surfaces")
     return 0
 
 
