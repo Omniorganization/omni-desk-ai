@@ -30,7 +30,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     OMNIDESK_VERSION=$OMNIDESK_VERSION \
     OMNIDESK_BUILD_SHA=$OMNIDESK_BUILD_SHA \
     OMNIDESK_ARTIFACT_SHA256=$OMNIDESK_ARTIFACT_SHA256 \
-    OMNIDESK_IMAGE_DIGEST=$OMNIDESK_IMAGE_DIGEST
+    OMNIDESK_IMAGE_DIGEST=$OMNIDESK_IMAGE_DIGEST \
+    OMNIDESK_CONFIG=/data/config.production.yaml
 WORKDIR /app
 COPY requirements.bootstrap.lock requirements.runtime.lock requirements.enterprise.lock /tmp/
 COPY --from=builder /build/dist/*.whl /tmp/
@@ -43,8 +44,7 @@ RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.b
     && mkdir -p /data \
     && chown -R omnidesk:omnidesk /data /app
 USER omnidesk
-ENV OMNIDESK_CONFIG=/data/config.yaml
 EXPOSE 18789
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18789/ready', timeout=3)"
-CMD ["omnidesk", "--config", "/data/config.yaml", "serve", "--host", "0.0.0.0"]
+CMD ["omnidesk", "--config", "/data/config.production.yaml", "serve", "--host", "0.0.0.0"]
