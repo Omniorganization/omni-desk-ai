@@ -11,10 +11,13 @@ REQUIRED_FILES = (
     ".github/workflows/remote-evidence-pipeline.yml",
     ".github/workflows/real-ga-evidence-control-plane.yml",
     ".github/workflows/bigseller-real-contract.yml",
+    ".github/workflows/team-governance.yml",
     "scripts/check_live_branch_protection_contract.py",
     "scripts/check_main_verification_artifact_live.py",
     "scripts/check_model_live_smoke_evidence.py",
     "scripts/check_external_ga_evidence.py",
+    "scripts/check_real_ga_complete.py",
+    "scripts/check_team_governance_contract.py",
     "scripts/import_external_ga_evidence.py",
     "scripts/assemble_external_ga_evidence_bundle.py",
     "scripts/check_bigseller_route_enablement.py",
@@ -27,7 +30,7 @@ WORKFLOW_SNIPPETS = (
     "name: Real GA Readiness",
     "check_live_branch_protection_contract.py",
     "check_main_verification_artifact_live.py",
-    "check_external_ga_evidence.py",
+    "check_real_ga_complete.py",
     "check_model_live_smoke_evidence.py",
     "readiness_channel",
     "external_evidence_run_id",
@@ -44,7 +47,7 @@ REMOTE_EVIDENCE_WORKFLOW_SNIPPETS = (
     "check_release_configuration.py",
     "--scope external-ga-evidence",
     "import_external_ga_evidence.py",
-    "check_external_ga_evidence.py",
+    "check_real_ga_complete.py",
     "external-ga-evidence",
 )
 
@@ -56,7 +59,7 @@ CONTROL_PLANE_WORKFLOW_SNIPPETS = (
     "Kubernetes/systemd",
     "assemble_external_ga_evidence_bundle.py",
     "import_external_ga_evidence.py",
-    "check_external_ga_evidence.py",
+    "check_real_ga_complete.py",
     "real-ga-readiness.yml",
     "external-ga-evidence",
 )
@@ -75,6 +78,8 @@ BIGSELLER_WORKFLOW_SNIPPETS = (
 
 MANIFEST_REQUIRED_KEYS = (
     "live_branch_protection_control_plane",
+    "team_governance_control_plane",
+    "native_signed_artifact_bindings",
     "model_live_smoke",
     "bigseller_live_smoke",
     "native_build",
@@ -86,13 +91,12 @@ MANIFEST_REQUIRED_KEYS = (
     "self_healing_failure_injection",
 )
 
-EXTERNAL_CHECK_SNIPPETS = (
-    '"live_branch_protection"',
-    '"model_live_smoke"',
-    '"bigseller_live_smoke"',
-    "github-branch-protection-live.json",
-    "model-live-smoke.json",
-    "integrations/bigseller-live-smoke.json",
+COMPLETE_GA_CHECK_SNIPPETS = (
+    "team_governance_control_plane",
+    "native_signed_artifact_bindings",
+    "github-team-governance-live.json",
+    "native-signed-artifact-binding.json",
+    "check_external_ga_evidence",
 )
 
 
@@ -117,82 +121,34 @@ def audit(root: Path) -> dict[str, object]:
     try:
         workflow = _read(root, ".github/workflows/real-ga-readiness.yml")
         for snippet in WORKFLOW_SNIPPETS:
-            _check(
-                snippet in workflow,
-                failures,
-                f"real-ga-readiness workflow missing snippet: {snippet}",
-            )
-        _check(
-            "--audit-only" in workflow,
-            failures,
-            "real-ga-readiness workflow must support audit-only candidate runs",
-        )
-        _check(
-            "workflow_call" in workflow,
-            failures,
-            "real-ga-readiness workflow must support control-plane workflow_call reuse",
-        )
-        _check(
-            "contents: read" in workflow and "actions: read" in workflow,
-            failures,
-            "real-ga-readiness workflow must use least-privilege read permissions",
-        )
+            _check(snippet in workflow, failures, f"real-ga-readiness workflow missing snippet: {snippet}")
+        _check("--audit-only" in workflow, failures, "real-ga-readiness workflow must support audit-only candidate runs")
+        _check("workflow_call" in workflow, failures, "real-ga-readiness workflow must support control-plane workflow_call reuse")
+        _check("contents: read" in workflow and "actions: read" in workflow, failures, "real-ga-readiness workflow must use least-privilege read permissions")
     except FileNotFoundError:
         pass
 
     try:
-        remote_evidence_workflow = _read(
-            root, ".github/workflows/remote-evidence-pipeline.yml"
-        )
+        remote_evidence_workflow = _read(root, ".github/workflows/remote-evidence-pipeline.yml")
         for snippet in REMOTE_EVIDENCE_WORKFLOW_SNIPPETS:
-            _check(
-                snippet in remote_evidence_workflow,
-                failures,
-                f"remote-evidence-pipeline workflow missing snippet: {snippet}",
-            )
-        _check(
-            "contents: read" in remote_evidence_workflow
-            and "actions: read" in remote_evidence_workflow,
-            failures,
-            "remote-evidence-pipeline workflow must use least-privilege read permissions",
-        )
+            _check(snippet in remote_evidence_workflow, failures, f"remote-evidence-pipeline workflow missing snippet: {snippet}")
+        _check("contents: read" in remote_evidence_workflow and "actions: read" in remote_evidence_workflow, failures, "remote-evidence-pipeline workflow must use least-privilege read permissions")
     except FileNotFoundError:
         pass
 
     try:
-        control_plane_workflow = _read(
-            root, ".github/workflows/real-ga-evidence-control-plane.yml"
-        )
+        control_plane_workflow = _read(root, ".github/workflows/real-ga-evidence-control-plane.yml")
         for snippet in CONTROL_PLANE_WORKFLOW_SNIPPETS:
-            _check(
-                snippet in control_plane_workflow,
-                failures,
-                f"real-ga-evidence-control-plane workflow missing snippet: {snippet}",
-            )
-        _check(
-            "contents: read" in control_plane_workflow
-            and "actions: read" in control_plane_workflow,
-            failures,
-            "real-ga-evidence-control-plane workflow must use least-privilege read permissions",
-        )
+            _check(snippet in control_plane_workflow, failures, f"real-ga-evidence-control-plane workflow missing snippet: {snippet}")
+        _check("contents: read" in control_plane_workflow and "actions: read" in control_plane_workflow, failures, "real-ga-evidence-control-plane workflow must use least-privilege read permissions")
     except FileNotFoundError:
         pass
 
     try:
-        bigseller_workflow = _read(
-            root, ".github/workflows/bigseller-real-contract.yml"
-        )
+        bigseller_workflow = _read(root, ".github/workflows/bigseller-real-contract.yml")
         for snippet in BIGSELLER_WORKFLOW_SNIPPETS:
-            _check(
-                snippet in bigseller_workflow,
-                failures,
-                f"bigseller-real-contract workflow missing snippet: {snippet}",
-            )
-        _check(
-            "contents: read" in bigseller_workflow,
-            failures,
-            "bigseller-real-contract workflow must use least-privilege read permissions",
-        )
+            _check(snippet in bigseller_workflow, failures, f"bigseller-real-contract workflow missing snippet: {snippet}")
+        _check("contents: read" in bigseller_workflow, failures, "bigseller-real-contract workflow must use least-privilege read permissions")
     except FileNotFoundError:
         pass
 
@@ -200,82 +156,49 @@ def audit(root: Path) -> dict[str, object]:
         manifest = json.loads(_read(root, "release/production-evidence.manifest.json"))
         external = manifest.get("external_evidence_required") or {}
         for key in MANIFEST_REQUIRED_KEYS:
-            _check(
-                key in external,
-                failures,
-                f"production evidence manifest missing external requirement: {key}",
-            )
-        _check(
-            manifest.get("status") == "source_gate_ready_external_evidence_blocked",
-            failures,
-            "manifest must remain external-evidence blocked until real evidence passes",
-        )
-        _check(
-            "main_verification_live_artifact" in manifest,
-            failures,
-            "manifest must declare live main verification artifact gate",
-        )
-        _check(
-            "bigseller_route_enablement" in manifest,
-            failures,
-            "manifest must declare BigSeller route enablement gate",
-        )
-        _check(
-            "bigseller_real_contract_workflow" in manifest,
-            failures,
-            "manifest must declare BigSeller real contract workflow",
-        )
+            _check(key in external, failures, f"production evidence manifest missing external requirement: {key}")
+        _check(manifest.get("status") == "source_gate_ready_external_evidence_blocked", failures, "manifest must remain external-evidence blocked until real evidence passes")
+        _check("team_governance_contract" in manifest, failures, "manifest must declare team governance contract")
+        _check("native_signed_artifact_binding" in manifest, failures, "manifest must declare native signed artifact binding gate")
+        _check("main_verification_live_artifact" in manifest, failures, "manifest must declare live main verification artifact gate")
+        _check("bigseller_route_enablement" in manifest, failures, "manifest must declare BigSeller route enablement gate")
+        _check("bigseller_real_contract_workflow" in manifest, failures, "manifest must declare BigSeller real contract workflow")
     except Exception as exc:
         failures.append(f"could not validate production evidence manifest: {exc}")
 
     try:
-        external_check = _read(root, "scripts/check_external_ga_evidence.py")
-        for snippet in EXTERNAL_CHECK_SNIPPETS:
-            _check(
-                snippet in external_check,
-                failures,
-                f"external evidence checker missing snippet: {snippet}",
-            )
+        complete_check = _read(root, "scripts/check_real_ga_complete.py")
+        for snippet in COMPLETE_GA_CHECK_SNIPPETS:
+            _check(snippet in complete_check, failures, f"complete Real GA checker missing snippet: {snippet}")
     except FileNotFoundError:
         pass
 
     try:
         release_policy = _read(root, ".github/workflows/release-policy.yml")
-        _check(
-            "check_real_ga_readiness_contract.py" in release_policy,
-            failures,
-            "release policy must enforce real GA readiness source contract",
-        )
-        _check(
-            "check_bigseller_route_enablement.py" in release_policy,
-            failures,
-            "release policy must enforce BigSeller route enablement source contract",
-        )
+        _check("check_real_ga_readiness_contract.py" in release_policy, failures, "release policy must enforce real GA readiness source contract")
+        _check("check_team_governance_contract.py" in release_policy, failures, "release policy must enforce team governance source contract")
+        _check("check_bigseller_route_enablement.py" in release_policy, failures, "release policy must enforce BigSeller route enablement source contract")
+        _check("check_real_ga_complete.py" in release_policy, failures, "release policy must enforce complete Real GA evidence contract")
     except FileNotFoundError:
         pass
 
     try:
         main_verification = _read(root, ".github/workflows/main-verification.yml")
-        _check(
-            "check_real_ga_readiness_contract.py" in main_verification,
-            failures,
-            "main verification must enforce real GA readiness source contract",
-        )
+        _check("check_real_ga_readiness_contract.py" in main_verification, failures, "main verification must enforce real GA readiness source contract")
+        _check("native-signed-artifact-binding.json" in main_verification, failures, "main verification must emit native signed artifact binding evidence")
     except FileNotFoundError:
         pass
 
     return {
-        "schema": "omnidesk-real-ga-readiness-contract/v3",
+        "schema": "omnidesk-real-ga-readiness-contract/v4",
         "status": "passed" if not failures else "failed",
         "failures": failures,
-        "boundary": "This source contract verifies that real-GA collection and validation gates exist. It does not fabricate or replace external evidence.",
+        "boundary": "This source contract verifies that complete real-GA collection and validation gates exist. It does not fabricate or replace external evidence.",
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Validate Real GA readiness source contracts."
-    )
+    parser = argparse.ArgumentParser(description="Validate Real GA readiness source contracts.")
     parser.add_argument("root", nargs="?", default=".")
     parser.add_argument("--write-report", default="")
     args = parser.parse_args(argv)
@@ -286,17 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         if not out.is_absolute():
             out = root / out
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(
-            json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    print(
-        json.dumps(
-            {"status": report["status"], "failure_count": len(report["failures"])},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
+        out.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"status": report["status"], "failure_count": len(report["failures"])}, ensure_ascii=False, sort_keys=True))
     for failure in report["failures"]:
         print(f"BLOCKER {failure}", file=sys.stderr)
     return 0 if report["status"] == "passed" else 1

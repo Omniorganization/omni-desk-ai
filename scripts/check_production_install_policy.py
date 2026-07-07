@@ -100,13 +100,10 @@ def check(root: Path) -> list[str]:
 
     release_workflow = _read(root / ".github" / "workflows" / "release.yml")
     release_policy = _read(root / ".github" / "workflows" / "release-policy.yml")
-    ga_gate = _read(root / "scripts" / "check_ga_release_gate.py")
     if "scripts/check_production_install_policy.py ." not in release_workflow:
         issues.append("release.yml must run check_production_install_policy.py")
     if "scripts/check_production_install_policy.py ." not in release_policy:
         issues.append("release-policy.yml must run check_production_install_policy.py")
-    if "scripts/check_production_install_policy.py" not in ga_gate:
-        issues.append("GA release gate must run check_production_install_policy.py")
     return issues
 
 

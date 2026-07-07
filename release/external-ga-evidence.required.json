@@ -14,8 +14,14 @@
       "signed-artifacts/desktop-macos-notarized.json",
       "signed-artifacts/desktop-windows-signed.json"
     ],
+    "native_signed_artifact_bindings": [
+      "control-plane/native-signed-artifact-binding.json"
+    ],
     "live_branch_protection": [
       "control-plane/github-branch-protection-live.json"
+    ],
+    "team_governance_control_plane": [
+      "control-plane/github-team-governance-live.json"
     ],
     "model_live_smoke": [
       "model/model-live-smoke.json"
@@ -38,9 +44,10 @@
     ]
   },
   "source_gates": {
+    "team_governance_contract": "scripts/check_team_governance_contract.py .",
     "bigseller_route_enablement": "scripts/check_bigseller_route_enablement.py .",
     "bigseller_real_contract_workflow": ".github/workflows/bigseller-real-contract.yml",
-    "external_ga_evidence": "scripts/check_external_ga_evidence.py ."
+    "external_ga_evidence": "scripts/check_real_ga_complete.py ."
   },
-  "policy": "Every file must be produced by the relevant CI, signer, push provider, approved integration, staging cluster, or operations drill. Placeholder/mock/example values are rejected. BigSeller live smoke evidence must come from an approved BigSeller staging or production integration, not from the mock adapter."
+  "policy": "Every file must be produced by the relevant CI, signer, push provider, approved integration, staging cluster, operations drill, live GitHub control-plane probe, or Main Verification evidence binder. Placeholder, mock, sample, handwritten pass files, unresolved GitHub teams, personal CODEOWNERS fallbacks, and unbound native/signed artifacts are rejected. BigSeller live smoke evidence must come from an approved BigSeller staging or production integration, not from the mock adapter."
 }

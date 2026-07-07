@@ -24,6 +24,11 @@ def _contains(root: Path, rel: str, *needles: str) -> bool:
     return all(needle in text for needle in needles)
 
 
+def _contains_any(root: Path, rel: str, needles: tuple[str, ...]) -> bool:
+    text = _read(root, rel)
+    return any(needle in text for needle in needles)
+
+
 def _file_exists(root: Path, rel: str) -> bool:
     return (root / rel).exists()
 
@@ -61,7 +66,11 @@ def _security_supply_chain(root: Path) -> list[tuple[str, bool]]:
         ("security workflow runs attack surface checker", _contains(root, ".github/workflows/security.yml", "check_security_attack_surface.py .")),
         ("supply chain standard checker exists", _file_exists(root, "scripts/check_supply_chain_standard.py")),
         ("production install policy checker exists", _file_exists(root, "scripts/check_production_install_policy.py")),
-        ("release workflow uses external evidence gate", _contains(root, ".github/workflows/release.yml", "check_external_ga_evidence.py", "write_real_ga_evidence_summary.py")),
+        (
+            "release workflow uses external evidence gate",
+            _contains_any(root, ".github/workflows/release.yml", ("check_external_ga_evidence.py", "check_real_ga_complete.py"))
+            and _contains(root, ".github/workflows/release.yml", "write_real_ga_evidence_summary.py"),
+        ),
         ("AGENTS forbid fabricated evidence", _contains(root, "AGENTS.md", "Do not fabricate release evidence")),
     ]
 

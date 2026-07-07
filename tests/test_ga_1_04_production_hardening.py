@@ -307,4 +307,6 @@ def test_ga_release_gate_script_is_wired_into_release_workflows() -> None:
     script = Path("scripts/check_ga_release_gate.py").read_text(encoding="utf-8")
     assert "python scripts/check_ga_release_gate.py ." in release
     assert "python scripts/check_ga_release_gate.py ." in tri_app
-    assert "Helm requires pipeline-injected final image digest" in script
+    assert 'BASE_EXTERNAL_EVIDENCE_GATE = "check_external_ga_evidence.py"' in script
+    assert 'COMPLETE_REAL_GA_GATE = "check_real_ga_complete.py"' in script
+    assert 'REAL_GA_STATUS = "blocked_missing_external_evidence"' in script

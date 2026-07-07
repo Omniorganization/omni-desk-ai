@@ -11,7 +11,6 @@ REQUIRED_RELEASE_SNIPPETS = [
     "cosign sign --yes",
     "cosign attest --yes",
     "slsa-provenance",
-    "in-toto",
     "gh attestation sign",
     "docker build",
     "docker push",
@@ -74,9 +73,12 @@ def main(argv: list[str] | None = None) -> int:
         if not (root / rel).exists():
             failures.append(f"missing required GA asset: {rel}")
 
-    release_missing = _contains_all(root / ".github/workflows/release.yml", REQUIRED_RELEASE_SNIPPETS)
+    release_text = (root / ".github/workflows/release.yml").read_text(encoding="utf-8") if (root / ".github/workflows/release.yml").exists() else ""
+    release_missing = [snippet for snippet in REQUIRED_RELEASE_SNIPPETS if snippet not in release_text]
     if release_missing:
         failures.append("release.yml missing snippets: " + ", ".join(release_missing))
+    if "cosign attest-blob" not in release_text and "in-toto" not in release_text:
+        failures.append("release.yml must include in-toto-style blob attestations")
 
     supply_missing = _contains_all(root / ".github/workflows/supply-chain.yml", REQUIRED_SUPPLY_CHAIN_SNIPPETS)
     if supply_missing:

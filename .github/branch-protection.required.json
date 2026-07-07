@@ -22,6 +22,7 @@
     "Docker Image Scan",
     "Tri-App Quality Gate",
     "Main Verification",
+    "Team Governance",
     "Self Upgrade Gate",
     "Source Maturity Closure",
     "P0 P1 P2 Feasible Closure",
@@ -40,6 +41,7 @@
     "mobile-ios-simulator",
     "backend-and-contract",
     "main-verification",
+    "team-governance",
     "security-attack-surface",
     "source-maturity-closure",
     "feasible-closure",
@@ -63,9 +65,18 @@
     "require_enforce_admins": true,
     "require_linear_history": true
   },
+  "team_governance": {
+    "required_for_customer_distribution_ga": true,
+    "source_contract": ".github/team-governance.required.json",
+    "live_evidence": "release/external-evidence/control-plane/github-team-governance-live.json",
+    "require_organization_owner": true,
+    "require_resolved_github_teams": true,
+    "forbid_personal_owner_fallback_for_real_ga": true
+  },
   "distribution_ga_policy": {
     "require_main_verification_artifact": true,
     "require_main_verification_live_artifact": true,
+    "require_team_codeowners": true,
     "require_external_ga_evidence_passed": true,
     "forbid_mock_or_sample_evidence": true
   }

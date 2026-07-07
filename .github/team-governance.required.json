@@ -1,0 +1,31 @@
+{
+  "schema": "omnidesk-team-governance/v1",
+  "required_for_customer_distribution_ga": true,
+  "current_repository_owner_type": "User",
+  "required_repository_owner_type": "Organization",
+  "personal_owner_fallback_allowed_for_source_candidate": true,
+  "personal_owner_fallback_forbidden_for_real_ga": true,
+  "codeowners_file": ".github/CODEOWNERS",
+  "migration_blocker": "Repository must be transferred from the personal owner yinyufan0813-cmyk to an approved GitHub organization before customer-distribution Real GA. GitHub teams are only enforceable for organization-owned repositories.",
+  "required_organization": "omnidesk-ai",
+  "required_teams": [
+    {
+      "slug": "omnidesk-maintainers",
+      "required_paths": ["*"]
+    },
+    {
+      "slug": "release-owners",
+      "required_paths": [".github/workflows/", "scripts/", "release/", "omnidesk_agent/self_upgrade/"]
+    },
+    {
+      "slug": "security-owners",
+      "required_paths": [".github/workflows/", "release/", "omnidesk_agent/security/", "omnidesk_agent/sandbox/", "omnidesk_agent/plugins/", "omnidesk_agent/self_upgrade/"]
+    },
+    {
+      "slug": "platform-owners",
+      "required_paths": ["deploy/", "omnidesk_agent/sandbox/"]
+    }
+  ],
+  "live_evidence_required_file": "release/external-evidence/control-plane/github-team-governance-live.json",
+  "live_evidence_policy": "Real GA requires a live GitHub API report proving owner_type=Organization, all required teams exist, CODEOWNERS references resolved teams, branch protection requires CODEOWNERS review, and no personal-owner fallback is active."
+}
