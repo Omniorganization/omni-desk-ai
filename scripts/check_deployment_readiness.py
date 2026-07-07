@@ -17,6 +17,7 @@ REQUIRED_ENV = [
     "OMNIDESK_POSTGRES_DSN",
 ]
 DIGEST_RE = re.compile(r"@sha256:[a-f0-9]{64}")
+PRODUCTION_CONFIG_PATH = "/data/config.production.yaml"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             issues.append("app deployment must not mount /var/run/docker.sock")
         for required in [
             "OMNIDESK_ENV: production",
+            f"OMNIDESK_CONFIG: {PRODUCTION_CONFIG_PATH}",
             "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET",
             "OMNIDESK_SANDBOX_REQUIRE_HMAC",
             "OMNIDESK_SANDBOX_IMAGE_ALLOWLIST",
@@ -54,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
         ]:
             if required not in text:
                 issues.append(f"compose file missing {required}")
+        if "OMNIDESK_CONFIG: /data/config.yaml" in text:
+            issues.append("production compose must not point OMNIDESK_CONFIG at the dev config path")
         if "OMNIDESK_SANDBOX_ALLOWED_IMAGE" in text:
             issues.append("legacy OMNIDESK_SANDBOX_ALLOWED_IMAGE must not be used; use OMNIDESK_SANDBOX_IMAGE_ALLOWLIST")
         if "/ready" not in text:
@@ -80,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
             issues.append("Dockerfile must not install PostgreSQL dependencies outside hash-locked lockfiles")
         if "/ready" not in dtext:
             issues.append("Dockerfile HEALTHCHECK must use /ready")
+        if f"OMNIDESK_CONFIG={PRODUCTION_CONFIG_PATH}" not in dtext:
+            issues.append("Dockerfile must default OMNIDESK_CONFIG to the production config path")
+        if f"--config\", \"{PRODUCTION_CONFIG_PATH}\"" not in dtext:
+            issues.append("Dockerfile CMD must serve with the production config path")
+        if "/data/config.yaml" in dtext:
+            issues.append("Dockerfile must not use the ambiguous dev config path in production runtime")
 
     if issues:
         for issue in issues:
