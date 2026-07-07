@@ -65,8 +65,8 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "release_channel" in workflow
     assert "RELEASE_CHANNEL" in workflow
     assert '[[ "$RELEASE_CHANNEL" == "real-ga" ]]' in workflow
-    assert "check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.7.json" in workflow
-    assert "check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json" in workflow
+    assert "check_real_ga_complete.py . --write-report release/real-ga-evidence-audit-1.12.7.json" in workflow
+    assert "check_real_ga_complete.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json" in workflow
     assert "write_real_ga_evidence_summary.py" in workflow
     assert "dist/external-ga-evidence-summary.json" in workflow
     assert "scripts/check_production_install_policy.py ." in workflow
@@ -88,7 +88,7 @@ def test_real_ga_evidence_control_plane_wires_external_providers_to_readiness():
     assert "staging_operations_evidence_artifact_name" not in workflow
     assert "scripts/assemble_external_ga_evidence_bundle.py" in workflow
     assert "scripts/import_external_ga_evidence.py" in workflow
-    assert "scripts/check_external_ga_evidence.py" in workflow
+    assert "scripts/check_real_ga_complete.py" in workflow
     assert "uses: ./.github/workflows/real-ga-readiness.yml" in workflow
     assert "external_evidence_run_id: ${{ github.run_id }}" in workflow
 

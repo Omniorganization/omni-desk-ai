@@ -76,7 +76,7 @@ jobs:
               (
                   path
                   for path in candidates
-                  if any((path / marker).exists() for marker in ("native-build", "mobile-real-device", "signed-artifacts", "drills"))
+                  if any((path / marker).exists() for marker in ("native-build", "mobile-real-device", "signed-artifacts", "drills", "control-plane"))
               ),
               raw_root,
           )
@@ -133,7 +133,7 @@ jobs:
           python scripts/check_model_live_smoke_evidence.py . \
             $audit_flag \
             --write-report dist/evidence/model-live-smoke-check.json
-      - name: Validate external GA evidence set
+      - name: Validate complete Real GA evidence set
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
         run: |
@@ -142,7 +142,7 @@ jobs:
           if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
             audit_flag="--audit-only"
           fi
-          python scripts/check_external_ga_evidence.py . \
+          python scripts/check_real_ga_complete.py . \
             $audit_flag \
             --write-report dist/evidence/external-ga-evidence-audit.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

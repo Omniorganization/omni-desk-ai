@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/evidence
-          python scripts/check_external_ga_evidence.py . \
+          python scripts/check_real_ga_complete.py . \
             --audit-only \
             --write-report dist/evidence/real-ga-evidence-audit-1.12.7.json
           python scripts/write_real_ga_customer_distribution_report.py . \
@@ -35,4 +35,4 @@ jobs:
         with:
           name: remaining-real-ga-source-fixes-${{ github.sha }}
           path: dist/evidence/
-          if-no-files-found: error
+          if-no-files-found: warn

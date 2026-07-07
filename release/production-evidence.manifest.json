@@ -8,12 +8,15 @@
     "kubernetes_source_contract": "required",
     "docker_production_config_validation": "required",
     "security_attack_surface_gate": "required",
+    "team_governance_contract": "required",
     "real_ga_readiness_contract": "required",
     "bigseller_connector_contract": "required",
     "bigseller_route_enablement": "required",
     "bigseller_real_contract_workflow": "required",
     "live_branch_protection_contract": "required",
     "model_live_smoke_contract": "required",
+    "complete_real_ga_evidence_wrapper": "required",
+    "native_signed_artifact_binding_contract": "required",
     "pytest_chunked_full_suite": "required",
     "release_hygiene": "required",
     "tri_app_runtime_evidence": "required",
@@ -46,12 +49,30 @@
     "contract_check": "scripts/check_branch_protection_contract.py .",
     "required_for_customer_distribution_ga": true
   },
+  "team_governance_contract": {
+    "schema": "omnidesk-team-governance/v1",
+    "policy_file": ".github/team-governance.required.json",
+    "contract_check": "scripts/check_team_governance_contract.py .",
+    "workflow": ".github/workflows/team-governance.yml",
+    "live_evidence_file": "release/external-evidence/control-plane/github-team-governance-live.json",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Source contract only. Customer-distribution Real GA requires a live GitHub control-plane report proving the repository is organization-owned, required teams exist, CODEOWNERS resolves to teams, branch protection requires CODEOWNERS review, admins are enforced, and no personal fallback owner is active."
+  },
   "live_branch_protection_control_plane": {
     "schema": "omnidesk-live-branch-protection/v2",
     "contract_check": "scripts/check_live_branch_protection_contract.py . --repository $GITHUB_REPOSITORY --write-report release/external-evidence/control-plane/github-branch-protection-live.json",
     "workflow": ".github/workflows/real-ga-readiness.yml",
     "required_for_customer_distribution_ga": true,
     "boundary": "Live GitHub control-plane verification only; it checks required checks, strict status, code owner review, signed commits, linear history, and admin enforcement. It does not replace signed artifacts, push, soak, rollback, backup/restore, or failure-injection evidence."
+  },
+  "native_signed_artifact_binding": {
+    "schema": "omnidesk-native-signed-artifact-binding/v1",
+    "evidence_file": "release/external-evidence/control-plane/native-signed-artifact-binding.json",
+    "main_verification_artifact_file": "dist/evidence/native-signed-artifact-binding.json",
+    "workflow": ".github/workflows/main-verification.yml",
+    "contract_check": "scripts/check_real_ga_complete.py . --write-report dist/evidence/external-ga-evidence-audit.json",
+    "required_for_customer_distribution_ga": true,
+    "boundary": "Main Verification records the native-build and signed-artifact evidence paths and hashes for the current commit. Real GA requires all four native build evidence files and all four signed artifact evidence files to be present and bound."
   },
   "security_attack_surface_gate": {
     "schema": "omnidesk-security-attack-surface/v1",
@@ -77,15 +98,15 @@
   "bigseller_real_contract_workflow": {
     "schema": "omnidesk-bigseller-real-contract-workflow/v1",
     "workflow": ".github/workflows/bigseller-real-contract.yml",
-    "candidate_check": "scripts/check_external_ga_evidence.py . --audit-only --write-report dist/evidence/external-ga-evidence-audit.json",
-    "real_ga_check": "scripts/run_bigseller_live_smoke.py --output release/external-evidence/integrations/bigseller-live-smoke.json && scripts/check_external_ga_evidence.py . --write-report dist/evidence/external-ga-evidence-audit.json",
+    "candidate_check": "scripts/check_real_ga_complete.py . --audit-only --write-report dist/evidence/external-ga-evidence-audit.json",
+    "real_ga_check": "scripts/run_bigseller_live_smoke.py --output release/external-evidence/integrations/bigseller-live-smoke.json && scripts/check_real_ga_complete.py . --write-report dist/evidence/external-ga-evidence-audit.json",
     "required_for_customer_distribution_ga": true,
     "boundary": "Candidate mode audits source wiring; real-ga mode fails closed unless approved BigSeller live inputs are provided by the operator environment."
   },
   "bigseller_live_smoke_evidence": {
     "schema": "omnidesk-bigseller-live-smoke/v1",
     "evidence_file": "release/external-evidence/integrations/bigseller-live-smoke.json",
-    "contract_check": "scripts/check_external_ga_evidence.py . --audit-only --write-report /tmp/external-ga-evidence-contract.json",
+    "contract_check": "scripts/check_real_ga_complete.py . --audit-only --write-report /tmp/external-ga-evidence-contract.json",
     "run_script": "scripts/run_bigseller_live_smoke.py --output release/external-evidence/integrations/bigseller-live-smoke.json",
     "import_script": "scripts/import_bigseller_live_smoke_evidence.py /path/to/operator-produced-bigseller-live-smoke.json",
     "required_for_customer_distribution_ga": true,
@@ -97,9 +118,10 @@
     "artifact_name_pattern": "main-verification-evidence-${commit_sha}",
     "evidence_file": "main-verification-evidence.json",
     "artifact_manifest_file": "main-verification-artifact.json",
+    "native_signed_artifact_binding_file": "native-signed-artifact-binding.json",
     "evidence_digest_algorithm": "sha256",
     "required_for_customer_distribution_ga": true,
-    "policy": "Every protected main merge commit must have a successful main-verification workflow artifact whose evidence digest is bound to the merge commit and workflow run id."
+    "policy": "Every protected main merge commit must have a successful main-verification workflow artifact whose evidence digest, native signed artifact binding status, source commit and workflow run id are bound to the merge commit."
   },
   "main_verification_live_artifact": {
     "schema": "omnidesk-main-verification-live-artifact/v1",
@@ -111,7 +133,9 @@
   "external_evidence_required": {
     "native_build": "true Flutter/Rust/Tauri native build evidence with artifact references and sha256 checks",
     "signed_artifacts": "true Android/iOS/Desktop signed artifacts, including macOS notarization and platform signature verification",
+    "native_signed_artifact_bindings": "Main Verification artifact must bind native-build and signed-artifact evidence paths, sha256 values, source commit, workflow run id, and Real GA summary path",
     "live_branch_protection_control_plane": "live GitHub branch-protection API report matching .github/branch-protection.required.json",
+    "team_governance_control_plane": "live GitHub API report proving Organization owner, resolved teams, team CODEOWNERS, enforced code-owner review, and no personal fallback",
     "model_live_smoke": "live model Q&A smoke proving non-empty response, trace, audit event, cost ledger, and budget enforcement",
     "bigseller_live_smoke": "true BigSeller staging smoke proving auth, order list, inventory list, webhook signature, replay guard, trace, audit, and no secret leakage",
     "main_verification_live_artifact": "successful post-merge Main Verification run with unexpired commit-addressed evidence artifact",
@@ -133,5 +157,5 @@
     "desktop_native_signed_artifacts": "must include platform-specific signed macOS/Windows/Linux artifacts before customer distribution",
     "device_signature_live_rollout": "must verify real desktop/mobile challenge verification and signed-request enforcement in staging"
   },
-  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_external_ga_evidence.py and scripts/check_main_verification_artifact_live.py to pass against real external signer, registry, store, staging, push, approved integration, and operations evidence."
+  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_real_ga_complete.py and scripts/check_main_verification_artifact_live.py to pass against real external signer, registry, store, staging, push, approved integration, GitHub organization/team control-plane, and operations evidence."
 }

@@ -52,9 +52,11 @@ def main(argv: list[str] | None = None) -> int:
 
     guide = _read(root / "docs" / "REAL_EXTERNAL_EVIDENCE_COMPLETION_GUIDE_1.12.7.md", issues)
     for term in (
-        "python scripts/check_external_ga_evidence.py . --write-report",
+        "python scripts/check_real_ga_complete.py . --write-report",
         "Native builds",
         "Signed artifacts",
+        "Team governance",
+        "Native signed artifact binding",
         "Push delivery",
         "Operations drills",
         "customer-distribution Real GA",
@@ -66,8 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     workflow_text = _read(workflow, issues)
     if "check_remaining_real_evidence_source_fixes.py" not in workflow_text:
         issues.append("remaining real evidence source fixes workflow must run this gate")
-    if "check_external_ga_evidence.py" not in workflow_text or "--audit-only" not in workflow_text:
-        issues.append("workflow must write a candidate external evidence audit without claiming Real GA")
+    if "check_real_ga_complete.py" not in workflow_text or "--audit-only" not in workflow_text:
+        issues.append("workflow must write a candidate complete Real GA evidence audit without claiming Real GA")
 
     if issues:
         for issue in issues:

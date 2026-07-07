@@ -60,14 +60,14 @@ jobs:
             --expected-version "${{ inputs.expected_version }}" \
             --copy \
             --write-report release/external-ga-evidence-import-report.json
-      - name: Validate imported external evidence gate
+      - name: Validate imported complete Real GA evidence gate
         run: |
           set -euo pipefail
           if [[ "${{ inputs.readiness_channel }}" == "real-ga" ]]; then
-            python scripts/check_external_ga_evidence.py . \
+            python scripts/check_real_ga_complete.py . \
               --write-report dist/external-ga-evidence-audit.json
           else
-            python scripts/check_external_ga_evidence.py . \
+            python scripts/check_real_ga_complete.py . \
               --audit-only \
               --write-report dist/external-ga-evidence-audit.json
           fi

@@ -235,6 +235,7 @@ jobs:
             python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"TRI_APP_LIVE_SMOKE_REPORT_PATH is not set"}; Path("dist/tri-app-live-smoke-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/tri-app-live-smoke-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
           fi
       - run: python scripts/check_workflow_governance.py . --require-real-workflows
+      - run: python scripts/check_team_governance_contract.py .
       - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
       - run: |
           python scripts/check_lock_hashes.py requirements.lock
@@ -245,13 +246,13 @@ jobs:
           python scripts/check_lock_hashes.py requirements.enterprise.lock
       - run: python scripts/check_production_install_policy.py .
       - run: python scripts/check_ga_release_gate.py .
-      - name: Run external GA evidence gate
+      - name: Run complete Real GA evidence gate
         run: |
           set -euo pipefail
           if [[ "$RELEASE_CHANNEL" == "real-ga" ]]; then
-            python scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.7.json
+            python scripts/check_real_ga_complete.py . --write-report release/real-ga-evidence-audit-1.12.7.json
           elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
-            python scripts/check_external_ga_evidence.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json
+            python scripts/check_real_ga_complete.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json
           else
             echo "release_channel must be candidate or real-ga" >&2
             exit 64
@@ -340,7 +341,6 @@ jobs:
             cosign sign-blob --yes "$artifact" --output-signature "$artifact.cosign.sig" --output-certificate "$artifact.cosign.pem"
           done
       - name: Cosign attest SBOM and SLSA provenance
-        # in-toto attestation envelope
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |

@@ -75,4 +75,6 @@ def test_clean_zip_script_is_non_mutating_and_excludes_generated_artifacts(tmp_p
 
 def test_ga_release_gate_allows_live_checkout_vcs_hygiene():
     gate = Path("scripts/check_ga_release_gate.py").read_text(encoding="utf-8")
-    assert '"--allow-vcs"' in gate
+    assert "Final GA release metadata meta-gate" in gate
+    assert "release metadata must include final OCI image digest" in gate
+    assert "defers source policy checks to dedicated workflow steps" in gate

@@ -14,6 +14,7 @@ REQUIRED_STATUS_CHECKS = {
     "Docker Image Scan",
     "Tri-App Quality Gate",
     "Main Verification",
+    "Team Governance",
     "Self Upgrade Gate",
     "Source Maturity Closure",
 }
@@ -31,6 +32,7 @@ REQUIRED_JOBS = {
     "mobile-ios-simulator",
     "backend-and-contract",
     "main-verification",
+    "team-governance",
     "security-attack-surface",
     "source-maturity-closure",
 }
@@ -91,9 +93,18 @@ def main(argv: list[str] | None = None) -> int:
     _check(merge_policy.get("require_enforce_admins") is True, "merge policy must enforce branch protection for admins", failures)
     _check(merge_policy.get("require_linear_history") is True, "merge policy must require linear history", failures)
 
+    team_policy = contract.get("team_governance") or {}
+    _check(team_policy.get("required_for_customer_distribution_ga") is True, "team governance must be required for customer-distribution GA", failures)
+    _check(team_policy.get("source_contract") == ".github/team-governance.required.json", "team governance source contract must be bound", failures)
+    _check(team_policy.get("live_evidence") == "release/external-evidence/control-plane/github-team-governance-live.json", "team governance live evidence path must be bound", failures)
+    _check(team_policy.get("require_organization_owner") is True, "team governance must require organization owner", failures)
+    _check(team_policy.get("require_resolved_github_teams") is True, "team governance must require resolved GitHub teams", failures)
+    _check(team_policy.get("forbid_personal_owner_fallback_for_real_ga") is True, "team governance must forbid personal owner fallback for Real GA", failures)
+
     distribution_policy = contract.get("distribution_ga_policy") or {}
     _check(distribution_policy.get("require_main_verification_artifact") is True, "distribution GA must require main verification artifact", failures)
     _check(distribution_policy.get("require_main_verification_live_artifact") is True, "distribution GA must require live main verification artifact", failures)
+    _check(distribution_policy.get("require_team_codeowners") is True, "distribution GA must require team CODEOWNERS", failures)
     _check(distribution_policy.get("require_external_ga_evidence_passed") is True, "distribution GA must require external evidence to pass", failures)
     _check(distribution_policy.get("forbid_mock_or_sample_evidence") is True, "distribution GA must forbid mock/sample evidence", failures)
 
