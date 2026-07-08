@@ -39,6 +39,14 @@ models:
     vision: vision
     private: local
     summarize: {primary: deepseek, fallback: [fast, local], max_retries: 1}
+    profile_acl:
+      roles:
+        viewer: [fast, local]
+        operator: [fast, planner, vision, local, deepseek, qwen_dashscope, qwen_dashscope_sg]
+        admin: ["*"]
+        owner: ["*"]
+      high_cost_profiles: [code]
+      approval_metadata_key: approved_model_profiles
   profiles:
     fast: {enabled: true, provider: openai, model: gpt-5.1-mini, api_key_env: OPENAI_API_KEY, max_output_tokens: 800, temperature: 0.2}
     planner: {enabled: true, provider: openai, model: gpt-5.1, api_key_env: OPENAI_API_KEY, max_output_tokens: 1600, temperature: 0.2}
@@ -178,41 +186,3 @@ channels:
   x:
     enabled: false
     bearer_token_env: X_BEARER_TOKEN
-    api_key_env: X_API_KEY
-    api_secret_env: X_API_SECRET
-    access_token_env: X_ACCESS_TOKEN
-    access_secret_env: X_ACCESS_SECRET
-    webhook_crc_token_env: X_WEBHOOK_CRC_TOKEN
-    allowed_user_ids: []
-  gmail:
-    enabled: false
-    credentials_file: ~/.omnidesk/google/credentials.json
-    token_file: ~/.omnidesk/google/gmail_token.json
-    allowed_senders: []
-    readonly: false
-  chrome:
-    enabled: true
-    devtools_host: 127.0.0.1
-    devtools_port: 9222
-    allowed_origins: []
-  ui_bridge:
-    enabled: true
-    require_foreground_confirmation: true
-    allowed_apps:
-      - WhatsApp
-      - WhatsApp Business
-      - WeChat
-      - DingTalk
-      - Lark
-      - Feishu
-      - Xiaohongshu
-      - LINE
-      - X
-      - Telegram
-      - Facebook
-      - Instagram
-      - Google Chrome
-      - Gmail
-      - Chrome
-      - Safari
-      - Edge
