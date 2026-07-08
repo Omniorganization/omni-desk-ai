@@ -7,6 +7,7 @@ from omnidesk_agent.config import ModelProfileConfig, ModelsConfig
 from omnidesk_agent.core.token_budget import TokenBudgetManager
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
 from omnidesk_agent.models.cost_store import ModelCostStore
+from omnidesk_agent.models.pricing import ModelPricingTable
 from omnidesk_agent.models.router import ModelRouter
 
 
@@ -36,6 +37,14 @@ class PassingProvider:
 
 class OpenAIPassingProvider(PassingProvider):
     provider_name = "openai"
+
+
+class DeepSeekPassingProvider(PassingProvider):
+    provider_name = "deepseek"
+
+
+class DashScopePassingProvider(PassingProvider):
+    provider_name = "dashscope"
 
 
 def test_model_router_falls_back_after_primary_failure(monkeypatch, tmp_path: Path):
@@ -179,6 +188,42 @@ def test_model_router_uses_server_pricing_for_budget_precheck(monkeypatch, tmp_p
         assert "actor model budget exceeded" in str(exc)
     else:
         raise AssertionError("expected server-side projected cost to block the request")
+
+
+def test_external_provider_pricing_is_nonzero_for_budget_guardrails():
+    pricing = ModelPricingTable()
+
+    assert pricing.estimate(provider="deepseek", model="deepseek-v4-pro", input_tokens=1000, output_tokens=1000) > 0
+    assert pricing.estimate(provider="deepseek", model="unknown", input_tokens=1000, output_tokens=1000) > 0
+    assert pricing.estimate(provider="dashscope", model="qwen-plus", input_tokens=1000, output_tokens=1000) > 0
+    assert pricing.estimate(provider="qwen", model="qwen-plus", input_tokens=1000, output_tokens=1000) > 0
+
+
+def test_live_validation_acl_allows_deepseek_and_dashscope_profiles(tmp_path: Path):
+    cfg = ModelsConfig(
+        default="fast",
+        profiles={
+            "fast": ModelProfileConfig(provider="openai", model="gpt-5.1-mini", api_key_env=None),
+            "local": ModelProfileConfig(provider="ollama", model="qwen2.5-coder:7b", api_key_env=None, base_url="http://127.0.0.1:11434"),
+            "deepseek": ModelProfileConfig(provider="deepseek", model="deepseek-v4-pro", api_key_env=None),
+            "qwen_dashscope": ModelProfileConfig(provider="dashscope", model="qwen-plus", api_key_env=None),
+        },
+        routing={
+            "chat": {"primary": "deepseek", "fallback": ["fast", "local"], "max_retries": 0},
+            "profile_acl": {
+                "roles": {
+                    "viewer": ["fast", "local"],
+                    "operator": ["fast", "planner", "vision", "local", "deepseek", "qwen_dashscope"],
+                    "owner": ["*"],
+                },
+                "high_cost_profiles": ["code"],
+            },
+        },
+    )
+    router = ModelRouter(cfg, TokenBudgetManager(tmp_path / "tokens.sqlite3"))
+
+    assert router.route_plan("chat", {"profile": "deepseek"}).profiles == ["deepseek"]
+    assert router.route_plan("chat", {"profile": "qwen_dashscope"}).profiles == ["qwen_dashscope"]
 
 
 def test_model_router_records_server_estimated_cost_when_provider_omits_cost(monkeypatch, tmp_path: Path):
