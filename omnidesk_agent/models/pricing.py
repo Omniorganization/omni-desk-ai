@@ -49,6 +49,14 @@ DEFAULT_PRICES: dict[tuple[str, str], ModelPrice] = {
     ("openai", "gpt-4.1-mini"): ModelPrice(input_per_million_usd=0.40, output_per_million_usd=1.60),
     ("openai", "gpt-4o"): ModelPrice(input_per_million_usd=2.50, output_per_million_usd=10.00),
     ("openai", "gpt-4o-mini"): ModelPrice(input_per_million_usd=0.15, output_per_million_usd=0.60),
+    # Non-OpenAI routed production profiles use explicit non-zero fallback
+    # estimates so budget enforcement and ledgers do not silently record zero
+    # when OpenAI-compatible providers omit `cost_usd` in the response usage.
+    ("deepseek", "deepseek-v4-pro"): ModelPrice(input_per_million_usd=1.00, output_per_million_usd=4.00),
+    ("deepseek", "*"): ModelPrice(input_per_million_usd=1.00, output_per_million_usd=4.00),
+    ("dashscope", "qwen-plus"): ModelPrice(input_per_million_usd=0.50, output_per_million_usd=2.00),
+    ("dashscope", "*"): ModelPrice(input_per_million_usd=0.50, output_per_million_usd=2.00),
+    ("qwen", "*"): ModelPrice(input_per_million_usd=0.50, output_per_million_usd=2.00),
     ("ollama", "*"): ModelPrice(input_per_million_usd=0.0, output_per_million_usd=0.0),
     ("local", "*"): ModelPrice(input_per_million_usd=0.0, output_per_million_usd=0.0),
 }
