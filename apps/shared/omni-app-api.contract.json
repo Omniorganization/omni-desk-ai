@@ -38,6 +38,50 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/app/projects",
+      "description": "List user-created projects in the caller organization for Web Admin, Desktop, and Mobile project synchronization.",
+      "role": "viewer",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/app/projects",
+      "description": "Create a user-owned project and emit a project.created sync event. No default projects are provisioned by the Gateway.",
+      "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/app/projects/{project_id}",
+      "description": "Rename or update metadata for a user-created project within the caller organization.",
+      "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/app/projects/{project_id}",
+      "description": "Soft-delete a user-created project and emit a project.deleted sync event.",
+      "role": "operator",
+      "client_surfaces": [
+        "desktop",
+        "mobile",
+        "web_admin"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/app/devices/register",
       "role": "operator",
@@ -285,6 +329,7 @@
   "shared_objects": [
     "Organization",
     "UserProfile",
+    "ProjectRecord",
     "DeviceRecord",
     "ConversationRecord",
     "MessageRecord",

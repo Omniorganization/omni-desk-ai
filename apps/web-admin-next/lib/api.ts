@@ -10,6 +10,13 @@ export interface WebAdminDeviceRegistration {
   publicKeyPem: string;
 }
 
+export interface ProjectPayload {
+  name?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  archived?: boolean;
+}
+
 export interface SessionOptions {
   baseUrl?: string;
   token?: string;
@@ -74,6 +81,32 @@ export class OmniAdminApi {
   approvals() { return this.request<any>('/api/omni/approvals?status=pending'); }
   notifications() { return this.request<any>('/api/omni/notifications?audience=web_admin'); }
   conversations() { return this.request<any>('/api/omni/conversations'); }
+
+  projects() { return this.request<any>('/api/omni/projects'); }
+  createProject(name: string, description = '', metadata: Record<string, unknown> = {}) {
+    const session = this.session;
+    return this.request<any>('/api/omni/projects', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        description,
+        metadata,
+        ...(session.deviceId ? { source_device_id: session.deviceId } : {})
+      })
+    }, `web-admin-project-create-${name.length}-${Date.now()}`);
+  }
+  updateProject(projectId: string, payload: ProjectPayload) {
+    return this.request<any>(`/api/omni/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    }, `web-admin-project-update-${projectId}-${Date.now()}`);
+  }
+  deleteProject(projectId: string) {
+    return this.request<any>(`/api/omni/projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE'
+    }, `web-admin-project-delete-${projectId}-${Date.now()}`);
+  }
+
   createConversation(title: string) {
     return this.request<any>('/api/omni/conversations', {
       method: 'POST',

@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-METHOD_RE = re.compile(r'@app\.(get|post|put|patch|websocket)\("([^"]+)"\)')
+METHOD_RE = re.compile(r'@app\.(get|post|put|patch|delete|websocket)\("([^"]+)"\)')
 PATH_LITERAL_RE = re.compile(r"['\"`](/(?:app|api/chat)[^'\"`]*)['\"`]")
 OMNI_PROXY_RE = re.compile(r"omniProxy\(['\"`]([^'\"`]+)['\"`]")
 EXECUTABLE_CALL_TOKENS = (
@@ -21,6 +21,7 @@ EXECUTABLE_CALL_TOKENS = (
 
 CLIENT_REQUIRED_PATHS = {
     "/app/bootstrap",
+    "/app/projects",
     "/app/devices/register",
     "/app/conversations",
     "/app/conversations/{conversation_id}/messages",
@@ -34,6 +35,9 @@ CLIENT_REQUIRED_PATHS = {
 }
 
 SUBSTITUTIONS = {
+    "${encodeURIComponent(projectId)}": "{project_id}",
+    "${_pathSegment(projectId)}": "{project_id}",
+    "${projectId}": "{project_id}",
     "${encodeURIComponent(conversationId)}": "{conversation_id}",
     "${_pathSegment(conversationId)}": "{conversation_id}",
     "${conversationId}": "{conversation_id}",
@@ -73,7 +77,11 @@ def _contract_paths(root: Path) -> set[tuple[str, str]]:
 
 def _backend_paths(root: Path) -> set[tuple[str, str]]:
     paths: set[tuple[str, str]] = set()
-    for rel in ["omnidesk_agent/appsync/routes.py", "omnidesk_agent/server.py"]:
+    for rel in [
+        "omnidesk_agent/appsync/routes.py",
+        "omnidesk_agent/appsync/projects.py",
+        "omnidesk_agent/server.py",
+    ]:
         text = (root / rel).read_text(encoding="utf-8")
         for method, path in METHOD_RE.findall(text):
             normalized_method = "WS" if method == "websocket" else method.upper()

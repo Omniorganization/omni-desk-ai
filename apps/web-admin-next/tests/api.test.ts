@@ -12,7 +12,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-type ContractMethod = 'GET' | 'POST';
+type ContractMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 type SharedContractEntry = { role: string; signed: readonly string[] };
 type BaseTypedContractCase = {
   readonly surface: 'web_admin';
@@ -36,6 +36,10 @@ type TypedContractCase = UnsignedTypedContractCase | SignedTypedContractCase;
 
 const WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES: readonly TypedContractCase[] = [
   { surface: 'web_admin', method: 'GET', contractPath: '/app/bootstrap', clientPath: '/api/omni/bootstrap', invoke: (api) => api.bootstrap() },
+  { surface: 'web_admin', method: 'GET', contractPath: '/app/projects', clientPath: '/api/omni/projects', invoke: (api) => api.projects() },
+  { surface: 'web_admin', method: 'POST', contractPath: '/app/projects', clientPath: '/api/omni/projects', invoke: (api) => api.createProject('Typed project') },
+  { surface: 'web_admin', method: 'PATCH', contractPath: '/app/projects/{project_id}', clientPath: '/api/omni/projects/proj_1234567890abcdef', invoke: (api) => api.updateProject('proj_1234567890abcdef', { name: 'Renamed project' }) },
+  { surface: 'web_admin', method: 'DELETE', contractPath: '/app/projects/{project_id}', clientPath: '/api/omni/projects/proj_1234567890abcdef', invoke: (api) => api.deleteProject('proj_1234567890abcdef') },
   { surface: 'web_admin', method: 'POST', contractPath: '/app/devices/register', clientPath: '/api/omni/devices/register', invoke: (api) => api.registerAdminDevice({ deviceId: 'web_1234567890abcdef1234567890abcdef1234', publicKeyPem: '-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----' }) },
   { surface: 'web_admin', method: 'GET', contractPath: '/app/conversations', clientPath: '/api/omni/conversations', invoke: (api) => api.conversations() },
   { surface: 'web_admin', method: 'POST', contractPath: '/app/conversations', clientPath: '/api/omni/conversations', invoke: (api) => api.createConversation('Typed contract conversation') },
@@ -138,6 +142,30 @@ test('registerAdminDevice uses the server-side proxy and per-install web_admin i
   assert.equal(body.device_type, 'web_admin');
   assert.equal(body.public_key, identity.publicKeyPem);
   assert.deepEqual(body.capabilities, ['governance', 'channels', 'audit', 'approval', 'role:owner']);
+});
+
+test('createProject uses the server-side project proxy with csrf and idempotency', async () => {
+  let requestUrl = '';
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = async (input, init) => {
+    requestUrl = input.toString();
+    requestInit = init;
+    return new Response(JSON.stringify({ ok: true, project: { project_id: 'proj_1234567890abcdef', name: 'Launch' } }), { status: 200 });
+  };
+
+  const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'operator', deviceId: 'web_signed_device' });
+  await api.createProject('Launch', 'Campaign project');
+
+  assert.equal(requestUrl, '/api/omni/projects');
+  assert.equal(String(requestInit?.method), 'POST');
+  assert.equal((requestInit?.headers as Record<string, string>)['x-csrf-token'], 'csrf-token');
+  assert.match((requestInit?.headers as Record<string, string>)['idempotency-key'], /^web-admin-project-create-6-/);
+  assert.deepEqual(JSON.parse(requestInit?.body as string), {
+    name: 'Launch',
+    description: 'Campaign project',
+    metadata: {},
+    source_device_id: 'web_signed_device',
+  });
 });
 
 test('decide posts the owner approval decision and surfaces gateway errors', async () => {
