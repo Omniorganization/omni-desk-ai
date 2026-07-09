@@ -50,11 +50,16 @@ class OmniApiClient {
   ]) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     late http.Response response;
-    final requestBody =
-        method == 'GET' ? '' : jsonEncode(body ?? <String, dynamic>{});
+    final requestBody = method == 'GET' || method == 'DELETE'
+        ? ''
+        : jsonEncode(body ?? <String, dynamic>{});
     final headers = await _headers(method, path, requestBody, idempotencyKey);
     if (method == 'GET') {
       response = await _httpClient.get(uri, headers: headers);
+    } else if (method == 'PATCH') {
+      response = await _httpClient.patch(uri, headers: headers, body: requestBody);
+    } else if (method == 'DELETE') {
+      response = await _httpClient.delete(uri, headers: headers);
     } else {
       response = await _httpClient.post(
         uri,
@@ -69,6 +74,62 @@ class OmniApiClient {
   }
 
   Future<Map<String, dynamic>> bootstrap() => _request('GET', '/app/bootstrap');
+
+  Future<Map<String, dynamic>> projects() => _request('GET', '/app/projects');
+
+  Future<Map<String, dynamic>> createProject(
+    String name, {
+    String description = '',
+    Map<String, dynamic> metadata = const <String, dynamic>{},
+    String? sourceDeviceId,
+    String? idempotencyKey,
+  }) =>
+      _request(
+        'POST',
+        '/app/projects',
+        <String, dynamic>{
+          'name': name,
+          'description': description,
+          'metadata': metadata,
+          if (sourceDeviceId != null && sourceDeviceId.isNotEmpty)
+            'source_device_id': sourceDeviceId,
+        },
+        idempotencyKey ??
+            'mobile-project-create-${name.hashCode}-${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+  Future<Map<String, dynamic>> updateProject(
+    String projectId, {
+    String? name,
+    String? description,
+    Map<String, dynamic>? metadata,
+    bool? archived,
+    String? idempotencyKey,
+  }) =>
+      _request(
+        'PATCH',
+        '/app/projects/${_pathSegment(projectId)}',
+        <String, dynamic>{
+          if (name != null) 'name': name,
+          if (description != null) 'description': description,
+          if (metadata != null) 'metadata': metadata,
+          if (archived != null) 'archived': archived,
+        },
+        idempotencyKey ??
+            'mobile-project-update-$projectId-${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+  Future<Map<String, dynamic>> deleteProject(
+    String projectId, {
+    String? idempotencyKey,
+  }) =>
+      _request(
+        'DELETE',
+        '/app/projects/${_pathSegment(projectId)}',
+        null,
+        idempotencyKey ??
+            'mobile-project-delete-$projectId-${DateTime.now().millisecondsSinceEpoch}',
+      );
 
   Future<Map<String, dynamic>> registerMobile({
     required String deviceId,

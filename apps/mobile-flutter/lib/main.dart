@@ -6,6 +6,37 @@ import 'package:local_auth/local_auth.dart';
 import 'omni_api.dart';
 import 'device_identity.dart';
 
+class ProjectItem {
+  ProjectItem({required this.id, required this.name, required this.createdAt});
+
+  final String id;
+  final String name;
+  final DateTime createdAt;
+}
+
+class AccountSettingItem {
+  const AccountSettingItem(this.title, this.detail, this.action);
+
+  final String title;
+  final String detail;
+  final String action;
+}
+
+const accountSettings = <AccountSettingItem>[
+  AccountSettingItem('账户资料', '头像、名称、邮箱与移动端身份', '管理'),
+  AccountSettingItem('工作区与组织', '团队、成员、权限与审批职责', '打开'),
+  AccountSettingItem('自定义指令', '默认语气、工作习惯与项目偏好', '编辑'),
+  AccountSettingItem('Skills / 工作流', '移动端任务模板、运行手册与自动化技能', '配置'),
+  AccountSettingItem('连接器', 'GitHub、Google Drive、Slack、AWS 等外部应用', '连接'),
+  AccountSettingItem('GitHub 仓库', '仓库访问、PR、分支、Review 与变更通知', '同步'),
+  AccountSettingItem('执行环境', '本地、云端、worktree、终端与沙盒策略', '设置'),
+  AccountSettingItem('Secrets / 环境变量', '令牌、密钥、环境变量与敏感凭据', '管理'),
+  AccountSettingItem('通知', '审批、任务完成、失败、评论与提醒', '设置'),
+  AccountSettingItem('外观', '主题、密度、语言、快捷键与侧栏显示', '调整'),
+  AccountSettingItem('数据控制', '记忆、历史记录、导出、删除与隐私边界', '查看'),
+  AccountSettingItem('安全与登录', '设备、会话、生物识别与退出登录', '检查'),
+];
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
@@ -26,22 +57,26 @@ class OmniMobileApp extends StatefulWidget {
 class _OmniMobileAppState extends State<OmniMobileApp> {
   static const _storage = FlutterSecureStorage();
   final _auth = LocalAuthentication();
-  final gatewayController = TextEditingController(
-    text: 'http://127.0.0.1:18789',
-  );
+  final gatewayController = TextEditingController(text: 'http://127.0.0.1:18789');
   final tokenController = TextEditingController();
   final actorController = TextEditingController(text: 'mobile-operator');
   final taskController = TextEditingController(text: '请检查今天的任务状态');
-  final reasonController = TextEditingController(
-    text: 'Approved from Omni Mobile with biometric/PIN confirmation',
-  );
+  final projectController = TextEditingController();
+  final reasonController = TextEditingController(text: 'Approved from Omni Mobile with biometric/PIN confirmation');
   Map<String, dynamic>? snapshot;
   String? chatConversationId;
   String chatProfile = 'fast';
   List<dynamic> chatMessages = <dynamic>[];
+  List<ProjectItem> projects = <ProjectItem>[];
+  String? activeProjectId;
+  String projectError = '';
   String error = '';
   String securityState = 'secure storage ready';
   String pushState = 'push not registered';
+  bool accountSettingsOpen = true;
+  bool dailyAutomation = true;
+  bool approvalAutomation = true;
+  bool contentAutomation = false;
   OmniDeviceIdentity? deviceIdentity;
 
   DeviceIdentityStore get identityStore => DeviceIdentityStore(_storage);
@@ -58,12 +93,21 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     _restoreSession();
   }
 
+  @override
+  void dispose() {
+    gatewayController.dispose();
+    tokenController.dispose();
+    actorController.dispose();
+    taskController.dispose();
+    projectController.dispose();
+    reasonController.dispose();
+    super.dispose();
+  }
+
   Future<void> _restoreSession() async {
-    gatewayController.text =
-        await _storage.read(key: 'omni.gateway') ?? gatewayController.text;
+    gatewayController.text = await _storage.read(key: 'omni.gateway') ?? gatewayController.text;
     tokenController.text = await _storage.read(key: 'omni.token') ?? '';
-    actorController.text =
-        await _storage.read(key: 'omni.actor') ?? actorController.text;
+    actorController.text = await _storage.read(key: 'omni.actor') ?? actorController.text;
     if (mounted) setState(() {});
   }
 
@@ -75,15 +119,11 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
 
   Future<bool> _confirmSensitiveAction() async {
     try {
-      final canCheck =
-          await _auth.canCheckBiometrics || await _auth.isDeviceSupported();
+      final canCheck = await _auth.canCheckBiometrics || await _auth.isDeviceSupported();
       if (!canCheck) return false;
       return _auth.authenticate(
         localizedReason: 'Confirm Omni approval decision',
-        options: const AuthenticationOptions(
-          biometricOnly: false,
-          stickyAuth: true,
-        ),
+        options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
       );
     } catch (_) {
       return false;
@@ -100,6 +140,44 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     }
   }
 
+  ProjectItem? get activeProject {
+    for (final project in projects) {
+      if (project.id == activeProjectId) return project;
+    }
+    return null;
+  }
+
+  String get activeProjectName => activeProject?.name ?? '未选择项目';
+
+  void createProject([String? fallbackName]) {
+    final name = (fallbackName ?? projectController.text).trim();
+    if (name.isEmpty) {
+      setState(() => projectError = '请输入项目名称。');
+      return;
+    }
+    if (projects.any((project) => project.name.toLowerCase() == name.toLowerCase())) {
+      setState(() => projectError = '项目已存在。');
+      return;
+    }
+    final project = ProjectItem(
+      id: '${DateTime.now().millisecondsSinceEpoch}-${name.hashCode.abs()}',
+      name: name,
+      createdAt: DateTime.now(),
+    );
+    setState(() {
+      projects = <ProjectItem>[project, ...projects];
+      activeProjectId = project.id;
+      projectController.clear();
+      projectError = '';
+    });
+  }
+
+  void applyPrompt(String prompt) {
+    final project = activeProject;
+    taskController.text = project == null ? prompt : '[${project.name}] $prompt';
+    setState(() {});
+  }
+
   Future<void> connect() async {
     setState(() => error = '');
     try {
@@ -107,21 +185,14 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       final token = await _resolvePushToken();
       final identity = await identityStore.loadOrCreate();
       deviceIdentity = identity;
-      await client.registerMobile(
-        deviceId: identity.deviceId,
-        pushToken: token,
-        publicKey: identity.publicKey,
-      );
+      await client.registerMobile(deviceId: identity.deviceId, pushToken: token, publicKey: identity.publicKey);
       if (token != null) {
         await client.registerPushToken(identity.deviceId, token);
       }
       snapshot = await client.bootstrap();
       setState(() {
-        securityState =
-            'session saved in flutter_secure_storage; biometric/PIN required for approval';
-        pushState = token == null
-            ? 'push provider unavailable in this build'
-            : 'FCM/APNS token registered';
+        securityState = 'session saved in flutter_secure_storage; biometric/PIN required for approval';
+        pushState = token == null ? 'push provider unavailable in this build' : 'FCM/APNS token registered';
       });
     } catch (e) {
       setState(() => error = e.toString());
@@ -191,133 +262,369 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
 
   @override
   Widget build(BuildContext context) {
-    final approvals =
-        (snapshot?['pending_approvals'] as List<dynamic>? ?? <dynamic>[]);
-    final notifications =
-        (snapshot?['notifications'] as List<dynamic>? ?? <dynamic>[]);
+    final approvals = snapshot?['pending_approvals'] as List<dynamic>? ?? <dynamic>[];
+    final notifications = snapshot?['notifications'] as List<dynamic>? ?? <dynamic>[];
     return MaterialApp(
       title: 'Omni Mobile',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo, brightness: Brightness.dark),
+        scaffoldBackgroundColor: const Color(0xFF07101B),
+        cardTheme: CardThemeData(
+          color: const Color(0xFF101A2A),
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        ),
+      ),
       home: Scaffold(
-        appBar: AppBar(title: const Text('Omni Mobile Approval')),
+        appBar: AppBar(
+          title: const Text('AI 助理 Mobile'),
+          actions: <Widget>[
+            IconButton(
+              tooltip: '账户设置',
+              icon: const Icon(Icons.account_circle_outlined),
+              onPressed: () => setState(() => accountSettingsOpen = !accountSettingsOpen),
+            ),
+          ],
+        ),
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: <Widget>[
-            Text('Security: $securityState'),
-            Text('Push: $pushState'),
-            Text('Device: ${deviceIdentity?.deviceId ?? 'not enrolled'}'),
-            TextField(
-              controller: gatewayController,
-              decoration: const InputDecoration(labelText: 'Gateway URL'),
+            _heroCard(),
+            _projectCard(),
+            _quickActions(),
+            _composerCard(),
+            if (error.isNotEmpty) Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(error, style: const TextStyle(color: Colors.redAccent)),
             ),
-            TextField(
-              controller: tokenController,
-              decoration: const InputDecoration(
-                labelText: 'Owner/Operator Token',
-              ),
-              obscureText: true,
-            ),
-            TextField(
-              controller: actorController,
-              decoration: const InputDecoration(labelText: 'Actor'),
+            if (accountSettingsOpen) _accountSettingsCard(),
+            _connectionCard(),
+            _approvalCard(approvals),
+            _automationCard(),
+            _messagesCard(),
+            _notificationsCard(notifications),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _heroCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Container(
+                  width: 44,
+                  height: 44,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    gradient: const LinearGradient(colors: <Color>[Color(0xFF6674FF), Color(0xFF5DCAFF)]),
+                  ),
+                  child: const Text('AI', style: TextStyle(fontWeight: FontWeight.w800)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Text('我们应该在 AI 助理中做些什么？', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800))),
+              ],
             ),
             const SizedBox(height: 12),
-            FilledButton(
-              onPressed: connect,
-              child: const Text('连接 Omni Gateway'),
-            ),
-            if (error.isNotEmpty)
-              Text(error, style: const TextStyle(color: Colors.red)),
-            const Divider(),
-            DropdownButtonFormField<String>(
-              initialValue: chatProfile,
-              decoration: const InputDecoration(labelText: 'Model Profile'),
-              items: const <DropdownMenuItem<String>>[
-                DropdownMenuItem<String>(value: 'fast', child: Text('fast')),
-                DropdownMenuItem<String>(
-                  value: 'planner',
-                  child: Text('planner'),
-                ),
-                DropdownMenuItem<String>(value: 'local', child: Text('local')),
+            Text('智能协作 · 远程审批 · 移动问答 · 项目自建', style: TextStyle(color: Colors.blueGrey.shade100)),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                Chip(label: Text('Security: $securityState')),
+                Chip(label: Text('Push: $pushState')),
+                Chip(label: Text('Device: ${deviceIdentity?.deviceId ?? 'not enrolled'}')),
               ],
-              onChanged: (value) =>
-                  setState(() => chatProfile = value ?? 'fast'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _projectCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Expanded(child: Text('项目', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+                FilledButton.tonal(onPressed: () => createProject(projectController.text.isEmpty ? '新项目' : null), child: const Text('＋ 新建项目')),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    controller: projectController,
+                    decoration: const InputDecoration(labelText: '输入项目名称后创建', border: OutlineInputBorder()),
+                    onSubmitted: (_) => createProject(),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton(onPressed: createProject, child: const Text('创建')),
+              ],
+            ),
+            if (projectError.isNotEmpty) Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(projectError, style: const TextStyle(color: Colors.orangeAccent)),
+            ),
+            const SizedBox(height: 12),
+            if (projects.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: const Text('暂无项目。项目内容需要由用户自行创建；创建后才会进入移动端工作区、审批和任务上下文。'),
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  for (final project in projects)
+                    ChoiceChip(
+                      selected: project.id == activeProjectId,
+                      label: Text(project.name),
+                      onSelected: (_) => setState(() => activeProjectId = project.id),
+                    ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _quickActions() {
+    final actions = <Map<String, String>>[
+      <String, String>{'title': '远程审批', 'detail': '查看并确认高风险动作', 'prompt': '请检查当前待审批动作，并说明是否可以批准。'},
+      <String, String>{'title': '移动问答', 'detail': '随时追问项目状态', 'prompt': '汇总当前项目状态、风险点和下一步动作。'},
+      <String, String>{'title': '任务派发', 'detail': '发送到桌面运行器执行', 'prompt': '把这个任务拆分为可由桌面端执行的步骤。'},
+      <String, String>{'title': '连接应用', 'detail': '同步 GitHub / AWS / Drive', 'prompt': '检查当前工作流需要连接哪些应用，并列出权限边界。'},
+    ];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text('快捷功能', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            for (final action in actions)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.auto_awesome_outlined),
+                title: Text(action['title']!),
+                subtitle: Text(action['detail']!),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => applyPrompt(action['prompt']!),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _composerCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(child: Text('当前项目：$activeProjectName', style: const TextStyle(fontWeight: FontWeight.w700))),
+                DropdownButton<String>(
+                  value: chatProfile,
+                  items: const <DropdownMenuItem<String>>[
+                    DropdownMenuItem<String>(value: 'fast', child: Text('快速')),
+                    DropdownMenuItem<String>(value: 'planner', child: Text('规划')),
+                    DropdownMenuItem<String>(value: 'local', child: Text('本地')),
+                  ],
+                  onChanged: (value) => setState(() => chatProfile = value ?? 'fast'),
+                ),
+              ],
             ),
             TextField(
               controller: taskController,
-              decoration: const InputDecoration(labelText: '消息 / 任务内容'),
+              maxLines: 3,
+              decoration: InputDecoration(
+                labelText: activeProject == null ? '先创建项目，或直接向 AI 助理提问' : '在 ${activeProject!.name} 中输入任务',
+                border: const OutlineInputBorder(),
+              ),
             ),
+            const SizedBox(height: 12),
             Wrap(
               spacing: 8,
+              runSpacing: 8,
               children: <Widget>[
-                FilledButton(
-                  onPressed: askAssistant,
-                  child: const Text('问一下 AI'),
-                ),
-                OutlinedButton(
-                  onPressed: sendTask,
-                  child: const Text('发送并请求桌面执行'),
-                ),
+                FilledButton.icon(onPressed: askAssistant, icon: const Icon(Icons.arrow_upward), label: const Text('问一下 AI')),
+                OutlinedButton.icon(onPressed: sendTask, icon: const Icon(Icons.desktop_windows_outlined), label: const Text('发送并请求桌面执行')),
               ],
             ),
-            for (final message in chatMessages.take(8))
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _accountSettingsCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Expanded(child: Text('账户设置', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+                Chip(label: const Text('Codex-style'), backgroundColor: Colors.indigo.withValues(alpha: .22)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            for (final setting in accountSettings)
               ListTile(
-                title: Text('${message['role'] ?? 'message'}'),
-                subtitle: Text(
-                  '${message['content'] ?? ''}\n${message['model_provider'] ?? ''} ${message['model_name'] ?? ''} ${message['trace_id'] ?? ''}',
-                ),
-                isThreeLine: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(setting.title),
+                subtitle: Text(setting.detail),
+                trailing: Text(setting.action),
+                onTap: () {},
               ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _connectionCard() {
+    return Card(
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        title: const Text('连接配置'),
+        subtitle: const Text('Gateway、Token、Actor 与设备注册'),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: <Widget>[
+          TextField(controller: gatewayController, decoration: const InputDecoration(labelText: 'Gateway URL')),
+          TextField(controller: tokenController, decoration: const InputDecoration(labelText: 'Owner/Operator Token'), obscureText: true),
+          TextField(controller: actorController, decoration: const InputDecoration(labelText: 'Actor')),
+          const SizedBox(height: 12),
+          SizedBox(width: double.infinity, child: FilledButton(onPressed: connect, child: const Text('连接 Omni Gateway'))),
+        ],
+      ),
+    );
+  }
+
+  Widget _approvalCard(List<dynamic> approvals) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('待审批：${approvals.length}', style: Theme.of(context).textTheme.titleLarge),
+            TextField(controller: reasonController, decoration: const InputDecoration(labelText: '审批原因 / Audit Reason')),
             const SizedBox(height: 12),
-            Text(
-              '待审批：${approvals.length}',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            TextField(
-              controller: reasonController,
-              decoration: const InputDecoration(
-                labelText: '审批原因 / Audit Reason',
-              ),
-            ),
-            for (final approval in approvals)
-              Card(
-                child: ListTile(
-                  title: Text(approval['action']?.toString() ?? 'Approval'),
-                  subtitle: Text(
-                    'Risk: ${approval['risk']}\nReason: ${approval['reason']}\nExpires: ${approval['expires_at'] ?? 'n/a'}',
-                  ),
-                  isThreeLine: true,
-                  trailing: Wrap(
-                    spacing: 8,
-                    children: <Widget>[
-                      IconButton(
-                        icon: const Icon(Icons.check),
-                        onPressed: () => decide(
-                          approval['approval_id'] as String,
-                          'approved',
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => decide(
-                          approval['approval_id'] as String,
-                          'rejected',
-                        ),
-                      ),
-                    ],
+            if (approvals.isEmpty)
+              const Text('暂无来自 Gateway 的待审批动作。')
+            else
+              for (final approval in approvals)
+                Card(
+                  child: ListTile(
+                    title: Text(approval['action']?.toString() ?? 'Approval'),
+                    subtitle: Text('Risk: ${approval['risk']}\nReason: ${approval['reason']}\nExpires: ${approval['expires_at'] ?? 'n/a'}'),
+                    isThreeLine: true,
+                    trailing: Wrap(
+                      spacing: 8,
+                      children: <Widget>[
+                        IconButton(icon: const Icon(Icons.check), onPressed: () => decide(approval['approval_id'] as String, 'approved')),
+                        IconButton(icon: const Icon(Icons.close), onPressed: () => decide(approval['approval_id'] as String, 'rejected')),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            const Divider(),
-            Text(
-              '通知：${notifications.length}',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            for (final item in notifications.take(8))
-              ListTile(
-                title: Text(item['title']?.toString() ?? ''),
-                subtitle: Text(item['body']?.toString() ?? ''),
-              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _automationCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text('自动化', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            SwitchListTile(value: dailyAutomation, onChanged: (value) => setState(() => dailyAutomation = value), title: const Text('每日数据采集')),
+            SwitchListTile(value: approvalAutomation, onChanged: (value) => setState(() => approvalAutomation = value), title: const Text('审批提醒')),
+            SwitchListTile(value: contentAutomation, onChanged: (value) => setState(() => contentAutomation = value), title: const Text('内容发布流程')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _messagesCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text('最近对话', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            if (chatMessages.isEmpty)
+              const Text('暂无对话。')
+            else
+              for (final message in chatMessages.take(8))
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('${message['role'] ?? 'message'}'),
+                  subtitle: Text('${message['content'] ?? ''}\n${message['model_provider'] ?? ''} ${message['model_name'] ?? ''} ${message['trace_id'] ?? ''}'),
+                  isThreeLine: true,
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _notificationsCard(List<dynamic> notifications) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('通知：${notifications.length}', style: Theme.of(context).textTheme.titleLarge),
+            if (notifications.isEmpty)
+              const Text('暂无通知。')
+            else
+              for (final item in notifications.take(8))
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(item['title']?.toString() ?? ''),
+                  subtitle: Text(item['body']?.toString() ?? ''),
+                ),
           ],
         ),
       ),

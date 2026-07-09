@@ -10,7 +10,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-type ContractMethod = 'GET' | 'POST';
+type ContractMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 type SharedContractEntry = { role: string; signed: readonly string[] };
 type TypedContractCase = {
   readonly surface: 'desktop';
@@ -23,6 +23,10 @@ type TypedContractCase = {
 
 const DESKTOP_TYPED_CLIENT_CONTRACT_CASES: readonly TypedContractCase[] = [
   { surface: 'desktop', method: 'GET', contractPath: '/app/bootstrap', clientPath: '/app/bootstrap', invoke: (client) => client.bootstrap() },
+  { surface: 'desktop', method: 'GET', contractPath: '/app/projects', clientPath: '/app/projects', invoke: (client) => client.projects() },
+  { surface: 'desktop', method: 'POST', contractPath: '/app/projects', clientPath: '/app/projects', invoke: (client) => client.createProject('Typed desktop project', '', {}, 'desktop-1') },
+  { surface: 'desktop', method: 'PATCH', contractPath: '/app/projects/{project_id}', clientPath: '/app/projects/proj_1234567890abcdef', invoke: (client) => client.updateProject('proj_1234567890abcdef', { name: 'Renamed desktop project' }) },
+  { surface: 'desktop', method: 'DELETE', contractPath: '/app/projects/{project_id}', clientPath: '/app/projects/proj_1234567890abcdef', invoke: (client) => client.deleteProject('proj_1234567890abcdef') },
   { surface: 'desktop', method: 'POST', contractPath: '/app/devices/register', clientPath: '/app/devices/register', invoke: (client) => client.registerDesktop('desktop-1', 'macOS', ['local-runtime']) },
   { surface: 'desktop', method: 'POST', contractPath: '/app/conversations', clientPath: '/app/conversations', invoke: (client) => client.createConversation('Typed desktop conversation', 'desktop-1') },
   { surface: 'desktop', method: 'GET', contractPath: '/app/conversations/{conversation_id}/messages', clientPath: '/app/conversations/conv-1/messages', invoke: (client) => client.listMessages('conv-1') },
@@ -119,6 +123,29 @@ test('desktop registration trims the gateway URL and sends operator identity', a
     name: 'Omni Desktop Runtime',
     platform: 'macOS',
     capabilities: ['local-runtime'],
+  });
+});
+
+test('createProject uses the shared /app/projects contract', async () => {
+  let requestUrl = '';
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = async (input, init) => {
+    requestUrl = input.toString();
+    requestInit = init;
+    return new Response(JSON.stringify({ ok: true, project: { project_id: 'proj_1234567890abcdef', name: 'Desktop Launch' } }), { status: 200 });
+  };
+
+  const client = new OmniApiClient({ baseUrl: 'https://gateway.example.test/', token: 'operator-token', actor: 'desktop-operator' });
+  await client.createProject('Desktop Launch', 'Local execution project', {}, 'desktop-1');
+
+  assert.equal(requestUrl, 'https://gateway.example.test/app/projects');
+  assert.equal(String(requestInit?.method), 'POST');
+  assert.match((requestInit?.headers as Record<string, string>)['idempotency-key'], /^desktop-project-create-14-/);
+  assert.deepEqual(JSON.parse(requestInit?.body as string), {
+    name: 'Desktop Launch',
+    description: 'Local execution project',
+    metadata: {},
+    source_device_id: 'desktop-1',
   });
 });
 

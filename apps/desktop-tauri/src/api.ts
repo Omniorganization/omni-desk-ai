@@ -10,6 +10,13 @@ export interface OmniClientOptions {
   deviceSigner?: DeviceRequestSigner;
 }
 
+export interface ProjectPayload {
+  name?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  archived?: boolean;
+}
+
 export class OmniApiClient {
   constructor(private options: OmniClientOptions) {}
 
@@ -37,6 +44,30 @@ export class OmniApiClient {
 
   bootstrap() {
     return this.request<any>('/app/bootstrap');
+  }
+
+  projects() {
+    return this.request<any>('/app/projects');
+  }
+
+  createProject(name: string, description = '', metadata: Record<string, unknown> = {}, sourceDeviceId?: string) {
+    return this.request<any>('/app/projects', {
+      method: 'POST',
+      body: JSON.stringify({ name, description, metadata, source_device_id: sourceDeviceId })
+    }, `desktop-project-create-${name.length}-${Date.now()}`);
+  }
+
+  updateProject(projectId: string, payload: ProjectPayload) {
+    return this.request<any>(`/app/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    }, `desktop-project-update-${projectId}-${Date.now()}`);
+  }
+
+  deleteProject(projectId: string) {
+    return this.request<any>(`/app/projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE'
+    }, `desktop-project-delete-${projectId}-${Date.now()}`);
   }
 
   createConversation(title: string, sourceDeviceId?: string) {
