@@ -12,13 +12,13 @@ on:
           - candidate
           - real-ga
       external_evidence_run_id:
-        description: "Optional Remote Evidence Pipeline run id that uploaded an external-ga-evidence artifact"
+        description: "Optional enforced Main Verification run id that uploaded the bound external evidence artifact"
         required: false
         default: ""
       external_evidence_artifact_name:
-        description: "External evidence artifact name from the Remote Evidence Pipeline"
+        description: "Bound external evidence artifact name from Main Verification"
         required: false
-        default: external-ga-evidence
+        default: external-ga-evidence-bound
   workflow_call:
     inputs:
       readiness_channel:
@@ -27,15 +27,15 @@ on:
         required: false
         default: candidate
       external_evidence_run_id:
-        description: "Remote Evidence Pipeline or Real GA Evidence Control Plane run id that uploaded an external-ga-evidence artifact"
+        description: "Enforced Main Verification run id that uploaded the complete bound external evidence artifact"
         type: string
         required: false
         default: ""
       external_evidence_artifact_name:
-        description: "External evidence artifact name from the producing workflow"
+        description: "Bound external evidence artifact name from Main Verification"
         type: string
         required: false
-        default: external-ga-evidence
+        default: external-ga-evidence-bound
 
 permissions:
   contents: read
@@ -133,17 +133,24 @@ jobs:
           python scripts/check_model_live_smoke_evidence.py . \
             $audit_flag \
             --write-report dist/evidence/model-live-smoke-check.json
-      - name: Validate complete Real GA evidence set
+      - name: Validate final Customer-distribution Real GA boundary
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           audit_flag=""
           if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
             audit_flag="--audit-only"
+          elif [[ -z "${{ inputs.external_evidence_run_id }}" ]]; then
+            echo "real-ga readiness requires an enforced Main Verification evidence run id" >&2
+            exit 64
           fi
-          python scripts/check_real_ga_complete.py . \
+          python scripts/check_customer_distribution_ga.py . \
             $audit_flag \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --write-live-report dist/evidence/main-verification-live-artifact.json \
             --write-report dist/evidence/external-ga-evidence-audit.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

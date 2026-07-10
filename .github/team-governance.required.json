@@ -1,13 +1,15 @@
 {
   "schema": "omnidesk-team-governance/v1",
+  "repository_full_name": "Omniorganization/omni-desk-ai",
   "required_for_customer_distribution_ga": true,
-  "current_repository_owner_type": "User",
+  "current_repository_owner_type": "Organization",
   "required_repository_owner_type": "Organization",
-  "personal_owner_fallback_allowed_for_source_candidate": true,
+  "personal_owner_fallback_allowed_for_source_candidate": false,
   "personal_owner_fallback_forbidden_for_real_ga": true,
+  "migration_status": "completed",
   "codeowners_file": ".github/CODEOWNERS",
-  "migration_blocker": "Repository must be transferred from the personal owner yinyufan0813-cmyk to an approved GitHub organization before customer-distribution Real GA. GitHub teams are only enforceable for organization-owned repositories.",
-  "required_organization": "omnidesk-ai",
+  "migration_blocker": "",
+  "required_organization": "Omniorganization",
   "required_teams": [
     {
       "slug": "omnidesk-maintainers",

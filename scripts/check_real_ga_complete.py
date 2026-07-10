@@ -34,6 +34,13 @@ TEAM_GOVERNANCE_CONTRACT = ".github/team-governance.required.json"
 NATIVE_BUILD_EVIDENCE_PATHS = tuple(external_ga.REQUIRED_EVIDENCE["native_build"]["files"])
 SIGNED_ARTIFACT_EVIDENCE_PATHS = tuple(external_ga.REQUIRED_EVIDENCE["signed_artifacts"]["files"])
 
+NATIVE_SIGNED_PLATFORM_REQUIREMENTS = {
+    "android": ("android_signer_certificate_sha256",),
+    "ios": ("apple_team_id", "provisioning_profile_uuid", "ipa_codesign_identifier"),
+    "macos": ("developer_id_application", "notarization_submission_id"),
+    "windows": ("authenticode_signer", "authenticode_certificate_sha256"),
+}
+
 
 def _status_ok(value: Any) -> bool:
     return str(value or "").strip().lower() in OK_STATUSES
@@ -225,6 +232,7 @@ def _native_signed_binding(root: Path, evidence_dir: Path) -> dict[str, Any]:
             issues.append("schema must be omnidesk-native-signed-artifact-binding/v1")
         issues.extend(_require_fields(doc, (
             "main_verification_commit",
+            "main_verification_run_id",
             "main_verification_artifact_name",
             "main_verification_evidence_digest",
             "real_ga_evidence_summary",
@@ -264,6 +272,60 @@ def _native_signed_binding(root: Path, evidence_dir: Path) -> dict[str, Any]:
                 "signed_artifact_evidence",
             )
         )
+        if not _bool_true(doc.get("all_artifact_digest_bindings_valid")):
+            issues.append("all_artifact_digest_bindings_valid must be true")
+        digest_bindings = doc.get("artifact_digest_bindings")
+        if not isinstance(digest_bindings, list):
+            issues.append("artifact_digest_bindings must be a list")
+        else:
+            reported_platforms = {
+                str(row.get("platform") or "")
+                for row in digest_bindings
+                if isinstance(row, dict)
+            }
+            if reported_platforms != set(NATIVE_SIGNED_PLATFORM_REQUIREMENTS):
+                issues.append(
+                    "artifact_digest_bindings must cover android, ios, macos and windows exactly"
+                )
+            for row in digest_bindings:
+                if not isinstance(row, dict):
+                    issues.append("artifact_digest_bindings entries must be objects")
+                    continue
+                platform = str(row.get("platform") or "")
+                release_digest = str(row.get("release_payload_artifact_sha256") or "").strip().lower()
+                signed_digest = str(row.get("external_evidence_signed_artifact_sha256") or "").strip().lower()
+                binding_digest = str(row.get("native_signed_binding_sha256") or "").strip().lower()
+                if not release_digest or release_digest != signed_digest or signed_digest != binding_digest:
+                    issues.append(f"{platform} release, signed evidence and native binding sha256 values must match")
+                if not _bool_true(row.get("digests_match")) or not _bool_true(row.get("valid")):
+                    issues.append(f"{platform} digest binding must be valid")
+                if expected_commit and row.get("source_commit") != expected_commit:
+                    issues.append(f"{platform} source_commit must match the checked commit")
+                if not str(row.get("build_run_id") or "").strip():
+                    issues.append(f"{platform} build_run_id is required")
+                if not str(row.get("signing_run_id") or "").strip():
+                    issues.append(f"{platform} signing_run_id is required")
+                if str(row.get("main_verification_run_id") or "") != str(doc.get("main_verification_run_id") or ""):
+                    issues.append(f"{platform} main_verification_run_id must match the binding producer run")
+                attestation = row.get("artifact_attestation")
+                if not isinstance(attestation, dict):
+                    issues.append(f"{platform} artifact_attestation must be an object")
+                else:
+                    if not str(attestation.get("attestation_id") or "").strip():
+                        issues.append(f"{platform} artifact_attestation.attestation_id is required")
+                    if str(attestation.get("subject_sha256") or "").strip().lower() != binding_digest:
+                        issues.append(f"{platform} artifact attestation subject must match the bound artifact sha256")
+                signature_metadata = row.get("signature_metadata")
+                if not isinstance(signature_metadata, dict):
+                    issues.append(f"{platform} signature_metadata must be an object")
+                else:
+                    for field in NATIVE_SIGNED_PLATFORM_REQUIREMENTS.get(platform, ()):
+                        if not str(signature_metadata.get(field) or "").strip():
+                            issues.append(f"{platform} signature metadata missing {field}")
+                if row.get("missing_signature_fields") not in ([], None):
+                    issues.append(f"{platform} missing_signature_fields must be empty")
+                if row.get("failed_verifications") not in ([], None):
+                    issues.append(f"{platform} failed_verifications must be empty")
     return {
         "label": "Main Verification binding for native build and signed artifact evidence",
         "ok": not issues,

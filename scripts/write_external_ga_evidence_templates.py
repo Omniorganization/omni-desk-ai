@@ -31,10 +31,51 @@ def _base_template(rel_path: str) -> dict[str, Any]:
         "_template_notice": "Template only. It is not Real GA evidence until every field is replaced by output from a real CI, signer, provider, staging cluster, integration, or operations drill.",
     }
     if rel_path.startswith("native-build/"):
-        doc.update({"schema": "omnidesk-native-build-evidence/v1", "command": "replace-with-command", "exit_code": 0, "artifacts": [{"path": "replace-with-artifact-path", "sha256": "replace-with-artifact-sha256"}]})
+        doc.update({
+            "schema": "omnidesk-native-build-evidence/v1",
+            "command": "replace-with-command",
+            "exit_code": 0,
+            "source_commit": "replace-with-source-commit",
+            "build_run_id": "replace-with-build-run-id",
+            "release_payload_artifact_sha256": "replace-with-release-payload-sha256",
+            "artifacts": [{"path": "replace-with-artifact-path", "sha256": "replace-with-artifact-sha256"}],
+        })
     elif rel_path.startswith("signed-artifacts/"):
         platform = "macos" if "macos" in rel_path else "windows" if "windows" in rel_path else "android" if "android" in rel_path else "ios"
-        doc.update({"schema": "omnidesk-signed-artifact-evidence/v1", "platform": platform, "signature_verified": True, "notarization_verified": platform == "macos", "signer_identity": "replace-with-signer-identity", "artifacts": [{"path": "replace-with-signed-artifact-path", "sha256": "replace-with-artifact-sha256"}]})
+        signature_fields = {
+            "android": {"android_signer_certificate_sha256": "replace-with-android-signer-certificate-sha256"},
+            "ios": {
+                "apple_team_id": "replace-with-apple-team-id",
+                "provisioning_profile_uuid": "replace-with-provisioning-profile-uuid",
+                "ipa_codesign_identifier": "replace-with-ipa-codesign-identifier",
+            },
+            "macos": {
+                "developer_id_application": "replace-with-developer-id-application",
+                "notarization_submission_id": "replace-with-notarization-submission-id",
+            },
+            "windows": {
+                "authenticode_signer": "replace-with-authenticode-signer",
+                "authenticode_certificate_sha256": "replace-with-authenticode-certificate-sha256",
+                "authenticode_verified": True,
+            },
+        }[platform]
+        doc.update({
+            "schema": "omnidesk-signed-artifact-evidence/v1",
+            "platform": platform,
+            "signature_verified": True,
+            "notarization_verified": platform == "macos",
+            "signer_identity": "replace-with-signer-identity",
+            "source_commit": "replace-with-source-commit",
+            "signing_run_id": "replace-with-signing-run-id",
+            "signed_artifact_sha256": "replace-with-signed-artifact-sha256",
+            "native_signed_binding_sha256": "replace-with-the-same-final-artifact-sha256",
+            "artifact_attestation": {
+                "attestation_id": "replace-with-attestation-id",
+                "subject_sha256": "replace-with-the-same-final-artifact-sha256",
+            },
+            "artifacts": [{"path": "replace-with-signed-artifact-path", "sha256": "replace-with-artifact-sha256"}],
+            **signature_fields,
+        })
     elif rel_path.startswith("control-plane/"):
         doc.update({"schema": "omnidesk-live-branch-protection/v2", "repository": "owner/repo", "branch": "main", "failures": []})
     elif rel_path.startswith("model/"):

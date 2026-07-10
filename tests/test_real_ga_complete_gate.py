@@ -21,13 +21,16 @@ def _team_contract(root: Path, *, owner_type: str = "User") -> None:
         root / ".github" / "team-governance.required.json",
         {
             "schema": "omnidesk-team-governance/v1",
+            "repository_full_name": "Omniorganization/omni-desk-ai",
             "required_for_customer_distribution_ga": True,
             "current_repository_owner_type": owner_type,
             "required_repository_owner_type": "Organization",
+            "personal_owner_fallback_allowed_for_source_candidate": owner_type != "Organization",
             "personal_owner_fallback_forbidden_for_real_ga": True,
+            "migration_status": "completed" if owner_type == "Organization" else "blocked",
             "codeowners_file": ".github/CODEOWNERS",
-            "migration_blocker": "Repository must move to an organization.",
-            "required_organization": "omnidesk-ai",
+            "migration_blocker": "" if owner_type == "Organization" else "Repository must move to an organization.",
+            "required_organization": "Omniorganization",
             "required_teams": [
                 {"slug": "omnidesk-maintainers", "required_paths": ["*"]},
                 {"slug": "release-owners", "required_paths": [".github/workflows/", "scripts/", "release/", "omnidesk_agent/self_upgrade/"]},
@@ -44,7 +47,7 @@ def test_team_governance_live_report_must_match_scope_and_required_teams(tmp_pat
     evidence = root / "release" / "external-evidence"
     root.mkdir()
     _team_contract(root)
-    monkeypatch.setenv("GITHUB_REPOSITORY", "yinyufan0813-cmyk/omni-desk-ai")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "Omniorganization/omni-desk-ai")
     monkeypatch.setenv("GITHUB_SHA", "abc123")
 
     _write_json(
@@ -73,8 +76,8 @@ def test_team_governance_live_report_must_match_scope_and_required_teams(tmp_pat
     result = check_real_ga_complete._team_governance(root, evidence)
 
     assert result["ok"] is False
-    assert "repository must be yinyufan0813-cmyk/omni-desk-ai" in result["issues"]
-    assert "organization must be omnidesk-ai" in result["issues"]
+    assert "repository must be Omniorganization/omni-desk-ai" in result["issues"]
+    assert "organization must be Omniorganization" in result["issues"]
     assert "codeowners_ref must match the checked commit" in result["issues"]
     assert any("required_teams must match source contract teams" in issue for issue in result["issues"])
 
@@ -142,15 +145,15 @@ def test_team_governance_contract_allows_organization_team_codeowners(tmp_path: 
     (root / ".github" / "CODEOWNERS").write_text(
         "\n".join(
             [
-                "* @omnidesk-ai/omnidesk-maintainers",
-                ".github/workflows/ @omnidesk-ai/release-owners @omnidesk-ai/security-owners",
-                "scripts/ @omnidesk-ai/release-owners",
-                "deploy/ @omnidesk-ai/platform-owners",
-                "release/ @omnidesk-ai/release-owners @omnidesk-ai/security-owners",
-                "omnidesk_agent/security/ @omnidesk-ai/security-owners",
-                "omnidesk_agent/sandbox/ @omnidesk-ai/security-owners @omnidesk-ai/platform-owners",
-                "omnidesk_agent/plugins/ @omnidesk-ai/security-owners",
-                "omnidesk_agent/self_upgrade/ @omnidesk-ai/release-owners @omnidesk-ai/security-owners",
+                "* @Omniorganization/omnidesk-maintainers",
+                ".github/workflows/ @Omniorganization/release-owners @Omniorganization/security-owners",
+                "scripts/ @Omniorganization/release-owners",
+                "deploy/ @Omniorganization/platform-owners",
+                "release/ @Omniorganization/release-owners @Omniorganization/security-owners",
+                "omnidesk_agent/security/ @Omniorganization/security-owners",
+                "omnidesk_agent/sandbox/ @Omniorganization/security-owners @Omniorganization/platform-owners",
+                "omnidesk_agent/plugins/ @Omniorganization/security-owners",
+                "omnidesk_agent/self_upgrade/ @Omniorganization/release-owners @Omniorganization/security-owners",
             ]
         )
         + "\n",

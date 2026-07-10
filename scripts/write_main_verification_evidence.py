@@ -24,6 +24,37 @@ NATIVE_REQUIRED = (
     "native-build/rust-cargo-check-locked.json",
 )
 
+PLATFORM_ARTIFACT_BINDINGS = (
+    {
+        "platform": "android",
+        "native": "native-build/flutter-android-release.json",
+        "signed": "signed-artifacts/android-signed-aab.json",
+        "required_signature_fields": ("android_signer_certificate_sha256",),
+        "required_true_fields": ("signature_verified",),
+    },
+    {
+        "platform": "ios",
+        "native": "native-build/flutter-ios-release.json",
+        "signed": "signed-artifacts/ios-signed-ipa.json",
+        "required_signature_fields": ("apple_team_id", "provisioning_profile_uuid", "ipa_codesign_identifier"),
+        "required_true_fields": ("signature_verified",),
+    },
+    {
+        "platform": "macos",
+        "native": "native-build/tauri-desktop-release.json",
+        "signed": "signed-artifacts/desktop-macos-notarized.json",
+        "required_signature_fields": ("developer_id_application", "notarization_submission_id"),
+        "required_true_fields": ("signature_verified", "notarization_verified"),
+    },
+    {
+        "platform": "windows",
+        "native": "native-build/tauri-desktop-release.json",
+        "signed": "signed-artifacts/desktop-windows-signed.json",
+        "required_signature_fields": ("authenticode_signer", "authenticode_certificate_sha256"),
+        "required_true_fields": ("signature_verified", "authenticode_verified"),
+    },
+)
+
 REQUIRED_GATES = (
     "version_consistency",
     "release_channel_policy",
@@ -84,6 +115,138 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_sha256(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text.startswith("sha256:"):
+        digest = text[7:]
+    else:
+        digest = text
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        return ""
+    return f"sha256:{digest}"
+
+
+def _platform_value(doc: dict[str, Any], field: str, platform: str) -> Any:
+    by_platform = doc.get(f"{field}_by_platform")
+    if isinstance(by_platform, dict) and platform in by_platform:
+        return by_platform[platform]
+    return doc.get(field)
+
+
+def _artifact_digest(doc: dict[str, Any], *, field: str, platform: str) -> str:
+    value = _normalize_sha256(_platform_value(doc, field, platform))
+    if value:
+        return value
+    artifacts = doc.get("artifacts")
+    if not isinstance(artifacts, list):
+        return ""
+    candidates: list[str] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        item_platform = str(item.get("platform") or "").strip().lower()
+        if item_platform and item_platform != platform:
+            continue
+        digest = _normalize_sha256(item.get("sha256"))
+        if digest:
+            candidates.append(digest)
+    return candidates[0] if len(set(candidates)) == 1 else ""
+
+
+def _artifact_digest_bindings(root: Path, *, commit: str, main_verification_run_id: str) -> list[dict[str, Any]]:
+    bindings: list[dict[str, Any]] = []
+    for spec in PLATFORM_ARTIFACT_BINDINGS:
+        platform = str(spec["platform"])
+        native_path = str(spec["native"])
+        signed_path = str(spec["signed"])
+        native = _load_json(root / native_path)
+        signed = _load_json(root / signed_path)
+        release_digest = _artifact_digest(
+            native,
+            field="release_payload_artifact_sha256",
+            platform=platform,
+        )
+        signed_digest = _artifact_digest(
+            signed,
+            field="signed_artifact_sha256",
+            platform=platform,
+        )
+        binding_digest = _normalize_sha256(signed.get("native_signed_binding_sha256"))
+        native_commit = str(native.get("source_commit") or "").strip()
+        signed_commit = str(signed.get("source_commit") or "").strip()
+        build_run_id = str(native.get("build_run_id") or "").strip()
+        signing_run_id = str(signed.get("signing_run_id") or "").strip()
+        attestation = signed.get("artifact_attestation")
+        attestation_digest = ""
+        attestation_id = ""
+        if isinstance(attestation, dict):
+            attestation_digest = _normalize_sha256(attestation.get("subject_sha256"))
+            attestation_id = str(attestation.get("attestation_id") or "").strip()
+        signature_metadata = {
+            field: signed.get(field)
+            for field in spec["required_signature_fields"]
+        }
+        missing_signature_fields = [
+            field
+            for field, value in signature_metadata.items()
+            if not str(value or "").strip()
+        ]
+        false_verifications = [
+            field
+            for field in spec["required_true_fields"]
+            if signed.get(field) is not True
+        ]
+        digests_match = bool(release_digest) and release_digest == signed_digest == binding_digest
+        valid = all(
+            (
+                bool(native),
+                bool(signed),
+                digests_match,
+                native_commit == commit,
+                signed_commit == commit,
+                bool(build_run_id),
+                bool(signing_run_id),
+                bool(attestation_id),
+                attestation_digest == binding_digest,
+                not missing_signature_fields,
+                not false_verifications,
+            )
+        )
+        bindings.append(
+            {
+                "platform": platform,
+                "native_build_evidence_path": native_path,
+                "signed_artifact_evidence_path": signed_path,
+                "release_payload_artifact_sha256": release_digest or None,
+                "external_evidence_signed_artifact_sha256": signed_digest or None,
+                "native_signed_binding_sha256": binding_digest or None,
+                "digests_match": digests_match,
+                "source_commit": commit,
+                "native_source_commit": native_commit or None,
+                "signed_source_commit": signed_commit or None,
+                "build_run_id": build_run_id or None,
+                "signing_run_id": signing_run_id or None,
+                "artifact_attestation": attestation if isinstance(attestation, dict) else None,
+                "main_verification_run_id": main_verification_run_id,
+                "signature_metadata": signature_metadata,
+                "missing_signature_fields": missing_signature_fields,
+                "failed_verifications": false_verifications,
+                "valid": valid,
+            }
+        )
+    return bindings
+
+
 def _read_audit_status(path: Path | None) -> tuple[str, int | None]:
     if path is None or not path.is_file():
         return "not_supplied", None
@@ -109,8 +272,6 @@ def write_evidence(
     all_signed_present = all(row["present"] for row in signed_rows)
     audit_status, audit_blocker_count = _read_audit_status(real_ga_audit_report)
     prebinding_audit_passed = audit_status == "passed"
-    external_evidence_complete = all_native_present and all_signed_present and prebinding_audit_passed
-    customer_ga_status = "passed" if external_evidence_complete else "blocked_missing_external_evidence"
 
     commit = _env("GITHUB_SHA", "local")
     run_id = _env("GITHUB_RUN_ID", "local")
@@ -119,6 +280,19 @@ def write_evidence(
     ref = _env("GITHUB_REF", "local")
     repository = _env("GITHUB_REPOSITORY", "local")
     trigger = _env("GITHUB_EVENT_NAME", "local")
+    artifact_digest_bindings = _artifact_digest_bindings(
+        external_evidence_root,
+        commit=commit,
+        main_verification_run_id=run_id,
+    )
+    all_artifact_digest_bindings_valid = all(row["valid"] for row in artifact_digest_bindings)
+    external_evidence_complete = (
+        all_native_present
+        and all_signed_present
+        and prebinding_audit_passed
+        and all_artifact_digest_bindings_valid
+    )
+    customer_ga_status = "passed" if external_evidence_complete else "blocked_missing_external_evidence"
 
     evidence = {
         "schema": "omnidesk-main-verification/v1",
@@ -144,6 +318,8 @@ def write_evidence(
         "signed_artifact_evidence": signed_rows,
         "all_required_native_builds_present": all_native_present,
         "all_required_signed_artifacts_present": all_signed_present,
+        "all_artifact_digest_bindings_valid": all_artifact_digest_bindings_valid,
+        "artifact_digest_bindings": artifact_digest_bindings,
     }
 
     evidence_path = output_dir / "main-verification-evidence.json"
@@ -167,6 +343,8 @@ def write_evidence(
         "signed_artifacts_bound": all_signed_present and prebinding_audit_passed,
         "all_required_native_builds_present": all_native_present,
         "all_required_signed_artifacts_present": all_signed_present,
+        "all_artifact_digest_bindings_valid": all_artifact_digest_bindings_valid,
+        "artifact_digest_bindings": artifact_digest_bindings,
         "native_build_evidence_paths": list(NATIVE_REQUIRED),
         "signed_artifact_evidence_paths": list(SIGNED_REQUIRED),
         "native_build_evidence": native_rows,
@@ -195,6 +373,7 @@ def write_evidence(
         "native_signed_artifact_binding_status": binding["status"],
         "all_required_native_builds_present": all_native_present,
         "all_required_signed_artifacts_present": all_signed_present,
+        "all_artifact_digest_bindings_valid": all_artifact_digest_bindings_valid,
     }
     manifest_path = output_dir / "main-verification-artifact.json"
     _write_json(manifest_path, manifest)

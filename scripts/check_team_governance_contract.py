@@ -49,11 +49,27 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
 
     _check(contract.get("schema") == "omnidesk-team-governance/v1", "team governance schema must be omnidesk-team-governance/v1", failures)
+    _check(
+        contract.get("repository_full_name") == "Omniorganization/omni-desk-ai",
+        "team governance repository_full_name must be Omniorganization/omni-desk-ai",
+        failures,
+    )
     _check(contract.get("required_for_customer_distribution_ga") is True, "team governance must be required for customer-distribution GA", failures)
     _check(contract.get("required_repository_owner_type") == "Organization", "customer-distribution GA must require an Organization-owned repository", failures)
     _check(contract.get("personal_owner_fallback_forbidden_for_real_ga") is True, "personal owner fallback must be forbidden for Real GA", failures)
     _check(bool(contract.get("live_evidence_required_file")), "live team governance evidence file must be declared", failures)
-    _check(bool(contract.get("migration_blocker")), "migration blocker must be explicit while repository is not organization-owned", failures)
+    owner_type = str(contract.get("current_repository_owner_type") or "").strip()
+    if owner_type == "Organization":
+        _check(contract.get("migration_status") == "completed", "organization migration_status must be completed", failures)
+        _check(contract.get("migration_blocker") == "", "completed organization migration must not retain a blocker", failures)
+        _check(
+            contract.get("personal_owner_fallback_allowed_for_source_candidate") is False,
+            "organization-owned repository must forbid personal fallback for source candidates",
+            failures,
+        )
+    else:
+        _check(bool(contract.get("migration_blocker")), "migration blocker must be explicit while repository is not organization-owned", failures)
+    _check(contract.get("required_organization") == "Omniorganization", "required_organization must be Omniorganization", failures)
 
     teams = contract.get("required_teams") or []
     team_slugs = {str(item.get("slug") or "") for item in teams if isinstance(item, dict)}
@@ -72,7 +88,6 @@ def main(argv: list[str] | None = None) -> int:
         failures.append(f"CODEOWNERS file is missing: {codeowners_path.relative_to(root)}")
     else:
         codeowners = codeowners_path.read_text(encoding="utf-8")
-        owner_type = str(contract.get("current_repository_owner_type") or "").strip()
         has_personal_fallback = "@yinyufan0813-cmyk" in codeowners
         if owner_type == "User":
             _check("TEAM_OWNER_BLOCKER" in codeowners, "CODEOWNERS must document the personal-repository team blocker", failures)
@@ -84,7 +99,11 @@ def main(argv: list[str] | None = None) -> int:
                 failures,
             )
         for team in REQUIRED_TEAMS:
-            _check(f"/{team}" in codeowners or f"{team}" in codeowners, f"CODEOWNERS migration target missing team: {team}", failures)
+            _check(
+                f"@Omniorganization/{team}" in codeowners,
+                f"CODEOWNERS migration target missing team: {team}",
+                failures,
+            )
 
     if failures:
         print("team governance contract check failed:", file=sys.stderr)

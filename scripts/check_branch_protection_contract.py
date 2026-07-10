@@ -37,6 +37,25 @@ REQUIRED_JOBS = {
     "source-maturity-closure",
 }
 
+REQUIRED_CHECK_CONTEXTS = {
+    "CI",
+    "Security",
+    "release-policy",
+    "external-ga-evidence-contract",
+    "security-attack-surface",
+    "docker-scan",
+    "backend-and-contract",
+    "web-admin",
+    "desktop-tauri",
+    "mobile-flutter",
+    "mobile-ios-simulator",
+    "main-verification",
+    "team-governance",
+    "source-maturity-closure",
+    "feasible-closure",
+    "remaining-real-evidence-source-fixes",
+}
+
 REQUIRED_BOOLEAN_TRUE = (
     "require_pull_request",
     "require_branch_up_to_date",
@@ -83,6 +102,12 @@ def main(argv: list[str] | None = None) -> int:
 
     status_checks = set(contract.get("required_status_checks") or [])
     _check(REQUIRED_STATUS_CHECKS.issubset(status_checks), f"required status checks missing: {sorted(REQUIRED_STATUS_CHECKS - status_checks)}", failures)
+    check_contexts = set(contract.get("required_check_contexts") or [])
+    _check(
+        REQUIRED_CHECK_CONTEXTS.issubset(check_contexts),
+        f"required check contexts missing: {sorted(REQUIRED_CHECK_CONTEXTS - check_contexts)}",
+        failures,
+    )
     jobs = set(contract.get("required_jobs") or [])
     _check(REQUIRED_JOBS.issubset(jobs), f"required jobs missing: {sorted(REQUIRED_JOBS - jobs)}", failures)
 

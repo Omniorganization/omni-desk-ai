@@ -142,14 +142,30 @@ jobs:
             echo "- External evidence supplied: $([[ -n "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]] && echo yes || echo no)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Upload required Main Verification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: main-verification-evidence-${{ github.sha }}
           path: |
             dist/evidence/main-verification-evidence.json
             dist/evidence/main-verification-artifact.json
             dist/evidence/native-signed-artifact-binding.json
-            dist/evidence/external-ga-evidence-final-audit.json
             release/external-evidence/control-plane/main-verification-evidence.json
             release/external-evidence/control-plane/native-signed-artifact-binding.json
-          if-no-files-found: warn
+          if-no-files-found: error
+
+      - name: Upload enforced final Real GA audit
+        if: ${{ inputs.external_evidence_run_id != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: main-verification-final-audit-${{ github.sha }}
+          path: dist/evidence/external-ga-evidence-final-audit.json
+          if-no-files-found: error
+
+      - name: Upload complete bound external evidence bundle
+        if: ${{ inputs.external_evidence_run_id != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: external-ga-evidence-bound
+          path: release/external-evidence/**
+          if-no-files-found: error

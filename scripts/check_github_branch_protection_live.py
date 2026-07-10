@@ -154,7 +154,13 @@ def evaluate_live_protection(
         }
         return LiveCheckResult(False, failures, checks, report)
 
-    required_contexts = {str(item) for item in contract.get("required_status_checks", [])}
+    required_contexts = {
+        str(item)
+        for item in (
+            contract.get("required_check_contexts")
+            or contract.get("required_status_checks", [])
+        )
+    }
     actual_contexts = _status_contexts(protection)
     missing_contexts = sorted(required_contexts - actual_contexts)
     if missing_contexts:
