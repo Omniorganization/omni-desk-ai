@@ -16,6 +16,7 @@ from scripts.write_native_artifact_manifest import build_manifest
 
 
 def test_customer_distribution_ga_requires_complete_and_live(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GITHUB_RUN_ID", "release-1")
     binding_report = tmp_path / "current-release-artifact-binding.json"
     binding_report.write_text(
         json.dumps(
