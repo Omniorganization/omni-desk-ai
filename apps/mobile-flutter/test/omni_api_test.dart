@@ -207,7 +207,7 @@ void main() {
     client.close();
   });
 
-  test('createProject posts to the shared project contract', () async {
+  test('createProject posts to the shared project contract with explicit idempotency override', () async {
     final client = OmniApiClient(
       baseUrl: 'https://gateway.example.test/',
       token: 'operator-token',
@@ -215,7 +215,7 @@ void main() {
       httpClient: MockClient((http.Request request) async {
         expect(request.url.toString(), 'https://gateway.example.test/app/projects');
         expect(request.method, 'POST');
-        expect(request.headers['idempotency-key'], startsWith('mobile-project-create-'));
+        expect(request.headers['idempotency-key'], 'mobile-project-create-op-123');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['name'], 'Mobile Launch');
         expect(body['description'], 'Mobile managed project');
@@ -228,6 +228,7 @@ void main() {
       'Mobile Launch',
       description: 'Mobile managed project',
       sourceDeviceId: 'mobile-1',
+      idempotencyKey: 'mobile-project-create-op-123',
     );
     client.close();
   });

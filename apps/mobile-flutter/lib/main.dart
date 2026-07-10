@@ -117,6 +117,10 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     await _storage.write(key: 'omni.actor', value: actorController.text);
   }
 
+  String _operationKey(String prefix) {
+    return '$prefix-${DateTime.now().microsecondsSinceEpoch}-${Object().hashCode}';
+  }
+
   Future<bool> _confirmSensitiveAction() async {
     try {
       final canCheck = await _auth.canCheckBiometrics || await _auth.isDeviceSupported();
@@ -149,7 +153,47 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
 
   String get activeProjectName => activeProject?.name ?? '未选择项目';
 
-  void createProject([String? fallbackName]) {
+  DateTime _dateFromGateway(dynamic value) {
+    if (value is num) {
+      return DateTime.fromMillisecondsSinceEpoch((value * 1000).round());
+    }
+    if (value is String) {
+      return DateTime.tryParse(value) ?? DateTime.now();
+    }
+    return DateTime.now();
+  }
+
+  ProjectItem _projectFromGateway(Map<String, dynamic> raw) {
+    return ProjectItem(
+      id: (raw['project_id'] ?? raw['id'] ?? '').toString(),
+      name: (raw['name'] ?? 'Untitled project').toString(),
+      createdAt: _dateFromGateway(raw['created_at'] ?? raw['createdAt']),
+    );
+  }
+
+  Future<List<ProjectItem>> syncProjects() async {
+    final response = await client.projects();
+    final rawProjects = response['projects'];
+    final loaded = <ProjectItem>[];
+    if (rawProjects is List) {
+      for (final raw in rawProjects) {
+        if (raw is Map) {
+          final project = _projectFromGateway(Map<String, dynamic>.from(raw));
+          if (project.id.isNotEmpty) loaded.add(project);
+        }
+      }
+    }
+    if (!mounted) return loaded;
+    setState(() {
+      projects = loaded;
+      if (activeProjectId == null || !loaded.any((project) => project.id == activeProjectId)) {
+        activeProjectId = loaded.isEmpty ? null : loaded.first.id;
+      }
+    });
+    return loaded;
+  }
+
+  Future<void> createProject([String? fallbackName]) async {
     final name = (fallbackName ?? projectController.text).trim();
     if (name.isEmpty) {
       setState(() => projectError = '请输入项目名称。');
@@ -159,17 +203,26 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       setState(() => projectError = '项目已存在。');
       return;
     }
-    final project = ProjectItem(
-      id: '${DateTime.now().millisecondsSinceEpoch}-${name.hashCode.abs()}',
-      name: name,
-      createdAt: DateTime.now(),
-    );
-    setState(() {
-      projects = <ProjectItem>[project, ...projects];
-      activeProjectId = project.id;
-      projectController.clear();
-      projectError = '';
-    });
+    try {
+      final identity = deviceIdentity ?? await identityStore.loadOrCreate();
+      deviceIdentity = identity;
+      final response = await client.createProject(
+        name,
+        sourceDeviceId: identity.deviceId,
+        idempotencyKey: _operationKey('mobile-project-create'),
+      );
+      final rawProject = response['project'];
+      if (rawProject is! Map) throw Exception('Gateway did not return project');
+      final project = _projectFromGateway(Map<String, dynamic>.from(rawProject));
+      setState(() {
+        projects = <ProjectItem>[project, ...projects.where((item) => item.id != project.id)];
+        activeProjectId = project.id;
+        projectController.clear();
+        projectError = '';
+      });
+    } catch (e) {
+      setState(() => projectError = e.toString());
+    }
   }
 
   void applyPrompt(String prompt) {
@@ -190,6 +243,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
         await client.registerPushToken(identity.deviceId, token);
       }
       snapshot = await client.bootstrap();
+      await syncProjects();
       setState(() {
         securityState = 'session saved in flutter_secure_storage; biometric/PIN required for approval';
         pushState = token == null ? 'push provider unavailable in this build' : 'FCM/APNS token registered';
@@ -335,7 +389,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
               ],
             ),
             const SizedBox(height: 12),
-            Text('智能协作 · 远程审批 · 移动问答 · 项目自建', style: TextStyle(color: Colors.blueGrey.shade100)),
+            Text('智能协作 · 远程审批 · 移动问答 · Gateway 项目同步', style: TextStyle(color: Colors.blueGrey.shade100)),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -362,7 +416,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
             Row(
               children: <Widget>[
                 const Expanded(child: Text('项目', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
-                FilledButton.tonal(onPressed: () => createProject(projectController.text.isEmpty ? '新项目' : null), child: const Text('＋ 新建项目')),
+                OutlinedButton(onPressed: () { syncProjects(); }, child: const Text('同步')),
+                const SizedBox(width: 8),
+                FilledButton.tonal(onPressed: () { createProject(projectController.text.isEmpty ? '新项目' : null); }, child: const Text('＋ 新建项目')),
               ],
             ),
             const SizedBox(height: 10),
@@ -372,11 +428,11 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
                   child: TextField(
                     controller: projectController,
                     decoration: const InputDecoration(labelText: '输入项目名称后创建', border: OutlineInputBorder()),
-                    onSubmitted: (_) => createProject(),
+                    onSubmitted: (_) { createProject(); },
                   ),
                 ),
                 const SizedBox(width: 10),
-                FilledButton(onPressed: createProject, child: const Text('创建')),
+                FilledButton(onPressed: () { createProject(); }, child: const Text('创建')),
               ],
             ),
             if (projectError.isNotEmpty) Padding(
@@ -392,7 +448,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: Colors.white24),
                 ),
-                child: const Text('暂无项目。项目内容需要由用户自行创建；创建后才会进入移动端工作区、审批和任务上下文。'),
+                child: const Text('暂无项目。项目由 Gateway 创建并跨 Web Admin / Desktop / Mobile 同步。'),
               )
             else
               Wrap(
@@ -477,8 +533,8 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
               spacing: 8,
               runSpacing: 8,
               children: <Widget>[
-                FilledButton.icon(onPressed: askAssistant, icon: const Icon(Icons.arrow_upward), label: const Text('问一下 AI')),
-                OutlinedButton.icon(onPressed: sendTask, icon: const Icon(Icons.desktop_windows_outlined), label: const Text('发送并请求桌面执行')),
+                FilledButton.icon(onPressed: () { askAssistant(); }, icon: const Icon(Icons.arrow_upward), label: const Text('问一下 AI')),
+                OutlinedButton.icon(onPressed: () { sendTask(); }, icon: const Icon(Icons.desktop_windows_outlined), label: const Text('发送并请求桌面执行')),
               ],
             ),
           ],
@@ -527,7 +583,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
           TextField(controller: tokenController, decoration: const InputDecoration(labelText: 'Owner/Operator Token'), obscureText: true),
           TextField(controller: actorController, decoration: const InputDecoration(labelText: 'Actor')),
           const SizedBox(height: 12),
-          SizedBox(width: double.infinity, child: FilledButton(onPressed: connect, child: const Text('连接 Omni Gateway'))),
+          SizedBox(width: double.infinity, child: FilledButton(onPressed: () { connect(); }, child: const Text('连接 Omni Gateway'))),
         ],
       ),
     );

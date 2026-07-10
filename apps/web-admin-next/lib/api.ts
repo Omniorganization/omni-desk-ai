@@ -83,7 +83,13 @@ export class OmniAdminApi {
   conversations() { return this.request<any>('/api/omni/conversations'); }
 
   projects() { return this.request<any>('/api/omni/projects'); }
-  createProject(name: string, description = '', metadata: Record<string, unknown> = {}) {
+  createProject(
+    name: string,
+    description = '',
+    metadata: Record<string, unknown> = {},
+    extraPayload: Record<string, unknown> = {},
+    idempotencyKey?: string,
+  ) {
     const session = this.session;
     return this.request<any>('/api/omni/projects', {
       method: 'POST',
@@ -91,20 +97,21 @@ export class OmniAdminApi {
         name,
         description,
         metadata,
+        ...extraPayload,
         ...(session.deviceId ? { source_device_id: session.deviceId } : {})
       })
-    }, `web-admin-project-create-${name.length}-${Date.now()}`);
+    }, idempotencyKey || `web-admin-project-create-${name.length}-${Date.now()}`);
   }
-  updateProject(projectId: string, payload: ProjectPayload) {
+  updateProject(projectId: string, payload: ProjectPayload, idempotencyKey?: string) {
     return this.request<any>(`/api/omni/projects/${encodeURIComponent(projectId)}`, {
       method: 'PATCH',
       body: JSON.stringify(payload)
-    }, `web-admin-project-update-${projectId}-${Date.now()}`);
+    }, idempotencyKey || `web-admin-project-update-${projectId}-${Date.now()}`);
   }
-  deleteProject(projectId: string) {
+  deleteProject(projectId: string, idempotencyKey?: string) {
     return this.request<any>(`/api/omni/projects/${encodeURIComponent(projectId)}`, {
       method: 'DELETE'
-    }, `web-admin-project-delete-${projectId}-${Date.now()}`);
+    }, idempotencyKey || `web-admin-project-delete-${projectId}-${Date.now()}`);
   }
 
   createConversation(title: string) {

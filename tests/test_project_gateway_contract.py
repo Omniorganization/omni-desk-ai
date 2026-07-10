@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from omnidesk_agent.appsync.projects import POSTGRES_PROJECTS_SCHEMA_SQL
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.server import create_app
 
@@ -147,3 +148,52 @@ def test_gateway_project_contract_is_organization_scoped(tmp_path, monkeypatch):
         bob_projects = client.get("/app/projects", headers=headers("bob-list")).json()["projects"]
         assert [project["name"] for project in alice_projects] == ["Org A Project"]
         assert [project["name"] for project in bob_projects] == ["Org B Project"]
+
+
+def test_gateway_project_metadata_validation_rejects_pollution_and_unknown_patch(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    app = create_app(_cfg(tmp_path))
+    headers = {
+        "authorization": "Bearer operator-token",
+        "x-omnidesk-actor": "alice",
+    }
+
+    with TestClient(app) as client:
+        polluted = client.post(
+            "/app/projects",
+            headers={**headers, "idempotency-key": "polluted-metadata"},
+            json={"name": "Polluted", "metadata": {"__proto__": {"admin": True}}},
+        )
+        assert polluted.status_code == 422, polluted.text
+        assert "metadata key is not allowed" in polluted.text
+
+        too_deep = client.post(
+            "/app/projects",
+            headers={**headers, "idempotency-key": "deep-metadata"},
+            json={"name": "Deep", "metadata": {"a": {"b": {"c": {"d": {"e": {"f": "blocked"}}}}}}},
+        )
+        assert too_deep.status_code == 422, too_deep.text
+        assert "metadata must be at most" in too_deep.text
+
+        created = client.post(
+            "/app/projects",
+            headers={**headers, "idempotency-key": "safe-project"},
+            json={"name": "Safe", "metadata": {"surface": "web_admin"}},
+        )
+        assert created.status_code == 200, created.text
+        project_id = created.json()["project"]["project_id"]
+
+        unknown_patch = client.patch(
+            f"/app/projects/{project_id}",
+            headers={**headers, "idempotency-key": "unknown-patch"},
+            json={"name": "Still Safe", "owner_actor": "mallory"},
+        )
+        assert unknown_patch.status_code == 422, unknown_patch.text
+        assert "unsupported project patch fields" in unknown_patch.text
+
+
+def test_gateway_project_store_declares_postgres_normalized_schema_contract():
+    assert "CREATE TABLE IF NOT EXISTS omnidesk_appsync_projects" in POSTGRES_PROJECTS_SCHEMA_SQL
+    assert "metadata JSONB NOT NULL" in POSTGRES_PROJECTS_SCHEMA_SQL
+    assert "omnidesk_appsync_projects_active_name_idx" in POSTGRES_PROJECTS_SCHEMA_SQL
+    assert "WHERE deleted_at IS NULL" in POSTGRES_PROJECTS_SCHEMA_SQL
