@@ -38,6 +38,11 @@ jobs:
           set -o pipefail
           python scripts/check_typed_client_contracts.py . \
             2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/typed-client-contracts.txt"
+      - name: Web Admin proxy contract coverage
+        run: |
+          set -o pipefail
+          python scripts/check_web_admin_proxy_contract.py . \
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/web-admin-proxy-contract.txt"
       - run: find . -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
       - name: GA release gate
         run: |

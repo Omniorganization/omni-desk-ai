@@ -16,6 +16,14 @@ type ProjectItem = {
   createdAt: string;
 };
 
+type GatewayProject = {
+  project_id?: unknown;
+  id?: unknown;
+  name?: unknown;
+  created_at?: unknown;
+  createdAt?: unknown;
+};
+
 type QuickAction = {
   icon: string;
   title: string;
@@ -79,13 +87,24 @@ async function keychainSet(key: string, value: string): Promise<void> {
   await invoke('secure_set', { key, value });
 }
 
-function makeProjectId(name: string) {
-  const slug = name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-');
-  return `${Date.now()}-${slug}`;
-}
-
 function projectInitials(name: string) {
   return name.trim().slice(0, 2).toUpperCase() || 'P';
+}
+
+function actorInitials(value: string) {
+  return value.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]+/g, '').trim().slice(0, 2).toLowerCase() || 'op';
+}
+
+function operationKey(prefix: string) {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function projectFromGateway(project: GatewayProject): ProjectItem {
+  return {
+    id: String(project.project_id || project.id || ''),
+    name: String(project.name || 'Untitled project'),
+    createdAt: String(project.created_at || project.createdAt || new Date().toISOString()),
+  };
 }
 
 function App() {
@@ -121,6 +140,17 @@ function App() {
     keychainGet('omni.actor').then(v => v && setActor(v));
   }, []);
 
+  async function refreshProjects(activeClient = client): Promise<ProjectItem[]> {
+    const result = await activeClient.projects();
+    const rawProjects: unknown[] = Array.isArray(result.projects) ? result.projects : [];
+    const loaded: ProjectItem[] = rawProjects
+      .map((project: unknown) => projectFromGateway(project && typeof project === 'object' ? project as GatewayProject : {}))
+      .filter((project: ProjectItem) => project.id);
+    setProjects(loaded);
+    setActiveProjectId(current => current && loaded.some(project => project.id === current) ? current : (loaded[0]?.id || ''));
+    return loaded;
+  }
+
   async function connect() {
     setError('');
     try {
@@ -132,6 +162,7 @@ function App() {
       await client.registerDesktop(identity.deviceId, navigator.platform, CAPABILITIES, identity.publicKeyPem);
       await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
       setSnapshot(await client.bootstrap());
+      await refreshProjects();
     } catch (e: any) {
       setError(e.message || String(e));
     }
@@ -199,7 +230,7 @@ function App() {
     }
   }
 
-  function createProject(projectName = newProjectName) {
+  async function createProject(projectName = newProjectName) {
     const name = projectName.trim();
     if (!name) {
       setProjectError('请输入项目名称。');
@@ -209,11 +240,17 @@ function App() {
       setProjectError('项目已存在。');
       return;
     }
-    const project = { id: makeProjectId(name), name, createdAt: new Date().toISOString() };
-    setProjects(current => [project, ...current]);
-    setActiveProjectId(project.id);
-    setNewProjectName('');
     setProjectError('');
+    try {
+      const result = await client.createProject(name, '', {}, deviceIdentity?.deviceId, operationKey('desktop-project-create'));
+      const project = projectFromGateway(result.project);
+      setProjects(current => [project, ...current.filter(item => item.id !== project.id)]);
+      setActiveProjectId(project.id);
+      setNewProjectName('');
+      setSnapshot(await client.bootstrap());
+    } catch (e: any) {
+      setProjectError(e.message || String(e));
+    }
   }
 
   useEffect(() => {
@@ -255,14 +292,14 @@ function App() {
       </nav>
 
       <section className="panel projects-panel">
-        <div className="panel-title"><span>项目</span><button type="button" onClick={() => createProject(newProjectName || '新项目')}>＋ 新建项目</button></div>
-        <form className="project-form" onSubmit={event => { event.preventDefault(); createProject(); }}>
+        <div className="panel-title"><span>项目</span><button type="button" onClick={() => void createProject(newProjectName || '新项目')}>＋ 新建项目</button></div>
+        <form className="project-form" onSubmit={event => { event.preventDefault(); void createProject(); }}>
           <input value={newProjectName} onChange={event => setNewProjectName(event.target.value)} placeholder="输入项目名称后创建" />
           <button type="submit">创建</button>
         </form>
         {projectError && <p className="error small-error">{projectError}</p>}
         <div className="project-list">
-          {projects.length === 0 ? <div className="empty-state"><strong>暂无项目</strong><span>Desktop 项目由用户自行创建；创建后才会绑定本地任务、终端与运行证据。</span></div> : projects.map(project => <button
+          {projects.length === 0 ? <div className="empty-state"><strong>暂无项目</strong><span>Desktop 项目由 Gateway 创建并跨 Web / Mobile 同步；连接后会自动加载组织项目。</span></div> : projects.map(project => <button
             className={`project-row ${project.id === activeProjectId ? 'active' : ''}`}
             key={project.id}
             type="button"
@@ -271,7 +308,7 @@ function App() {
         </div>
       </section>
 
-      <button className="profile-row" type="button" onClick={() => setShowAccountSettings(open => !open)}><span className="avatar">yy</span><span><strong>yufan yin</strong><small>{actor}</small></span><em>{showAccountSettings ? '⌃' : '⌄'}</em></button>
+      <button className="profile-row" type="button" onClick={() => setShowAccountSettings(open => !open)}><span className="avatar">{actorInitials(actor)}</span><span><strong>{actor}</strong><small>Desktop operator</small></span><em>{showAccountSettings ? '⌃' : '⌄'}</em></button>
     </aside>
 
     <section className="desktop-workspace">
@@ -305,7 +342,7 @@ function App() {
 
     <aside className="desktop-rightbar">
       {showAccountSettings && <section className="panel account-panel"><div className="panel-title"><h2>账户设置</h2><span>Codex-style</span></div>{ACCOUNT_SETTINGS.map(setting => <button className="setting-row" key={setting.title} type="button"><span><strong>{setting.title}</strong><small>{setting.detail}</small></span><em>{setting.action}</em></button>)}</section>}
-      <section className="panel"><div className="panel-title"><h2>当前项目</h2><span>{activeProject ? 'ready' : '待创建'}</span></div><p>{activeProject ? `${activeProject.name} 已绑定 Desktop Runtime。` : '请先在左侧创建项目。'}</p><p>Device: {deviceIdentity?.deviceId || 'not enrolled'}</p></section>
+      <section className="panel"><div className="panel-title"><h2>当前项目</h2><span>{activeProject ? 'ready' : '待创建'}</span></div><p>{activeProject ? `${activeProject.name} 已从 Gateway 同步到 Desktop Runtime。` : '请先连接 Gateway 并创建或选择项目。'}</p><p>Device: {deviceIdentity?.deviceId || 'not enrolled'}</p></section>
       <section className="panel"><h2>连接配置</h2><label>Gateway URL<input value={gatewayUrl} onChange={e => setGatewayUrl(e.target.value)} /></label><label>Operator Token<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" /></label><label>Actor<input value={actor} onChange={e => setActor(e.target.value)} /></label></section>
       <section className="panel"><h2>审批状态</h2><p>待审批：{pendingApprovals.length}</p><pre>{JSON.stringify(pendingApprovals.slice(0, 3), null, 2)}</pre></section>
       <section className="panel"><h2>通知</h2><p>{notifications.length} 条</p><pre>{JSON.stringify(notifications.slice(0, 5), null, 2)}</pre></section>

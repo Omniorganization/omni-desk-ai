@@ -144,7 +144,7 @@ test('registerAdminDevice uses the server-side proxy and per-install web_admin i
   assert.deepEqual(body.capabilities, ['governance', 'channels', 'audit', 'approval', 'role:owner']);
 });
 
-test('createProject uses the server-side project proxy with csrf and idempotency', async () => {
+test('createProject uses the server-side project proxy with csrf and explicit idempotency override', async () => {
   let requestUrl = '';
   let requestInit: RequestInit | undefined;
   globalThis.fetch = async (input, init) => {
@@ -154,12 +154,12 @@ test('createProject uses the server-side project proxy with csrf and idempotency
   };
 
   const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'operator', deviceId: 'web_signed_device' });
-  await api.createProject('Launch', 'Campaign project');
+  await api.createProject('Launch', 'Campaign project', {}, {}, 'web-admin-project-create-op-123');
 
   assert.equal(requestUrl, '/api/omni/projects');
   assert.equal(String(requestInit?.method), 'POST');
   assert.equal((requestInit?.headers as Record<string, string>)['x-csrf-token'], 'csrf-token');
-  assert.match((requestInit?.headers as Record<string, string>)['idempotency-key'], /^web-admin-project-create-6-/);
+  assert.equal((requestInit?.headers as Record<string, string>)['idempotency-key'], 'web-admin-project-create-op-123');
   assert.deepEqual(JSON.parse(requestInit?.body as string), {
     name: 'Launch',
     description: 'Campaign project',
