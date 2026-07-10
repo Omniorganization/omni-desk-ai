@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -197,3 +198,73 @@ def test_gateway_project_store_declares_postgres_normalized_schema_contract():
     assert "metadata JSONB NOT NULL" in POSTGRES_PROJECTS_SCHEMA_SQL
     assert "omnidesk_appsync_projects_active_name_idx" in POSTGRES_PROJECTS_SCHEMA_SQL
     assert "WHERE deleted_at IS NULL" in POSTGRES_PROJECTS_SCHEMA_SQL
+
+
+def test_gateway_project_routes_return_503_until_owner_recovers_checksum_valid_backup(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_VIEWER_TOKEN", "viewer-token")
+    monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
+    cfg = _cfg(tmp_path)
+    operator = {"authorization": "Bearer operator-token", "idempotency-key": "project-write"}
+    viewer = {"authorization": "Bearer viewer-token"}
+    owner = {"authorization": "Bearer owner-token", "idempotency-key": "project-recovery"}
+
+    with TestClient(create_app(cfg)) as client:
+        created = client.post("/app/projects", headers=operator, json={"name": "Before corruption"})
+        assert created.status_code == 200, created.text
+        project_id = created.json()["project"]["project_id"]
+        updated = client.patch(
+            f"/app/projects/{project_id}",
+            headers={**operator, "idempotency-key": "project-update"},
+            json={"name": "Latest value"},
+        )
+        assert updated.status_code == 200, updated.text
+        project_store_path = cfg.workspace.root / "app_sync_state.json.projects.json"
+        project_store_path.write_text("not-json", encoding="utf-8")
+
+        assert client.get("/app/projects", headers=viewer).status_code == 503
+        assert client.post(
+            "/app/projects",
+            headers={**operator, "idempotency-key": "blocked-create"},
+            json={"name": "Blocked"},
+        ).status_code == 503
+        assert client.patch(
+            f"/app/projects/{project_id}",
+            headers={**operator, "idempotency-key": "blocked-update"},
+            json={"name": "Blocked"},
+        ).status_code == 503
+        assert client.delete(
+            f"/app/projects/{project_id}",
+            headers={**operator, "idempotency-key": "blocked-delete"},
+        ).status_code == 503
+
+        marker_path = Path(f"{project_store_path}.corruption.json")
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        marker["reason"] = "Traceback: secret internal path /srv/omnidesk/private.py"
+        marker["path"] = "/srv/omnidesk/private-projects.json"
+        marker["quarantine_path"] = "/srv/omnidesk/private-projects.json.corrupt"
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    with TestClient(create_app(cfg)) as restarted:
+        blocked = restarted.get("/app/projects", headers=viewer)
+        assert blocked.status_code == 503
+        assert blocked.json()["detail"]["code"] == "PROJECT_STORE_CORRUPT"
+        assert blocked.json()["detail"]["message"] == "Project storage is unavailable pending administrator recovery."
+        assert "/srv/omnidesk" not in blocked.text
+        status = restarted.get("/admin/projects/store/recovery", headers=owner)
+        assert status.status_code == 200, status.text
+        recovery_status = status.json()["recovery"]
+        assert recovery_status["blocked"] is True
+        assert recovery_status["marker"]["error_code"] == "PROJECT_STORE_CORRUPT"
+        assert recovery_status["marker"]["quarantine_present"] is True
+        assert {"reason", "path", "quarantine_path", "quarantine_error", "backup_candidates"}.isdisjoint(
+            recovery_status["marker"]
+        )
+        assert all({"path", "error"}.isdisjoint(backup) for backup in recovery_status["backups"])
+        assert "/srv/omnidesk" not in status.text
+        recovered = restarted.post("/admin/projects/store/recover", headers=owner, json={})
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()["recovery"]["backup_index"] == 1
+        listed = restarted.get("/app/projects", headers=viewer)
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["projects"][0]["name"] == "Before corruption"

@@ -17,6 +17,7 @@ REQUIRED_FILES = (
     "scripts/check_model_live_smoke_evidence.py",
     "scripts/check_external_ga_evidence.py",
     "scripts/check_real_ga_complete.py",
+    "scripts/check_customer_distribution_ga.py",
     "scripts/check_team_governance_contract.py",
     "scripts/import_external_ga_evidence.py",
     "scripts/assemble_external_ga_evidence_bundle.py",
@@ -30,11 +31,12 @@ WORKFLOW_SNIPPETS = (
     "name: Real GA Readiness",
     "check_live_branch_protection_contract.py",
     "check_main_verification_artifact_live.py",
-    "check_real_ga_complete.py",
+    "check_customer_distribution_ga.py",
     "check_model_live_smoke_evidence.py",
     "readiness_channel",
     "external_evidence_run_id",
     "external_evidence_artifact_name",
+    "external-ga-evidence-bound",
     "gh run download",
     "real-ga",
     "candidate",
@@ -96,7 +98,19 @@ COMPLETE_GA_CHECK_SNIPPETS = (
     "native_signed_artifact_bindings",
     "github-team-governance-live.json",
     "native-signed-artifact-binding.json",
+    "artifact_digest_bindings",
+    "release_payload_artifact_sha256",
+    "external_evidence_signed_artifact_sha256",
+    "native_signed_binding_sha256",
     "check_external_ga_evidence",
+)
+
+CUSTOMER_GA_CHECK_SNIPPETS = (
+    "audit_complete_real_ga",
+    "audit_live_main_verification",
+    "main_verification_live_artifact",
+    "omnidesk-customer-distribution-ga/v1",
+    "blocked_missing_external_evidence",
 )
 
 
@@ -125,6 +139,7 @@ def audit(root: Path) -> dict[str, object]:
         _check("--audit-only" in workflow, failures, "real-ga-readiness workflow must support audit-only candidate runs")
         _check("workflow_call" in workflow, failures, "real-ga-readiness workflow must support control-plane workflow_call reuse")
         _check("contents: read" in workflow and "actions: read" in workflow, failures, "real-ga-readiness workflow must use least-privilege read permissions")
+        _check("--write-live-report" in workflow, failures, "real-ga-readiness workflow must persist the exact-commit Main Verification live report")
     except FileNotFoundError:
         pass
 
@@ -160,6 +175,18 @@ def audit(root: Path) -> dict[str, object]:
         _check(manifest.get("status") == "source_gate_ready_external_evidence_blocked", failures, "manifest must remain external-evidence blocked until real evidence passes")
         _check("team_governance_contract" in manifest, failures, "manifest must declare team governance contract")
         _check("native_signed_artifact_binding" in manifest, failures, "manifest must declare native signed artifact binding gate")
+        native_binding = manifest.get("native_signed_artifact_binding") or {}
+        _check(
+            native_binding.get("digest_equality_policy")
+            == "release_payload_artifact_sha256 == external_evidence_signed_artifact_sha256 == native_signed_binding_sha256",
+            failures,
+            "native signed artifact binding must declare final artifact digest equality",
+        )
+        _check(
+            "artifact attestation" in str(native_binding.get("platform_identity_policy") or ""),
+            failures,
+            "native signed artifact binding must bind platform identity and artifact attestation",
+        )
         _check("main_verification_live_artifact" in manifest, failures, "manifest must declare live main verification artifact gate")
         _check("bigseller_route_enablement" in manifest, failures, "manifest must declare BigSeller route enablement gate")
         _check("bigseller_real_contract_workflow" in manifest, failures, "manifest must declare BigSeller real contract workflow")
@@ -174,6 +201,13 @@ def audit(root: Path) -> dict[str, object]:
         pass
 
     try:
+        customer_check = _read(root, "scripts/check_customer_distribution_ga.py")
+        for snippet in CUSTOMER_GA_CHECK_SNIPPETS:
+            _check(snippet in customer_check, failures, f"Customer GA checker missing snippet: {snippet}")
+    except FileNotFoundError:
+        pass
+
+    try:
         release_policy = _read(root, ".github/workflows/release-policy.yml")
         _check("check_real_ga_readiness_contract.py" in release_policy, failures, "release policy must enforce real GA readiness source contract")
         _check("check_team_governance_contract.py" in release_policy, failures, "release policy must enforce team governance source contract")
@@ -183,17 +217,26 @@ def audit(root: Path) -> dict[str, object]:
         pass
 
     try:
+        release_workflow = _read(root, ".github/workflows/release.yml")
+        _check("check_customer_distribution_ga.py" in release_workflow, failures, "release workflow must enforce the final Customer GA boundary")
+        _check("external-ga-evidence-bound" in release_workflow, failures, "release workflow must consume the Main Verification-bound external evidence bundle")
+        _check("actions/download-artifact@" in release_workflow, failures, "release workflow must download native application artifacts before final signing")
+    except FileNotFoundError:
+        pass
+
+    try:
         main_verification = _read(root, ".github/workflows/main-verification.yml")
         _check("check_real_ga_readiness_contract.py" in main_verification, failures, "main verification must enforce real GA readiness source contract")
         _check("native-signed-artifact-binding.json" in main_verification, failures, "main verification must emit native signed artifact binding evidence")
+        _check("external-ga-evidence-bound" in main_verification, failures, "main verification must publish a complete bound external evidence bundle")
     except FileNotFoundError:
         pass
 
     return {
-        "schema": "omnidesk-real-ga-readiness-contract/v4",
+        "schema": "omnidesk-real-ga-readiness-contract/v5",
         "status": "passed" if not failures else "failed",
         "failures": failures,
-        "boundary": "This source contract verifies that complete real-GA collection and validation gates exist. It does not fabricate or replace external evidence.",
+        "boundary": "This source contract verifies that complete real-GA collection, binding, live-artifact, and final Customer GA validation gates exist. It does not fabricate or replace external evidence.",
     }
 
 

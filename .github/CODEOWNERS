@@ -1,35 +1,14 @@
-# Team-level governance target for customer-distribution Real GA.
-#
-# TEAM_OWNER_BLOCKER: this repository is currently owned by a GitHub User account,
-# so GitHub team CODEOWNERS such as @org/team cannot be enforced yet.
-# Transfer the repository to the production organization, create the teams listed
-# in .github/team-governance.required.json, then replace the personal fallback
-# entries below with real @org/team owners before claiming Real GA.
-#
-# Required organization-team mapping after migration:
-# *                         @omnidesk-ai/omnidesk-maintainers
-# .github/workflows/        @omnidesk-ai/release-owners @omnidesk-ai/security-owners
-# scripts/                  @omnidesk-ai/release-owners
-# deploy/                   @omnidesk-ai/platform-owners
-# release/                  @omnidesk-ai/release-owners @omnidesk-ai/security-owners
-# omnidesk_agent/security/  @omnidesk-ai/security-owners
-# omnidesk_agent/sandbox/   @omnidesk-ai/security-owners @omnidesk-ai/platform-owners
-# omnidesk_agent/plugins/   @omnidesk-ai/security-owners
-# omnidesk_agent/self_upgrade/ @omnidesk-ai/release-owners @omnidesk-ai/security-owners
-#
-# Source-candidate fallback only. This fallback is forbidden for customer-
-# distribution Real GA by scripts/check_external_ga_evidence.py, which requires
-# release/external-evidence/control-plane/github-team-governance-live.json to
-# prove an Organization-owned repository and resolved GitHub teams.
-* @yinyufan0813-cmyk
+* @Omniorganization/omnidesk-maintainers
 
-.github/workflows/ @yinyufan0813-cmyk
-scripts/ @yinyufan0813-cmyk
-omnidesk_agent/security/ @yinyufan0813-cmyk
-omnidesk_agent/sandbox/ @yinyufan0813-cmyk
-omnidesk_agent/plugins/ @yinyufan0813-cmyk
-omnidesk_agent/self_upgrade/ @yinyufan0813-cmyk
-deploy/ @yinyufan0813-cmyk
-release/ @yinyufan0813-cmyk
-scripts/deploy_artifact.sh @yinyufan0813-cmyk
-scripts/verify_release_artifact.py @yinyufan0813-cmyk
+/.github/ @Omniorganization/omnidesk-maintainers @Omniorganization/release-owners @Omniorganization/security-owners
+/.github/CODEOWNERS @Omniorganization/omnidesk-maintainers @Omniorganization/security-owners
+/.github/workflows/ @Omniorganization/release-owners @Omniorganization/security-owners
+
+/scripts/ @Omniorganization/release-owners
+/release/ @Omniorganization/release-owners @Omniorganization/security-owners
+/deploy/ @Omniorganization/platform-owners
+
+/omnidesk_agent/security/ @Omniorganization/security-owners
+/omnidesk_agent/sandbox/ @Omniorganization/security-owners @Omniorganization/platform-owners
+/omnidesk_agent/plugins/ @Omniorganization/security-owners
+/omnidesk_agent/self_upgrade/ @Omniorganization/release-owners @Omniorganization/security-owners

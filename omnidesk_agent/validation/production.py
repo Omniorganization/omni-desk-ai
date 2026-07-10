@@ -122,6 +122,8 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
     if not getattr(cfg.app_sync, "reject_predictable_device_ids_in_production", True):
         issues.append("app_sync.reject_predictable_device_ids_in_production must be true in production")
     _require_env(env, getattr(cfg.app_sync, "secret_pepper_env", "OMNIDESK_APPSYNC_SECRET_PEPPER"), "app_sync secret pepper", issues, min_length=STRONG_SECRET_MIN_LENGTH)
+    if cfg.app_sync.backend != "postgres":
+        issues.append("app_sync.backend must be postgres in production; JSON project storage is local/dev only")
     if cfg.storage.require_multi_instance_safe and cfg.app_sync.backend != "postgres":
         issues.append("app_sync.backend must be postgres when storage.require_multi_instance_safe=true")
     if cfg.app_sync.backend == "postgres":

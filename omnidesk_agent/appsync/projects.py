@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os
 import re
+import shutil
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -17,6 +22,15 @@ MAX_PROJECT_METADATA_BYTES = 16 * 1024
 MAX_PROJECT_METADATA_DEPTH = 5
 FORBIDDEN_METADATA_KEYS = {"__proto__", "constructor", "prototype"}
 PROJECT_PATCH_KEYS = {"name", "description", "metadata", "archived"}
+PROJECT_STORE_SCHEMA_VERSION = 1
+PROJECT_STORE_BACKUP_COUNT = 3
+PROJECT_STORE_LOCK_TIMEOUT_SECONDS = 10.0
+PROJECT_STORE_CORRUPTION_CODE = "PROJECT_STORE_CORRUPT"
+PROJECT_STORE_CORRUPTION_MARKER_SCHEMA = "omnidesk-project-store-corruption/v1"
+PROJECT_STORE_PUBLIC_UNAVAILABLE_MESSAGE = "Project storage is unavailable pending administrator recovery."
+PROJECT_STORE_RECOVERY_POLICY = (
+    "An owner must restore a checksum-valid rotated backup through the administrator recovery tool."
+)
 
 POSTGRES_PROJECTS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS omnidesk_appsync_projects (
@@ -40,6 +54,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS omnidesk_appsync_projects_active_name_idx
 CREATE INDEX IF NOT EXISTS omnidesk_appsync_projects_org_updated_idx
     ON omnidesk_appsync_projects(namespace, organization_id, updated_at DESC);
 """
+
 
 def _now() -> float:
     return time.time()
@@ -120,6 +135,19 @@ def _json_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+class ProjectStoreCorruptionError(RuntimeError):
+    """Raised when local/dev project storage cannot be trusted."""
+
+    def __init__(self, message: str, *, quarantine_path: Path | None = None):
+        self.error_code = PROJECT_STORE_CORRUPTION_CODE
+        self.quarantine_path = quarantine_path
+        super().__init__(message)
+
+
+class ProjectStoreLockTimeout(RuntimeError):
+    """Raised when another process holds the local project-store lock too long."""
+
+
 class GatewayProjectStore:
     """Durable project registry used by the tri-app Gateway contract.
 
@@ -133,6 +161,8 @@ class GatewayProjectStore:
         self.app_sync = app_sync
         base_path = Path(getattr(app_sync, "path", "app_sync.json"))
         self.path = base_path.with_name(f"{base_path.name}.projects.json")
+        self.lock_path = Path(str(self.path) + ".lock")
+        self.corruption_marker_path = Path(str(self.path) + ".corruption.json")
 
     @property
     def _postgres_enabled(self) -> bool:
@@ -167,30 +197,396 @@ class GatewayProjectStore:
             "deleted_at": float(row[10]) if row[10] is not None else None,
         }
 
+    @staticmethod
+    def _canonical_projects(projects: dict[str, dict[str, Any]]) -> bytes:
+        return json.dumps(projects, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def _projects_checksum(cls, projects: dict[str, dict[str, Any]]) -> str:
+        return "sha256:" + hashlib.sha256(cls._canonical_projects(projects)).hexdigest()
+
+    @contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.lock_path.open("a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + PROJECT_STORE_LOCK_TIMEOUT_SECONDS
+        acquired = False
+        try:
+            while not acquired:
+                try:
+                    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except (BlockingIOError, OSError) as exc:
+                    if time.monotonic() >= deadline:
+                        raise ProjectStoreLockTimeout(
+                            f"timed out acquiring project store lock: {self.lock_path}"
+                        ) from exc
+                    time.sleep(0.05)
+            yield
+        finally:
+            if acquired:
+                try:
+                    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
+    @contextmanager
+    def _local_store_guard(self) -> Iterator[None]:
+        with self.app_sync._lock:  # noqa: SLF001 - same package boundary
+            with self._file_lock():
+                yield
+
+    def _fsync_directory(self) -> None:
+        if os.name == "nt":
+            return
+        directory_fd = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _write_json_atomically(self, path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(f"{path}.tmp.{os.getpid()}.{time.time_ns()}")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            self._fsync_directory()
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _read_store_file(self, path: Path) -> dict[str, dict[str, Any]]:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ProjectStoreCorruptionError(f"invalid json or unreadable file: {exc}") from exc
+        return self._decode_store(raw)
+
+    def _backup_status(self) -> list[dict[str, Any]]:
+        status: list[dict[str, Any]] = []
+        for index in range(1, PROJECT_STORE_BACKUP_COUNT + 1):
+            path = Path(f"{self.path}.bak.{index}")
+            item: dict[str, Any] = {"index": index, "path": str(path), "present": path.is_file(), "valid": False}
+            if path.is_file():
+                try:
+                    projects = self._read_store_file(path)
+                    item.update(
+                        {
+                            "valid": True,
+                            "project_count": len(projects),
+                            "checksum": self._projects_checksum(projects),
+                        }
+                    )
+                except ProjectStoreCorruptionError as exc:
+                    item["error"] = str(exc)[:500]
+            status.append(item)
+        return status
+
+    def _read_corruption_marker(self) -> dict[str, Any] | None:
+        if not self.corruption_marker_path.exists():
+            return None
+        try:
+            marker = json.loads(self.corruption_marker_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {
+                "schema": PROJECT_STORE_CORRUPTION_MARKER_SCHEMA,
+                "status": "blocked",
+                "reason": f"corruption marker is unreadable: {exc}",
+            }
+        if not isinstance(marker, dict):
+            return {
+                "schema": PROJECT_STORE_CORRUPTION_MARKER_SCHEMA,
+                "status": "blocked",
+                "reason": "corruption marker root must be an object",
+            }
+        return marker
+
+    def _marked_corruption_error(self, marker: dict[str, Any]) -> ProjectStoreCorruptionError:
+        quarantine_value = str(marker.get("quarantine_path") or "").strip()
+        quarantine_path = Path(quarantine_value) if quarantine_value else None
+        reason = str(marker.get("reason") or "persistent corruption marker is active")
+        return ProjectStoreCorruptionError(
+            f"local project storage is blocked pending administrator recovery: {reason}",
+            quarantine_path=quarantine_path,
+        )
+
+    def _raise_if_corruption_marked(self) -> None:
+        marker = self._read_corruption_marker()
+        if marker is not None:
+            raise self._marked_corruption_error(marker)
+
+    def _quarantine_corrupt_store(self, reason: str) -> ProjectStoreCorruptionError:
+        existing_marker = self._read_corruption_marker()
+        if existing_marker is not None:
+            return self._marked_corruption_error(existing_marker)
+        quarantine_path: Path | None = None
+        marker = {
+            "schema": PROJECT_STORE_CORRUPTION_MARKER_SCHEMA,
+            "status": "blocked",
+            "error_code": PROJECT_STORE_CORRUPTION_CODE,
+            "detected_at_unix": time.time(),
+            "path": str(self.path),
+            "reason": reason[:500],
+            "quarantine_path": None,
+            "recovery_required": True,
+            "recovery_policy": PROJECT_STORE_RECOVERY_POLICY,
+        }
+        try:
+            # Persist the marker before moving the primary file. A crash between
+            # these steps must still leave the next process fail closed.
+            self._write_json_atomically(self.corruption_marker_path, marker)
+        except Exception as exc:
+            return ProjectStoreCorruptionError(
+                f"local project storage failed integrity validation and the corruption marker could not be persisted: {exc}"
+            )
+        if self.path.exists():
+            quarantine_path = Path(f"{self.path}.corrupt.{time.time_ns()}")
+            try:
+                os.replace(self.path, quarantine_path)
+                self._fsync_directory()
+            except OSError as exc:
+                marker["quarantine_error"] = str(exc)[:500]
+                quarantine_path = None
+        marker["quarantine_path"] = str(quarantine_path) if quarantine_path else None
+        marker["backup_candidates"] = self._backup_status()
+        try:
+            self._write_json_atomically(self.corruption_marker_path, marker)
+        except OSError:
+            # The initial durable marker already blocks every subsequent load.
+            pass
+        event = getattr(self.app_sync, "_event", None)
+        persist = getattr(self.app_sync, "_persist", None)
+        if callable(event):
+            event(
+                "project.store.corruption",
+                "system",
+                {
+                    "error_code": PROJECT_STORE_CORRUPTION_CODE,
+                    "path": str(self.path),
+                    "quarantine_path": str(quarantine_path) if quarantine_path else None,
+                    "reason": reason[:500],
+                },
+            )
+        if callable(persist):
+            persist()
+        return ProjectStoreCorruptionError(
+            f"local project storage failed integrity validation: {reason}",
+            quarantine_path=quarantine_path,
+        )
+
+    def _decode_store(self, raw: Any) -> dict[str, dict[str, Any]]:
+        if not isinstance(raw, dict):
+            raise ProjectStoreCorruptionError("project store root must be an object")
+        schema_version = raw.get("schema_version", 0)
+        if schema_version not in {0, PROJECT_STORE_SCHEMA_VERSION}:
+            raise ProjectStoreCorruptionError(f"unsupported project store schema_version: {schema_version}")
+        projects = raw.get("projects")
+        if not isinstance(projects, dict):
+            raise ProjectStoreCorruptionError("project store projects must be an object")
+        if schema_version == PROJECT_STORE_SCHEMA_VERSION:
+            expected = str(raw.get("checksum") or "")
+            actual = self._projects_checksum(projects)
+            if not expected or not hmac.compare_digest(expected, actual):
+                raise ProjectStoreCorruptionError("project store checksum mismatch")
+        normalized: dict[str, dict[str, Any]] = {}
+        for project_id, project in projects.items():
+            key = str(project_id)
+            if not PROJECT_ID_RE.fullmatch(key):
+                raise ProjectStoreCorruptionError(f"invalid project id in store: {key}")
+            if not isinstance(project, dict):
+                raise ProjectStoreCorruptionError(f"project record must be an object: {key}")
+            record = dict(project)
+            if str(record.get("project_id") or "") != key:
+                raise ProjectStoreCorruptionError(f"project record id mismatch: {key}")
+            normalized[key] = record
+        return normalized
+
     def _load(self) -> dict[str, dict[str, Any]]:
+        self._raise_if_corruption_marked()
         if not self.path.exists():
             return {}
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        projects = raw.get("projects") if isinstance(raw, dict) else {}
-        if not isinstance(projects, dict):
-            return {}
-        return {
-            str(project_id): dict(project)
-            for project_id, project in projects.items()
-            if isinstance(project, dict)
-        }
+            return self._read_store_file(self.path)
+        except ProjectStoreCorruptionError as exc:
+            raise self._quarantine_corrupt_store(str(exc)) from exc
+        except Exception as exc:
+            raise self._quarantine_corrupt_store(f"invalid json or unreadable file: {exc}") from exc
+
+    def _rotate_backups(self) -> None:
+        if not self.path.exists():
+            return
+        oldest = Path(f"{self.path}.bak.{PROJECT_STORE_BACKUP_COUNT}")
+        oldest.unlink(missing_ok=True)
+        for index in range(PROJECT_STORE_BACKUP_COUNT - 1, 0, -1):
+            source = Path(f"{self.path}.bak.{index}")
+            target = Path(f"{self.path}.bak.{index + 1}")
+            if source.exists():
+                os.replace(source, target)
+        shutil.copy2(self.path, Path(f"{self.path}.bak.1"))
 
     def _persist(self, projects: dict[str, dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps({"projects": projects}, ensure_ascii=False, sort_keys=True, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(self.path)
+        envelope = {
+            "schema_version": PROJECT_STORE_SCHEMA_VERSION,
+            "checksum": self._projects_checksum(projects),
+            "projects": projects,
+        }
+        tmp = Path(f"{self.path}.tmp.{os.getpid()}.{time.time_ns()}")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(envelope, handle, ensure_ascii=False, sort_keys=True, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._rotate_backups()
+            os.replace(tmp, self.path)
+            self._fsync_directory()
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def recovery_status(self) -> dict[str, Any]:
+        if self._postgres_enabled:
+            return {"backend": "postgres", "blocked": False, "recovery_required": False, "backups": []}
+        with self._local_store_guard():
+            marker = self._read_corruption_marker()
+            return {
+                "backend": "json",
+                "blocked": marker is not None,
+                "recovery_required": marker is not None,
+                "marker": marker,
+                "backups": self._backup_status(),
+            }
+
+    def public_recovery_status(self) -> dict[str, Any]:
+        """Return owner-facing recovery state without exception text or server paths."""
+        if self._postgres_enabled:
+            return {"backend": "postgres", "blocked": False, "recovery_required": False, "marker": None, "backups": []}
+        with self._local_store_guard():
+            marker = self._read_corruption_marker()
+            public_marker = None
+            if marker is not None:
+                public_marker = {
+                    "schema": PROJECT_STORE_CORRUPTION_MARKER_SCHEMA,
+                    "status": "blocked",
+                    "error_code": PROJECT_STORE_CORRUPTION_CODE,
+                    "recovery_required": True,
+                    "recovery_policy": PROJECT_STORE_RECOVERY_POLICY,
+                    "quarantine_present": bool(str(marker.get("quarantine_path") or "").strip()),
+                }
+            backups: list[dict[str, Any]] = []
+            for index in range(1, PROJECT_STORE_BACKUP_COUNT + 1):
+                path = Path(f"{self.path}.bak.{index}")
+                item: dict[str, Any] = {"index": index, "present": path.is_file(), "valid": False}
+                if path.is_file():
+                    try:
+                        projects = self._read_store_file(path)
+                    except ProjectStoreCorruptionError:
+                        pass
+                    else:
+                        item.update(
+                            {
+                                "valid": True,
+                                "project_count": len(projects),
+                                "checksum": self._projects_checksum(projects),
+                            }
+                        )
+                backups.append(item)
+            return {
+                "backend": "json",
+                "blocked": marker is not None,
+                "recovery_required": marker is not None,
+                "marker": public_marker,
+                "backups": backups,
+            }
+
+    def assert_available(self) -> None:
+        """Fail closed before request validation or idempotency replay."""
+        if self._postgres_enabled:
+            return
+        with self._local_store_guard():
+            self._raise_if_corruption_marked()
+
+    def recover_from_backup(self, *, actor: str, backup_index: int | None = None) -> dict[str, Any]:
+        if self._postgres_enabled:
+            raise RuntimeError("project store recovery is only available for the local JSON backend")
+        if backup_index is not None and backup_index not in range(1, PROJECT_STORE_BACKUP_COUNT + 1):
+            raise ValueError(f"backup_index must be between 1 and {PROJECT_STORE_BACKUP_COUNT}")
+        with self._local_store_guard():
+            marker = self._read_corruption_marker()
+            if marker is None:
+                raise ValueError("project store is not marked corrupt")
+            candidates = self._backup_status()
+            valid = [
+                item
+                for item in candidates
+                if item.get("valid") and (backup_index is None or item.get("index") == backup_index)
+            ]
+            if not valid:
+                raise ProjectStoreCorruptionError(
+                    "no checksum-valid project store backup is available; corruption marker remains active"
+                )
+            selected = valid[0]
+            selected_path = Path(str(selected["path"]))
+            projects = self._read_store_file(selected_path)
+            recovery_quarantine_path: Path | None = None
+            if self.path.exists():
+                recovery_quarantine_path = Path(f"{self.path}.corrupt.recovery.{time.time_ns()}")
+                os.replace(self.path, recovery_quarantine_path)
+            self._persist(projects)
+            verified = self._read_store_file(self.path)
+            if self._projects_checksum(verified) != self._projects_checksum(projects):
+                raise ProjectStoreCorruptionError("restored project store checksum verification failed")
+            self.corruption_marker_path.unlink()
+            self._fsync_directory()
+            event = getattr(self.app_sync, "_event", None)
+            persist = getattr(self.app_sync, "_persist", None)
+            if callable(event):
+                event(
+                    "project.store.recovered",
+                    actor,
+                    {
+                        "error_code": PROJECT_STORE_CORRUPTION_CODE,
+                        "backup_index": selected["index"],
+                        "backup_path": str(selected_path),
+                        "project_count": len(verified),
+                        "checksum": self._projects_checksum(verified),
+                        "recovery_quarantine_path": str(recovery_quarantine_path) if recovery_quarantine_path else None,
+                    },
+                )
+            if callable(persist):
+                persist()
+            return {
+                "status": "recovered",
+                "backup_index": selected["index"],
+                "backup_path": str(selected_path),
+                "project_count": len(verified),
+                "checksum": self._projects_checksum(verified),
+            }
 
     def _event(self, event_type: str, actor: str, project: dict[str, Any]) -> None:
         event = getattr(self.app_sync, "_event", None)
@@ -232,7 +628,7 @@ class GatewayProjectStore:
     def list_projects(self, *, actor: str, include_deleted: bool = False) -> list[dict[str, Any]]:
         if self._postgres_enabled:
             return self._postgres_list_projects(actor=actor, include_deleted=include_deleted)
-        with self.app_sync._lock:  # noqa: SLF001 - same package boundary
+        with self._local_store_guard():
             organization_id = self._organization_for_actor(actor)
             projects = self._load().values()
             scoped = [
@@ -282,6 +678,7 @@ class GatewayProjectStore:
         idempotency_key: Optional[str] = None,
         idempotency_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self.assert_available()
         name = str(name or "").strip()
         if not name:
             raise ValueError("project name is required")
@@ -299,7 +696,8 @@ class GatewayProjectStore:
                 idempotency_key=idempotency_key,
                 idempotency_payload=idempotency_payload,
             )
-        with self.app_sync._lock:  # noqa: SLF001 - same package boundary
+        with self._local_store_guard():
+            self._raise_if_corruption_marked()
             cached = self.app_sync._idempotency_get(  # noqa: SLF001
                 actor=actor,
                 endpoint="projects.create",
@@ -434,6 +832,7 @@ class GatewayProjectStore:
         idempotency_key: Optional[str] = None,
         idempotency_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self.assert_available()
         if not PROJECT_ID_RE.fullmatch(project_id):
             raise KeyError("project not found")
         unknown_keys = set(patch) - PROJECT_PATCH_KEYS - {"idempotency_key"}
@@ -447,7 +846,8 @@ class GatewayProjectStore:
                 idempotency_key=idempotency_key,
                 idempotency_payload=idempotency_payload,
             )
-        with self.app_sync._lock:  # noqa: SLF001 - same package boundary
+        with self._local_store_guard():
+            self._raise_if_corruption_marked()
             cached = self.app_sync._idempotency_get(  # noqa: SLF001
                 actor=actor,
                 endpoint="projects.update",
@@ -587,6 +987,7 @@ class GatewayProjectStore:
         idempotency_key: Optional[str] = None,
         idempotency_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self.assert_available()
         if not PROJECT_ID_RE.fullmatch(project_id):
             raise KeyError("project not found")
         if self._postgres_enabled:
@@ -596,7 +997,8 @@ class GatewayProjectStore:
                 idempotency_key=idempotency_key,
                 idempotency_payload=idempotency_payload,
             )
-        with self.app_sync._lock:  # noqa: SLF001 - same package boundary
+        with self._local_store_guard():
+            self._raise_if_corruption_marked()
             cached = self.app_sync._idempotency_get(  # noqa: SLF001
                 actor=actor,
                 endpoint="projects.delete",
@@ -685,11 +1087,42 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
     app_sync = _store(rt, cfg)
     projects = GatewayProjectStore(app_sync)
 
+    @app.get("/admin/projects/store/recovery")
+    async def admin_project_store_recovery_status(request: Request):
+        await admin(request, "owner")
+        return {"ok": True, "recovery": projects.public_recovery_status()}
+
+    @app.post("/admin/projects/store/recover")
+    async def admin_recover_project_store(request: Request):
+        decision = await admin(request, "owner")
+        payload = await request.json()
+        if not _idempotency_key(request, payload):
+            raise HTTPException(428, "idempotency-key is required for project store recovery")
+        raw_index = payload.get("backup_index")
+        try:
+            backup_index = int(raw_index) if raw_index is not None else None
+            result = projects.recover_from_backup(actor=_actor(decision), backup_index=backup_index)
+        except ProjectStoreCorruptionError as exc:
+            raise HTTPException(
+                503,
+                detail={"code": PROJECT_STORE_CORRUPTION_CODE, "message": PROJECT_STORE_PUBLIC_UNAVAILABLE_MESSAGE},
+            ) from exc
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        metrics.inc("omnidesk_app_project_requests_total", operation="recover") if metrics else None
+        return {"ok": True, "recovery": result}
+
     @app.get("/app/projects")
     async def app_list_projects(request: Request, include_deleted: bool = False):
         decision = await admin(request, "viewer")
         actor = _actor(decision)
-        result = projects.list_projects(actor=actor, include_deleted=include_deleted)
+        try:
+            result = projects.list_projects(actor=actor, include_deleted=include_deleted)
+        except ProjectStoreCorruptionError as exc:
+            raise HTTPException(
+                503,
+                detail={"code": PROJECT_STORE_CORRUPTION_CODE, "message": PROJECT_STORE_PUBLIC_UNAVAILABLE_MESSAGE},
+            ) from exc
         metrics.inc("omnidesk_app_project_requests_total", operation="list") if metrics else None
         return {"ok": True, "projects": result}
 
@@ -698,8 +1131,9 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         decision = await admin(request, "operator")
         actor = _actor(decision)
         payload = await request.json()
-        idem_key = _require_idempotency(cfg, request, payload)
         try:
+            projects.assert_available()
+            idem_key = _require_idempotency(cfg, request, payload)
             project = projects.create_project(
                 actor=actor,
                 name=str(payload.get("name") or ""),
@@ -709,6 +1143,11 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
                 idempotency_key=idem_key,
                 idempotency_payload=payload,
             )
+        except ProjectStoreCorruptionError as exc:
+            raise HTTPException(
+                503,
+                detail={"code": PROJECT_STORE_CORRUPTION_CODE, "message": PROJECT_STORE_PUBLIC_UNAVAILABLE_MESSAGE},
+            ) from exc
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
@@ -721,8 +1160,9 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         decision = await admin(request, "operator")
         actor = _actor(decision)
         payload = await request.json()
-        idem_key = _require_idempotency(cfg, request, payload)
         try:
+            projects.assert_available()
+            idem_key = _require_idempotency(cfg, request, payload)
             project = projects.update_project(
                 actor=actor,
                 project_id=project_id,
@@ -730,6 +1170,11 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
                 idempotency_key=idem_key,
                 idempotency_payload={**payload, "project_id": project_id},
             )
+        except ProjectStoreCorruptionError as exc:
+            raise HTTPException(
+                503,
+                detail={"code": PROJECT_STORE_CORRUPTION_CODE, "message": PROJECT_STORE_PUBLIC_UNAVAILABLE_MESSAGE},
+            ) from exc
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
@@ -744,14 +1189,20 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         decision = await admin(request, "operator")
         actor = _actor(decision)
         payload = {"project_id": project_id}
-        idem_key = _require_idempotency(cfg, request, payload)
         try:
+            projects.assert_available()
+            idem_key = _require_idempotency(cfg, request, payload)
             project = projects.delete_project(
                 actor=actor,
                 project_id=project_id,
                 idempotency_key=idem_key,
                 idempotency_payload=payload,
             )
+        except ProjectStoreCorruptionError as exc:
+            raise HTTPException(
+                503,
+                detail={"code": PROJECT_STORE_CORRUPTION_CODE, "message": PROJECT_STORE_PUBLIC_UNAVAILABLE_MESSAGE},
+            ) from exc
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:

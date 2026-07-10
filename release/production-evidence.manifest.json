@@ -72,7 +72,9 @@
     "workflow": ".github/workflows/main-verification.yml",
     "contract_check": "scripts/check_real_ga_complete.py . --write-report dist/evidence/external-ga-evidence-audit.json",
     "required_for_customer_distribution_ga": true,
-    "boundary": "Main Verification records the native-build and signed-artifact evidence paths and hashes for the current commit. Real GA requires all four native build evidence files and all four signed artifact evidence files to be present and bound."
+    "digest_equality_policy": "release_payload_artifact_sha256 == external_evidence_signed_artifact_sha256 == native_signed_binding_sha256",
+    "platform_identity_policy": "Android signer certificate, iOS Team ID/provisioning profile/IPA codesign identifier, macOS Developer ID/notarization submission, and Windows Authenticode signer/certificate must be verified and bound to source commit, build run, signing run, artifact attestation, and Main Verification run.",
+    "boundary": "Main Verification records the native-build and signed-artifact evidence paths and hashes for the current commit. Real GA requires all four native build evidence files and all four signed artifact evidence files, exact final-artifact digest equality, platform signer identity, source commit, build/signing run ids, artifact attestation, and the producing Main Verification run id."
   },
   "security_attack_surface_gate": {
     "schema": "omnidesk-security-attack-surface/v1",
@@ -133,7 +135,7 @@
   "external_evidence_required": {
     "native_build": "true Flutter/Rust/Tauri native build evidence with artifact references and sha256 checks",
     "signed_artifacts": "true Android/iOS/Desktop signed artifacts, including macOS notarization and platform signature verification",
-    "native_signed_artifact_bindings": "Main Verification artifact must bind native-build and signed-artifact evidence paths, sha256 values, source commit, workflow run id, and Real GA summary path",
+    "native_signed_artifact_bindings": "Main Verification artifact must prove release payload sha256 equals signed external-evidence sha256 equals native binding sha256 for Android, iOS, macOS and Windows, then bind platform signer identity, source commit, build/signing run ids, artifact attestation, Main Verification run id and Real GA summary path",
     "live_branch_protection_control_plane": "live GitHub branch-protection API report matching .github/branch-protection.required.json",
     "team_governance_control_plane": "live GitHub API report proving Organization owner, resolved teams, team CODEOWNERS, enforced code-owner review, and no personal fallback",
     "model_live_smoke": "live model Q&A smoke proving non-empty response, trace, audit event, cost ledger, and budget enforcement",

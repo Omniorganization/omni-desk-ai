@@ -28,6 +28,24 @@
     "P0 P1 P2 Feasible Closure",
     "Remaining Real GA Source Fixes"
   ],
+  "required_check_contexts": [
+    "CI",
+    "Security",
+    "release-policy",
+    "external-ga-evidence-contract",
+    "security-attack-surface",
+    "docker-scan",
+    "backend-and-contract",
+    "web-admin",
+    "desktop-tauri",
+    "mobile-flutter",
+    "mobile-ios-simulator",
+    "main-verification",
+    "team-governance",
+    "source-maturity-closure",
+    "feasible-closure",
+    "remaining-real-evidence-source-fixes"
+  ],
   "required_jobs": [
     "release-policy",
     "external-ga-evidence-contract",

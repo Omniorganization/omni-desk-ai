@@ -13,7 +13,8 @@ CONTRACT = {
     "require_conversation_resolution": True,
     "require_pull_request": True,
     "required_approving_review_count": 1,
-    "required_status_checks": ["CI", "Security", "release-policy", "external-ga-evidence-contract"],
+    "required_status_checks": ["CI workflow", "Security workflow"],
+    "required_check_contexts": ["CI", "Security", "release-policy", "external-ga-evidence-contract"],
 }
 
 
