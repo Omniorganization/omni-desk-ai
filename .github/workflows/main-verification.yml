@@ -4,13 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       external_evidence_run_id:
-        description: Optional run id containing external Real GA evidence to bind into the main verification artifact
-        required: false
-        default: ""
+        description: Required run id containing complete external Real GA evidence
+        required: true
       external_evidence_artifact_name:
         description: External evidence artifact name
         required: false
         default: external-ga-evidence
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -41,22 +43,28 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - name: Download optional external evidence bundle for Main Verification binding
+
+      - name: Download external evidence bundle for Main Verification binding
         env:
           GH_TOKEN: ${{ github.token }}
-          EXTERNAL_EVIDENCE_RUN_ID: ${{ github.event.inputs.external_evidence_run_id || '' }}
-          EXTERNAL_EVIDENCE_ARTIFACT_NAME: ${{ github.event.inputs.external_evidence_artifact_name || 'external-ga-evidence' }}
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id || '' }}
+          EXTERNAL_EVIDENCE_ARTIFACT_NAME: ${{ inputs.external_evidence_artifact_name || 'external-ga-evidence' }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -z "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]]; then
+            echo "workflow_dispatch requires external_evidence_run_id" >&2
+            exit 2
+          fi
           if [[ -n "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]]; then
             mkdir -p release/external-evidence
             gh run download "$EXTERNAL_EVIDENCE_RUN_ID" \
               --name "$EXTERNAL_EVIDENCE_ARTIFACT_NAME" \
               --dir release/external-evidence
           else
-            echo "No external evidence run id supplied; Main Verification will record missing native signed artifact bindings."
+            echo "No external evidence supplied for PR/push source verification; customer-distribution Real GA remains blocked."
           fi
-      - name: Source release gates
+
+      - name: Source release gates and complete pre-binding Real GA audit
         run: |
           python scripts/check_version_consistency.py .
           python scripts/check_release_channel_policy.py .
@@ -74,11 +82,20 @@ jobs:
           python scripts/check_kubernetes_contract.py .
           python scripts/check_branch_protection_contract.py .
           python scripts/check_main_verification_contract.py .
-          python scripts/check_real_ga_complete.py . --audit-only --write-report /tmp/external-ga-evidence-contract.json
+          python scripts/check_real_ga_prebinding.py . \
+            --audit-only \
+            --write-report /tmp/external-ga-prebinding-audit.json
           python scripts/check_ga_release_gate.py .
+
       - name: Focused runtime regression tests
         run: |
-          PYTHONPATH=. python -m pytest -q tests/test_offline_sync_updater_hardening.py tests/test_auto_update_runtime.py tests/test_reconnect_sync_worker.py tests/test_appsync_offline_outbox.py
+          PYTHONPATH=. python -m pytest -q \
+            tests/test_offline_sync_updater_hardening.py \
+            tests/test_auto_update_runtime.py \
+            tests/test_reconnect_sync_worker.py \
+            tests/test_appsync_offline_outbox.py \
+            tests/test_main_verification_evidence.py
+
       - name: Web Admin verify
         working-directory: apps/web-admin-next
         run: |
@@ -86,149 +103,45 @@ jobs:
           npm run typecheck
           npm test
           npm run build
+
       - name: Desktop verify
         working-directory: apps/desktop-tauri
         run: |
           npm ci
           npm run typecheck
           npm test
-      - name: Write main verification evidence
+
+      - name: Write truthful main verification evidence
+        env:
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id || '' }}
         run: |
-          mkdir -p dist/evidence
-          python - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
+          set -euo pipefail
+          enforcement_args=()
+          if [[ -n "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]]; then
+            enforcement_args+=(--require-external-evidence)
+          fi
+          python scripts/write_main_verification_evidence.py \
+            --output-dir dist/evidence \
+            --external-evidence-root release/external-evidence \
+            --real-ga-summary release/real-ga-evidence-summary-1.12.7.json \
+            --real-ga-audit-report /tmp/external-ga-prebinding-audit.json \
+            "${enforcement_args[@]}"
 
-          signed_required = [
-              "signed-artifacts/android-signed-aab.json",
-              "signed-artifacts/ios-signed-ipa.json",
-              "signed-artifacts/desktop-macos-notarized.json",
-              "signed-artifacts/desktop-windows-signed.json",
-          ]
-          native_required = [
-              "native-build/flutter-android-release.json",
-              "native-build/flutter-ios-release.json",
-              "native-build/tauri-desktop-release.json",
-              "native-build/rust-cargo-check-locked.json",
-          ]
-          evidence_root = Path("release/external-evidence")
+          if [[ -n "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]]; then
+            python scripts/check_real_ga_complete.py . \
+              --evidence-dir release/external-evidence \
+              --write-report dist/evidence/external-ga-evidence-final-audit.json
+          fi
 
-          def sha256(path: Path) -> str:
-              digest = hashlib.sha256()
-              with path.open("rb") as handle:
-                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                      digest.update(chunk)
-              return "sha256:" + digest.hexdigest()
+          status="$(python -c 'import json; print(json.load(open("dist/evidence/main-verification-artifact.json"))["status"])')"
+          {
+            echo "## Main Verification"
+            echo ""
+            echo "- Source verification: passed"
+            echo "- Customer-distribution Real GA: ${status}"
+            echo "- External evidence supplied: $([[ -n "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]] && echo yes || echo no)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          def collect(rel_paths):
-              rows = []
-              for rel in rel_paths:
-                  path = evidence_root / rel
-                  rows.append({
-                      "path": rel,
-                      "present": path.exists(),
-                      "sha256": sha256(path) if path.exists() else None,
-                  })
-              return rows
-
-          native_rows = collect(native_required)
-          signed_rows = collect(signed_required)
-          all_native_present = all(row["present"] for row in native_rows)
-          all_signed_present = all(row["present"] for row in signed_rows)
-
-          evidence = {
-              "schema": "omnidesk-main-verification/v1",
-              "status": "passed",
-              "commit": os.environ["GITHUB_SHA"],
-              "run_id": os.environ["GITHUB_RUN_ID"],
-              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
-              "workflow": os.environ["GITHUB_WORKFLOW"],
-              "ref": os.environ["GITHUB_REF"],
-              "repository": os.environ["GITHUB_REPOSITORY"],
-              "trigger": os.environ["GITHUB_EVENT_NAME"],
-              "required_gates": [
-                  "version_consistency",
-                  "release_channel_policy",
-                  "ci_evidence_contract",
-                  "security_workflow_policy",
-                  "security_attack_surface",
-                  "team_governance_contract",
-                  "real_ga_readiness_contract",
-                  "bigseller_connector_contract",
-                  "enterprise_dependency_contract",
-                  "observability_contract",
-                  "deployment_readiness",
-                  "supply_chain_standard",
-                  "enterprise_readiness",
-                  "kubernetes_contract",
-                  "branch_protection_contract",
-                  "complete_real_ga_evidence_contract",
-                  "focused_runtime_regression",
-                  "web_admin_verify",
-                  "desktop_verify",
-                  "native_signed_artifact_binding",
-              ],
-              "native_build_evidence": native_rows,
-              "signed_artifact_evidence": signed_rows,
-              "all_required_native_builds_present": all_native_present,
-              "all_required_signed_artifacts_present": all_signed_present,
-          }
-          evidence_path = "dist/evidence/main-verification-evidence.json"
-          with open(evidence_path, "w", encoding="utf-8") as fh:
-              json.dump(evidence, fh, ensure_ascii=False, sort_keys=True, indent=2)
-              fh.write("\n")
-          evidence_digest = "sha256:" + hashlib.sha256(open(evidence_path, "rb").read()).hexdigest()
-
-          binding = {
-              "schema": "omnidesk-native-signed-artifact-binding/v1",
-              "status": "passed" if all_native_present and all_signed_present else "blocked_missing_external_evidence",
-              "produced_at": os.environ.get("GITHUB_RUN_STARTED_AT") or "workflow-run",
-              "producer": "Main Verification",
-              "repository": os.environ["GITHUB_REPOSITORY"],
-              "main_verification_commit": evidence["commit"],
-              "main_verification_run_id": evidence["run_id"],
-              "main_verification_artifact_name": f"main-verification-evidence-{evidence['commit']}",
-              "main_verification_evidence_digest": evidence_digest,
-              "real_ga_evidence_summary": "release/real-ga-evidence-summary-1.12.7.json",
-              "native_builds_bound": all_native_present,
-              "signed_artifacts_bound": all_signed_present,
-              "all_required_native_builds_present": all_native_present,
-              "all_required_signed_artifacts_present": all_signed_present,
-              "native_build_evidence_paths": native_required,
-              "signed_artifact_evidence_paths": signed_required,
-              "native_build_evidence": native_rows,
-              "signed_artifact_evidence": signed_rows,
-              "policy": "Real GA requires all native build and signed artifact evidence files to be present, hashed, and bound into this commit-addressed Main Verification artifact.",
-          }
-          binding_path = "dist/evidence/native-signed-artifact-binding.json"
-          with open(binding_path, "w", encoding="utf-8") as fh:
-              json.dump(binding, fh, ensure_ascii=False, sort_keys=True, indent=2)
-              fh.write("\n")
-
-          control_plane_dir = Path("release/external-evidence/control-plane")
-          control_plane_dir.mkdir(parents=True, exist_ok=True)
-          (control_plane_dir / "main-verification-evidence.json").write_bytes(Path(evidence_path).read_bytes())
-          (control_plane_dir / "native-signed-artifact-binding.json").write_bytes(Path(binding_path).read_bytes())
-
-          manifest = {
-              "schema": "omnidesk-main-verification-artifact/v1",
-              "status": "passed",
-              "commit": evidence["commit"],
-              "run_id": evidence["run_id"],
-              "artifact_name": f"main-verification-evidence-{evidence['commit']}",
-              "evidence_path": "main-verification-evidence.json",
-              "evidence_digest": evidence_digest,
-              "native_signed_artifact_binding_path": "native-signed-artifact-binding.json",
-              "native_signed_artifact_binding_status": binding["status"],
-              "all_required_native_builds_present": all_native_present,
-              "all_required_signed_artifacts_present": all_signed_present,
-          }
-          with open("dist/evidence/main-verification-artifact.json", "w", encoding="utf-8") as fh:
-              json.dump(manifest, fh, ensure_ascii=False, sort_keys=True, indent=2)
-              fh.write("\n")
-          print(f"MAIN_VERIFICATION_EVIDENCE_DIGEST={evidence_digest}")
-          print(f"NATIVE_SIGNED_ARTIFACT_BINDING_STATUS={binding['status']}")
-          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: main-verification-evidence-${{ github.sha }}
@@ -236,6 +149,7 @@ jobs:
             dist/evidence/main-verification-evidence.json
             dist/evidence/main-verification-artifact.json
             dist/evidence/native-signed-artifact-binding.json
+            dist/evidence/external-ga-evidence-final-audit.json
             release/external-evidence/control-plane/main-verification-evidence.json
             release/external-evidence/control-plane/native-signed-artifact-binding.json
-          if-no-files-found: error
+          if-no-files-found: warn
