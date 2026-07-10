@@ -46,7 +46,9 @@ def audit(repository: str, commit_sha: str, token: str, api_base: str = "https:/
     if failures:
         return {"schema": "omnidesk-main-verification-live-artifact/v1", "status": "blocked", "failures": failures}
 
-    runs_url = f"{api_base.rstrip('/')}/repos/{repository}/actions/runs?head_sha={commit_sha}&event=push&per_page=50"
+    # Only an explicit workflow_dispatch can bind an external evidence run id. PR and push
+    # runs intentionally verify source readiness while emitting a blocked customer-GA status.
+    runs_url = f"{api_base.rstrip('/')}/repos/{repository}/actions/runs?head_sha={commit_sha}&event=workflow_dispatch&per_page=50"
     status, runs_doc, body = _api_get(runs_url, token)
     if status >= 400 or runs_doc is None:
         return {
@@ -62,10 +64,11 @@ def audit(repository: str, commit_sha: str, token: str, api_base: str = "https:/
         for run in runs_doc.get("workflow_runs", [])
         if run.get("head_sha") == commit_sha
         and str(run.get("name") or "") == "Main Verification"
+        and str(run.get("event") or "") == "workflow_dispatch"
         and str(run.get("conclusion") or "") == "success"
     ]
     if not matching_runs:
-        failures.append("no successful Main Verification workflow run found for commit")
+        failures.append("no successful enforced Main Verification workflow_dispatch run found for commit")
 
     artifacts: list[dict[str, Any]] = []
     for run in matching_runs:
@@ -86,15 +89,20 @@ def audit(repository: str, commit_sha: str, token: str, api_base: str = "https:/
         "repository": repository,
         "commit": commit_sha,
         "artifact_name": artifact_name,
+        "required_event": "workflow_dispatch",
         "matching_run_ids": [run.get("id") for run in matching_runs],
         "artifact_ids": [artifact.get("id") for artifact in live_artifacts],
         "failures": failures,
-        "policy": "Real GA requires a successful post-merge Main Verification run and an unexpired commit-addressed evidence artifact.",
+        "policy": (
+            "Real GA requires a successful Main Verification workflow_dispatch for the exact commit. "
+            "That dispatch requires an external evidence run id and fails unless the "
+            "complete semantic Real GA audit and native/signed binding both pass."
+        ),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify live post-merge Main Verification artifact for a commit.")
+    parser = argparse.ArgumentParser(description="Verify live enforced Main Verification artifact for a commit.")
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
