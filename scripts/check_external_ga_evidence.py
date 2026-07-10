@@ -182,8 +182,8 @@ def _category_specific(category: str, doc: dict[str, Any]) -> list[str]:
         if "macos" in str(doc.get("platform", "")).lower() and not _bool_true(doc.get("notarization_verified")):
             issues.append("macOS notarization must be verified")
     elif category == "live_branch_protection":
-        if doc.get("schema") not in {"omnidesk-live-branch-protection/v1", "omnidesk-live-branch-protection/v2"}:
-            issues.append("schema must be omnidesk-live-branch-protection/v1 or v2")
+        if doc.get("schema") not in {"omnidesk-live-branch-protection/v1", "omnidesk-live-branch-protection/v2", "omnidesk-live-branch-protection/v3"}:
+            issues.append("schema must be omnidesk-live-branch-protection/v1, v2 or v3")
         issues.extend(_require_fields(doc, ("repository", "branch")))
         if doc.get("failures") not in ([], None):
             issues.append("live branch protection report must have no failures")

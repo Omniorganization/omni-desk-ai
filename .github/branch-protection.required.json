@@ -2,6 +2,7 @@
   "schema": "omnidesk-branch-protection/v1",
   "protected_branch": "main",
   "allow_direct_pushes": false,
+  "allow_force_pushes": false,
   "allow_deletions": false,
   "require_pull_request": true,
   "require_branch_up_to_date": true,
@@ -11,6 +12,10 @@
   "require_signed_commits": true,
   "require_enforce_admins": true,
   "require_linear_history": true,
+  "require_last_push_approval": true,
+  "require_lock_branch": false,
+  "required_deployments": [],
+  "allowed_bypass_actors": [],
   "required_approving_review_count": 1,
   "required_status_checks": [
     "Release Policy",
@@ -89,11 +94,15 @@
     "live_evidence": "release/external-evidence/control-plane/github-team-governance-live.json",
     "require_organization_owner": true,
     "require_resolved_github_teams": true,
+    "require_two_person_teams": true,
+    "require_independent_reviewer": true,
+    "forbid_ruleset_bypass_actors": true,
     "forbid_personal_owner_fallback_for_real_ga": true
   },
   "distribution_ga_policy": {
     "require_main_verification_artifact": true,
     "require_main_verification_live_artifact": true,
+    "require_current_release_artifact_binding": true,
     "require_team_codeowners": true,
     "require_external_ga_evidence_passed": true,
     "forbid_mock_or_sample_evidence": true

@@ -418,6 +418,44 @@ jobs:
           python scripts/check_lock_hashes.py requirements.enterprise.lock
       - run: python scripts/check_production_install_policy.py .
       - run: python scripts/check_ga_release_gate.py .
+      - name: Verify live branch and team governance before Real GA
+        env:
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          audit_args=()
+          if [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
+            audit_args+=(--audit-only)
+          fi
+          mkdir -p release/external-evidence/control-plane
+          python scripts/check_live_branch_protection_contract.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --token-env TEAM_GOVERNANCE_TOKEN \
+            --write-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            "${audit_args[@]}"
+          python scripts/check_github_team_governance_live.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch-protection-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            --write-report release/external-evidence/control-plane/github-team-governance-live.json \
+            "${audit_args[@]}"
+      - name: Bind current Release-built native files to enforced Main Verification evidence
+        run: |
+          set -euo pipefail
+          audit_args=()
+          if [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
+            audit_args+=(--audit-only)
+          fi
+          python scripts/check_current_release_artifact_binding.py \
+            --artifact-root "$RUNNER_TEMP/tri-app-native-input" \
+            --evidence-root release/external-evidence \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --release-run-id "$GITHUB_RUN_ID" \
+            --main-verification-run-id "${{ inputs.external_evidence_run_id }}" \
+            --write-report dist/current-release-artifact-binding.json \
+            "${audit_args[@]}"
       - name: Run complete Real GA evidence and final Customer GA gate
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -429,6 +467,7 @@ jobs:
             python scripts/check_customer_distribution_ga.py . \
               --repository "$GITHUB_REPOSITORY" \
               --commit "$GITHUB_SHA" \
+              --current-release-binding-report dist/current-release-artifact-binding.json \
               --write-live-report dist/main-verification-live-artifact.json \
               --write-report release/real-ga-evidence-audit-1.12.7.json
           elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
@@ -437,6 +476,7 @@ jobs:
               --audit-only \
               --repository "$GITHUB_REPOSITORY" \
               --commit "$GITHUB_SHA" \
+              --current-release-binding-report dist/current-release-artifact-binding.json \
               --write-live-report dist/main-verification-live-artifact.json \
               --write-report release/real-ga-evidence-audit-1.12.7.json
           else
@@ -588,6 +628,9 @@ jobs:
             release/external-ga-evidence-import-report.json
             release/ios-real-device-evidence-import-report.json
             release/tri-app-live-smoke-evidence-import-report.json
+            release/external-evidence/control-plane/github-branch-protection-live.json
+            release/external-evidence/control-plane/github-team-governance-live.json
+            dist/current-release-artifact-binding.json
             dist/external-ga-evidence-preflight.json
             dist/ios-evidence-preflight.json
             dist/tri-app-live-smoke-preflight.json
