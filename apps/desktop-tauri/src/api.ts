@@ -25,6 +25,8 @@ function normalizeCapabilities(capabilities: string[]): string[] {
 }
 
 function gatewayError(status: number, body: string): Error {
+  if (status >= 500) return new Error(`${status} gateway_unavailable`);
+
   let detail = '';
   try {
     const payload = JSON.parse(body) as { detail?: unknown; code?: unknown };
@@ -35,7 +37,7 @@ function gatewayError(status: number, body: string): Error {
       if (typeof code === 'string') detail = code;
     }
   } catch {
-    detail = status >= 500 ? 'gateway_unavailable' : body.slice(0, 160);
+    detail = body.slice(0, 160);
   }
   return new Error(`${status} ${detail || 'request_failed'}`);
 }
