@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 const SERVICE: &str = "ai.omnidesk.desktop";
 
@@ -39,26 +39,85 @@ fn home_directory() -> Result<PathBuf, String> {
     Err("home directory unavailable".to_string())
 }
 
+fn validate_relative_path(relative_path: &str) -> Result<(), String> {
+    if relative_path.is_empty() || relative_path.len() > 1024 {
+        return Err("path must contain 1 to 1024 characters".to_string());
+    }
+    if relative_path.chars().any(char::is_control) {
+        return Err("path cannot contain control characters".to_string());
+    }
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative.components().any(|part| matches!(part, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+    {
+        return Err("path must be relative and cannot contain parent/root components".to_string());
+    }
+    Ok(())
+}
+
+fn approved_workspace_root() -> Result<PathBuf, String> {
+    let home = home_directory()?
+        .canonicalize()
+        .map_err(|_| "home directory is unavailable".to_string())?;
+    let declared = home.join("OmniDesktopWorkspace");
+    let metadata = fs::symlink_metadata(&declared)
+        .map_err(|_| "approved workspace root ~/OmniDesktopWorkspace is unavailable".to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("approved workspace root cannot be a symlink".to_string());
+    }
+    if !metadata.is_dir() {
+        return Err("approved workspace root must be a directory".to_string());
+    }
+    let approved = declared
+        .canonicalize()
+        .map_err(|_| "approved workspace root ~/OmniDesktopWorkspace is unavailable".to_string())?;
+    if !approved.starts_with(&home) {
+        return Err("approved workspace root must remain inside the home directory".to_string());
+    }
+    Ok(approved)
+}
+
 fn safe_workspace(workspace: &str) -> Result<PathBuf, String> {
-    let path = Path::new(workspace).canonicalize().map_err(|error| error.to_string())?;
-    let home = home_directory()?;
-    let approved = home.join("OmniDesktopWorkspace");
+    let requested = Path::new(workspace);
+    if !requested.is_absolute() {
+        return Err("workspace path must be absolute".to_string());
+    }
+    let metadata = fs::symlink_metadata(requested).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("workspace root cannot be a symlink".to_string());
+    }
+    if !metadata.is_dir() {
+        return Err("workspace root must be a directory".to_string());
+    }
+    let path = requested.canonicalize().map_err(|error| error.to_string())?;
+    let approved = approved_workspace_root()?;
     if !path.starts_with(&approved) {
         return Err("workspace must be inside ~/OmniDesktopWorkspace".to_string());
     }
     Ok(path)
 }
 
+fn reject_symlink_components(root: &Path, relative: &Path) -> Result<(), String> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(segment) => current.push(segment),
+            _ => return Err("invalid workspace path component".to_string()),
+        }
+        if current.exists() && fs::symlink_metadata(&current).map_err(|error| error.to_string())?.file_type().is_symlink() {
+            return Err("workspace path cannot traverse symlinks".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn safe_workspace_path(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
     let root = safe_workspace(workspace)?;
+    validate_relative_path(relative_path)?;
     let relative = Path::new(relative_path);
-    if relative.is_absolute()
-        || relative.components().any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        return Err("path must be relative and cannot contain ..".to_string());
-    }
-    let candidate = root.join(relative);
-    let resolved = candidate.canonicalize().map_err(|error| error.to_string())?;
+    reject_symlink_components(&root, relative)?;
+    let resolved = root.join(relative).canonicalize().map_err(|error| error.to_string())?;
     if !resolved.starts_with(&root) {
         return Err("path escapes the approved workspace".to_string());
     }
@@ -100,4 +159,28 @@ fn main() {
         .invoke_handler(tauri::generate_handler![secure_get, secure_set, read_workspace_file, list_workspace_directory])
         .run(tauri::generate_context!())
         .expect("error while running Omni Desktop App");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_relative_path;
+
+    #[test]
+    fn accepts_bounded_relative_paths() {
+        assert!(validate_relative_path(".").is_ok());
+        assert!(validate_relative_path("project/src/main.rs").is_ok());
+    }
+
+    #[test]
+    fn rejects_escape_and_absolute_paths() {
+        assert!(validate_relative_path("../secret").is_err());
+        assert!(validate_relative_path("project/../../secret").is_err());
+        assert!(validate_relative_path("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn rejects_control_and_oversized_paths() {
+        assert!(validate_relative_path("bad\0path").is_err());
+        assert!(validate_relative_path(&"a".repeat(1025)).is_err());
+    }
 }

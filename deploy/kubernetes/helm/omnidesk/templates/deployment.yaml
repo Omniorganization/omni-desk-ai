@@ -89,13 +89,13 @@ spec:
 {{ toYaml .Values.resources | indent 12 }}
           startupProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: http
             failureThreshold: 30
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: http
             periodSeconds: 20
             timeoutSeconds: 3

@@ -21,7 +21,13 @@ type Tone = 'green' | 'blue' | 'orange' | 'gray' | 'red' | 'violet';
 type ProjectItem = {
   id: string;
   name: string;
+  description: string;
+  ownerActor: string;
+  organizationId: string;
+  metadata: GatewayRecord;
+  archived: boolean;
   createdAt: string;
+  updatedAt: string;
 };
 
 type QuickAction = {
@@ -81,7 +87,13 @@ function projectFromGateway(project: GatewayRecord): ProjectItem {
   return {
     id: String(project.project_id || project.id || ''),
     name: String(project.name || 'Untitled project'),
+    description: String(project.description || ''),
+    ownerActor: String(project.owner_actor || ''),
+    organizationId: String(project.organization_id || ''),
+    metadata: project.metadata && typeof project.metadata === 'object' ? project.metadata : {},
+    archived: Boolean(project.archived),
     createdAt: String(project.created_at || project.createdAt || 'n/a'),
+    updatedAt: String(project.updated_at || project.updatedAt || project.created_at || project.createdAt || 'n/a'),
   };
 }
 
@@ -278,6 +290,25 @@ export default function Page() {
     }
   }
 
+  async function updateActiveProject(action: 'rename' | 'archive') {
+    const project = projects.find((item) => item.id === activeProjectId);
+    if (!project) return;
+    setLoading(true);
+    try {
+      const session = csrfToken ? { csrfToken, actor, role } : await establishSession();
+      const identity = deviceIdentity || await ensureWebAdminDevice(session.csrfToken, session.actor, session.role);
+      const activeApi = webAdminApiFor(identity, session.csrfToken, session.actor, session.role);
+      const name = action === 'rename' ? window.prompt('新项目名称', project.name)?.trim() : undefined;
+      if (action === 'rename' && !name) return;
+      await activeApi.updateProject(project.id, action === 'rename' ? { name } : { archived: !project.archived }, operationKey(`web-admin-project-${action}`));
+      await refreshProjects(activeApi);
+    } catch (e: any) {
+      setProjectError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function decide(id: string, decision: 'approved' | 'rejected') {
     if (!canApprove) {
       setError('当前角色不是 owner，不能执行审批。');
@@ -414,7 +445,7 @@ export default function Page() {
       </section>
 
       <section className="metrics-grid">
-        <div className="side-card"><div className="card-title"><h3>当前项目</h3><StatusPill tone={activeProject ? 'green' : 'gray'}>{activeProject ? 'ready' : '待创建'}</StatusPill></div><p>{activeProject ? `${activeProject.name} · ${formatDate(activeProject.createdAt)}` : '请先连接 Gateway 并创建或选择项目。'}</p>{activeProject && <button type="button" className="secondary-action" onClick={() => void deleteProject(activeProject.id)} disabled={loading}>删除当前项目</button>}</div>
+        <div className="side-card"><div className="card-title"><h3>当前项目</h3><StatusPill tone={activeProject ? 'green' : 'gray'}>{activeProject ? (activeProject.archived ? 'archived' : 'ready') : '待创建'}</StatusPill></div><p>{activeProject ? `${activeProject.name} · ${formatDate(activeProject.updatedAt)}` : '请先连接 Gateway 并创建或选择项目。'}</p>{activeProject && <><button type="button" className="secondary-action" onClick={() => void updateActiveProject('rename')} disabled={loading}>重命名</button>{' '}<button type="button" className="secondary-action" onClick={() => void updateActiveProject('archive')} disabled={loading}>{activeProject.archived ? '恢复' : '归档'}</button>{' '}<button type="button" className="secondary-action" onClick={() => void deleteProject(activeProject.id)} disabled={loading}>删除</button></>}</div>
         <div className="side-card"><div className="card-title"><h3>设备</h3><StatusPill tone={deviceIdentity ? 'green' : 'gray'}>{deviceIdentity ? 'enrolled' : 'not enrolled'}</StatusPill></div><p>{deviceIdentity?.deviceId || '尚未注册 Web Admin 设备'}</p><p>Gateway devices: {devices.length}</p></div>
         <div className="side-card"><div className="card-title"><h3>审批</h3><StatusPill tone={approvals.length ? 'orange' : 'green'}>{approvals.length} pending</StatusPill></div>{approvals.slice(0, 3).map((approval) => <div className="mini-row" key={String(approval.approval_id)}><strong>{approval.action || 'Approval'}</strong><span>{approval.risk || 'risk n/a'}</span><button type="button" disabled={!canApprove || loading} onClick={() => void decide(String(approval.approval_id), 'approved')}>批准</button></div>)}</div>
         <div className="side-card"><div className="card-title"><h3>通知</h3><StatusPill tone={notifications.length ? 'blue' : 'gray'}>{notifications.length}</StatusPill></div>{notifications.slice(0, 4).map((item) => <p key={String(item.notification_id || item.title)}>{item.title || item.body}</p>)}</div>
