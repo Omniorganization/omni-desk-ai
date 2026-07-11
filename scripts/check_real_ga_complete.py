@@ -198,9 +198,11 @@ def _team_governance(root: Path, evidence_dir: Path) -> dict[str, Any]:
         for field in (
             "repository_is_organization_owned",
             "required_teams_resolved",
+            "required_team_member_separation_satisfied",
             "codeowners_team_owned",
             "branch_protection_requires_codeowners_review",
             "admins_enforced",
+            "ruleset_bypass_actors_absent",
         ):
             if not _bool_true(doc.get(field)):
                 issues.append(f"{field} must be true")
@@ -212,6 +214,20 @@ def _team_governance(root: Path, evidence_dir: Path) -> dict[str, Any]:
         reported_teams = _team_slugs(required_teams)
         if expected_teams and reported_teams != expected_teams:
             issues.append(f"required_teams must match source contract teams: {sorted(expected_teams)}")
+        minimum_members = int(contract.get("minimum_members_per_team") or 0)
+        minimum_independent = int(contract.get("minimum_independent_reviewers_per_team") or 0)
+        if isinstance(required_teams, list):
+            for team in required_teams:
+                if not isinstance(team, dict):
+                    continue
+                slug = str(team.get("slug") or "")
+                if int(team.get("member_count") or 0) < minimum_members:
+                    issues.append(f"{slug} member_count must be at least {minimum_members}")
+                independent = team.get("independent_reviewers")
+                if not isinstance(independent, list) or len(independent) < minimum_independent:
+                    issues.append(f"{slug} must have at least {minimum_independent} independent reviewer(s)")
+                if not _bool_true(team.get("valid")):
+                    issues.append(f"{slug} live team governance result must be valid")
         if doc.get("failures") not in ([], None):
             issues.append("team governance live report must have no failures")
     return {
@@ -292,11 +308,6 @@ def _native_signed_binding(root: Path, evidence_dir: Path) -> dict[str, Any]:
                     issues.append("artifact_digest_bindings entries must be objects")
                     continue
                 platform = str(row.get("platform") or "")
-                release_digest = str(row.get("release_payload_artifact_sha256") or "").strip().lower()
-                signed_digest = str(row.get("external_evidence_signed_artifact_sha256") or "").strip().lower()
-                binding_digest = str(row.get("native_signed_binding_sha256") or "").strip().lower()
-                if not release_digest or release_digest != signed_digest or signed_digest != binding_digest:
-                    issues.append(f"{platform} release, signed evidence and native binding sha256 values must match")
                 if not _bool_true(row.get("digests_match")) or not _bool_true(row.get("valid")):
                     issues.append(f"{platform} digest binding must be valid")
                 if expected_commit and row.get("source_commit") != expected_commit:
@@ -307,14 +318,37 @@ def _native_signed_binding(root: Path, evidence_dir: Path) -> dict[str, Any]:
                     issues.append(f"{platform} signing_run_id is required")
                 if str(row.get("main_verification_run_id") or "") != str(doc.get("main_verification_run_id") or ""):
                     issues.append(f"{platform} main_verification_run_id must match the binding producer run")
-                attestation = row.get("artifact_attestation")
-                if not isinstance(attestation, dict):
-                    issues.append(f"{platform} artifact_attestation must be an object")
+                artifacts = row.get("artifacts")
+                if not isinstance(artifacts, list) or not artifacts:
+                    issues.append(f"{platform} artifacts must enumerate every bound artifact")
                 else:
-                    if not str(attestation.get("attestation_id") or "").strip():
-                        issues.append(f"{platform} artifact_attestation.attestation_id is required")
-                    if str(attestation.get("subject_sha256") or "").strip().lower() != binding_digest:
-                        issues.append(f"{platform} artifact attestation subject must match the bound artifact sha256")
+                    for artifact in artifacts:
+                        if not isinstance(artifact, dict):
+                            issues.append(f"{platform} artifact binding entries must be objects")
+                            continue
+                        release_digest = str(artifact.get("release_payload_artifact_sha256") or "").strip().lower()
+                        signed_digest = str(artifact.get("external_evidence_signed_artifact_sha256") or "").strip().lower()
+                        binding_digest = str(artifact.get("native_signed_binding_sha256") or "").strip().lower()
+                        if not release_digest or release_digest != signed_digest or signed_digest != binding_digest:
+                            issues.append(f"{platform} per-artifact release, signed evidence and native binding sha256 values must match")
+                        if not _bool_true(artifact.get("valid")):
+                            issues.append(f"{platform} per-artifact digest binding must be valid")
+                        if expected_commit and artifact.get("source_commit") != expected_commit:
+                            issues.append(f"{platform} per-artifact source_commit must match the checked commit")
+                        if str(artifact.get("build_run_id") or "") != str(row.get("build_run_id") or ""):
+                            issues.append(f"{platform} per-artifact build_run_id must match the platform binding")
+                        if str(artifact.get("signing_run_id") or "") != str(row.get("signing_run_id") or ""):
+                            issues.append(f"{platform} per-artifact signing_run_id must match the platform binding")
+                        if str(artifact.get("main_verification_run_id") or "") != str(doc.get("main_verification_run_id") or ""):
+                            issues.append(f"{platform} per-artifact main_verification_run_id must match the binding producer run")
+                        attestation = artifact.get("artifact_attestation")
+                        if not isinstance(attestation, dict):
+                            issues.append(f"{platform} per-artifact artifact_attestation must be an object")
+                        else:
+                            if not str(attestation.get("attestation_id") or "").strip():
+                                issues.append(f"{platform} per-artifact artifact_attestation.attestation_id is required")
+                            if str(attestation.get("subject_sha256") or "").strip().lower() != binding_digest:
+                                issues.append(f"{platform} per-artifact attestation subject must match the bound artifact sha256")
                 signature_metadata = row.get("signature_metadata")
                 if not isinstance(signature_metadata, dict):
                     issues.append(f"{platform} signature_metadata must be an object")

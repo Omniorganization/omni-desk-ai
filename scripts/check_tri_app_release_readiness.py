@@ -81,7 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     for script in ["build", "typecheck", "test", "tauri:build"]:
         _check(script in desktop_package.get("scripts", {}), f"desktop-tauri has npm script: {script}", failures, ok)
     _check((apps/"web-admin-next"/"public").is_dir(), "Web Admin public directory exists for Docker runtime copy", failures, ok)
-    _check("COPY --from=build /app/public ./public" in web_docker, "Web Admin Docker runtime copies public assets from build stage", failures, ok)
+    public_copy = any(
+        line.strip().startswith("COPY --from=build")
+        and "/app/public" in line
+        and "./public" in line
+        for line in web_docker.splitlines()
+    )
+    _check(public_copy, "Web Admin Docker runtime copies public assets from build stage", failures, ok)
     contract_methods = {(item["method"], item["path"]) for item in contract.get("endpoints", [])}
     expected_contract = {("GET", "/app/bootstrap"), ("POST", "/app/devices/register"), ("POST", "/app/approvals/{approval_id}/decide"), ("POST", "/app/runtime/desktop/claim"), ("POST", "/app/devices/enrollment/{enrollment_id}/challenge"), ("POST", "/app/devices/enrollment/{enrollment_id}/verify"), ("GET", "/app/sync"), ("WS", "/app/ws")}
     missing_contract = sorted(expected_contract - contract_methods)

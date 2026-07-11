@@ -64,6 +64,32 @@ jobs:
             echo "No external evidence supplied for PR/push source verification; customer-distribution Real GA remains blocked."
           fi
 
+      - name: Generate live branch and team governance evidence for this commit
+        env:
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id || '' }}
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          audit_args=()
+          if [[ -z "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]]; then
+            audit_args+=(--audit-only)
+          fi
+          mkdir -p release/external-evidence/control-plane dist/evidence
+          python scripts/check_live_branch_protection_contract.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --token-env TEAM_GOVERNANCE_TOKEN \
+            --write-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            "${audit_args[@]}"
+          python scripts/check_github_team_governance_live.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch-protection-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            --write-report release/external-evidence/control-plane/github-team-governance-live.json \
+            "${audit_args[@]}"
+          cp release/external-evidence/control-plane/github-branch-protection-live.json dist/evidence/github-branch-protection-live.json
+          cp release/external-evidence/control-plane/github-team-governance-live.json dist/evidence/github-team-governance-live.json
+
       - name: Source release gates and complete pre-binding Real GA audit
         run: |
           python scripts/check_version_consistency.py .
@@ -152,6 +178,8 @@ jobs:
             dist/evidence/native-signed-artifact-binding.json
             release/external-evidence/control-plane/main-verification-evidence.json
             release/external-evidence/control-plane/native-signed-artifact-binding.json
+            release/external-evidence/control-plane/github-branch-protection-live.json
+            release/external-evidence/control-plane/github-team-governance-live.json
           if-no-files-found: error
 
       - name: Upload enforced final Real GA audit

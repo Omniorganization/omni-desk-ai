@@ -16,6 +16,28 @@ from scripts.write_native_artifact_manifest import build_manifest
 
 
 def test_customer_distribution_ga_requires_complete_and_live(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GITHUB_RUN_ID", "release-1")
+    binding_report = tmp_path / "current-release-artifact-binding.json"
+    binding_report.write_text(
+        json.dumps(
+            {
+                "schema": "omnidesk-current-release-artifact-binding/v1",
+                "status": "passed",
+                "repository": "owner/repo",
+                "source_commit": "abc",
+                "release_run_id": "release-1",
+                "main_verification_run_id": "main-1",
+                "all_artifacts_bound": True,
+                "platforms": [
+                    {"platform": platform, "status": "passed"}
+                    for platform in ("android", "ios", "macos", "windows")
+                ],
+                "failures": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         customer_ga,
         "audit_complete_real_ga",
@@ -40,6 +62,7 @@ def test_customer_distribution_ga_requires_complete_and_live(monkeypatch, tmp_pa
         repository="owner/repo",
         commit_sha="abc",
         token="token",
+        current_release_binding_report=binding_report,
     )
     assert passed["status"] == "passed"
     assert passed["blocker_count"] == 0
@@ -58,6 +81,7 @@ def test_customer_distribution_ga_requires_complete_and_live(monkeypatch, tmp_pa
         repository="owner/repo",
         commit_sha="abc",
         token="token",
+        current_release_binding_report=binding_report,
     )
     assert blocked["status"] == "blocked_missing_external_evidence"
     assert blocked["categories"]["main_verification_live_artifact"]["ok"] is False

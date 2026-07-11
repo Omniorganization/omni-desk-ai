@@ -13,15 +13,28 @@ const CAPABILITIES = ['chat', 'local-runtime', 'browser', 'files', 'ui-bridge', 
 type ProjectItem = {
   id: string;
   name: string;
+  description: string;
+  ownerActor: string;
+  organizationId: string;
+  metadata: Record<string, unknown>;
+  archived: boolean;
   createdAt: string;
+  updatedAt: string;
 };
 
 type GatewayProject = {
   project_id?: unknown;
   id?: unknown;
   name?: unknown;
+  description?: unknown;
+  owner_actor?: unknown;
+  organization_id?: unknown;
+  metadata?: unknown;
+  archived?: unknown;
   created_at?: unknown;
   createdAt?: unknown;
+  updated_at?: unknown;
+  updatedAt?: unknown;
 };
 
 type QuickAction = {
@@ -103,7 +116,13 @@ function projectFromGateway(project: GatewayProject): ProjectItem {
   return {
     id: String(project.project_id || project.id || ''),
     name: String(project.name || 'Untitled project'),
+    description: String(project.description || ''),
+    ownerActor: String(project.owner_actor || ''),
+    organizationId: String(project.organization_id || ''),
+    metadata: project.metadata && typeof project.metadata === 'object' ? project.metadata as Record<string, unknown> : {},
+    archived: Boolean(project.archived),
     createdAt: String(project.created_at || project.createdAt || new Date().toISOString()),
+    updatedAt: String(project.updated_at || project.updatedAt || project.created_at || project.createdAt || new Date().toISOString()),
   };
 }
 
@@ -159,10 +178,16 @@ function App() {
       await keychainSet('omni.actor', actor);
       const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
       setDeviceIdentity(identity);
-      await client.registerDesktop(identity.deviceId, navigator.platform, CAPABILITIES, identity.publicKeyPem);
-      await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
-      setSnapshot(await client.bootstrap());
-      await refreshProjects();
+      const signedClient = new OmniApiClient({
+        baseUrl: gatewayUrl.replace(/\/$/, ''),
+        token,
+        actor,
+        deviceSigner: createDesktopDeviceRequestSigner(identity.deviceId),
+      });
+      await signedClient.registerDesktop(identity.deviceId, navigator.platform, CAPABILITIES, identity.publicKeyPem);
+      await signedClient.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
+      setSnapshot(await signedClient.bootstrap());
+      await refreshProjects(signedClient);
     } catch (e: any) {
       setError(e.message || String(e));
     }
@@ -248,6 +273,26 @@ function App() {
       setActiveProjectId(project.id);
       setNewProjectName('');
       setSnapshot(await client.bootstrap());
+    } catch (e: any) {
+      setProjectError(e.message || String(e));
+    }
+  }
+
+  async function mutateProject(action: 'rename' | 'archive' | 'delete') {
+    const project = projects.find(item => item.id === activeProjectId);
+    if (!project) return;
+    setProjectError('');
+    try {
+      if (action === 'delete') {
+        await client.deleteProject(project.id, operationKey('desktop-project-delete'));
+      } else {
+        const payload = action === 'archive'
+          ? { archived: !project.archived }
+          : { name: window.prompt('新项目名称', project.name)?.trim() };
+        if (action === 'rename' && !payload.name) return;
+        await client.updateProject(project.id, payload, operationKey(`desktop-project-${action}`));
+      }
+      await refreshProjects();
     } catch (e: any) {
       setProjectError(e.message || String(e));
     }
@@ -342,7 +387,7 @@ function App() {
 
     <aside className="desktop-rightbar">
       {showAccountSettings && <section className="panel account-panel"><div className="panel-title"><h2>账户设置</h2><span>Codex-style</span></div>{ACCOUNT_SETTINGS.map(setting => <button className="setting-row" key={setting.title} type="button"><span><strong>{setting.title}</strong><small>{setting.detail}</small></span><em>{setting.action}</em></button>)}</section>}
-      <section className="panel"><div className="panel-title"><h2>当前项目</h2><span>{activeProject ? 'ready' : '待创建'}</span></div><p>{activeProject ? `${activeProject.name} 已从 Gateway 同步到 Desktop Runtime。` : '请先连接 Gateway 并创建或选择项目。'}</p><p>Device: {deviceIdentity?.deviceId || 'not enrolled'}</p></section>
+      <section className="panel"><div className="panel-title"><h2>当前项目</h2><span>{activeProject ? (activeProject.archived ? 'archived' : 'ready') : '待创建'}</span></div><p>{activeProject ? `${activeProject.name} 已从 Gateway 同步到 Desktop Runtime。` : '请先连接 Gateway 并创建或选择项目。'}</p>{activeProject && <p><button type="button" onClick={() => void mutateProject('rename')}>重命名</button>{' '}<button type="button" onClick={() => void mutateProject('archive')}>{activeProject.archived ? '恢复' : '归档'}</button>{' '}<button type="button" onClick={() => void mutateProject('delete')}>删除</button></p>}<p>Device: {deviceIdentity?.deviceId || 'not enrolled'}</p></section>
       <section className="panel"><h2>连接配置</h2><label>Gateway URL<input value={gatewayUrl} onChange={e => setGatewayUrl(e.target.value)} /></label><label>Operator Token<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" /></label><label>Actor<input value={actor} onChange={e => setActor(e.target.value)} /></label></section>
       <section className="panel"><h2>审批状态</h2><p>待审批：{pendingApprovals.length}</p><pre>{JSON.stringify(pendingApprovals.slice(0, 3), null, 2)}</pre></section>
       <section className="panel"><h2>通知</h2><p>{notifications.length} 条</p><pre>{JSON.stringify(notifications.slice(0, 5), null, 2)}</pre></section>

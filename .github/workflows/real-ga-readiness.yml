@@ -36,6 +36,10 @@ on:
         type: string
         required: false
         default: external-ga-evidence-bound
+    secrets:
+      OMNIDESK_GITHUB_GOVERNANCE_TOKEN:
+        description: "GitHub App installation token or fine-grained PAT with repository Administration read and organization Members read"
+        required: false
 
 permissions:
   contents: read
@@ -94,6 +98,7 @@ jobs:
       - name: Verify live branch protection control plane
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -103,9 +108,28 @@ jobs:
           fi
           python scripts/check_live_branch_protection_contract.py . \
             --repository "$GITHUB_REPOSITORY" \
+            --token-env TEAM_GOVERNANCE_TOKEN \
             $audit_flag \
             --write-report release/external-evidence/control-plane/github-branch-protection-live.json
           cp release/external-evidence/control-plane/github-branch-protection-live.json dist/evidence/github-branch-protection-live.json
+      - name: Verify live team governance and reviewer independence
+        env:
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          audit_flag=""
+          if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
+            audit_flag="--audit-only"
+          fi
+          python scripts/check_github_team_governance_live.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch-protection-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            $audit_flag \
+            --write-report release/external-evidence/control-plane/github-team-governance-live.json
+          cp release/external-evidence/control-plane/github-team-governance-live.json dist/evidence/github-team-governance-live.json
       - name: Verify post-merge Main Verification artifact
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
@@ -133,21 +157,30 @@ jobs:
           python scripts/check_model_live_smoke_evidence.py . \
             $audit_flag \
             --write-report dist/evidence/model-live-smoke-check.json
-      - name: Validate final Customer-distribution Real GA boundary
+      - name: Validate complete external evidence before starting Release Build
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           audit_flag=""
           if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
             audit_flag="--audit-only"
-          elif [[ -z "${{ inputs.external_evidence_run_id }}" ]]; then
+          fi
+          python scripts/check_real_ga_complete.py . \
+            $audit_flag \
+            --write-report dist/evidence/pre-release-external-ga-evidence-audit.json
+      - name: Audit Release-only final Customer GA boundary without claiming completion
+        env:
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$READINESS_CHANNEL" == "real-ga" && -z "${{ inputs.external_evidence_run_id }}" ]]; then
             echo "real-ga readiness requires an enforced Main Verification evidence run id" >&2
             exit 64
           fi
           python scripts/check_customer_distribution_ga.py . \
-            $audit_flag \
+            --audit-only \
             --repository "$GITHUB_REPOSITORY" \
             --commit "$GITHUB_SHA" \
             --write-live-report dist/evidence/main-verification-live-artifact.json \
@@ -158,7 +191,9 @@ jobs:
           path: |
             dist/evidence/real-ga-readiness-contract.json
             dist/evidence/github-branch-protection-live.json
+            dist/evidence/github-team-governance-live.json
             dist/evidence/main-verification-live-artifact.json
             dist/evidence/model-live-smoke-check.json
+            dist/evidence/pre-release-external-ga-evidence-audit.json
             dist/evidence/external-ga-evidence-audit.json
           if-no-files-found: error

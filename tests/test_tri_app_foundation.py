@@ -404,6 +404,35 @@ class FakeChatRouter:
         )
 
 
+class FailingChatRouter:
+    async def complete(self, request):
+        raise RuntimeError("upstream https://secret.example token=do-not-leak")
+
+
+def test_api_chat_redacts_provider_failure_details(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    app = create_app(_cfg(tmp_path))
+    app.state.runtime.model_router = FailingChatRouter()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat",
+            headers={
+                "authorization": "Bearer operator-token",
+                "x-omnidesk-actor": "alice",
+                "x-request-id": "trace-safe-1",
+                "idempotency-key": "provider-failure-1",
+            },
+            json={"content": "hello"},
+        )
+    assert response.status_code == 502
+    assert response.json()["detail"] == {
+        "code": "model_provider_unavailable",
+        "trace_id": "trace-safe-1",
+    }
+    assert "secret.example" not in response.text
+    assert "do-not-leak" not in response.text
+
+
 def test_appsync_ask_route_uses_model_router_and_persists_messages(
     tmp_path, monkeypatch
 ):
@@ -441,6 +470,8 @@ def test_appsync_ask_route_uses_model_router_and_persists_messages(
         assert body["audit_trace_id"].startswith("trace_")
         assert fake_router.requests[0].task == "chat"
         assert fake_router.requests[0].metadata["actor"] == "alice"
+        assert fake_router.requests[0].metadata["role"] == "operator"
+        assert fake_router.requests[0].metadata["organization_id"] == "org_default"
         replay = client.post(
             f"/app/conversations/{convo['conversation_id']}/ask",
             headers={**operator_headers, "idempotency-key": "ask-1"},
@@ -453,6 +484,15 @@ def test_appsync_ask_route_uses_model_router_and_persists_messages(
             headers=operator_headers,
         ).json()["messages"]
         assert [item["role"] for item in messages] == ["user", "assistant"]
+        follow_up = client.post(
+            f"/app/conversations/{convo['conversation_id']}/ask",
+            headers={**operator_headers, "idempotency-key": "ask-2"},
+            json={"content": "And now?", "model_profile": "fast"},
+        )
+        assert follow_up.status_code == 200, follow_up.text
+        assert "User: What changed?" in fake_router.requests[1].system
+        assert "Assistant: assistant:What changed?" in fake_router.requests[1].system
+        assert "And now?" not in fake_router.requests[1].system
 
 
 def test_api_chat_alias_uses_audited_model_router_and_creates_conversation(

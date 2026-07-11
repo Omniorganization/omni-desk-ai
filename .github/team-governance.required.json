@@ -10,24 +10,30 @@
   "codeowners_file": ".github/CODEOWNERS",
   "migration_blocker": "",
   "required_organization": "Omniorganization",
+  "minimum_members_per_team": 2,
+  "minimum_independent_reviewers_per_team": 1,
   "required_teams": [
     {
       "slug": "omnidesk-maintainers",
+      "minimum_repository_permission": "maintain",
       "required_paths": ["*"]
     },
     {
       "slug": "release-owners",
+      "minimum_repository_permission": "push",
       "required_paths": [".github/workflows/", "scripts/", "release/", "omnidesk_agent/self_upgrade/"]
     },
     {
       "slug": "security-owners",
+      "minimum_repository_permission": "push",
       "required_paths": [".github/workflows/", "release/", "omnidesk_agent/security/", "omnidesk_agent/sandbox/", "omnidesk_agent/plugins/", "omnidesk_agent/self_upgrade/"]
     },
     {
       "slug": "platform-owners",
+      "minimum_repository_permission": "push",
       "required_paths": ["deploy/", "omnidesk_agent/sandbox/"]
     }
   ],
   "live_evidence_required_file": "release/external-evidence/control-plane/github-team-governance-live.json",
-  "live_evidence_policy": "Real GA requires a live GitHub API report proving owner_type=Organization, all required teams exist, CODEOWNERS references resolved teams, branch protection requires CODEOWNERS review, and no personal-owner fallback is active."
+  "live_evidence_policy": "Real GA requires a live GitHub API report proving owner_type=Organization, all required teams exist with explicit write-or-higher access and visible membership, each team has at least two members including one reviewer independent of the checked commit author, CODEOWNERS references only resolved teams, branch protection requires CODEOWNERS review, and no bypass or personal-owner fallback is active."
 }

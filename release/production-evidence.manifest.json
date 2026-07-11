@@ -17,6 +17,7 @@
     "model_live_smoke_contract": "required",
     "complete_real_ga_evidence_wrapper": "required",
     "native_signed_artifact_binding_contract": "required",
+    "current_release_artifact_binding_contract": "required",
     "pytest_chunked_full_suite": "required",
     "release_hygiene": "required",
     "tri_app_runtime_evidence": "required",
@@ -56,14 +57,14 @@
     "workflow": ".github/workflows/team-governance.yml",
     "live_evidence_file": "release/external-evidence/control-plane/github-team-governance-live.json",
     "required_for_customer_distribution_ga": true,
-    "boundary": "Source contract only. Customer-distribution Real GA requires a live GitHub control-plane report proving the repository is organization-owned, required teams exist, CODEOWNERS resolves to teams, branch protection requires CODEOWNERS review, admins are enforced, and no personal fallback owner is active."
+    "boundary": "Source contract only. Customer-distribution Real GA requires a live GitHub control-plane report proving the repository is organization-owned, required teams are closed/visible with explicit write-or-higher access, every team has at least two members and an independent reviewer for the checked commit, CODEOWNERS resolves only to those teams, branch protection requires CODEOWNERS review, admins are enforced, and no bypass or personal fallback owner is active."
   },
   "live_branch_protection_control_plane": {
-    "schema": "omnidesk-live-branch-protection/v2",
+    "schema": "omnidesk-live-branch-protection/v3",
     "contract_check": "scripts/check_live_branch_protection_contract.py . --repository $GITHUB_REPOSITORY --write-report release/external-evidence/control-plane/github-branch-protection-live.json",
     "workflow": ".github/workflows/real-ga-readiness.yml",
     "required_for_customer_distribution_ga": true,
-    "boundary": "Live GitHub control-plane verification only; it checks required checks, strict status, code owner review, signed commits, linear history, and admin enforcement. It does not replace signed artifacts, push, soak, rollback, backup/restore, or failure-injection evidence."
+    "boundary": "Live GitHub control-plane verification only; it combines legacy protection and active Rulesets to check exact required contexts, strict status, approvals, stale and last-push review policy, Code Owner review, signed commits, linear history, deployments, lock, deletion/force-push controls, admin enforcement, and bypass actors. It does not replace signed artifacts, push, soak, rollback, backup/restore, or failure-injection evidence."
   },
   "native_signed_artifact_binding": {
     "schema": "omnidesk-native-signed-artifact-binding/v1",
@@ -74,7 +75,16 @@
     "required_for_customer_distribution_ga": true,
     "digest_equality_policy": "release_payload_artifact_sha256 == external_evidence_signed_artifact_sha256 == native_signed_binding_sha256",
     "platform_identity_policy": "Android signer certificate, iOS Team ID/provisioning profile/IPA codesign identifier, macOS Developer ID/notarization submission, and Windows Authenticode signer/certificate must be verified and bound to source commit, build run, signing run, artifact attestation, and Main Verification run.",
-    "boundary": "Main Verification records the native-build and signed-artifact evidence paths and hashes for the current commit. Real GA requires all four native build evidence files and all four signed artifact evidence files, exact final-artifact digest equality, platform signer identity, source commit, build/signing run ids, artifact attestation, and the producing Main Verification run id."
+    "boundary": "Main Verification records every native-build and signed-artifact evidence path and per-file hash for the current commit. Real GA requires all four native build evidence files and all four signed artifact evidence files, exact final-artifact digest-set equality, platform signer identity, source commit, build/signing run ids, per-artifact attestation, and the producing Main Verification run id."
+  },
+  "current_release_artifact_binding": {
+    "schema": "omnidesk-current-release-artifact-binding/v1",
+    "evidence_file": "dist/current-release-artifact-binding.json",
+    "workflow": ".github/workflows/release.yml",
+    "contract_check": "scripts/check_current_release_artifact_binding.py --artifact-root $RUNNER_TEMP/tri-app-native-input --evidence-root release/external-evidence --repository $GITHUB_REPOSITORY --source-commit $GITHUB_SHA --release-run-id $GITHUB_RUN_ID --main-verification-run-id $MAIN_VERIFICATION_RUN_ID --write-report dist/current-release-artifact-binding.json",
+    "required_for_customer_distribution_ga": true,
+    "digest_equality_policy": "actual_release_file_sha256 == current_native_manifest_sha256 == external_evidence_signed_artifact_sha256 == artifact_attestation_subject_sha256 == main_verification_native_signed_binding_sha256",
+    "boundary": "The Release workflow rehashes every distributable Android, iOS, macOS and Windows file from the current run and must pass this gate before Customer GA evaluation and before signing the aggregate release payload. Candidate runs only record blockers."
   },
   "security_attack_surface_gate": {
     "schema": "omnidesk-security-attack-surface/v1",
@@ -135,9 +145,10 @@
   "external_evidence_required": {
     "native_build": "true Flutter/Rust/Tauri native build evidence with artifact references and sha256 checks",
     "signed_artifacts": "true Android/iOS/Desktop signed artifacts, including macOS notarization and platform signature verification",
-    "native_signed_artifact_bindings": "Main Verification artifact must prove release payload sha256 equals signed external-evidence sha256 equals native binding sha256 for Android, iOS, macOS and Windows, then bind platform signer identity, source commit, build/signing run ids, artifact attestation, Main Verification run id and Real GA summary path",
+    "native_signed_artifact_bindings": "Main Verification artifact must prove every release payload sha256 equals signed external-evidence sha256 equals native binding sha256 for Android, iOS, macOS and Windows, then bind platform signer identity, source commit, build/signing run ids, per-artifact attestation, Main Verification run id and Real GA summary path",
+    "current_release_artifact_binding": "the actual distributable files built by the current Release run must be rehashed and match the external signed evidence, attestation subjects and Main Verification per-artifact digest bindings before Customer GA and final aggregate-payload signing",
     "live_branch_protection_control_plane": "live GitHub branch-protection API report matching .github/branch-protection.required.json",
-    "team_governance_control_plane": "live GitHub API report proving Organization owner, resolved teams, team CODEOWNERS, enforced code-owner review, and no personal fallback",
+    "team_governance_control_plane": "live GitHub API report proving Organization owner, closed/visible teams with explicit repository access, two-person membership and reviewer independence, team-only CODEOWNERS, enforced code-owner review, and no bypass or personal fallback",
     "model_live_smoke": "live model Q&A smoke proving non-empty response, trace, audit event, cost ledger, and budget enforcement",
     "bigseller_live_smoke": "true BigSeller staging smoke proving auth, order list, inventory list, webhook signature, replay guard, trace, audit, and no secret leakage",
     "main_verification_live_artifact": "successful post-merge Main Verification run with unexpired commit-addressed evidence artifact",
@@ -159,5 +170,5 @@
     "desktop_native_signed_artifacts": "must include platform-specific signed macOS/Windows/Linux artifacts before customer distribution",
     "device_signature_live_rollout": "must verify real desktop/mobile challenge verification and signed-request enforcement in staging"
   },
-  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_real_ga_complete.py and scripts/check_main_verification_artifact_live.py to pass against real external signer, registry, store, staging, push, approved integration, GitHub organization/team control-plane, and operations evidence."
+  "policy": "Source gates may prove enforcement logic exists; distribution GA requires scripts/check_real_ga_complete.py, scripts/check_main_verification_artifact_live.py, and scripts/check_current_release_artifact_binding.py to pass against the current Release payload plus real external signer, attestation, registry, store, staging, push, approved integration, GitHub organization/team control-plane, and operations evidence."
 }

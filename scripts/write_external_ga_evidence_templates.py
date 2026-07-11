@@ -73,11 +73,22 @@ def _base_template(rel_path: str) -> dict[str, Any]:
                 "attestation_id": "replace-with-attestation-id",
                 "subject_sha256": "replace-with-the-same-final-artifact-sha256",
             },
-            "artifacts": [{"path": "replace-with-signed-artifact-path", "sha256": "replace-with-artifact-sha256"}],
+            "artifacts": [
+                {
+                    "path": "replace-with-signed-artifact-path",
+                    "sha256": "replace-with-artifact-sha256",
+                    "signed_artifact_sha256": "replace-with-the-same-final-artifact-sha256",
+                    "native_signed_binding_sha256": "replace-with-the-same-final-artifact-sha256",
+                    "artifact_attestation": {
+                        "attestation_id": "replace-with-attestation-id",
+                        "subject_sha256": "replace-with-the-same-final-artifact-sha256",
+                    },
+                }
+            ],
             **signature_fields,
         })
     elif rel_path.startswith("control-plane/"):
-        doc.update({"schema": "omnidesk-live-branch-protection/v2", "repository": "owner/repo", "branch": "main", "failures": []})
+        doc.update({"schema": "omnidesk-live-branch-protection/v3", "repository": "owner/repo", "branch": "main", "failures": []})
     elif rel_path.startswith("model/"):
         doc.update({"schema": "omnidesk-model-live-smoke/v1", "backend_base_url": "replace-with-live-backend", "scenario_id": "replace-with-scenario", "model_request_id": "replace-with-model-request-id", "trace_id": "replace-with-trace-id", "audit_event_id": "replace-with-audit-event-id", "cost_ledger_entry_id": "replace-with-cost-ledger-entry-id", "response_non_empty": True, "audit_logged": True, "cost_ledger_recorded": True, "budget_enforced": True, "approval_required_on_budget_exceeded": True, "p95_latency_ms": 2500, "error_rate": 0})
     elif rel_path.startswith("integrations/"):

@@ -61,6 +61,8 @@ def test_postgres_store_declares_transactional_claim_and_lease() -> None:
 def test_desktop_shell_sandbox_executor_has_workspace_policy() -> None:
     executor = (ROOT / "apps/desktop-tauri/src/executor.ts").read_text(encoding="utf-8")
     main_rs = (ROOT / "apps/desktop-tauri/src-tauri/src/main.rs").read_text(encoding="utf-8")
-    assert "run_workspace_command" in executor
+    assert "read_workspace_file" in executor
+    assert "list_workspace_directory" in executor
+    assert "run_workspace_command" not in executor
     assert "workspace_only" in executor
     assert "OmniDesktopWorkspace" in main_rs
