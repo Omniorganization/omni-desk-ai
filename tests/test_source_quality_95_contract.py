@@ -51,6 +51,7 @@ def test_web_admin_runtime_is_standalone_and_non_root() -> None:
     assert "output: 'standalone'" in next_config
     assert "USER nextjs" in dockerfile
     assert "/app/.next/standalone" in dockerfile
+    assert "COPY --from=build --chown=nextjs:nodejs /app/public ./public" in dockerfile
     assert 'CMD ["node", "server.js"]' in dockerfile
 
 
@@ -58,4 +59,4 @@ def test_backend_oci_source_matches_organization_repository() -> None:
     dockerfile = text("Dockerfile")
     assert "https://github.com/Omniorganization/omni-desk-ai" in dockerfile
     assert "https://github.com/yinyufan0813-cmyk/omni-desk-ai" not in dockerfile
-    assert "http://127.0.0.1:18789/health" in dockerfile
+    assert "http://127.0.0.1:18789/ready" in dockerfile

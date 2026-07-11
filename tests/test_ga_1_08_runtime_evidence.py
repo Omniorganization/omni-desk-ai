@@ -6,7 +6,12 @@ from pathlib import Path
 def test_web_admin_docker_public_directory_is_committed() -> None:
     assert Path("apps/web-admin-next/public/.gitkeep").exists()
     dockerfile = Path("apps/web-admin-next/Dockerfile").read_text(encoding="utf-8")
-    assert "COPY --from=build /app/public ./public" in dockerfile
+    assert any(
+        line.strip().startswith("COPY --from=build")
+        and "/app/public" in line
+        and "./public" in line
+        for line in dockerfile.splitlines()
+    )
 
 
 def test_desktop_rust_has_no_undeclared_dirs_dependency() -> None:
