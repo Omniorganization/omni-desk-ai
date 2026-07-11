@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Awaitable, Callable, Optional, cast
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from omnidesk_agent.appsync.factory import create_appsync_store
+from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
 from omnidesk_agent.appsync.push import dispatch_pending_push
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.validation.production import is_production_mode
+
+
+logger = logging.getLogger(__name__)
 
 
 def _actor(decision: Any) -> str:
@@ -172,9 +177,14 @@ def register_appsync_routes(
     app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin: Any
 ) -> None:
     store = _store(rt)
+    context_builder = ConversationContextBuilder()
 
     async def _complete_chat_turn(
-        conversation_id: str, request: Request, payload: dict[str, Any], actor: str
+        conversation_id: str,
+        request: Request,
+        payload: dict[str, Any],
+        actor: str,
+        role: str,
     ) -> dict[str, Any]:
         content = str(payload.get("content") or payload.get("message") or "").strip()
         if not content:
@@ -221,15 +231,21 @@ def register_appsync_routes(
         )
         metadata = {
             "actor": actor,
+            "role": role,
+            "organization_id": user_message["organization_id"],
             "conversation_id": conversation_id,
             "source_device_id": source_device_id,
         }
         if model_profile:
             metadata["profile"] = model_profile
         try:
+            history = store.list_messages(conversation_id, actor=actor)
+            conversation_context = context_builder.build(
+                history, current_message_id=user_message["message_id"]
+            )
             response = await model_complete(
                 ModelRequest(
-                    system=_chat_system_prompt(),
+                    system=f"{_chat_system_prompt()}\n\n{conversation_context}",
                     user=content,
                     task="chat",
                     task_id=f"chat-{conversation_id}-{user_message['message_id']}",
@@ -238,7 +254,19 @@ def register_appsync_routes(
             )
         except Exception as exc:
             metrics.inc("omnidesk_app_chat_model_errors_total") if metrics else None
-            raise HTTPException(502, f"model router failed: {exc}") from exc
+            trace_id = str(
+                getattr(request.state, "request_id", "")
+                or request.headers.get("x-request-id")
+                or "unavailable"
+            )
+            logger.exception(
+                "model router failed",
+                extra={"trace_id": trace_id, "conversation_id": conversation_id},
+            )
+            raise HTTPException(
+                502,
+                {"code": "model_provider_unavailable", "trace_id": trace_id},
+            ) from exc
         try:
             assistant_message = store.add_assistant_message(
                 actor=actor,
@@ -403,7 +431,11 @@ def register_appsync_routes(
         decision = await admin(request, "operator")
         payload = await request.json()
         return await _complete_chat_turn(
-            conversation_id, request, payload, _actor(decision)
+            conversation_id,
+            request,
+            payload,
+            _actor(decision),
+            str(getattr(decision, "role", "operator")),
         )
 
     @app.post("/api/chat")
@@ -438,7 +470,13 @@ def register_appsync_routes(
                 raise HTTPException(403, str(exc)) from exc
             conversation_id = conversation["conversation_id"]
         payload = {**payload, "conversation_id": conversation_id}
-        return await _complete_chat_turn(conversation_id, request, payload, actor)
+        return await _complete_chat_turn(
+            conversation_id,
+            request,
+            payload,
+            actor,
+            str(getattr(decision, "role", "operator")),
+        )
 
     @app.post("/api/chat/stream")
     async def api_chat_stream(request: Request):

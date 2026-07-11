@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::fs;
 
 const SERVICE: &str = "ai.omnidesk.desktop";
 
@@ -19,10 +19,6 @@ fn secure_get(key: String) -> Result<String, String> {
         Err(keyring::Error::NoEntry) => Ok(String::new()),
         Err(error) => Err(error.to_string()),
     }
-}
-
-fn allowed_command(command: &str) -> bool {
-    matches!(command, "echo" | "pwd" | "ls" | "cat")
 }
 
 fn home_directory() -> Result<PathBuf, String> {
@@ -53,24 +49,55 @@ fn safe_workspace(workspace: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn safe_workspace_path(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let root = safe_workspace(workspace)?;
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative.components().any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err("path must be relative and cannot contain ..".to_string());
+    }
+    let candidate = root.join(relative);
+    let resolved = candidate.canonicalize().map_err(|error| error.to_string())?;
+    if !resolved.starts_with(&root) {
+        return Err("path escapes the approved workspace".to_string());
+    }
+    Ok(resolved)
+}
+
 #[tauri::command]
-fn run_workspace_command(workspace: String, command: String, args: Vec<String>) -> Result<String, String> {
-    if !allowed_command(&command) {
-        return Err("command is not in the signed allowlist".to_string());
+fn read_workspace_file(workspace: String, relative_path: String) -> Result<String, String> {
+    const MAX_BYTES: u64 = 1024 * 1024;
+    let path = safe_workspace_path(&workspace, &relative_path)?;
+    let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_BYTES {
+        return Err("workspace file must be regular and no larger than 1 MiB".to_string());
     }
-    let cwd = safe_workspace(&workspace)?;
-    let output = Command::new(command).args(args).current_dir(cwd).output().map_err(|error| error.to_string())?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    if !output.status.success() {
-        return Err(format!("command failed: {stderr}"));
+    fs::read_to_string(path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_workspace_directory(workspace: String, relative_path: String) -> Result<Vec<String>, String> {
+    const MAX_ENTRIES: usize = 1000;
+    let path = safe_workspace_path(&workspace, &relative_path)?;
+    if !path.is_dir() {
+        return Err("workspace path is not a directory".to_string());
     }
-    Ok(stdout)
+    let mut entries = fs::read_dir(path)
+        .map_err(|error| error.to_string())?
+        .take(MAX_ENTRIES + 1)
+        .map(|entry| entry.map_err(|error| error.to_string()).map(|value| value.file_name().to_string_lossy().to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if entries.len() > MAX_ENTRIES {
+        return Err("workspace directory exceeds the 1000 entry output limit".to_string());
+    }
+    entries.sort();
+    Ok(entries)
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![secure_get, secure_set, run_workspace_command])
+        .invoke_handler(tauri::generate_handler![secure_get, secure_set, read_workspace_file, list_workspace_directory])
         .run(tauri::generate_context!())
         .expect("error while running Omni Desktop App");
 }
