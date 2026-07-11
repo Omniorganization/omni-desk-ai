@@ -5,7 +5,6 @@ export interface RuntimeTask { task_id: string; title: string; approval_id?: str
 export interface ExecutionResult { status: 'completed' | 'failed'; summary: string; artifacts?: string[]; }
 export interface RuntimeExecutor { capability: RuntimeCapability; canExecute(task: RuntimeTask): boolean; execute(task: RuntimeTask): Promise<ExecutionResult>; }
 function requireApprovalScope(task: RuntimeTask): void { if (!task.approval_id) throw new Error('approved approval_id is required'); if (!task.scope) throw new Error('approval scope is required'); }
-function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map(String) : []; }
 
 export class DryRunExecutor implements RuntimeExecutor { capability: RuntimeCapability = 'dry_run'; canExecute(task: RuntimeTask): boolean { return !task.capability || task.capability === this.capability; } async execute(task: RuntimeTask): Promise<ExecutionResult> { return { status: 'completed', summary: `Desktop dry-run executor accepted ${task.task_id}: ${task.title}` }; } }
 export class ShellSandboxExecutor implements RuntimeExecutor {
@@ -16,11 +15,18 @@ export class ShellSandboxExecutor implements RuntimeExecutor {
     if (task.filesystem_policy !== 'workspace_only') throw new Error('shell_sandbox requires workspace_only filesystem policy');
     if (task.network_policy !== 'none') throw new Error('shell_sandbox requires network_policy none');
     const scope = task.scope || {};
-    const command = String(scope.command || '');
-    const args = stringList(scope.args);
     const workspace = String(scope.workspace || '');
-    const stdout = await invoke<string>('run_workspace_command', { workspace, command, args });
-    return { status: 'completed', summary: `shell_sandbox completed ${command}: ${stdout.slice(0, 4000)}` };
+    const operation = String(scope.operation || '');
+    const relativePath = String(scope.relative_path || '.');
+    if (operation === 'read_file') {
+      const output = await invoke<string>('read_workspace_file', { workspace, relativePath });
+      return { status: 'completed', summary: `workspace read completed: ${output.slice(0, 4000)}` };
+    }
+    if (operation === 'list_directory') {
+      const entries = await invoke<string[]>('list_workspace_directory', { workspace, relativePath });
+      return { status: 'completed', summary: `workspace list completed: ${entries.join('\n').slice(0, 4000)}` };
+    }
+    throw new Error('shell_sandbox only supports read_file or list_directory');
   }
 }
 export class BrowserAutomationExecutor implements RuntimeExecutor { capability: RuntimeCapability = 'browser_automation'; canExecute(task: RuntimeTask): boolean { return task.capability === this.capability; } async execute(task: RuntimeTask): Promise<ExecutionResult> { requireApprovalScope(task); return { status: 'failed', summary: 'browser_automation requires signed browser policy and remains gated in production-ga' }; } }

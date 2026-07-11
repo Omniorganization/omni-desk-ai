@@ -159,10 +159,16 @@ function App() {
       await keychainSet('omni.actor', actor);
       const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
       setDeviceIdentity(identity);
-      await client.registerDesktop(identity.deviceId, navigator.platform, CAPABILITIES, identity.publicKeyPem);
-      await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
-      setSnapshot(await client.bootstrap());
-      await refreshProjects();
+      const signedClient = new OmniApiClient({
+        baseUrl: gatewayUrl.replace(/\/$/, ''),
+        token,
+        actor,
+        deviceSigner: createDesktopDeviceRequestSigner(identity.deviceId),
+      });
+      await signedClient.registerDesktop(identity.deviceId, navigator.platform, CAPABILITIES, identity.publicKeyPem);
+      await signedClient.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
+      setSnapshot(await signedClient.bootstrap());
+      await refreshProjects(signedClient);
     } catch (e: any) {
       setError(e.message || String(e));
     }
