@@ -214,3 +214,51 @@ def test_digest_or_platform_signature_mismatch_blocks_customer_ga(tmp_path, monk
     assert artifacts["manifest"]["all_artifact_digest_bindings_valid"] is False
     assert android["digests_match"] is False
     assert android["missing_signature_fields"] == ["android_signer_certificate_sha256"]
+
+
+def test_main_verification_binds_every_artifact_when_platform_has_multiple_files(tmp_path, monkeypatch) -> None:
+    _set_github_env(monkeypatch)
+    evidence_root = tmp_path / "release" / "external-evidence"
+    audit_report = tmp_path / "prebinding-audit.json"
+    _write_required_files(evidence_root)
+    _write_audit(audit_report, "passed", 0)
+    digests = ["sha256:" + "e" * 64, "sha256:" + "f" * 64]
+
+    native_path = evidence_root / "native-build/flutter-android-release.json"
+    native = json.loads(native_path.read_text(encoding="utf-8"))
+    native.pop("release_payload_artifact_sha256")
+    native["artifacts"] = [
+        {"path": f"app-{index}.aab", "sha256": digest, "release_payload_artifact_sha256": digest}
+        for index, digest in enumerate(digests, start=1)
+    ]
+    native_path.write_text(json.dumps(native) + "\n", encoding="utf-8")
+
+    signed_path = evidence_root / "signed-artifacts/android-signed-aab.json"
+    signed = json.loads(signed_path.read_text(encoding="utf-8"))
+    signed.pop("signed_artifact_sha256")
+    signed.pop("native_signed_binding_sha256")
+    signed.pop("artifact_attestation")
+    signed["artifacts"] = [
+        {
+            "path": f"app-{index}.aab",
+            "sha256": digest,
+            "signed_artifact_sha256": digest,
+            "native_signed_binding_sha256": digest,
+            "artifact_attestation": {"attestation_id": f"att-{index}", "subject_sha256": digest},
+        }
+        for index, digest in enumerate(digests, start=1)
+    ]
+    signed_path.write_text(json.dumps(signed) + "\n", encoding="utf-8")
+
+    artifacts = write_evidence(
+        output_dir=tmp_path / "dist/evidence",
+        external_evidence_root=evidence_root,
+        real_ga_summary="release/real-ga-evidence-summary.json",
+        real_ga_audit_report=audit_report,
+    )
+
+    android = next(row for row in artifacts["binding"]["artifact_digest_bindings"] if row["platform"] == "android")
+    assert artifacts["manifest"]["status"] == "passed"
+    assert android["valid"] is True
+    assert len(android["artifacts"]) == 2
+    assert {item["native_signed_binding_sha256"] for item in android["artifacts"]} == set(digests)

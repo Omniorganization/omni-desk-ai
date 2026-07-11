@@ -19,7 +19,9 @@ Preferred control-plane run:
 Run `.github/workflows/real-ga-readiness.yml` manually.
 
 - Use `readiness_channel=candidate` to collect an audit report without blocking on missing evidence.
-- Use `readiness_channel=real-ga` only when all evidence exists under `release/external-evidence/` and the live control-plane token is available to the workflow environment.
+- Use `readiness_channel=real-ga` only when all pre-release evidence exists under `release/external-evidence/` and the live control-plane token is available. This mode enforces the complete external-evidence gate, but it only audits the final Customer GA boundary because the current Release run does not exist yet.
+- Configure `OMNIDESK_GITHUB_GOVERNANCE_TOKEN` from a GitHub App installation token or fine-grained token that can read repository Administration metadata and organization Members. Do not copy a developer's broad personal CLI token into Actions.
+- Every required production team must be closed/visible, have its declared repository permission, contain at least two members, and include at least one reviewer other than the checked commit author.
 - When evidence is produced outside the repository runner, first upload a raw `release/external-evidence` shaped bundle as a GitHub Actions artifact, then run `.github/workflows/remote-evidence-pipeline.yml`. That workflow validates the complete bundle with `scripts/import_external_ga_evidence.py`, uploads a clean `external-ga-evidence` artifact, and does not create or soften evidence.
 - To consume the clean bundle, pass the Remote Evidence Pipeline run id to `real-ga-readiness.yml` or `release.yml` through `external_evidence_run_id` and keep `external_evidence_artifact_name=external-ga-evidence`.
 
@@ -35,6 +37,7 @@ release/external-evidence/signed-artifacts/ios-signed-ipa.json
 release/external-evidence/signed-artifacts/desktop-macos-notarized.json
 release/external-evidence/signed-artifacts/desktop-windows-signed.json
 release/external-evidence/control-plane/github-branch-protection-live.json
+release/external-evidence/control-plane/github-team-governance-live.json
 release/external-evidence/model/model-live-smoke.json
 release/external-evidence/push/apns-live-delivery.json
 release/external-evidence/push/fcm-live-delivery.json
@@ -56,6 +59,23 @@ python scripts/check_live_branch_protection_contract.py \
 ```
 
 The report must show `status: passed` and no failures. It verifies live GitHub branch protection against `.github/branch-protection.required.json`.
+
+Generate the organization/team report with the same checked commit and the branch report:
+
+```bash
+python scripts/check_github_team_governance_live.py \
+  . \
+  --repository "$GITHUB_REPOSITORY" \
+  --commit "$GITHUB_SHA" \
+  --branch-protection-report release/external-evidence/control-plane/github-branch-protection-live.json \
+  --write-report release/external-evidence/control-plane/github-team-governance-live.json
+```
+
+The report fails closed when team/member APIs cannot be read, a team is a one-person shell, the commit author is the only reviewer, CODEOWNERS contains a personal owner, or an applied Ruleset has a bypass actor.
+
+## P1b: Current Release artifact binding
+
+Main Verification must enumerate each Android, iOS, macOS, and Windows artifact separately. During `Release Build`, `scripts/check_current_release_artifact_binding.py` rehashes the actual files downloaded from this release run and requires exact digest-set equality with external signer evidence, each attestation subject, and the selected Main Verification run. The workflow runs this before `check_customer_distribution_ga.py` and before `scripts/sign_release.py`; candidate runs record blockers, while `real-ga` fails closed.
 
 ## P2: Model and tri-app smoke evidence
 
@@ -88,10 +108,14 @@ Do not commit placeholder, mock, fake, sample, or example values into `release/e
 
 ## Release decision rule
 
-A release can be called customer-distribution Real GA only when:
+A release can be called customer-distribution Real GA only when the `Release Build` workflow's final boundary passes without `--audit-only`:
 
 ```bash
-python scripts/check_external_ga_evidence.py . --write-report release/real-ga-evidence-audit-1.12.7.json
+python scripts/check_customer_distribution_ga.py . \
+  --repository "$GITHUB_REPOSITORY" \
+  --commit "$GITHUB_SHA" \
+  --current-release-binding-report dist/current-release-artifact-binding.json \
+  --write-report release/real-ga-evidence-audit-1.12.7.json
 ```
 
-returns `status: passed` without `--audit-only`.
+This is intentionally a Release-workflow boundary: a pre-release readiness workflow cannot claim Customer GA without the current Release run's native files.

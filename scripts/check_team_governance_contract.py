@@ -26,6 +26,8 @@ REQUIRED_PATHS = {
     "omnidesk_agent/self_upgrade/",
 }
 
+PERMISSION_RANK = {"pull": 1, "triage": 2, "push": 3, "maintain": 4, "admin": 5}
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -70,6 +72,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _check(bool(contract.get("migration_blocker")), "migration blocker must be explicit while repository is not organization-owned", failures)
     _check(contract.get("required_organization") == "Omniorganization", "required_organization must be Omniorganization", failures)
+    _check(
+        int(contract.get("minimum_members_per_team") or 0) >= 2,
+        "team governance must require at least two members per production team",
+        failures,
+    )
+    _check(
+        int(contract.get("minimum_independent_reviewers_per_team") or 0) >= 1,
+        "team governance must require an independent reviewer on every production team",
+        failures,
+    )
 
     teams = contract.get("required_teams") or []
     team_slugs = {str(item.get("slug") or "") for item in teams if isinstance(item, dict)}
@@ -80,6 +92,12 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(item, dict):
             failures.append("required_teams entries must be objects")
             continue
+        permission = str(item.get("minimum_repository_permission") or "").strip().lower()
+        _check(
+            PERMISSION_RANK.get(permission, 0) >= PERMISSION_RANK["push"],
+            f"team {item.get('slug') or '<unknown>'} must require explicit write-or-higher repository access",
+            failures,
+        )
         for path in item.get("required_paths") or []:
             declared_paths.add(str(path))
     _check(REQUIRED_PATHS.issubset(declared_paths), f"team governance paths missing: {sorted(REQUIRED_PATHS - declared_paths)}", failures)

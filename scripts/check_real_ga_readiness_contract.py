@@ -18,6 +18,8 @@ REQUIRED_FILES = (
     "scripts/check_external_ga_evidence.py",
     "scripts/check_real_ga_complete.py",
     "scripts/check_customer_distribution_ga.py",
+    "scripts/check_current_release_artifact_binding.py",
+    "scripts/check_github_team_governance_live.py",
     "scripts/check_team_governance_contract.py",
     "scripts/import_external_ga_evidence.py",
     "scripts/assemble_external_ga_evidence_bundle.py",
@@ -32,7 +34,10 @@ WORKFLOW_SNIPPETS = (
     "check_live_branch_protection_contract.py",
     "check_main_verification_artifact_live.py",
     "check_customer_distribution_ga.py",
+    "check_real_ga_complete.py",
     "check_model_live_smoke_evidence.py",
+    "check_github_team_governance_live.py",
+    "github-team-governance-live.json",
     "readiness_channel",
     "external_evidence_run_id",
     "external_evidence_artifact_name",
@@ -82,6 +87,7 @@ MANIFEST_REQUIRED_KEYS = (
     "live_branch_protection_control_plane",
     "team_governance_control_plane",
     "native_signed_artifact_bindings",
+    "current_release_artifact_binding",
     "model_live_smoke",
     "bigseller_live_smoke",
     "native_build",
@@ -102,6 +108,7 @@ COMPLETE_GA_CHECK_SNIPPETS = (
     "release_payload_artifact_sha256",
     "external_evidence_signed_artifact_sha256",
     "native_signed_binding_sha256",
+    '"artifacts"',
     "check_external_ga_evidence",
 )
 
@@ -109,6 +116,8 @@ CUSTOMER_GA_CHECK_SNIPPETS = (
     "audit_complete_real_ga",
     "audit_live_main_verification",
     "main_verification_live_artifact",
+    "current_release_artifact_binding",
+    "omnidesk-current-release-artifact-binding/v1",
     "omnidesk-customer-distribution-ga/v1",
     "blocked_missing_external_evidence",
 )
@@ -140,6 +149,8 @@ def audit(root: Path) -> dict[str, object]:
         _check("workflow_call" in workflow, failures, "real-ga-readiness workflow must support control-plane workflow_call reuse")
         _check("contents: read" in workflow and "actions: read" in workflow, failures, "real-ga-readiness workflow must use least-privilege read permissions")
         _check("--write-live-report" in workflow, failures, "real-ga-readiness workflow must persist the exact-commit Main Verification live report")
+        _check("github-team-governance-live.json" in workflow, failures, "real-ga-readiness workflow must persist live team governance evidence")
+        _check("pre-release-external-ga-evidence-audit.json" in workflow, failures, "real-ga-readiness must enforce complete pre-release external evidence separately from the Release-only final gate")
     except FileNotFoundError:
         pass
 
@@ -221,6 +232,15 @@ def audit(root: Path) -> dict[str, object]:
         _check("check_customer_distribution_ga.py" in release_workflow, failures, "release workflow must enforce the final Customer GA boundary")
         _check("external-ga-evidence-bound" in release_workflow, failures, "release workflow must consume the Main Verification-bound external evidence bundle")
         _check("actions/download-artifact@" in release_workflow, failures, "release workflow must download native application artifacts before final signing")
+        current_binding_index = release_workflow.find("check_current_release_artifact_binding.py")
+        customer_ga_index = release_workflow.find("check_customer_distribution_ga.py")
+        final_signing_index = release_workflow.find("python scripts/sign_release.py dist")
+        _check(current_binding_index >= 0, failures, "release workflow must rehash and bind current native artifacts")
+        _check(
+            0 <= current_binding_index < customer_ga_index < final_signing_index,
+            failures,
+            "current Release artifact binding must run before Customer GA and final release-payload signing",
+        )
     except FileNotFoundError:
         pass
 
@@ -229,11 +249,13 @@ def audit(root: Path) -> dict[str, object]:
         _check("check_real_ga_readiness_contract.py" in main_verification, failures, "main verification must enforce real GA readiness source contract")
         _check("native-signed-artifact-binding.json" in main_verification, failures, "main verification must emit native signed artifact binding evidence")
         _check("external-ga-evidence-bound" in main_verification, failures, "main verification must publish a complete bound external evidence bundle")
+        _check("check_github_team_governance_live.py" in main_verification, failures, "main verification must refresh live team governance evidence")
+        _check('"artifacts": artifact_bindings' in _read(root, "scripts/write_main_verification_evidence.py"), failures, "main verification must emit per-artifact digest bindings")
     except FileNotFoundError:
         pass
 
     return {
-        "schema": "omnidesk-real-ga-readiness-contract/v5",
+        "schema": "omnidesk-real-ga-readiness-contract/v6",
         "status": "passed" if not failures else "failed",
         "failures": failures,
         "boundary": "This source contract verifies that complete real-GA collection, binding, live-artifact, and final Customer GA validation gates exist. It does not fabricate or replace external evidence.",

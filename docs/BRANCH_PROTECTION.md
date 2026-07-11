@@ -30,12 +30,18 @@ Source-controlled policy is not enough for production promotion. Verify the live
 GitHub control plane before promoting a candidate:
 
 ```bash
-GITHUB_TOKEN=<admin-token> python scripts/check_github_branch_protection_live.py . \
-  --repo yinyufan0813-cmyk/omni-desk-ai \
-  --write-report release/github-branch-protection-live.json
+TEAM_GOVERNANCE_TOKEN=<app-installation-or-fine-grained-token> \
+  python scripts/check_live_branch_protection_contract.py . \
+  --repository Omniorganization/omni-desk-ai \
+  --token-env TEAM_GOVERNANCE_TOKEN \
+  --write-report release/external-evidence/control-plane/github-branch-protection-live.json
 ```
 
-The command fails closed when the default branch is not protected, when required
-status checks are missing, when CODEOWNERS review is not required, or when force
-pushes/deletions/conversation-resolution controls do not match
-`.github/branch-protection.required.json`.
+The v3 command combines legacy branch protection, applied branch rules, and the
+full active Ruleset definitions. It fails closed when any API surface needed for
+effective-policy evaluation is unreadable, or when required contexts, strict
+status policy, approvals, stale and last-push review policy, CODEOWNERS review,
+signed commits, linear history, admin enforcement, force pushes, deletion,
+direct pushes, deployments, lock state, or bypass actors do not match
+`.github/branch-protection.required.json`. `scripts/check_github_branch_protection_live.py`
+remains a compatibility entrypoint for the same canonical checker.
