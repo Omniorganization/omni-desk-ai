@@ -65,11 +65,14 @@ REQUIRED_BOOLEAN_TRUE = (
     "require_signed_commits",
     "require_enforce_admins",
     "require_linear_history",
+    "require_last_push_approval",
 )
 
 REQUIRED_BOOLEAN_FALSE = (
     "allow_direct_pushes",
+    "allow_force_pushes",
     "allow_deletions",
+    "require_lock_branch",
 )
 
 
@@ -99,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     for key in REQUIRED_BOOLEAN_FALSE:
         _check(contract.get(key) is False, f"{key} must be false", failures)
     _check(int(contract.get("required_approving_review_count", 0)) >= 1, "at least one approving review is required", failures)
+    _check(contract.get("required_deployments") == [], "required_deployments must be an explicit list", failures)
+    _check(contract.get("allowed_bypass_actors") == [], "ruleset bypass actors must be explicitly empty", failures)
 
     status_checks = set(contract.get("required_status_checks") or [])
     _check(REQUIRED_STATUS_CHECKS.issubset(status_checks), f"required status checks missing: {sorted(REQUIRED_STATUS_CHECKS - status_checks)}", failures)
@@ -124,11 +129,15 @@ def main(argv: list[str] | None = None) -> int:
     _check(team_policy.get("live_evidence") == "release/external-evidence/control-plane/github-team-governance-live.json", "team governance live evidence path must be bound", failures)
     _check(team_policy.get("require_organization_owner") is True, "team governance must require organization owner", failures)
     _check(team_policy.get("require_resolved_github_teams") is True, "team governance must require resolved GitHub teams", failures)
+    _check(team_policy.get("require_two_person_teams") is True, "team governance must require two-person production teams", failures)
+    _check(team_policy.get("require_independent_reviewer") is True, "team governance must require an independent reviewer", failures)
+    _check(team_policy.get("forbid_ruleset_bypass_actors") is True, "team governance must forbid Ruleset bypass actors", failures)
     _check(team_policy.get("forbid_personal_owner_fallback_for_real_ga") is True, "team governance must forbid personal owner fallback for Real GA", failures)
 
     distribution_policy = contract.get("distribution_ga_policy") or {}
     _check(distribution_policy.get("require_main_verification_artifact") is True, "distribution GA must require main verification artifact", failures)
     _check(distribution_policy.get("require_main_verification_live_artifact") is True, "distribution GA must require live main verification artifact", failures)
+    _check(distribution_policy.get("require_current_release_artifact_binding") is True, "distribution GA must require current Release artifact binding", failures)
     _check(distribution_policy.get("require_team_codeowners") is True, "distribution GA must require team CODEOWNERS", failures)
     _check(distribution_policy.get("require_external_ga_evidence_passed") is True, "distribution GA must require external evidence to pass", failures)
     _check(distribution_policy.get("forbid_mock_or_sample_evidence") is True, "distribution GA must forbid mock/sample evidence", failures)

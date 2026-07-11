@@ -21,6 +21,9 @@ REQUIRED_WORKFLOW_SNIPPETS = (
     "--real-ga-audit-report",
     "--require-external-evidence",
     "check_real_ga_complete.py .",
+    "check_live_branch_protection_contract.py .",
+    "check_github_team_governance_live.py .",
+    "github-team-governance-live.json",
     "main-verification-evidence-${{ github.sha }}",
     "main-verification-evidence.json",
     "main-verification-artifact.json",
@@ -37,6 +40,7 @@ REQUIRED_WRITER_SNIPPETS = (
     '"release_payload_artifact_sha256"',
     '"external_evidence_signed_artifact_sha256"',
     '"native_signed_binding_sha256"',
+    '"artifacts": artifact_bindings',
     '"source_verification_status": "passed"',
     '"customer_distribution_ga_status": customer_ga_status',
     '"real_ga_prebinding_audit_status": audit_status',
@@ -128,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
     _assert("if [[ -n \"${EXTERNAL_EVIDENCE_RUN_ID:-}\" ]]" in workflow, "supplied external evidence must enable fail-closed enforcement", failures)
     _assert("--audit-only" in workflow and "external-ga-prebinding-audit.json" in workflow, "workflow must produce a complete pre-binding semantic audit", failures)
     _assert("--evidence-dir release/external-evidence" in workflow, "enforced runs must execute the final complete Real GA audit", failures)
+    _assert(
+        workflow.find("check_github_team_governance_live.py") < workflow.find("check_real_ga_prebinding.py"),
+        "live team governance evidence must be refreshed before the pre-binding Real GA audit",
+        failures,
+    )
 
     main_contract = evidence_manifest.get("main_verification_evidence")
     _assert(isinstance(main_contract, dict), "production-evidence manifest must declare main_verification_evidence", failures)

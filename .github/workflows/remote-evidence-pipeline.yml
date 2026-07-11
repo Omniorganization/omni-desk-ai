@@ -60,6 +60,28 @@ jobs:
             --expected-version "${{ inputs.expected_version }}" \
             --copy \
             --write-report release/external-ga-evidence-import-report.json
+      - name: Refresh live GitHub branch and team governance evidence
+        env:
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          audit_args=()
+          if [[ "${{ inputs.readiness_channel }}" == "candidate" ]]; then
+            audit_args+=(--audit-only)
+          fi
+          mkdir -p release/external-evidence/control-plane
+          python scripts/check_live_branch_protection_contract.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --token-env TEAM_GOVERNANCE_TOKEN \
+            --write-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            "${audit_args[@]}"
+          python scripts/check_github_team_governance_live.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch-protection-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            --write-report release/external-evidence/control-plane/github-team-governance-live.json \
+            "${audit_args[@]}"
       - name: Validate imported complete Real GA evidence gate
         run: |
           set -euo pipefail

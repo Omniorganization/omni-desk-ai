@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
@@ -163,6 +164,46 @@ def _artifact_digest(doc: dict[str, Any], *, field: str, platform: str) -> str:
     return candidates[0] if len(set(candidates)) == 1 else ""
 
 
+def _artifact_entries(doc: dict[str, Any], *, field: str, platform: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    doc_platform = str(doc.get("platform") or "").strip().lower()
+    by_platform = doc.get(f"{field}_by_platform")
+    has_platform_digest = isinstance(by_platform, dict) and platform in by_platform
+    artifacts = doc.get("artifacts")
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            if not isinstance(item, dict):
+                continue
+            item_platform = str(item.get("platform") or "").strip().lower()
+            aliases = {platform, f"mobile-{platform}", f"desktop-{platform}", f"flutter-{platform}", f"tauri-{platform}"}
+            if item_platform and item_platform not in aliases:
+                continue
+            if not item_platform and doc_platform and doc_platform not in aliases:
+                continue
+            if not item_platform and not doc_platform and has_platform_digest:
+                continue
+            digest = _normalize_sha256(item.get(field) or item.get("sha256"))
+            if digest:
+                entries.append({"path": str(item.get("path") or "").strip() or None, "sha256": digest, "raw": item})
+    if entries:
+        return entries
+    digest = _artifact_digest(doc, field=field, platform=platform)
+    return [{"path": str(doc.get("signed_artifact") or "").strip() or None, "sha256": digest, "raw": {}}] if digest else []
+
+
+def _artifact_attestation(doc: dict[str, Any], item: dict[str, Any], digest: str) -> dict[str, Any] | None:
+    candidate = item.get("artifact_attestation")
+    if isinstance(candidate, dict):
+        return candidate
+    candidates = doc.get("artifact_attestations")
+    if isinstance(candidates, list):
+        for value in candidates:
+            if isinstance(value, dict) and _normalize_sha256(value.get("subject_sha256")) == digest:
+                return value
+    candidate = doc.get("artifact_attestation")
+    return candidate if isinstance(candidate, dict) else None
+
+
 def _artifact_digest_bindings(root: Path, *, commit: str, main_verification_run_id: str) -> list[dict[str, Any]]:
     bindings: list[dict[str, Any]] = []
     for spec in PLATFORM_ARTIFACT_BINDINGS:
@@ -171,27 +212,10 @@ def _artifact_digest_bindings(root: Path, *, commit: str, main_verification_run_
         signed_path = str(spec["signed"])
         native = _load_json(root / native_path)
         signed = _load_json(root / signed_path)
-        release_digest = _artifact_digest(
-            native,
-            field="release_payload_artifact_sha256",
-            platform=platform,
-        )
-        signed_digest = _artifact_digest(
-            signed,
-            field="signed_artifact_sha256",
-            platform=platform,
-        )
-        binding_digest = _normalize_sha256(signed.get("native_signed_binding_sha256"))
         native_commit = str(native.get("source_commit") or "").strip()
         signed_commit = str(signed.get("source_commit") or "").strip()
         build_run_id = str(native.get("build_run_id") or "").strip()
         signing_run_id = str(signed.get("signing_run_id") or "").strip()
-        attestation = signed.get("artifact_attestation")
-        attestation_digest = ""
-        attestation_id = ""
-        if isinstance(attestation, dict):
-            attestation_digest = _normalize_sha256(attestation.get("subject_sha256"))
-            attestation_id = str(attestation.get("attestation_id") or "").strip()
         signature_metadata = {
             field: signed.get(field)
             for field in spec["required_signature_fields"]
@@ -206,37 +230,86 @@ def _artifact_digest_bindings(root: Path, *, commit: str, main_verification_run_
             for field in spec["required_true_fields"]
             if signed.get(field) is not True
         ]
-        digests_match = bool(release_digest) and release_digest == signed_digest == binding_digest
+        native_entries = _artifact_entries(native, field="release_payload_artifact_sha256", platform=platform)
+        signed_entries = _artifact_entries(signed, field="signed_artifact_sha256", platform=platform)
+        native_by_digest: dict[str, list[dict[str, Any]]] = {}
+        signed_by_digest: dict[str, list[dict[str, Any]]] = {}
+        for item in native_entries:
+            native_by_digest.setdefault(str(item["sha256"]), []).append(item)
+        for item in signed_entries:
+            signed_by_digest.setdefault(str(item["sha256"]), []).append(item)
+        native_digest_counts = Counter(str(item["sha256"]) for item in native_entries)
+        signed_digest_counts = Counter(str(item["sha256"]) for item in signed_entries)
+        digest_sets_match = bool(native_digest_counts) and native_digest_counts == signed_digest_counts
+        artifact_bindings: list[dict[str, Any]] = []
+        for digest in sorted(set(native_digest_counts) | set(signed_digest_counts)):
+            for index in range(max(native_digest_counts[digest], signed_digest_counts[digest])):
+                native_item = native_by_digest.get(digest, [])[index] if index < native_digest_counts[digest] else {}
+                signed_item = signed_by_digest.get(digest, [])[index] if index < signed_digest_counts[digest] else {}
+                signed_raw = signed_item.get("raw") if isinstance(signed_item.get("raw"), dict) else {}
+                binding_digest = _normalize_sha256(signed_raw.get("native_signed_binding_sha256")) or _normalize_sha256(
+                    signed.get("native_signed_binding_sha256")
+                )
+                attestation = _artifact_attestation(signed, signed_raw, digest)
+                attestation_digest = _normalize_sha256(attestation.get("subject_sha256")) if isinstance(attestation, dict) else ""
+                attestation_id = str(attestation.get("attestation_id") or "").strip() if isinstance(attestation, dict) else ""
+                artifact_valid = all(
+                    (
+                        bool(native_item),
+                        bool(signed_item),
+                        digest == binding_digest,
+                        bool(attestation_id),
+                        attestation_digest == digest,
+                    )
+                )
+                artifact_bindings.append(
+                    {
+                        "path": signed_item.get("path") or native_item.get("path"),
+                        "native_build_artifact_path": native_item.get("path"),
+                        "signed_artifact_path": signed_item.get("path"),
+                        "release_payload_artifact_sha256": digest if native_item else None,
+                        "external_evidence_signed_artifact_sha256": digest if signed_item else None,
+                        "native_signed_binding_sha256": binding_digest or None,
+                        "artifact_attestation": attestation,
+                        "source_commit": commit,
+                        "build_run_id": build_run_id or None,
+                        "signing_run_id": signing_run_id or None,
+                        "main_verification_run_id": main_verification_run_id,
+                        "valid": artifact_valid,
+                    }
+                )
         valid = all(
             (
                 bool(native),
                 bool(signed),
-                digests_match,
+                digest_sets_match,
+                bool(artifact_bindings),
+                all(item["valid"] for item in artifact_bindings),
                 native_commit == commit,
                 signed_commit == commit,
                 bool(build_run_id),
                 bool(signing_run_id),
-                bool(attestation_id),
-                attestation_digest == binding_digest,
                 not missing_signature_fields,
                 not false_verifications,
             )
         )
+        single = artifact_bindings[0] if len(artifact_bindings) == 1 else {}
         bindings.append(
             {
                 "platform": platform,
                 "native_build_evidence_path": native_path,
                 "signed_artifact_evidence_path": signed_path,
-                "release_payload_artifact_sha256": release_digest or None,
-                "external_evidence_signed_artifact_sha256": signed_digest or None,
-                "native_signed_binding_sha256": binding_digest or None,
-                "digests_match": digests_match,
+                "release_payload_artifact_sha256": single.get("release_payload_artifact_sha256"),
+                "external_evidence_signed_artifact_sha256": single.get("external_evidence_signed_artifact_sha256"),
+                "native_signed_binding_sha256": single.get("native_signed_binding_sha256"),
+                "digests_match": digest_sets_match and all(item["valid"] for item in artifact_bindings),
                 "source_commit": commit,
                 "native_source_commit": native_commit or None,
                 "signed_source_commit": signed_commit or None,
                 "build_run_id": build_run_id or None,
                 "signing_run_id": signing_run_id or None,
-                "artifact_attestation": attestation if isinstance(attestation, dict) else None,
+                "artifact_attestation": single.get("artifact_attestation"),
+                "artifacts": artifact_bindings,
                 "main_verification_run_id": main_verification_run_id,
                 "signature_metadata": signature_metadata,
                 "missing_signature_fields": missing_signature_fields,

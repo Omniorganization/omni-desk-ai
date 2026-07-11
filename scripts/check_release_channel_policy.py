@@ -40,18 +40,26 @@ def _makefile_value(makefile: str, name: str) -> str:
 
 
 def _extract_real_ga_branch(workflow: str) -> str:
+    marker = 'if [[ "$RELEASE_CHANNEL" == "real-ga" ]]; then'
+    start = workflow.rfind(marker)
+    if start < 0:
+        return ""
     match = re.search(
         r'if \[\[ "\$RELEASE_CHANNEL" == "real-ga" \]\]; then(?P<body>.*?)elif \[\[ "\$RELEASE_CHANNEL" == "candidate" \]\]; then',
-        workflow,
+        workflow[start:],
         re.DOTALL,
     )
     return match.group("body") if match else ""
 
 
 def _extract_candidate_branch(workflow: str) -> str:
+    marker = 'elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then'
+    start = workflow.rfind(marker)
+    if start < 0:
+        return ""
     match = re.search(
         r'elif \[\[ "\$RELEASE_CHANNEL" == "candidate" \]\]; then(?P<body>.*?)else\s+echo "release_channel must be candidate or real-ga"',
-        workflow,
+        workflow[start:],
         re.DOTALL,
     )
     return match.group("body") if match else ""

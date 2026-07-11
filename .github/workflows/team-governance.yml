@@ -4,9 +4,19 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      enforcement:
+        description: "candidate records live blockers; real-ga fails closed"
+        type: choice
+        required: true
+        default: candidate
+        options:
+          - candidate
+          - real-ga
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   team-governance:
@@ -17,3 +27,37 @@ jobs:
         with:
           python-version: "3.11"
       - run: python scripts/check_team_governance_contract.py .
+      - name: Verify effective branch protection used by team governance
+        env:
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/check_live_branch_protection_contract.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --token-env TEAM_GOVERNANCE_TOKEN \
+            --audit-only \
+            --write-report dist/github-branch-protection-live.json
+      - name: Verify live organization teams, membership separation, and CODEOWNERS resolution
+        env:
+          ENFORCEMENT: ${{ inputs.enforcement || 'candidate' }}
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          audit_args=()
+          if [[ "$ENFORCEMENT" == "candidate" ]]; then
+            audit_args+=(--audit-only)
+          fi
+          python scripts/check_github_team_governance_live.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch-protection-report dist/github-branch-protection-live.json \
+            --write-report dist/github-team-governance-live.json \
+            "${audit_args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: team-governance-live-${{ github.sha }}
+          path: |
+            dist/github-branch-protection-live.json
+            dist/github-team-governance-live.json
+          if-no-files-found: error
