@@ -17,9 +17,12 @@ def test_desktop_capabilities_are_truthful_and_fail_closed() -> None:
     assert "new FileOperationExecutor()" not in executor
     assert "new UiBridgeExecutor()" not in executor
     assert "unsupported runtime capability" in executor
-    assert "contents omitted from status" in executor
+    assert "contents and path omitted from status" in executor
+    assert "names and path omitted from status" in executor
+    assert "workspace read completed: ${relativePath}" not in executor
+    assert "workspace list completed: ${relativePath}" not in executor
     assert "EXECUTABLE_CAPABILITIES" in api
-    assert "gateway_unavailable" in api
+    assert "if (status >= 500) return new Error(`${status} gateway_unavailable`)" in api
     assert "tests/*.test.ts" in package
 
 
@@ -30,6 +33,9 @@ def test_native_workspace_boundary_rejects_escape_and_symlinks() -> None:
     assert "Component::ParentDir" in native
     assert "Component::Prefix(_)" in native
     assert "workspace path cannot traverse symlinks" in native
+    assert "approved workspace root cannot be a symlink" in native
+    assert "workspace root cannot be a symlink" in native
+    assert "symlink_metadata(&declared)" in native
     assert "approved workspace root ~/OmniDesktopWorkspace is unavailable" in native
 
 
