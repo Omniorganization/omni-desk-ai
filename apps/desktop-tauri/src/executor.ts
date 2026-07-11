@@ -41,11 +41,11 @@ export class ShellSandboxExecutor implements RuntimeExecutor {
     if (!workspace) throw new Error('approved workspace is required');
     if (operation === 'read_file') {
       const output = await invoke<string>('read_workspace_file', { workspace, relativePath });
-      return { status: 'completed', summary: `workspace read completed: ${relativePath} (${output.length} characters; contents omitted from status)` };
+      return { status: 'completed', summary: `workspace read completed (${output.length} characters; contents and path omitted from status)` };
     }
     if (operation === 'list_directory') {
       const entries = await invoke<string[]>('list_workspace_directory', { workspace, relativePath });
-      return { status: 'completed', summary: `workspace list completed: ${relativePath} (${entries.length} entries; names omitted from status)` };
+      return { status: 'completed', summary: `workspace list completed (${entries.length} entries; names and path omitted from status)` };
     }
     throw new Error('shell_sandbox only supports read_file or list_directory');
   }
