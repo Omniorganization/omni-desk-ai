@@ -55,12 +55,42 @@ fn validate_relative_path(relative_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn safe_workspace(workspace: &str) -> Result<PathBuf, String> {
-    let path = Path::new(workspace).canonicalize().map_err(|error| error.to_string())?;
-    let approved = home_directory()?
-        .join("OmniDesktopWorkspace")
+fn approved_workspace_root() -> Result<PathBuf, String> {
+    let home = home_directory()?
+        .canonicalize()
+        .map_err(|_| "home directory is unavailable".to_string())?;
+    let declared = home.join("OmniDesktopWorkspace");
+    let metadata = fs::symlink_metadata(&declared)
+        .map_err(|_| "approved workspace root ~/OmniDesktopWorkspace is unavailable".to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("approved workspace root cannot be a symlink".to_string());
+    }
+    if !metadata.is_dir() {
+        return Err("approved workspace root must be a directory".to_string());
+    }
+    let approved = declared
         .canonicalize()
         .map_err(|_| "approved workspace root ~/OmniDesktopWorkspace is unavailable".to_string())?;
+    if !approved.starts_with(&home) {
+        return Err("approved workspace root must remain inside the home directory".to_string());
+    }
+    Ok(approved)
+}
+
+fn safe_workspace(workspace: &str) -> Result<PathBuf, String> {
+    let requested = Path::new(workspace);
+    if !requested.is_absolute() {
+        return Err("workspace path must be absolute".to_string());
+    }
+    let metadata = fs::symlink_metadata(requested).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("workspace root cannot be a symlink".to_string());
+    }
+    if !metadata.is_dir() {
+        return Err("workspace root must be a directory".to_string());
+    }
+    let path = requested.canonicalize().map_err(|error| error.to_string())?;
+    let approved = approved_workspace_root()?;
     if !path.starts_with(&approved) {
         return Err("workspace must be inside ~/OmniDesktopWorkspace".to_string());
     }
