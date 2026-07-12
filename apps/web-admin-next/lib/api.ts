@@ -1,3 +1,6 @@
+import { consumeSse } from './sse';
+import type { ChatStreamEvent } from './sse';
+
 export type AdminRole = 'viewer' | 'operator' | 'owner';
 export type DeviceRequestSigner = (
   method: string,
@@ -26,6 +29,16 @@ export interface SessionOptions {
   deviceId?: string;
   publicKeyPem?: string;
   deviceSigner?: DeviceRequestSigner;
+}
+
+export interface StreamChatOptions {
+  conversationId?: string;
+  content: string;
+  modelProfile?: string;
+  idempotencyKey?: string;
+  lastEventId?: number;
+  signal?: AbortSignal;
+  onEvent: (event: ChatStreamEvent) => void;
 }
 
 export class OmniAdminApi {
@@ -123,7 +136,7 @@ export class OmniAdminApi {
   listMessages(conversationId: string) {
     return this.request<any>(`/api/omni/conversations/${encodeURIComponent(conversationId)}/messages`);
   }
-  askConversation(conversationId: string, content: string, modelProfile = 'fast') {
+  askConversation(conversationId: string, content: string, modelProfile = 'fast', idempotencyKey?: string) {
     const session = this.session;
     return this.request<any>(`/api/omni/conversations/${encodeURIComponent(conversationId)}/ask`, {
       method: 'POST',
@@ -133,8 +146,57 @@ export class OmniAdminApi {
         stream: false,
         ...(session.deviceId ? { source_device_id: session.deviceId } : {})
       })
-    }, `web-admin-ask-${conversationId}-${content.length}-${Date.now()}`);
+    }, idempotencyKey || `web-admin-ask-${conversationId}-${content.length}-${Date.now()}`);
   }
+
+  async streamChat(options: StreamChatOptions): Promise<{ lastEventId: number; completed: boolean }> {
+    const session = this.session;
+    const key = options.idempotencyKey || `web-admin-stream-${crypto.randomUUID()}`;
+    const response = await fetch('/api/omni/chat/stream', {
+      method: 'POST',
+      cache: 'no-store',
+      signal: options.signal,
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        ...(session.csrfToken ? { 'x-csrf-token': session.csrfToken } : {}),
+        'idempotency-key': key,
+        ...(options.lastEventId ? { 'last-event-id': String(options.lastEventId) } : {}),
+      },
+      body: JSON.stringify({
+        conversation_id: options.conversationId,
+        content: options.content,
+        model_profile: options.modelProfile || 'fast',
+        ...(session.deviceId ? { source_device_id: session.deviceId } : {}),
+      }),
+    });
+    if (!response.ok) throw new Error(await this.safeErrorMessage(response));
+    return consumeSse(response, options);
+  }
+
+  async streamChatWithFallback(options: StreamChatOptions): Promise<{ streamed: boolean; result?: any; lastEventId: number }> {
+    let observed = false;
+    try {
+      const stream = await this.streamChat({
+        ...options,
+        onEvent: event => {
+          observed = true;
+          options.onEvent(event);
+        },
+      });
+      return { streamed: true, lastEventId: stream.lastEventId };
+    } catch (error) {
+      if (observed || options.signal?.aborted || !options.conversationId) throw error;
+      const result = await this.askConversation(
+        options.conversationId,
+        options.content,
+        options.modelProfile,
+        options.idempotencyKey,
+      );
+      return { streamed: false, result, lastEventId: options.lastEventId || 0 };
+    }
+  }
+
   registerAdminDevice(identity: WebAdminDeviceRegistration) {
     const session = this.session;
     return this.request<any>('/api/omni/devices/register', {
@@ -146,7 +208,7 @@ export class OmniAdminApi {
         platform: 'nextjs',
         public_key: identity.publicKeyPem,
         organization_id: 'org_default',
-        capabilities: ['governance', 'channels', 'audit', 'approval', `role:${session.role}`]
+        capabilities: ['governance', 'channels', 'audit', 'approval', 'chat-streaming', `role:${session.role}`]
       })
     }, `web-admin-device-registration-${identity.deviceId}`);
   }
@@ -214,3 +276,5 @@ export class OmniAdminApi {
     }, `web-admin-enroll-verify-${deviceId}-${Date.now()}`);
   }
 }
+
+export type { ChatStreamEvent };
