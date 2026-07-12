@@ -1,14 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import { OmniApiClient } from './api';
 import { buildControlHubPanels } from './controlHub';
-import { executeRuntimeTask } from './executor';
+import { advertisedRuntimeCapabilities, executeRuntimeTask } from './executor';
 import { createDesktopDeviceRequestSigner, loadOrCreateDesktopIdentity, DesktopDeviceIdentity } from './deviceIdentity';
 
 const DEFAULT_GATEWAY = 'http://127.0.0.1:18789';
 const VERSION = '1.12.7';
-const CAPABILITIES = ['chat', 'local-runtime', 'browser', 'files', 'ui-bridge', 'sandbox'];
+const CAPABILITIES = advertisedRuntimeCapabilities();
 
 type ProjectItem = {
   id: string;
@@ -127,6 +127,7 @@ function projectFromGateway(project: GatewayProject): ProjectItem {
 }
 
 function App() {
+  const workerBusy = useRef(false);
   const [gatewayUrl, setGatewayUrl] = useState(DEFAULT_GATEWAY);
   const [token, setToken] = useState('');
   const [actor, setActor] = useState('desktop-operator');
@@ -218,6 +219,9 @@ function App() {
   }
 
   async function runSafeWorkerCycle() {
+    if (workerBusy.current) return;
+    workerBusy.current = true;
+    try {
     const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
     setDeviceIdentity(identity);
     const result = await client.claimTask(identity.deviceId, CAPABILITIES, 120);
@@ -233,6 +237,9 @@ function App() {
     setWorkerLog(items => [`${new Date().toISOString()} ${execution.status}: ${execution.summary}`, ...items].slice(0, 20));
     setClaimedTask(null);
     setSnapshot(await client.bootstrap());
+    } finally {
+      workerBusy.current = false;
+    }
   }
 
   async function askAssistant() {

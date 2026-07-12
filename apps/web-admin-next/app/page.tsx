@@ -377,9 +377,9 @@ export default function Page() {
       <div className="window-row"><span className="traffic red" /><span className="traffic yellow" /><span className="traffic green" /></div>
       <nav className="primary-nav">
         <button className="nav-item nav-primary" type="button" onClick={() => setChatInput('')}>新对话 <span>＋</span></button>
-        <button className="nav-item" type="button">⌕ <span>搜索</span></button>
-        <button className="nav-item" type="button">◴ <span>已安排</span></button>
-        <button className="nav-item" type="button">✣ <span>插件</span></button>
+        <button className="nav-item" type="button" disabled title="未启用">⌕ <span>搜索 · 未启用</span></button>
+        <button className="nav-item" type="button" disabled title="未启用">◴ <span>已安排 · 未启用</span></button>
+        <button className="nav-item" type="button" disabled title="未启用">✣ <span>插件 · 未启用</span></button>
       </nav>
 
       <section className="project-box">
@@ -412,8 +412,8 @@ export default function Page() {
 
     <section className="workspace">
       <header className="topbar">
-        <button className="workspace-switcher" type="button">▣ <span>{activeProjectName}</span>⌄</button>
-        <label className="global-search" htmlFor="global-search"><span>⌕</span><input id="global-search" placeholder="全局搜索  ⌘K" /></label>
+        <button className="workspace-switcher" type="button" disabled title="项目切换器未启用">▣ <span>{activeProjectName}</span>⌄</button>
+        <label className="global-search" htmlFor="global-search"><span>⌕</span><input id="global-search" placeholder="全局搜索未启用" disabled /></label>
         <button className="connect-button" type="button" onClick={load} disabled={loading}>▦ 连接应用</button>
         <button className="top-avatar" type="button" aria-label="打开账户设置" onClick={() => setAccountSettingsOpen((open) => !open)}>{actorInitials}⌄</button>
       </header>
@@ -427,7 +427,7 @@ export default function Page() {
         {error && <div className="error-banner">{error}</div>}
       </div>
 
-      <section className="side-card" style={{ maxWidth: 900, margin: '0 auto 24px' }}>
+      <section className="side-card centered-card centered-card-first">
         <div className="card-title"><h3>Gateway 连接配置</h3><StatusPill tone={csrfToken ? 'green' : 'gray'}>{csrfToken ? 'session ready' : '未建立 session'}</StatusPill></div>
         <details className="connection-details" open>
           <summary>Gateway URL / Token / Actor / Role</summary>
@@ -451,8 +451,8 @@ export default function Page() {
         <div className="side-card"><div className="card-title"><h3>通知</h3><StatusPill tone={notifications.length ? 'blue' : 'gray'}>{notifications.length}</StatusPill></div>{notifications.slice(0, 4).map((item) => <p key={String(item.notification_id || item.title)}>{item.title || item.body}</p>)}</div>
       </section>
 
-      <section className="side-card" style={{ maxWidth: 900, margin: '24px auto' }}><div className="card-title"><h3>最近对话</h3><StatusPill tone={chatMessages.length ? 'blue' : 'gray'}>{chatMessages.length}</StatusPill></div><pre>{JSON.stringify(chatMessages.slice(-6).map((message) => ({ role: message.role, content: message.content, provider: message.model_provider, model: message.model_name, trace_id: message.trace_id })), null, 2)}</pre></section>
-      <section className="side-card" style={{ maxWidth: 900, margin: '24px auto' }}><div className="card-title"><h3>GA / Release Evidence</h3><StatusPill tone={releaseEvidence ? 'blue' : 'orange'}>{releaseEvidence ? 'loaded' : 'missing'}</StatusPill></div><pre>{releaseEvidenceText}</pre></section>
+      <section className="side-card centered-card"><div className="card-title"><h3>最近对话</h3><StatusPill tone={chatMessages.length ? 'blue' : 'gray'}>{chatMessages.length}</StatusPill></div><pre>{JSON.stringify(chatMessages.slice(-6).map((message) => ({ role: message.role, content: message.content, provider: message.model_provider, model: message.model_name, trace_id: message.trace_id })), null, 2)}</pre></section>
+      <section className="side-card centered-card"><div className="card-title"><h3>GA / Release Evidence</h3><StatusPill tone={releaseEvidence ? 'blue' : 'orange'}>{releaseEvidence ? 'loaded' : 'missing'}</StatusPill></div><pre>{releaseEvidenceText}</pre></section>
     </section>
 
     <aside className="right-rail">

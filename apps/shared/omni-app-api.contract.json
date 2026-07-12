@@ -148,7 +148,7 @@
     {
       "method": "POST",
       "path": "/api/chat/stream",
-      "description": "Reserved streaming chat entrypoint. This source-gated candidate fails closed with 501 until streaming transport, audit chunking, and client handling are production-gated.",
+      "description": "Audited SSE delivery with monotonic event IDs, bounded concurrency and connection time, disconnect handling, persisted complete responses, usage, trace, and explicit completion/failure events. Provider-native token streaming remains separately gated.",
       "role": "operator",
       "client_surfaces": []
     },

@@ -46,5 +46,5 @@ RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.b
 USER omnidesk
 EXPOSE 18789
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18789/ready', timeout=3)"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18789/health', timeout=3)"
 CMD ["omnidesk", "--config", "/data/config.production.yaml", "serve", "--host", "0.0.0.0"]
