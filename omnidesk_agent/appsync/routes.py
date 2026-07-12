@@ -6,6 +6,7 @@ import logging
 from typing import Any, Awaitable, Callable, Optional, cast
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
@@ -178,6 +179,7 @@ def register_appsync_routes(
 ) -> None:
     store = _store(rt)
     context_builder = ConversationContextBuilder()
+    stream_limit = asyncio.Semaphore(8)
 
     async def _complete_chat_turn(
         conversation_id: str,
@@ -480,10 +482,65 @@ def register_appsync_routes(
 
     @app.post("/api/chat/stream")
     async def api_chat_stream(request: Request):
-        await admin(request, "operator")
-        raise HTTPException(
-            501,
-            "streaming chat is not enabled in the source-gated candidate; use /api/chat for audited non-streaming chat",
+        decision = await admin(request, "operator")
+        payload = await request.json()
+        actor = _actor(decision)
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        if not conversation_id:
+            conversation = store.create_conversation(
+                actor=actor,
+                title=payload.get("title") or "API streaming chat",
+                source_device_id=payload.get("source_device_id"),
+            )
+            conversation_id = conversation["conversation_id"]
+        payload = {**payload, "conversation_id": conversation_id, "stream": False}
+        try:
+            last_event_id = max(0, int(request.headers.get("last-event-id", "0") or "0"))
+        except ValueError as exc:
+            raise HTTPException(400, "last-event-id must be an integer") from exc
+
+        def encode(sequence: int, event: str, data: dict[str, Any]) -> bytes:
+            body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+            return f"id: {sequence}\nevent: {event}\ndata: {body}\n\n".encode()
+
+        async def events():
+            sequence = 1
+            async with stream_limit:
+                if sequence > last_event_id:
+                    yield encode(sequence, "chat.started", {"conversation_id": conversation_id})
+                sequence += 1
+                try:
+                    result = await asyncio.wait_for(
+                        _complete_chat_turn(
+                            conversation_id, request, payload, actor,
+                            str(getattr(decision, "role", "operator")),
+                        ),
+                        timeout=120,
+                    )
+                    text = str(result["assistant_message"].get("content") or "")
+                    for offset in range(0, len(text), 256):
+                        if await request.is_disconnected():
+                            return
+                        if sequence > last_event_id:
+                            yield encode(sequence, "chat.delta", {"text": text[offset : offset + 256]})
+                        sequence += 1
+                    if sequence > last_event_id:
+                        yield encode(sequence, "chat.usage", result.get("usage") or {})
+                    sequence += 1
+                    if sequence > last_event_id:
+                        yield encode(sequence, "chat.completed", {
+                            "conversation_id": conversation_id,
+                            "audit_trace_id": result.get("audit_trace_id"),
+                        })
+                except asyncio.TimeoutError:
+                    yield encode(sequence, "chat.failed", {"code": "stream_timeout"})
+                except Exception:
+                    logger.exception("audited chat stream failed", extra={"conversation_id": conversation_id})
+                    yield encode(sequence, "chat.failed", {"code": "stream_failed"})
+
+        return StreamingResponse(
+            events(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
         )
 
     @app.get("/app/tasks/{task_id}")
