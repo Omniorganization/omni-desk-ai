@@ -45,6 +45,8 @@ RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.b
     && chown -R omnidesk:omnidesk /data /app
 USER omnidesk
 EXPOSE 18789
+# Orchestrators use /ready for dependency-aware traffic admission; the image
+# HEALTHCHECK intentionally uses /health so dependency loss does not restart it.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18789/health', timeout=3)"
 CMD ["omnidesk", "--config", "/data/config.production.yaml", "serve", "--host", "0.0.0.0"]
