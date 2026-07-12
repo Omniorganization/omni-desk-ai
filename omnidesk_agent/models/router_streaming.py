@@ -6,11 +6,11 @@ from typing import Any, AsyncIterator
 from omnidesk_agent.models.base import ModelDelta, ModelRequest
 from omnidesk_agent.models.provider_errors import classify_provider_error
 from omnidesk_agent.models.provider_streaming import stream_provider
-from omnidesk_agent.models.router import ModelRouter, RoutePlan
+from omnidesk_agent.models.router import ModelRouter
 
 
 class GovernedStreamingRouter:
-    """Streaming facade that preserves ModelRouter ACL, budget, retry and ledger policy."""
+    """Streaming facade preserving ModelRouter ACL, budget, retry and ledger policy."""
 
     def __init__(self, router: ModelRouter):
         self.router = router
@@ -23,27 +23,41 @@ class GovernedStreamingRouter:
             profile = configured_profile
             provider = self.router.providers.get(profile)
             if provider is None:
-                last_error = RuntimeError(f"Model profile not configured or disabled: {profile}")
+                last_error = RuntimeError(
+                    f"Model profile not configured or disabled: {profile}"
+                )
                 continue
             if self.router._offline_forbids_profile(profile, provider):
-                last_error = RuntimeError(f"offline mode forbids external model profile: {profile}")
+                last_error = RuntimeError(
+                    f"offline mode forbids external model profile: {profile}"
+                )
                 continue
             if self.router._circuit_open(profile, plan):
                 last_error = RuntimeError(f"Model profile circuit open: {profile}")
                 continue
-            budget_action = self.router._check_budget(request, profile=profile, provider=provider)
+            budget_action = self.router._check_budget(
+                request,
+                profile=profile,
+                provider=provider,
+            )
             if budget_action == "fallback_local":
                 profile = "local"
                 provider = self.router.providers.get(profile)
                 if provider is None:
-                    last_error = RuntimeError("model budget exceeded and local fallback is unavailable")
+                    last_error = RuntimeError(
+                        "model budget exceeded and local fallback is unavailable"
+                    )
                     continue
 
             for attempt in range(plan.max_retries + 1):
                 attempted.append(profile)
                 emitted = False
                 try:
-                    async for delta in self._stream_with_provider(request, profile, provider):
+                    async for delta in self._stream_with_provider(
+                        request,
+                        profile,
+                        provider,
+                    ):
                         emitted = emitted or bool(delta.text or delta.reasoning)
                         yield delta
                     return
@@ -52,20 +66,47 @@ class GovernedStreamingRouter:
                 except Exception as exc:
                     last_error = exc
                     info = classify_provider_error(exc)
-                    self.router.error_counts[info.category] = self.router.error_counts.get(info.category, 0) + 1
+                    self.router.error_counts[info.category] = (
+                        self.router.error_counts.get(info.category, 0) + 1
+                    )
                     self.router._record_failure(profile)
                     if emitted:
                         raise RuntimeError(
-                            f"model stream failed after partial delivery: profile={profile}; category={info.category}"
+                            "model stream failed after partial delivery: "
+                            f"profile={profile}; category={info.category}"
                         ) from exc
                     if info.retryable and attempt < plan.max_retries:
                         await asyncio.sleep(min(0.2 * (2**attempt), 1.0))
                         continue
                     break
-        tried = ", ".join(attempted or plan.profiles)
-        raise RuntimeError(
-            f"All model profiles failed for streaming task={request.task}; tried={tried}; last_error={last_error}"
-        ) from last_error
+
+        # Some providers, staging fakes and older compatible endpoints expose a
+        # governed complete transport but no native stream transport. Falling back
+        # before the first delta preserves availability without risking duplicate
+        # visible output. ModelRouter.complete remains responsible for all normal
+        # ACL, budget, retry, ledger and cache behavior in this path.
+        try:
+            response = await self.router.complete(request)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            tried = ", ".join(attempted or plan.profiles)
+            raise RuntimeError(
+                "All model profiles failed for streaming "
+                f"task={request.task}; tried={tried}; "
+                f"native_error={last_error}; fallback_error={exc}"
+            ) from exc
+        yield ModelDelta(
+            sequence=1,
+            provider=response.provider,
+            model=response.model,
+            profile=response.profile,
+            text=response.text,
+            usage=response.usage or {},
+            finish_reason="complete_fallback",
+            provider_request_id=str((response.raw or {}).get("id") or "") or None,
+            native=False,
+        )
 
     async def _stream_with_provider(
         self,
@@ -86,7 +127,9 @@ class GovernedStreamingRouter:
             verified_required=request.verified_required,
         )
         if not decision.allowed:
-            raise RuntimeError(f"Model call blocked by token guardrail: {decision.reason}")
+            raise RuntimeError(
+                f"Model call blocked by token guardrail: {decision.reason}"
+            )
 
         cached = self.router.token_budget.get_cached(decision.cache_key or "")
         if cached is not None:
@@ -114,7 +157,6 @@ class GovernedStreamingRouter:
         )
 
         text_parts: list[str] = []
-        reasoning_parts: list[str] = []
         final_usage: dict[str, Any] = {}
         final_reason = "stop"
         provider_request_id: str | None = None
@@ -126,8 +168,6 @@ class GovernedStreamingRouter:
             native = native and bool(delta.native)
             if delta.text:
                 text_parts.append(delta.text)
-            if delta.reasoning:
-                reasoning_parts.append(delta.reasoning)
             if delta.usage:
                 final_usage.update(delta.usage)
             if delta.finish_reason:
@@ -135,7 +175,9 @@ class GovernedStreamingRouter:
             if delta.text or delta.reasoning:
                 yield ModelDelta(
                     sequence=delta.sequence,
-                    provider=str(getattr(provider, "provider_name", delta.provider)),
+                    provider=str(
+                        getattr(provider, "provider_name", delta.provider)
+                    ),
                     model=str(provider.model),
                     profile=profile,
                     text=delta.text,
@@ -159,9 +201,17 @@ class GovernedStreamingRouter:
         actor = request.metadata.get("actor")
         if actor and not final_usage.get("actor"):
             final_usage["actor"] = str(actor)
-        final_usage.setdefault("estimated_input_tokens", decision.estimated_input_tokens)
-        final_usage.setdefault("estimated_output_tokens", estimated_output_tokens)
-        if not final_usage.get("cost_usd") and not final_usage.get("estimated_cost_usd"):
+        final_usage.setdefault(
+            "estimated_input_tokens",
+            decision.estimated_input_tokens,
+        )
+        final_usage.setdefault(
+            "estimated_output_tokens",
+            estimated_output_tokens,
+        )
+        if not final_usage.get("cost_usd") and not final_usage.get(
+            "estimated_cost_usd"
+        ):
             final_usage["estimated_cost_usd"] = self.router.pricing_table.estimate(
                 provider=str(getattr(provider, "provider_name", "unknown")),
                 model=str(provider.model),
