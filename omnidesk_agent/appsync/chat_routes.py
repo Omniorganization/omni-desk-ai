@@ -47,10 +47,11 @@ def register_first_class_chat_routes(
 ) -> ChatTurnService:
     """Register canonical chat routes before legacy AppSync route collections."""
 
+    store = _store(runtime, cfg)
     service = ChatTurnService(
         cfg=cfg,
         runtime=runtime,
-        store=_store(runtime, cfg),
+        store=store,
         metrics=metrics,
     )
     app.state.chat_turn_service = service
@@ -93,6 +94,17 @@ def register_first_class_chat_routes(
         if last_event_id < 0:
             raise HTTPException(400, "last-event-id cannot be negative")
 
+        # Bind each request to the current Runtime router. This supports controlled
+        # profile reloads and test/staging router replacement without retaining a
+        # stale provider graph from application construction time. Store identity
+        # and the outer API resource-guard lease remain shared.
+        stream_service = ChatTurnService(
+            cfg=cfg,
+            runtime=runtime,
+            store=store,
+            metrics=metrics,
+        )
+
         async def events():
             queue: asyncio.Queue[ChatStreamEvent | BaseException | None] = (
                 asyncio.Queue(maxsize=64)
@@ -110,7 +122,7 @@ def register_first_class_chat_routes(
 
             async def produce() -> None:
                 try:
-                    async for event in service.stream(
+                    async for event in stream_service.stream(
                         request=request,
                         payload=payload,
                         actor=_actor(decision),
