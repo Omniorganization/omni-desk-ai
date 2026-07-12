@@ -79,9 +79,11 @@ def test_delegated_request_uses_public_asgi_interfaces() -> None:
         "request_id": "trace-public-request",
     }
 
-    source = (ROOT / "omnidesk_agent/appsync/streaming.py").read_text(encoding="utf-8")
-    assert 'setattr(request, "_body"' not in source
-    assert 'setattr(request, "_json"' not in source
+    streaming_source = (ROOT / "omnidesk_agent/appsync/streaming.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'setattr(request, "_body"' not in streaming_source
+    assert 'setattr(request, "_json"' not in streaming_source
 
 
 def test_stream_rejects_invalid_writes_before_delegating_to_chat() -> None:
