@@ -13,7 +13,7 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: industrial-96-closure-transform
@@ -28,7 +28,6 @@ jobs:
         with:
           ref: agent/industrial-96-closure
           fetch-depth: 0
-          token: ${{ github.token }}
 
       - name: Detect bootstrap payload
         id: detect
@@ -79,21 +78,8 @@ jobs:
           python scripts/apply_industrial_96_closure.py
           python scripts/apply_industrial_96_product_closure.py
           chmod +x scripts/check_critical_coverage.py scripts/generate_industrial_score.py
-
-      - name: Materialize transformed snapshot
-        if: steps.detect.outputs.enabled == 'true'
-        env:
-          BRANCH: agent/industrial-96-closure
-        run: |
-          set -euo pipefail
           rm scripts/apply_industrial_96_closure.py
           rm scripts/apply_industrial_96_product_closure.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git reset -- .github/workflows/apply-industrial-96-closure.yml
-          git commit -m "Materialize industrial 96 source closure"
-          git push origin "HEAD:$BRANCH"
 
       - name: Install Python validation environment
         if: steps.detect.outputs.enabled == 'true'
@@ -186,25 +172,29 @@ jobs:
             --commit "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID"
 
-      - name: Verify final tree
-        if: steps.detect.outputs.enabled == 'true'
-        run: |
-          git diff --check
-          test ! -e scripts/apply_industrial_96_closure.py
-          test ! -e scripts/apply_industrial_96_product_closure.py
-          git status --short
-
-      - name: Commit and push validation normalizations
-        if: steps.detect.outputs.enabled == 'true'
-        env:
-          BRANCH: agent/industrial-96-closure
+      - name: Package transformed worktree
+        if: always() && steps.detect.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          git add -A
-          git reset -- .github/workflows/apply-industrial-96-closure.yml
-          if git diff --cached --quiet; then
-            echo "No validation normalization changes"
-            exit 0
-          fi
-          git commit -m "Normalize industrial 96 validated sources"
-          git push origin "HEAD:$BRANCH"
+          git status --short > "$RUNNER_TEMP/industrial-96-status.txt"
+          git diff --stat > "$RUNNER_TEMP/industrial-96-diff-stat.txt"
+          tar \
+            --exclude=.git \
+            --exclude='**/node_modules' \
+            --exclude='**/.next' \
+            --exclude='**/target' \
+            --exclude='**/build' \
+            --exclude='**/.dart_tool' \
+            -czf "$RUNNER_TEMP/industrial-96-worktree.tgz" .
+
+      - name: Upload transformed worktree
+        if: always() && steps.detect.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: industrial-96-worktree-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/industrial-96-worktree.tgz
+            ${{ runner.temp }}/industrial-96-status.txt
+            ${{ runner.temp }}/industrial-96-diff-stat.txt
+          if-no-files-found: error
+          retention-days: 7
