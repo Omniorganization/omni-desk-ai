@@ -8,6 +8,9 @@ on:
       - scripts/apply_industrial_96_closure.py
       - scripts/apply_industrial_96_product_closure.py
       - .github/workflows/apply-industrial-96-closure.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -18,7 +21,6 @@ concurrency:
 
 jobs:
   transform-and-validate:
-    if: contains(github.event.head_commit.message, '[industrial-96-bootstrap]')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -28,11 +30,23 @@ jobs:
           fetch-depth: 0
           token: ${{ github.token }}
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - name: Detect bootstrap payload
+        id: detect
+        run: |
+          if [[ -f scripts/apply_industrial_96_closure.py && -f scripts/apply_industrial_96_product_closure.py ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Bootstrap scripts already consumed; no transformation required."
+          fi
+
+      - if: steps.detect.outputs.enabled == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - if: steps.detect.outputs.enabled == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22"
           cache: npm
@@ -40,22 +54,26 @@ jobs:
             apps/web-admin-next/package-lock.json
             apps/desktop-tauri/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+      - if: steps.detect.outputs.enabled == 'true'
+        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: stable
           components: rustfmt, clippy
 
-      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+      - if: steps.detect.outputs.enabled == 'true'
+        uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
           flutter-version: "3.35.x"
           cache: true
 
       - name: Install native desktop build dependencies
+        if: steps.detect.outputs.enabled == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Apply integrated source transformations
+        if: steps.detect.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           python scripts/apply_industrial_96_closure.py
@@ -63,27 +81,29 @@ jobs:
           chmod +x scripts/check_critical_coverage.py scripts/generate_industrial_score.py
 
       - name: Materialize transformed snapshot
+        if: steps.detect.outputs.enabled == 'true'
         env:
           BRANCH: agent/industrial-96-closure
         run: |
           set -euo pipefail
+          rm scripts/apply_industrial_96_closure.py
+          rm scripts/apply_industrial_96_product_closure.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git reset -- \
-            scripts/apply_industrial_96_closure.py \
-            scripts/apply_industrial_96_product_closure.py \
-            .github/workflows/apply-industrial-96-closure.yml
+          git reset -- .github/workflows/apply-industrial-96-closure.yml
           git commit -m "Materialize industrial 96 source closure"
           git push origin "HEAD:$BRANCH"
 
       - name: Install Python validation environment
+        if: steps.detect.outputs.enabled == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install --require-hashes -r requirements.dev.lock
           python -m pip install -e . --no-deps --no-build-isolation
 
       - name: Format and lint Python
+        if: steps.detect.outputs.enabled == 'true'
         run: |
           ruff format \
             omnidesk_agent/appsync/chat_service.py \
@@ -113,6 +133,7 @@ jobs:
           pyright --project pyright.critical.json
 
       - name: Update and validate Web Admin
+        if: steps.detect.outputs.enabled == 'true'
         working-directory: apps/web-admin-next
         run: |
           npm install --save-dev --save-exact @playwright/test
@@ -123,6 +144,7 @@ jobs:
           npm run test:e2e
 
       - name: Update and validate Desktop Runtime
+        if: steps.detect.outputs.enabled == 'true'
         working-directory: apps/desktop-tauri
         run: |
           npm ci
@@ -134,6 +156,7 @@ jobs:
           cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Format and validate Mobile
+        if: steps.detect.outputs.enabled == 'true'
         working-directory: apps/mobile-flutter
         run: |
           flutter pub get
@@ -142,6 +165,7 @@ jobs:
           flutter test
 
       - name: Run backend and contract validation
+        if: steps.detect.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread \
@@ -163,20 +187,21 @@ jobs:
             --run-id "$GITHUB_RUN_ID"
 
       - name: Verify final tree
+        if: steps.detect.outputs.enabled == 'true'
         run: |
           git diff --check
+          test ! -e scripts/apply_industrial_96_closure.py
+          test ! -e scripts/apply_industrial_96_product_closure.py
           git status --short
 
       - name: Commit and push validation normalizations
+        if: steps.detect.outputs.enabled == 'true'
         env:
           BRANCH: agent/industrial-96-closure
         run: |
           set -euo pipefail
           git add -A
-          git reset -- \
-            scripts/apply_industrial_96_closure.py \
-            scripts/apply_industrial_96_product_closure.py \
-            .github/workflows/apply-industrial-96-closure.yml
+          git reset -- .github/workflows/apply-industrial-96-closure.yml
           if git diff --cached --quiet; then
             echo "No validation normalization changes"
             exit 0
