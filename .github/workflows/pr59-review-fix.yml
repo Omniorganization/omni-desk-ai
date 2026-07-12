@@ -1,0 +1,160 @@
+name: PR59 Review Remediation
+
+on:
+  push:
+    branches:
+      - ai/industrial-ga-remediation-20260712
+    paths:
+      - .github/workflows/pr59-review-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-review-fixes:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ai/industrial-ga-remediation-20260712
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply exact review fixes and regression contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          routes_path = Path("omnidesk_agent/appsync/routes.py")
+          routes = routes_path.read_text(encoding="utf-8")
+          old_stream_setup = '''        actor = _actor(decision)
+                  conversation_id = str(payload.get("conversation_id") or "").strip()
+                  if not conversation_id:
+                      conversation = store.create_conversation(
+                          actor=actor,
+                          title=payload.get("title") or "API streaming chat",
+                          source_device_id=payload.get("source_device_id"),
+                      )
+                      conversation_id = conversation["conversation_id"]
+                  payload = {**payload, "conversation_id": conversation_id, "stream": False}
+          '''
+          # The triple-quoted literal above is indented by the workflow YAML/Python
+          # block. Normalize it to the exact source indentation before matching.
+          old_stream_setup = "\n".join(line[8:] if line.startswith("        ") else line for line in old_stream_setup.splitlines()) + "\n"
+          new_stream_setup = '''        actor = _actor(decision)
+                  content = str(payload.get("content") or payload.get("message") or "").strip()
+                  if not content:
+                      raise HTTPException(422, "content is required")
+                  idem_key = _require_idempotency(cfg, request, payload)
+                  conversation_id = str(payload.get("conversation_id") or "").strip()
+                  if not conversation_id:
+                      idem_payload = {
+                          "title": payload.get("title") or "API streaming chat",
+                          "source_device_id": payload.get("source_device_id"),
+                          "content": payload.get("content"),
+                          "message": payload.get("message"),
+                          "model_profile": payload.get("model_profile"),
+                          "profile": payload.get("profile"),
+                      }
+                      try:
+                          conversation = store.create_conversation(
+                              actor=actor,
+                              title=idem_payload["title"],
+                              source_device_id=idem_payload["source_device_id"],
+                              idempotency_key=f"chat:{actor}:{idem_key}:conversation"
+                              if idem_key
+                              else None,
+                              idempotency_payload=idem_payload,
+                          )
+                      except IdempotencyConflict as exc:
+                          raise HTTPException(409, str(exc)) from exc
+                      except PermissionError as exc:
+                          raise HTTPException(403, str(exc)) from exc
+                      conversation_id = conversation["conversation_id"]
+                  payload = {**payload, "conversation_id": conversation_id, "stream": False}
+          '''
+          new_stream_setup = "\n".join(line[8:] if line.startswith("        ") else line for line in new_stream_setup.splitlines()) + "\n"
+          if old_stream_setup not in routes:
+              raise SystemExit("expected /api/chat/stream setup block was not found")
+          routes_path.write_text(routes.replace(old_stream_setup, new_stream_setup, 1), encoding="utf-8")
+
+          guard_path = Path("omnidesk_agent/security/resource_guard.py")
+          guard = guard_path.read_text(encoding="utf-8")
+          old_guard = '    if path == "/api/chat" or (path.startswith("/app/conversations/") and path.endswith("/ask")):\n'
+          new_guard = '    if path in {"/api/chat", "/api/chat/stream"} or (path.startswith("/app/conversations/") and path.endswith("/ask")):\n'
+          if old_guard not in guard:
+              raise SystemExit("expected resource-guard chat classification was not found")
+          guard_path.write_text(guard.replace(old_guard, new_guard, 1), encoding="utf-8")
+
+          ga16_updated = False
+          for test_path in sorted(Path("tests").glob("test_*.py")):
+              test_text = test_path.read_text(encoding="utf-8")
+              if "def test_ga16_deployment_contract_assets_are_present" not in test_text:
+                  continue
+              replacements = {
+                  '    assert "/ready" in dockerfile\n': '    assert "http://127.0.0.1:18789/health" in dockerfile\n    assert "http://127.0.0.1:18789/ready" not in dockerfile\n',
+                  '    assert "http://127.0.0.1:18789/ready" in dockerfile\n': '    assert "http://127.0.0.1:18789/health" in dockerfile\n    assert "http://127.0.0.1:18789/ready" not in dockerfile\n',
+              }
+              for old, new in replacements.items():
+                  if old in test_text:
+                      test_path.write_text(test_text.replace(old, new, 1), encoding="utf-8")
+                      ga16_updated = True
+                      break
+              if not ga16_updated:
+                  raise SystemExit(f"GA16 test found in {test_path}, but its readiness assertion did not match")
+              break
+          if not ga16_updated:
+              raise SystemExit("GA16 deployment contract test was not found")
+
+          regression_path = Path("tests/test_pr59_review_fixes.py")
+          regression_path.write_text('''from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _text(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+def test_stream_validates_and_binds_idempotency_before_conversation_write() -> None:
+    source = _text("omnidesk_agent/appsync/routes.py")
+    stream = source.split('@app.post("/api/chat/stream")', 1)[1].split(
+        '@app.get("/app/tasks/{task_id}")', 1
+    )[0]
+
+    validation = stream.index('content = str(payload.get("content")')
+    idempotency = stream.index("idem_key = _require_idempotency")
+    conversation_write = stream.index("store.create_conversation(")
+    assert validation < conversation_write
+    assert idempotency < conversation_write
+    assert 'idempotency_key=f"chat:{actor}:{idem_key}:conversation"' in stream
+    assert "idempotency_payload=idem_payload" in stream
+    assert "except IdempotencyConflict as exc" in stream
+
+
+def test_stream_uses_chat_specific_resource_budgets() -> None:
+    from omnidesk_agent.security.resource_guard import _route_class
+
+    assert _route_class("/api/chat") == "chat"
+    assert _route_class("/api/chat/stream") == "chat"
+    assert _route_class("/app/conversations/conv_123456789012/ask") == "chat"
+
+
+def test_container_healthcheck_is_liveness_only() -> None:
+    dockerfile = _text("Dockerfile")
+    assert "http://127.0.0.1:18789/health" in dockerfile
+    assert "http://127.0.0.1:18789/ready" not in dockerfile
+''', encoding="utf-8")
+
+          Path(".github/workflows/pr59-review-fix.yml").unlink()
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Address PR #59 review findings"
+          git push origin HEAD:ai/industrial-ga-remediation-20260712
