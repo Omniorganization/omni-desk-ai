@@ -91,7 +91,7 @@ def test_ga16_deployment_contract_assets_are_present():
 
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     assert "requirements.enterprise.lock" in dockerfile
-    assert "/ready" in dockerfile
+    assert "/health" in dockerfile
 
     values = Path("deploy/kubernetes/helm/omnidesk/values.yaml").read_text(encoding="utf-8")
     assert "ingressNamespaceLabel:" in values and "ingress-nginx" in values

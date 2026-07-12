@@ -541,10 +541,14 @@ def test_api_chat_alias_uses_audited_model_router_and_creates_conversation(
         assert mismatch.status_code == 409
         stream = client.post(
             "/api/chat/stream",
-            headers=operator_headers,
+            headers={**operator_headers, "idempotency-key": "chat-stream-1"},
             json={"content": "stream this"},
         )
-        assert stream.status_code == 501
+        assert stream.status_code == 200
+        assert "event: chat.started" in stream.text
+        assert "event: chat.delta" in stream.text
+        assert "event: chat.usage" in stream.text
+        assert "event: chat.completed" in stream.text
 
 
 def test_api_chat_actor_rate_limit_blocks_repeated_model_spend(tmp_path, monkeypatch):

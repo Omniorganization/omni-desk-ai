@@ -82,8 +82,8 @@ def main(argv: list[str] | None = None) -> int:
             issues.append("Dockerfile must install PostgreSQL enterprise dependencies from requirements.enterprise.lock")
         if "psycopg[binary]>=" in dtext or "pip install --no-cache-dir \"psycopg" in dtext:
             issues.append("Dockerfile must not install PostgreSQL dependencies outside hash-locked lockfiles")
-        if "/ready" not in dtext:
-            issues.append("Dockerfile HEALTHCHECK must use /ready")
+        if "/health" not in dtext:
+            issues.append("Dockerfile liveness HEALTHCHECK must use /health")
         if f"OMNIDESK_CONFIG={PRODUCTION_CONFIG_PATH}" not in dtext:
             issues.append("Dockerfile must default OMNIDESK_CONFIG to the production config path")
         if f"--config\", \"{PRODUCTION_CONFIG_PATH}\"" not in dtext:

@@ -1,10 +1,10 @@
-ARG NODE_BASE_IMAGE=node:22-bookworm-slim
+ARG NODE_BASE_IMAGE
 FROM ${NODE_BASE_IMAGE} AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --no-audit --no-fund
 
-ARG NODE_BASE_IMAGE=node:22-bookworm-slim
+ARG NODE_BASE_IMAGE
 FROM ${NODE_BASE_IMAGE} AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -12,7 +12,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-ARG NODE_BASE_IMAGE=node:22-bookworm-slim
+ARG NODE_BASE_IMAGE
 FROM ${NODE_BASE_IMAGE} AS runtime
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000

@@ -56,7 +56,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/release-web-admin/payload"
-          docker build -f apps/web-admin-next/Dockerfile -t omnidesk-web-admin:${{ github.sha }} apps/web-admin-next
+          docker pull node:22-bookworm-slim
+          NODE_BASE_IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' node:22-bookworm-slim)"
+          test -n "$NODE_BASE_IMAGE"
+          docker build --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" -f apps/web-admin-next/Dockerfile -t omnidesk-web-admin:${{ github.sha }} apps/web-admin-next
           docker save omnidesk-web-admin:${{ github.sha }} | gzip -9 > "$RUNNER_TEMP/release-web-admin/payload/omnidesk-web-admin-${{ github.sha }}.tar.gz"
           python scripts/write_native_artifact_manifest.py \
             --platform web-admin \
