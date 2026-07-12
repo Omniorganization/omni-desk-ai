@@ -58,6 +58,22 @@ export async function omniProxy(path: string, init: RequestInit = {}) {
     headers: forwarded,
     cache: 'no-store'
   });
+  const contentType = response.headers.get('content-type') || 'application/json';
+  if (contentType.includes('text/event-stream')) {
+    const responseHeaders = new Headers({
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': response.headers.get('cache-control') || 'no-cache, no-transform',
+      'x-accel-buffering': response.headers.get('x-accel-buffering') || 'no',
+      connection: 'keep-alive',
+    });
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    });
+  }
   const body = await response.text();
-  return new Response(body, { status: response.status, headers: { 'content-type': response.headers.get('content-type') || 'application/json' } });
+  return new Response(body, {
+    status: response.status,
+    headers: { 'content-type': contentType },
+  });
 }
