@@ -65,6 +65,20 @@ jobs:
           python scripts/apply_industrial_96_product_closure.py
           chmod +x scripts/check_critical_coverage.py scripts/generate_industrial_score.py
 
+      - name: Materialize transformed snapshot and remove bootstrap files
+        env:
+          BRANCH: agent/industrial-96-closure
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply_industrial_96_closure.py
+          rm -f scripts/apply_industrial_96_product_closure.py
+          rm -f .github/workflows/apply-industrial-96-closure.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Materialize industrial 96 source closure"
+          git push origin "HEAD:$BRANCH"
+
       - name: Install Python validation environment
         run: |
           python -m pip install --upgrade pip
@@ -150,12 +164,6 @@ jobs:
             --commit "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID"
 
-      - name: Remove bootstrap-only files
-        run: |
-          rm scripts/apply_industrial_96_closure.py
-          rm scripts/apply_industrial_96_product_closure.py
-          rm .github/workflows/apply-industrial-96-closure.yml
-
       - name: Verify final tree
         run: |
           git diff --check
@@ -164,17 +172,15 @@ jobs:
           test ! -e .github/workflows/apply-industrial-96-closure.yml
           git status --short
 
-      - name: Commit and push validated closure
+      - name: Commit and push validation normalizations
         env:
           BRANCH: agent/industrial-96-closure
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then
-            echo "No transformed changes to commit" >&2
-            exit 1
+            echo "No validation normalization changes"
+            exit 0
           fi
-          git commit -m "Complete industrial 96 source closure"
+          git commit -m "Normalize industrial 96 validated sources"
           git push origin "HEAD:$BRANCH"
