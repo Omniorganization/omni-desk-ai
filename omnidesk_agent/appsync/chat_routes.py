@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from omnidesk_agent.appsync.chat_service import ChatStreamEvent, ChatTurnService
 from omnidesk_agent.appsync.factory import create_appsync_store
+from omnidesk_agent.models.completion_streaming import CompletionOnlyStreamingRouter
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache, no-transform",
@@ -94,16 +95,19 @@ def register_first_class_chat_routes(
         if last_event_id < 0:
             raise HTTPException(400, "last-event-id cannot be negative")
 
-        # Bind each request to the current Runtime router. This supports controlled
-        # profile reloads and test/staging router replacement without retaining a
-        # stale provider graph from application construction time. Store identity
-        # and the outer API resource-guard lease remain shared.
         stream_service = ChatTurnService(
             cfg=cfg,
             runtime=runtime,
             store=store,
             metrics=metrics,
         )
+        active_router = getattr(runtime, "model_router", None)
+        if active_router is not None and not callable(
+            getattr(active_router, "route_plan", None)
+        ):
+            stream_service.streaming_router = CompletionOnlyStreamingRouter(
+                active_router
+            )
 
         async def events():
             queue: asyncio.Queue[ChatStreamEvent | BaseException | None] = (
