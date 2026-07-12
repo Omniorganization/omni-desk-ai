@@ -8,9 +8,6 @@ on:
       - scripts/apply_industrial_96_closure.py
       - scripts/apply_industrial_96_product_closure.py
       - .github/workflows/apply-industrial-96-closure.yml
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: write
@@ -21,7 +18,7 @@ concurrency:
 
 jobs:
   transform-and-validate:
-    if: github.event_name == 'pull_request' || contains(github.event.head_commit.message, '[industrial-96-bootstrap]')
+    if: contains(github.event.head_commit.message, '[industrial-96-bootstrap]')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -65,17 +62,18 @@ jobs:
           python scripts/apply_industrial_96_product_closure.py
           chmod +x scripts/check_critical_coverage.py scripts/generate_industrial_score.py
 
-      - name: Materialize transformed snapshot and remove bootstrap files
+      - name: Materialize transformed snapshot
         env:
           BRANCH: agent/industrial-96-closure
         run: |
           set -euo pipefail
-          rm -f scripts/apply_industrial_96_closure.py
-          rm -f scripts/apply_industrial_96_product_closure.py
-          rm -f .github/workflows/apply-industrial-96-closure.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git reset -- \
+            scripts/apply_industrial_96_closure.py \
+            scripts/apply_industrial_96_product_closure.py \
+            .github/workflows/apply-industrial-96-closure.yml
           git commit -m "Materialize industrial 96 source closure"
           git push origin "HEAD:$BRANCH"
 
@@ -167,9 +165,6 @@ jobs:
       - name: Verify final tree
         run: |
           git diff --check
-          test ! -e scripts/apply_industrial_96_closure.py
-          test ! -e scripts/apply_industrial_96_product_closure.py
-          test ! -e .github/workflows/apply-industrial-96-closure.yml
           git status --short
 
       - name: Commit and push validation normalizations
@@ -178,6 +173,10 @@ jobs:
         run: |
           set -euo pipefail
           git add -A
+          git reset -- \
+            scripts/apply_industrial_96_closure.py \
+            scripts/apply_industrial_96_product_closure.py \
+            .github/workflows/apply-industrial-96-closure.yml
           if git diff --cached --quiet; then
             echo "No validation normalization changes"
             exit 0
