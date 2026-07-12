@@ -1,0 +1,11 @@
+{
+  "name": "omnidesk-web-admin-e2e",
+  "version": "1.12.7",
+  "private": true,
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}
