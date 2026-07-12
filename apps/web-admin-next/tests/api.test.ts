@@ -141,7 +141,7 @@ test('registerAdminDevice uses the server-side proxy and per-install web_admin i
   assert.equal(body.device_id, identity.deviceId);
   assert.equal(body.device_type, 'web_admin');
   assert.equal(body.public_key, identity.publicKeyPem);
-  assert.deepEqual(body.capabilities, ['governance', 'channels', 'audit', 'approval', 'role:owner']);
+  assert.deepEqual(body.capabilities, ['governance', 'channels', 'audit', 'approval', 'chat-streaming', 'role:owner']);
 });
 
 test('createProject uses the server-side project proxy with csrf and explicit idempotency override', async () => {
