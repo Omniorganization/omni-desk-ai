@@ -26,30 +26,56 @@ class ChatStreamEvent:
 class ChatTurnService:
     """Own conversation creation, idempotency, model execution and persistence."""
 
-    def __init__(self, *, cfg: Any, runtime: Any, store: AppSyncStore, metrics: Any = None):
+    def __init__(
+        self,
+        *,
+        cfg: Any,
+        runtime: Any,
+        store: AppSyncStore,
+        metrics: Any = None,
+    ):
         self.cfg = cfg
         self.runtime = runtime
         self.store = store
         self.metrics = metrics
         self.context_builder = ConversationContextBuilder()
         router = getattr(runtime, "model_router", None)
-        self.streaming_router = GovernedStreamingRouter(router) if router is not None else None
+        self.streaming_router = (
+            GovernedStreamingRouter(router) if router is not None else None
+        )
         self.stream_limit = asyncio.Semaphore(
-            int(getattr(getattr(cfg, "api_resource_guard", None), "max_inflight_chat_requests", 8))
+            int(
+                getattr(
+                    getattr(cfg, "api_resource_guard", None),
+                    "max_inflight_chat_requests",
+                    8,
+                )
+            )
         )
 
-    def require_idempotency(self, request: Request, payload: dict[str, Any]) -> str | None:
-        header = request.headers.get("idempotency-key") or request.headers.get("x-idempotency-key")
+    def require_idempotency(
+        self,
+        request: Request,
+        payload: dict[str, Any],
+    ) -> str | None:
+        header = request.headers.get(
+            "idempotency-key"
+        ) or request.headers.get("x-idempotency-key")
         body_value = payload.get("idempotency_key")
         key = str(header or body_value or "").strip()[:180] or None
         app_sync = getattr(self.cfg, "app_sync", None)
         if getattr(app_sync, "require_idempotency", False) and not key:
-            raise HTTPException(428, "idempotency-key is required for this write operation")
+            raise HTTPException(
+                428,
+                "idempotency-key is required for this write operation",
+            )
         return key
 
     @staticmethod
     def content(payload: dict[str, Any]) -> str:
-        value = str(payload.get("content") or payload.get("message") or "").strip()
+        value = str(
+            payload.get("content") or payload.get("message") or ""
+        ).strip()
         if not value:
             raise HTTPException(422, "content is required")
         return value
@@ -79,7 +105,9 @@ class ChatTurnService:
                 title=idem_payload["title"],
                 source_device_id=idem_payload["source_device_id"],
                 idempotency_key=(
-                    f"chat:{actor}:{idempotency_key}:conversation" if idempotency_key else None
+                    f"chat:{actor}:{idempotency_key}:conversation"
+                    if idempotency_key
+                    else None
                 ),
                 idempotency_payload=idem_payload,
             )
@@ -97,7 +125,11 @@ class ChatTurnService:
         payload: dict[str, Any],
         idempotency_key: str | None,
     ) -> dict[str, Any] | None:
-        idem_payload = {**payload, "conversation_id": conversation_id, "stream": False}
+        idem_payload = {
+            **payload,
+            "conversation_id": conversation_id,
+            "stream": False,
+        }
         try:
             cached = self.store.get_idempotency_response(
                 actor=actor,
@@ -114,15 +146,17 @@ class ChatTurnService:
     def _prepare_turn(
         self,
         *,
-        request: Request,
         actor: str,
         role: str,
         conversation_id: str,
         payload: dict[str, Any],
-        idempotency_key: str | None,
     ) -> tuple[dict[str, Any], ModelRequest, dict[str, Any]]:
         content = self.content(payload)
-        idem_payload = {**payload, "conversation_id": conversation_id, "stream": False}
+        idem_payload = {
+            **payload,
+            "conversation_id": conversation_id,
+            "stream": False,
+        }
         try:
             user_message = self.store.add_chat_user_message(
                 actor=actor,
@@ -142,7 +176,9 @@ class ChatTurnService:
             "conversation_id": conversation_id,
             "source_device_id": payload.get("source_device_id"),
         }
-        model_profile = str(payload.get("model_profile") or payload.get("profile") or "").strip()
+        model_profile = str(
+            payload.get("model_profile") or payload.get("profile") or ""
+        ).strip()
         if model_profile:
             metadata["profile"] = model_profile
         history = self.store.list_messages(conversation_id, actor=actor)
@@ -153,14 +189,17 @@ class ChatTurnService:
         model_request = ModelRequest(
             system=(
                 "You are OmniDesk AI inside the enterprise Gateway. "
-                "Answer the operator directly, keep security and approval boundaries explicit, "
-                "and do not claim that desktop, mobile, push, signing, or external production "
-                "evidence exists unless it was supplied in the request.\n\n"
+                "Answer the operator directly, keep security and approval "
+                "boundaries explicit, and do not claim that desktop, mobile, "
+                "push, signing, or external production evidence exists unless "
+                "it was supplied in the request.\n\n"
                 f"{conversation_context}"
             ),
             user=content,
             task="chat",
-            task_id=f"chat-{conversation_id}-{user_message['message_id']}",
+            task_id=(
+                f"chat-{conversation_id}-{user_message['message_id']}"
+            ),
             metadata=metadata,
         )
         return user_message, model_request, idem_payload
@@ -243,12 +282,10 @@ class ChatTurnService:
         if cached is not None:
             return cached
         user_message, model_request, idem_payload = self._prepare_turn(
-            request=request,
             actor=actor,
             role=role,
             conversation_id=conversation_id,
             payload=payload,
-            idempotency_key=idempotency_key,
         )
         router = getattr(self.runtime, "model_router", None)
         complete = getattr(router, "complete", None)
@@ -262,11 +299,18 @@ class ChatTurnService:
             trace_id = self._trace_id(request)
             logger.exception(
                 "model router failed",
-                extra={"trace_id": trace_id, "conversation_id": conversation_id},
+                extra={
+                    "trace_id": trace_id,
+                    "conversation_id": conversation_id,
+                    "error_type": type(exc).__name__,
+                },
             )
             raise HTTPException(
                 502,
-                {"code": "model_provider_unavailable", "trace_id": trace_id},
+                {
+                    "code": "model_provider_unavailable",
+                    "trace_id": trace_id,
+                },
             ) from exc
         return self._persist_result(
             actor=actor,
@@ -304,24 +348,29 @@ class ChatTurnService:
             idempotency_key=idempotency_key,
         )
         if cached is not None:
-            async for event in self._replay_cached(cached, last_event_id):
+            async for event in self._replay_cached(
+                cached,
+                last_event_id,
+            ):
                 yield event
             return
 
         user_message, model_request, idem_payload = self._prepare_turn(
-            request=request,
             actor=actor,
             role=role,
             conversation_id=conversation_id,
             payload=payload,
-            idempotency_key=idempotency_key,
         )
         if self.streaming_router is None:
             raise HTTPException(503, "model router is not configured")
 
         sequence = 1
         if sequence > last_event_id:
-            yield ChatStreamEvent(sequence, "chat.started", {"conversation_id": conversation_id})
+            yield ChatStreamEvent(
+                sequence,
+                "chat.started",
+                {"conversation_id": conversation_id},
+            )
         sequence += 1
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -341,7 +390,9 @@ class ChatTurnService:
                     model = delta.model
                     profile = delta.profile
                     native = native and delta.native
-                    provider_request_id = delta.provider_request_id or provider_request_id
+                    provider_request_id = (
+                        delta.provider_request_id or provider_request_id
+                    )
                     if delta.text:
                         text_parts.append(delta.text)
                         if sequence > last_event_id:
@@ -362,7 +413,10 @@ class ChatTurnService:
                             yield ChatStreamEvent(
                                 sequence,
                                 "chat.reasoning.delta",
-                                {"text": delta.reasoning, "native": delta.native},
+                                {
+                                    "text": delta.reasoning,
+                                    "native": delta.native,
+                                },
                             )
                         sequence += 1
                     if delta.usage:
@@ -372,7 +426,10 @@ class ChatTurnService:
         except asyncio.CancelledError:
             logger.info(
                 "chat stream cancelled",
-                extra={"conversation_id": conversation_id, "actor": actor},
+                extra={
+                    "conversation_id": conversation_id,
+                    "actor": actor,
+                },
             )
             raise
         except Exception as exc:
@@ -381,13 +438,20 @@ class ChatTurnService:
             trace_id = self._trace_id(request)
             logger.exception(
                 "model router streaming failed",
-                extra={"trace_id": trace_id, "conversation_id": conversation_id},
+                extra={
+                    "trace_id": trace_id,
+                    "conversation_id": conversation_id,
+                    "error_type": type(exc).__name__,
+                },
             )
             if sequence > last_event_id:
                 yield ChatStreamEvent(
                     sequence,
                     "chat.failed",
-                    {"code": "model_provider_unavailable", "trace_id": trace_id},
+                    {
+                        "code": "model_provider_unavailable",
+                        "trace_id": trace_id,
+                    },
                 )
             return
 
@@ -413,7 +477,11 @@ class ChatTurnService:
             idempotency_payload=idem_payload,
         )
         if sequence > last_event_id:
-            yield ChatStreamEvent(sequence, "chat.usage", usage)
+            yield ChatStreamEvent(
+                sequence,
+                "chat.usage",
+                usage,
+            )
         sequence += 1
         if sequence > last_event_id:
             yield ChatStreamEvent(
@@ -436,17 +504,45 @@ class ChatTurnService:
         conversation_id = str(cached.get("conversation_id") or "")
         sequence = 1
         if sequence > last_event_id:
-            yield ChatStreamEvent(sequence, "chat.started", {"conversation_id": conversation_id, "replay": True})
+            yield ChatStreamEvent(
+                sequence,
+                "chat.started",
+                {
+                    "conversation_id": conversation_id,
+                    "replay": True,
+                },
+            )
         sequence += 1
-        message = cached.get("assistant_message") if isinstance(cached.get("assistant_message"), dict) else {}
+        message = (
+            cached.get("assistant_message")
+            if isinstance(cached.get("assistant_message"), dict)
+            else {}
+        )
         text = str(message.get("content") or "")
         for offset in range(0, len(text), STREAM_CHUNK_CHARACTERS):
             if sequence > last_event_id:
-                yield ChatStreamEvent(sequence, "chat.delta", {"text": text[offset : offset + STREAM_CHUNK_CHARACTERS], "replay": True})
+                yield ChatStreamEvent(
+                    sequence,
+                    "chat.delta",
+                    {
+                        "text": text[
+                            offset : offset + STREAM_CHUNK_CHARACTERS
+                        ],
+                        "replay": True,
+                    },
+                )
             sequence += 1
-        usage = cached.get("usage") if isinstance(cached.get("usage"), dict) else {}
+        usage = (
+            cached.get("usage")
+            if isinstance(cached.get("usage"), dict)
+            else {}
+        )
         if sequence > last_event_id:
-            yield ChatStreamEvent(sequence, "chat.usage", usage)
+            yield ChatStreamEvent(
+                sequence,
+                "chat.usage",
+                usage,
+            )
         sequence += 1
         if sequence > last_event_id:
             yield ChatStreamEvent(
