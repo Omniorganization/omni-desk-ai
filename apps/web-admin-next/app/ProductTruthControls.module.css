@@ -1,0 +1,18 @@
+.streamLink {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 100;
+  border: 1px solid #5f71ff;
+  border-radius: 999px;
+  background: #263a9d;
+  color: #fff;
+  padding: 10px 16px;
+  text-decoration: none;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+
+.streamLink:focus-visible {
+  outline: 3px solid #b6c1ff;
+  outline-offset: 3px;
+}
