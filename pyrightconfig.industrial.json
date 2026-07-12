@@ -1,0 +1,17 @@
+{
+  "include": [
+    "omnidesk_agent/appsync",
+    "omnidesk_agent/models",
+    "omnidesk_agent/server.py"
+  ],
+  "exclude": [
+    "omnidesk_agent/api/routes/bigseller.py"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportPrivateUsage": "error",
+  "reportMissingImports": "error",
+  "reportGeneralTypeIssues": "error",
+  "reportOptionalMemberAccess": "error",
+  "reportOptionalCall": "error"
+}
