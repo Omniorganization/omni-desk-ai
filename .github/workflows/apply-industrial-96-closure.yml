@@ -8,6 +8,9 @@ on:
       - scripts/apply_industrial_96_closure.py
       - scripts/apply_industrial_96_product_closure.py
       - .github/workflows/apply-industrial-96-closure.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -18,7 +21,7 @@ concurrency:
 
 jobs:
   transform-and-validate:
-    if: contains(github.event.head_commit.message, '[industrial-96-bootstrap]')
+    if: github.event_name == 'pull_request' || contains(github.event.head_commit.message, '[industrial-96-bootstrap]')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
