@@ -25,7 +25,9 @@ def _actor(decision: Any) -> str:
 
 def _encode(event: ChatStreamEvent) -> bytes:
     body = json.dumps(event.data, separators=(",", ":"), ensure_ascii=False)
-    return f"id: {event.sequence}\nevent: {event.event}\ndata: {body}\n\n".encode("utf-8")
+    return (
+        f"id: {event.sequence}\nevent: {event.event}\ndata: {body}\n\n"
+    ).encode("utf-8")
 
 
 def _store(runtime: Any, cfg: Any):
@@ -43,7 +45,7 @@ def register_first_class_chat_routes(
     metrics: Any,
     admin: Any,
 ) -> ChatTurnService:
-    """Register canonical chat routes before the legacy AppSync route collection."""
+    """Register canonical chat routes before legacy AppSync route collections."""
 
     service = ChatTurnService(
         cfg=cfg,
@@ -81,7 +83,9 @@ def register_first_class_chat_routes(
     async def api_chat_stream(request: Request):
         decision = await admin(request, "operator")
         payload = await request.json()
-        raw_last_event_id = request.headers.get("last-event-id", "0").strip() or "0"
+        raw_last_event_id = (
+            request.headers.get("last-event-id", "0").strip() or "0"
+        )
         try:
             last_event_id = int(raw_last_event_id)
         except ValueError as exc:
@@ -90,7 +94,19 @@ def register_first_class_chat_routes(
             raise HTTPException(400, "last-event-id cannot be negative")
 
         async def events():
-            queue: asyncio.Queue[ChatStreamEvent | BaseException | None] = asyncio.Queue(maxsize=64)
+            queue: asyncio.Queue[ChatStreamEvent | BaseException | None] = (
+                asyncio.Queue(maxsize=64)
+            )
+
+            def signal_done() -> None:
+                with suppress(asyncio.QueueFull):
+                    queue.put_nowait(None)
+
+            async def signal_error(exc: BaseException) -> None:
+                try:
+                    await asyncio.wait_for(queue.put(exc), timeout=1.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
 
             async def produce() -> None:
                 try:
@@ -105,36 +121,49 @@ def register_first_class_chat_routes(
                 except asyncio.CancelledError:
                     raise
                 except BaseException as exc:
-                    await queue.put(exc)
+                    await signal_error(exc)
                 finally:
-                    await queue.put(None)
+                    signal_done()
 
-            producer = asyncio.create_task(produce(), name="omnidesk-chat-stream")
+            producer = asyncio.create_task(
+                produce(),
+                name="omnidesk-chat-stream",
+            )
+            emitted_sequence = last_event_id
             try:
                 while True:
                     if await request.is_disconnected():
                         producer.cancel()
                         break
                     try:
-                        item = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+                        item = await asyncio.wait_for(
+                            queue.get(),
+                            timeout=HEARTBEAT_SECONDS,
+                        )
                     except asyncio.TimeoutError:
                         yield b": heartbeat\n\n"
                         continue
                     if item is None:
                         break
                     if isinstance(item, BaseException):
+                        failure_sequence = emitted_sequence + 1
                         if isinstance(item, HTTPException):
-                            detail = item.detail if isinstance(item.detail, dict) else {"code": "chat_stream_rejected"}
-                            yield _encode(ChatStreamEvent(last_event_id + 1, "chat.failed", detail))
-                            break
+                            detail = (
+                                item.detail
+                                if isinstance(item.detail, dict)
+                                else {"code": "chat_stream_rejected"}
+                            )
+                        else:
+                            detail = {"code": "chat_stream_failed"}
                         yield _encode(
                             ChatStreamEvent(
-                                last_event_id + 1,
+                                failure_sequence,
                                 "chat.failed",
-                                {"code": "chat_stream_failed"},
+                                detail,
                             )
                         )
                         break
+                    emitted_sequence = max(emitted_sequence, item.sequence)
                     yield _encode(item)
             finally:
                 producer.cancel()
