@@ -1,0 +1,44 @@
+name: Web Admin Browser E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/web-admin-next/package-lock.json
+            apps/web-admin-e2e/package-lock.json
+      - name: Install Web Admin dependencies
+        run: npm ci --prefix apps/web-admin-next
+      - name: Typecheck and build production Web Admin
+        run: |
+          npm --prefix apps/web-admin-next run typecheck
+          npm --prefix apps/web-admin-next run build
+      - name: Install locked Playwright dependencies
+        run: npm ci --prefix apps/web-admin-e2e
+      - name: Install Chromium runtime
+        run: npx --prefix apps/web-admin-e2e playwright install --with-deps chromium
+      - name: Run CSP, hydration and UI truthfulness tests
+        run: npm --prefix apps/web-admin-e2e test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: web-admin-browser-e2e-${{ github.sha }}
+          path: |
+            apps/web-admin-e2e/playwright-report/
+            apps/web-admin-e2e/test-results/
+          if-no-files-found: warn
