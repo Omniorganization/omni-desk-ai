@@ -1,0 +1,157 @@
+name: Commit Bound Industrial Score
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full source commit SHA to score
+        required: true
+      ci_run_id:
+        description: Successful CI run id that owns the coverage artifact
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: industrial-score-${{ github.event.workflow_run.head_sha || inputs.source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  score:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        github.event.workflow_run.conclusion == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve source and CI run binding
+        id: binding
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_commit }}
+          INPUT_CI_RUN_ID: ${{ inputs.ci_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            source_sha="$EVENT_SOURCE_SHA"
+            ci_run_id="$EVENT_CI_RUN_ID"
+          else
+            source_sha="$INPUT_SOURCE_SHA"
+            ci_run_id="$INPUT_CI_RUN_ID"
+          fi
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ci_run_id" =~ ^[0-9]+$ ]]
+          {
+            echo "source_sha=$source_sha"
+            echo "ci_run_id=$ci_run_id"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ steps.binding.outputs.source_sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Download commit-bound CI coverage evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ steps.binding.outputs.ci_run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/score-input/ci
+          gh run download "$CI_RUN_ID" \
+            --name ci-evidence-3.11 \
+            --dir dist/score-input/ci
+          test -f dist/score-input/ci/coverage.json
+      - name: Wait for protected required checks and capture conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.binding.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/score-input
+          settled=0
+          for attempt in $(seq 1 120); do
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/check-runs?per_page=100" \
+              > dist/score-input/check-runs.json
+            if python - <<'PY'
+          import json
+          from pathlib import Path
+
+          required = json.loads(Path('.github/branch-protection.required.json').read_text())['required_check_contexts']
+          payload = json.loads(Path('dist/score-input/check-runs.json').read_text())
+          checks = payload.get('check_runs', [])
+          states = {}
+          for item in checks:
+              name = str(item.get('name') or '')
+              if name in required:
+                  states[name] = (item.get('status'), item.get('conclusion'))
+          missing = [name for name in required if name not in states]
+          pending = [name for name, state in states.items() if state[0] != 'completed']
+          failed = [name for name, state in states.items() if state[0] == 'completed' and state[1] != 'success']
+          print(json.dumps({'missing': missing, 'pending': pending, 'failed': failed}, sort_keys=True))
+          raise SystemExit(0 if not missing and not pending else 1)
+          PY
+            then
+              settled=1
+              break
+            fi
+            sleep 10
+          done
+          test "$settled" -eq 1
+      - name: Generate evidence-bound industrial score
+        env:
+          SOURCE_SHA: ${{ steps.binding.outputs.source_sha }}
+        run: |
+          python scripts/write_commit_bound_industrial_score.py \
+            --root . \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --checks-json dist/score-input/check-runs.json \
+            --coverage-json dist/score-input/ci/coverage.json \
+            --output "dist/evidence/industrial-score-${SOURCE_SHA}.json"
+      - name: Verify report payload binding
+        env:
+          SOURCE_SHA: ${{ steps.binding.outputs.source_sha }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('dist/evidence') / f"industrial-score-{os.environ['SOURCE_SHA']}.json"
+          report = json.loads(path.read_text(encoding='utf-8'))
+          expected = report.pop('payload_sha256')
+          actual = 'sha256:' + hashlib.sha256(json.dumps(
+              report,
+              ensure_ascii=False,
+              sort_keys=True,
+              separators=(',', ':'),
+          ).encode('utf-8')).hexdigest()
+          assert expected == actual, (expected, actual)
+          assert report['source_commit'] == os.environ['SOURCE_SHA']
+          assert report['workflow_run_id'] == os.environ['GITHUB_RUN_ID']
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: industrial-score-${{ steps.binding.outputs.source_sha }}
+          path: |
+            dist/evidence/industrial-score-${{ steps.binding.outputs.source_sha }}.json
+            dist/score-input/check-runs.json
+            dist/score-input/ci/coverage.json
+          if-no-files-found: error
