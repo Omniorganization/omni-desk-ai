@@ -12,6 +12,8 @@ DIR_GATES = {
 }
 
 FILE_GATES = {
+    "omnidesk_agent/security/resource_guard.py": 95.0,
+    "omnidesk_agent/security/admin_auth.py": 90.0,
     "omnidesk_agent/sandbox/runner_server.py": 85.0,
     "omnidesk_agent/sandbox/remote_runner.py": 85.0,
     "omnidesk_agent/models/schema_retry.py": 90.0,
@@ -27,7 +29,10 @@ def main(path: str = "coverage.json") -> int:
         print(f"coverage report not found: {report_path}", file=sys.stderr)
         return 2
     data = json.loads(report_path.read_text(encoding="utf-8"))
-    files = {filename.replace("\\", "/").lstrip("./"): detail for filename, detail in data.get("files", {}).items()}
+    files = {
+        filename.replace("\\", "/").lstrip("./"): detail
+        for filename, detail in data.get("files", {}).items()
+    }
     failures: list[str] = []
     for prefix, threshold in DIR_GATES.items():
         covered = 0
