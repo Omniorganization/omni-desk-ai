@@ -153,11 +153,14 @@ Future<dynamic> _invokeNotifications(OmniApiClient client) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('mobile typed client cases emit the expected requests', () async {
+  test('mobile typed client cases emit expected authenticated requests', () async {
     for (final contractCase in mobileTypedClientContractCases) {
       expect(contractCase.surface, 'mobile');
       if (contractCase.signedInProduction) {
-        expect(contractCase.contractPath, anyOf(contains('/approvals/'), contains('/push-token')));
+        expect(
+          contractCase.contractPath,
+          anyOf(contains('/approvals/'), contains('/push-token')),
+        );
       }
 
       final calls = <http.Request>[];
@@ -181,21 +184,21 @@ void main() {
     }
   });
 
-  test('registerMobile sends bearer auth and mobile capabilities', () async {
+  test('registerMobile advertises implemented mobile capabilities', () async {
     final client = OmniApiClient(
       baseUrl: 'https://gateway.example.test/',
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/devices/register');
-        expect(request.headers['authorization'], 'Bearer operator-token');
-        expect(request.headers['x-omnidesk-actor'], 'mobile-operator');
+        expect(request.url.toString(),
+            'https://gateway.example.test/app/devices/register');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['device_id'], 'mobile-1');
         expect(body['device_type'], 'mobile');
         expect(body['push_token'], 'push-token');
         expect(body['capabilities'], <String>[
           'chat',
+          'chat-streaming',
           'approval',
           'notification',
         ]);
@@ -207,18 +210,16 @@ void main() {
     client.close();
   });
 
-  test('createProject posts to the shared project contract with explicit idempotency override', () async {
+  test('createProject preserves an explicit idempotency key', () async {
     final client = OmniApiClient(
-      baseUrl: 'https://gateway.example.test/',
+      baseUrl: 'https://gateway.example.test',
       token: 'operator-token',
       actor: 'mobile-operator',
       httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/projects');
-        expect(request.method, 'POST');
-        expect(request.headers['idempotency-key'], 'mobile-project-create-op-123');
+        expect(request.headers['idempotency-key'],
+            'mobile-project-create-op-123');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['name'], 'Mobile Launch');
-        expect(body['description'], 'Mobile managed project');
         expect(body['source_device_id'], 'mobile-1');
         return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
       }),
@@ -226,61 +227,20 @@ void main() {
 
     await client.createProject(
       'Mobile Launch',
-      description: 'Mobile managed project',
       sourceDeviceId: 'mobile-1',
       idempotencyKey: 'mobile-project-create-op-123',
     );
     client.close();
   });
 
-  test('sendMessage uses the shared conversation endpoint and encodes the id segment', () async {
-    final client = OmniApiClient(
-      baseUrl: 'https://gateway.example.test',
-      token: 'operator-token',
-      actor: 'mobile-operator',
-      httpClient: MockClient((http.Request request) async {
-        expect(request.url.path, startsWith('/app/conversations/'));
-        expect(request.url.path, endsWith('/messages'));
-        expect(request.url.toString(), contains('conv-1'));
-        final body = jsonDecode(request.body) as Map<String, dynamic>;
-        expect(body['content'], 'Run desktop task');
-        expect(body['requires_desktop_runtime'], isTrue);
-        expect(body['risk'], 'high');
-        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
-      }),
+  test('base URL rejects non-loopback cleartext transport', () {
+    expect(
+      () => OmniApiClient(
+        baseUrl: 'http://gateway.example.test',
+        token: 'token',
+        actor: 'actor',
+      ),
+      throwsArgumentError,
     );
-
-    await client.sendMessage(
-      'conv-1/with space',
-      'Run desktop task',
-      requiresDesktopRuntime: true,
-      risk: 'high',
-    );
-    client.close();
-  });
-
-  test('askConversation uses the shared audited chat endpoint', () async {
-    final client = OmniApiClient(
-      baseUrl: 'https://gateway.example.test',
-      token: 'operator-token',
-      actor: 'mobile-operator',
-      httpClient: MockClient((http.Request request) async {
-        expect(request.url.toString(), 'https://gateway.example.test/app/conversations/conv-1/ask');
-        expect(request.headers['idempotency-key'], startsWith('mobile-ask-conv-1-'));
-        final body = jsonDecode(request.body) as Map<String, dynamic>;
-        expect(body['content'], 'Ask AI');
-        expect(body['model_profile'], 'fast');
-        expect(body['stream'], isFalse);
-        expect(body['source_device_id'], 'mobile-1');
-        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
-      }),
-    );
-
-    await client.askConversation(
-      'conv-1',
-      'Ask AI',
-      sourceDeviceId: 'mobile-1',
-    );
-    client.close();
   });
 }

@@ -12,6 +12,7 @@
       "Authorization: Bearer <token>",
       "X-OmniDesk-Actor: <actor>",
       "Idempotency-Key: <operation-key>",
+      "Last-Event-ID: <monotonic-event-id>",
       "X-OmniDesk-Device-Id: <device-id>",
       "X-OmniDesk-Timestamp: <unix-ms>",
       "X-OmniDesk-Nonce: <random-nonce>",
@@ -31,126 +32,97 @@
       "method": "GET",
       "path": "/app/bootstrap",
       "role": "viewer",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "GET",
       "path": "/app/projects",
       "description": "List user-created projects in the caller organization for Web Admin, Desktop, and Mobile project synchronization.",
       "role": "viewer",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/projects",
       "description": "Create a user-owned project and emit a project.created sync event. No default projects are provisioned by the Gateway.",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "PATCH",
       "path": "/app/projects/{project_id}",
       "description": "Rename or update metadata for a user-created project within the caller organization.",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "DELETE",
       "path": "/app/projects/{project_id}",
       "description": "Soft-delete a user-created project and emit a project.deleted sync event.",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/devices/register",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "GET",
       "path": "/app/conversations",
       "role": "viewer",
-      "client_surfaces": [
-        "web_admin"
-      ]
+      "client_surfaces": ["web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/conversations",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/messages",
       "role": "operator",
-      "client_surfaces": [
-        "mobile"
-      ]
+      "client_surfaces": ["mobile"]
     },
     {
       "method": "GET",
       "path": "/app/conversations/{conversation_id}/messages",
       "role": "viewer",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/ask",
-      "description": "Create a Gateway-audited chat turn, call the configured ModelRouter with task=chat, persist user and assistant messages, and return model metadata without exposing provider credentials to clients.",
+      "description": "Create a Gateway-audited non-streaming chat turn and persist model metadata without exposing provider credentials.",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/api/chat",
-      "description": "Unified non-streaming chat entrypoint for Web, Desktop, Mobile, and API clients. Creates or reuses a conversation, calls the governed ModelRouter with task=chat, persists user/assistant messages, and returns audit trace metadata.",
+      "description": "Unified non-streaming fallback entrypoint for Web, Desktop, Mobile, and API clients.",
       "role": "operator",
       "client_surfaces": []
     },
     {
       "method": "POST",
       "path": "/api/chat/stream",
-      "description": "Audited SSE delivery with monotonic event IDs, bounded concurrency and connection time, disconnect handling, persisted complete responses, usage, trace, and explicit completion/failure events. Provider-native token streaming remains separately gated.",
+      "description": "Governed provider-native SSE chat with monotonic event IDs, heartbeat, cancellation, Last-Event-ID replay, bounded concurrency, complete-response persistence, usage/cost/audit binding, and explicit completion/failure events. Clients may fall back to the non-streaming conversation endpoint only before receiving the first stream event.",
       "role": "operator",
-      "client_surfaces": []
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "stream_events": [
+        "chat.started",
+        "chat.delta",
+        "chat.reasoning.delta",
+        "chat.usage",
+        "chat.completed",
+        "chat.failed"
+      ],
+      "supports_cancellation": true,
+      "supports_resume": true,
+      "fallback_endpoint": "/app/conversations/{conversation_id}/ask"
     },
     {
       "method": "GET",
@@ -162,72 +134,47 @@
       "method": "POST",
       "path": "/app/tasks/{task_id}/status",
       "role": "operator",
-      "client_surfaces": [
-        "desktop"
-      ],
-      "signed_device_required_in_production": [
-        "desktop"
-      ]
+      "client_surfaces": ["desktop"],
+      "signed_device_required_in_production": ["desktop"]
     },
     {
       "method": "GET",
       "path": "/app/approvals",
       "role": "viewer",
-      "client_surfaces": [
-        "web_admin"
-      ]
+      "client_surfaces": ["web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/approvals/{approval_id}/decide",
       "role": "owner",
-      "client_surfaces": [
-        "mobile",
-        "web_admin"
-      ],
-      "signed_device_required_in_production": [
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["mobile", "web_admin"],
+      "signed_device_required_in_production": ["mobile", "web_admin"]
     },
     {
       "method": "GET",
       "path": "/app/notifications",
       "role": "viewer",
-      "client_surfaces": [
-        "mobile",
-        "web_admin"
-      ]
+      "client_surfaces": ["mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/runtime/desktop/heartbeat",
       "role": "operator",
-      "client_surfaces": [
-        "desktop"
-      ],
-      "signed_device_required_in_production": [
-        "desktop"
-      ]
+      "client_surfaces": ["desktop"],
+      "signed_device_required_in_production": ["desktop"]
     },
     {
       "method": "POST",
       "path": "/app/runtime/desktop/claim",
       "role": "operator",
-      "client_surfaces": [
-        "desktop"
-      ],
-      "signed_device_required_in_production": [
-        "desktop"
-      ]
+      "client_surfaces": ["desktop"],
+      "signed_device_required_in_production": ["desktop"]
     },
     {
       "method": "GET",
       "path": "/app/sync",
       "role": "viewer",
-      "client_surfaces": [
-        "desktop"
-      ]
+      "client_surfaces": ["desktop"]
     },
     {
       "method": "POST",
@@ -251,49 +198,34 @@
       "method": "POST",
       "path": "/app/devices/{device_id}/push-token",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "mobile"
-      ],
-      "signed_device_required_in_production": [
-        "desktop",
-        "mobile"
-      ]
+      "client_surfaces": ["desktop", "mobile"],
+      "signed_device_required_in_production": ["desktop", "mobile"]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/start",
       "role": "owner",
-      "client_surfaces": [
-        "web_admin"
-      ]
+      "client_surfaces": ["web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/complete",
       "role": "operator",
-      "client_surfaces": [
-        "desktop",
-        "web_admin"
-      ]
+      "client_surfaces": ["desktop", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/challenge",
       "description": "Issue a nonce challenge for device credential verification.",
       "role": "operator",
-      "client_surfaces": [
-        "web_admin"
-      ]
+      "client_surfaces": ["web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/verify",
       "description": "Verify a signed device challenge and mint a device credential.",
       "role": "operator",
-      "client_surfaces": [
-        "web_admin"
-      ]
+      "client_surfaces": ["web_admin"]
     },
     {
       "method": "POST",
@@ -301,11 +233,7 @@
       "description": "Rotate a device token hash after successful device authentication.",
       "role": "operator",
       "client_surfaces": [],
-      "signed_device_required_in_production": [
-        "desktop",
-        "mobile",
-        "web_admin"
-      ]
+      "signed_device_required_in_production": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "POST",
@@ -313,10 +241,7 @@
       "description": "Revoke a desktop/mobile/web_admin device credential.",
       "role": "owner",
       "client_surfaces": [],
-      "signed_device_required_in_production": [
-        "mobile",
-        "web_admin"
-      ]
+      "signed_device_required_in_production": ["mobile", "web_admin"]
     },
     {
       "method": "POST",
