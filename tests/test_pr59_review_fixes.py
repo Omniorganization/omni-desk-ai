@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from omnidesk_agent.appsync.streaming import install_audited_stream_route
-from omnidesk_agent.security.resource_guard import _route_class
+from omnidesk_agent.security import resource_guard as resource_guard_module
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _cfg(*, require_idempotency: bool = True) -> SimpleNamespace:
@@ -43,8 +47,8 @@ def test_stream_adapter_replaces_provisional_route_and_classifies_chat() -> None
     ]
     assert len(stream_routes) == 1
     assert stream_routes[0].endpoint.__module__ == "omnidesk_agent.appsync.streaming"
-    assert _route_class("/api/chat") == "chat"
-    assert _route_class("/api/chat/stream") == "chat"
+    assert resource_guard_module._route_class("/api/chat") == "chat"
+    assert resource_guard_module._route_class("/api/chat/stream") == "chat"
 
 
 def test_stream_rejects_invalid_writes_before_delegating_to_chat() -> None:
@@ -95,7 +99,7 @@ def test_stream_rejects_invalid_writes_before_delegating_to_chat() -> None:
 
 
 def test_container_liveness_and_readiness_contracts_remain_distinct() -> None:
-    dockerfile = open("Dockerfile", encoding="utf-8").read()
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "urlopen('http://127.0.0.1:18789/health'" in dockerfile
     assert "Orchestrators use /ready" in dockerfile
     assert "urlopen('http://127.0.0.1:18789/ready'" not in dockerfile
