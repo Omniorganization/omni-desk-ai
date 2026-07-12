@@ -1,0 +1,25 @@
+name: Temporary Source Bundle
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tmp-source-bundle.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Create source snapshot
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude='*.pyc' --exclude='__pycache__' -czf "$RUNNER_TEMP/omni-desk-ai-source.tgz" .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: temporary-source-bundle-${{ github.sha }}
+          path: ${{ runner.temp }}/omni-desk-ai-source.tgz
+          if-no-files-found: error
+          retention-days: 1
