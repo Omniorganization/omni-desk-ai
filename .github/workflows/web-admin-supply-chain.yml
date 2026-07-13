@@ -1,0 +1,148 @@
+name: Web Admin Supply Chain
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: web-admin-supply-chain-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  immutable-web-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web-admin-next/package-lock.json
+      - name: Install and verify Web Admin
+        working-directory: apps/web-admin-next
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Resolve immutable Node base image
+        run: |
+          set -euo pipefail
+          node_base_name="node:22-bookworm-slim"
+          docker pull "$node_base_name"
+          node_base_image="$(docker image inspect --format '{{index .RepoDigests 0}}' "$node_base_name")"
+          node_base_digest="${node_base_image##*@}"
+          [[ "$node_base_image" == node@sha256:* ]]
+          [[ "$node_base_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "NODE_BASE_NAME=$node_base_name"
+            echo "NODE_BASE_IMAGE=$node_base_image"
+            echo "NODE_BASE_DIGEST=$node_base_digest"
+          } >> "$GITHUB_ENV"
+      - name: Build digest-bound Web Admin OCI image
+        run: |
+          set -euo pipefail
+          image_ref="omnidesk-web-admin:${GITHUB_SHA}"
+          docker build \
+            --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" \
+            --build-arg "NODE_BASE_NAME=$NODE_BASE_NAME" \
+            --build-arg "NODE_BASE_DIGEST=$NODE_BASE_DIGEST" \
+            --build-arg "OMNIDESK_BUILD_SHA=$GITHUB_SHA" \
+            -f apps/web-admin-next/Dockerfile \
+            -t "$image_ref" \
+            apps/web-admin-next
+          image_id="$(docker image inspect --format '{{.Id}}' "$image_ref")"
+          test -n "$image_id"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_ref")" = "$GITHUB_SHA"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.base.name"}}' "$image_ref")" = "$NODE_BASE_NAME"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.base.digest"}}' "$image_ref")" = "$NODE_BASE_DIGEST"
+          test "$(docker image inspect --format '{{index .Config.Labels "ai.omnidesk.web.base.image"}}' "$image_ref")" = "$NODE_BASE_IMAGE"
+          mkdir -p "$RUNNER_TEMP/web-admin-supply-chain/payload"
+          docker save "$image_ref" | gzip -9 > "$RUNNER_TEMP/web-admin-supply-chain/payload/omnidesk-web-admin-${GITHUB_SHA}.tar.gz"
+          {
+            echo "WEB_IMAGE_REF=$image_ref"
+            echo "WEB_IMAGE_ID=$image_id"
+          } >> "$GITHUB_ENV"
+      - name: Write SPDX SBOM, SLSA provenance, and binding manifest
+        run: |
+          python scripts/write_web_supply_chain_binding.py \
+            --artifact "$RUNNER_TEMP/web-admin-supply-chain/payload/omnidesk-web-admin-${GITHUB_SHA}.tar.gz" \
+            --image-ref "$WEB_IMAGE_REF" \
+            --image-id "$WEB_IMAGE_ID" \
+            --node-base-name "$NODE_BASE_NAME" \
+            --node-base-image "$NODE_BASE_IMAGE" \
+            --node-base-digest "$NODE_BASE_DIGEST" \
+            --source-commit "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --output-dir "$RUNNER_TEMP/web-admin-supply-chain"
+          python scripts/write_native_artifact_manifest.py \
+            --platform web-admin \
+            --artifact-root "$RUNNER_TEMP/web-admin-supply-chain/payload" \
+            --source-commit "$GITHUB_SHA" \
+            --build-run-id "$GITHUB_RUN_ID" \
+            --output "$RUNNER_TEMP/web-admin-supply-chain/native-artifact-manifest.json"
+      - name: Push and attest immutable Web image on protected main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          repo_lc="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          registry_ref="ghcr.io/${repo_lc}/omnidesk-web-admin:${GITHUB_SHA}"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag "$WEB_IMAGE_REF" "$registry_ref"
+          docker push "$registry_ref"
+          registry_digest="$(docker buildx imagetools inspect "$registry_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$registry_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
+          cosign sign --yes "$registry_ref@$registry_digest"
+          cosign attest --yes \
+            --predicate "$RUNNER_TEMP/web-admin-supply-chain/web-admin-sbom.spdx.json" \
+            --type spdx \
+            "$registry_ref@$registry_digest"
+          cosign attest --yes \
+            --predicate "$RUNNER_TEMP/web-admin-supply-chain/web-admin-slsa-provenance.json" \
+            --type slsaprovenance \
+            "$registry_ref@$registry_digest"
+          export REGISTRY_REF="$registry_ref"
+          export REGISTRY_DIGEST="$registry_digest"
+          {
+            echo "WEB_REGISTRY_REF=$registry_ref"
+            echo "WEB_REGISTRY_DIGEST=$registry_digest"
+          } >> "$GITHUB_ENV"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "web-admin-supply-chain" / "web-admin-registry-binding.json"
+          path.write_text(json.dumps({
+              "schema": "omnidesk-web-registry-binding/v1",
+              "status": "passed",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source_commit": os.environ["GITHUB_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "image_ref": os.environ["REGISTRY_REF"],
+              "image_digest": os.environ["REGISTRY_DIGEST"],
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: web-admin-supply-chain-${{ github.sha }}
+          path: ${{ runner.temp }}/web-admin-supply-chain/
+          if-no-files-found: error

@@ -17,6 +17,16 @@ export interface ProjectPayload {
   archived?: boolean;
 }
 
+export interface DesktopTaskControl {
+  task_id: string;
+  status: TaskStatus;
+  cancel_requested: boolean;
+  lease_expired: boolean;
+  lease_expires_at?: number;
+  attempt_count: number;
+  updated_at: number;
+}
+
 export interface ChatStreamEvent {
   id: number;
   event: 'chat.started' | 'chat.delta' | 'chat.reasoning.delta' | 'chat.usage' | 'chat.completed' | 'chat.failed';
@@ -34,7 +44,14 @@ export interface StreamChatOptions {
   onEvent?: (event: ChatStreamEvent) => void;
 }
 
-const EXECUTABLE_CAPABILITIES = new Set(['chat', 'local-runtime', 'shell_sandbox', 'dry_run']);
+const EXECUTABLE_CAPABILITIES = new Set([
+  'chat',
+  'chat-streaming',
+  'local-runtime',
+  'shell_sandbox',
+  'file_operation',
+  'dry_run',
+]);
 
 function normalizeCapabilities(capabilities: string[]): string[] {
   const normalized = capabilities.map(capability => capability === 'sandbox' ? 'shell_sandbox' : capability);
@@ -43,7 +60,6 @@ function normalizeCapabilities(capabilities: string[]): string[] {
 
 function gatewayError(status: number, body: string): Error {
   if (status >= 500) return new Error(`${status} gateway_unavailable`);
-
   let detail = '';
   try {
     const payload = JSON.parse(body) as { detail?: unknown; code?: unknown };
@@ -74,23 +90,31 @@ export function parseSseBlock(block: string): ChatStreamEvent | null {
     else if (field === 'data') data.push(value);
   }
   if (!event || !Number.isSafeInteger(id) || id < 1) return null;
-  let payload: Record<string, unknown> = {};
   try {
     const decoded = JSON.parse(data.join('\n')) as unknown;
-    if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
-      payload = decoded as Record<string, unknown>;
-    }
+    return {
+      id,
+      event: event as ChatStreamEvent['event'],
+      data: decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+        ? decoded as Record<string, unknown>
+        : {},
+    };
   } catch {
-    payload = { code: 'invalid_stream_event' };
+    return {
+      id,
+      event: event as ChatStreamEvent['event'],
+      data: { code: 'invalid_stream_event' },
+    };
   }
-  return { id, event: event as ChatStreamEvent['event'], data: payload };
 }
 
 export class OmniApiClient {
   constructor(private options: OmniClientOptions) {}
 
   private async headers(path: string, method: string, body: string, idempotencyKey?: string): Promise<Record<string, string>> {
-    const signedHeaders = this.options.deviceSigner ? await this.options.deviceSigner(method, path, body) : {};
+    const signedHeaders = this.options.deviceSigner
+      ? await this.options.deviceSigner(method, path, body)
+      : {};
     return {
       'content-type': 'application/json',
       authorization: `Bearer ${this.options.token}`,
@@ -108,8 +132,8 @@ export class OmniApiClient {
       ...init,
       headers: {
         ...await this.headers(path, method, body, idempotencyKey),
-        ...(init.headers || {})
-      }
+        ...(init.headers || {}),
+      },
     });
     if (!response.ok) throw gatewayError(response.status, await response.text());
     return response.json() as Promise<T>;
@@ -134,7 +158,9 @@ export class OmniApiClient {
     return this.request<any>('/app/conversations', { method: 'POST', body: JSON.stringify({ title, source_device_id: sourceDeviceId }) }, idempotencyKey || `desktop-conversation-${Date.now()}`);
   }
 
-  listMessages(conversationId: string) { return this.request<any>(`/app/conversations/${encodeURIComponent(conversationId)}/messages`); }
+  listMessages(conversationId: string) {
+    return this.request<any>(`/app/conversations/${encodeURIComponent(conversationId)}/messages`);
+  }
 
   askConversation(conversationId: string, content: string, modelProfile = 'fast', sourceDeviceId?: string, idempotencyKey?: string) {
     return this.request<any>(`/app/conversations/${encodeURIComponent(conversationId)}/ask`, { method: 'POST', body: JSON.stringify({ content, model_profile: modelProfile, stream: false, source_device_id: sourceDeviceId }) }, idempotencyKey || `desktop-ask-${conversationId}-${content.length}-${Date.now()}`);
@@ -167,23 +193,26 @@ export class OmniApiClient {
     let buffer = '';
     let lastEventId = options.lastEventId || 0;
     let completed = false;
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done }).replace(/\r\n/g, '\n');
-      let boundary = buffer.indexOf('\n\n');
-      while (boundary >= 0) {
-        const block = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        const event = parseSseBlock(block);
-        if (event && event.id > lastEventId) {
-          lastEventId = event.id;
-          options.onEvent?.(event);
-          if (event.event === 'chat.completed') completed = true;
-          if (event.event === 'chat.failed') throw new Error(String(event.data.code || 'chat_stream_failed'));
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done }).replace(/\r\n/g, '\n');
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+          const event = parseSseBlock(buffer.slice(0, boundary));
+          buffer = buffer.slice(boundary + 2);
+          if (event && event.id > lastEventId) {
+            lastEventId = event.id;
+            options.onEvent?.(event);
+            if (event.event === 'chat.completed') completed = true;
+            if (event.event === 'chat.failed') throw new Error(String(event.data.code || 'chat_stream_failed'));
+          }
+          boundary = buffer.indexOf('\n\n');
         }
-        boundary = buffer.indexOf('\n\n');
+        if (done) break;
       }
-      if (done) break;
+    } finally {
+      reader.releaseLock();
     }
     return { lastEventId, completed };
   }
@@ -224,16 +253,24 @@ export class OmniApiClient {
     return this.request<any>('/app/runtime/desktop/claim', { method: 'POST', body: JSON.stringify({ device_id: deviceId, capabilities: normalizeCapabilities(capabilities), lease_seconds: leaseSeconds }) });
   }
 
+  renewTaskLease(taskId: string, deviceId: string, leaseSeconds = 60) {
+    return this.request<any>(`/app/runtime/desktop/tasks/${encodeURIComponent(taskId)}/lease`, { method: 'POST', body: JSON.stringify({ device_id: deviceId, lease_seconds: leaseSeconds }) });
+  }
+
+  taskControl(taskId: string, deviceId: string) {
+    return this.request<{ ok: true; control: DesktopTaskControl }>(`/app/runtime/desktop/tasks/${encodeURIComponent(taskId)}/control`, { method: 'POST', body: JSON.stringify({ device_id: deviceId }) });
+  }
+
   updateTaskStatus(taskId: string, status: TaskStatus, resultSummary?: string, assignedRuntimeDeviceId?: string, idempotencyKey?: string) {
-    return this.request<any>(`/app/tasks/${taskId}/status`, { method: 'POST', body: JSON.stringify({ status, result_summary: resultSummary, assigned_runtime_device_id: assignedRuntimeDeviceId }) }, idempotencyKey || `desktop-task-${taskId}-${status}-${Date.now()}`);
+    return this.request<any>(`/app/tasks/${encodeURIComponent(taskId)}/status`, { method: 'POST', body: JSON.stringify({ status, result_summary: resultSummary, assigned_runtime_device_id: assignedRuntimeDeviceId }) }, idempotencyKey || `desktop-task-${taskId}-${status}-${Date.now()}`);
   }
 
   registerPushToken(deviceId: string, pushToken: string, platform = 'desktop') {
-    return this.request<any>(`/app/devices/${deviceId}/push-token`, { method: 'POST', body: JSON.stringify({ push_token: pushToken, platform }) });
+    return this.request<any>(`/app/devices/${encodeURIComponent(deviceId)}/push-token`, { method: 'POST', body: JSON.stringify({ push_token: pushToken, platform }) });
   }
 
   completeEnrollment(enrollmentId: string, pairingCode: string, deviceId: string, publicKey: string) {
-    return this.request<any>(`/app/devices/enrollment/${enrollmentId}/complete`, { method: 'POST', body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId, public_key: publicKey }) });
+    return this.request<any>(`/app/devices/enrollment/${encodeURIComponent(enrollmentId)}/complete`, { method: 'POST', body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId, public_key: publicKey }) });
   }
 
   sync(sinceSeq = 0) { return this.request<any>(`/app/sync?since_seq=${sinceSeq}`); }

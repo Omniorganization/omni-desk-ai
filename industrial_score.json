@@ -1,8 +1,15 @@
 {
+  "schema": "omnidesk-industrial-score/historical-v1",
   "version": "1.12.7+root-monorepo-production-ga-candidate",
-  "status": "production_ga_candidate",
+  "status": "historical_snapshot_do_not_use_for_current_release",
   "as_of": "2026-06-22",
-  "scores": {
+  "superseded_by": {
+    "workflow": ".github/workflows/commit-bound-industrial-score.yml",
+    "generator": "scripts/write_commit_bound_industrial_score.py",
+    "artifact_pattern": "industrial-score-<full-source-commit>.json",
+    "policy": "Current industrial maturity must be generated from the exact source commit, workflow run, protected required checks, coverage report, algorithm version and external-evidence status."
+  },
+  "historical_scores": {
     "architecture": 95,
     "security_controls": 95,
     "api_abuse_resistance": 95,
@@ -11,27 +18,5 @@
     "production_evidence_closure": 88,
     "overall_range": "94-96"
   },
-  "code_level_evidence": [
-    "api_resource_guard supports postgres backend and trusted_proxy_ips",
-    "high_risk_post_routes_use_pydantic_schemas",
-    "high_risk_post_routes_require_idempotency_key",
-    "agent_run_idempotency_replays_return_first_response_and_mismatched_payloads_conflict",
-    "model_budget_precheck_uses_server_side_pricing",
-    "model_cost_ledger_records_server_estimated_cost_when_provider_cost_missing",
-    "production_validation_requires_postgres_storage_for_shared_budget_ledger",
-    "production_validation_requires_postgres_api_resource_guard_backend",
-    "oauth_state_is_server_generated_and_actor_bound",
-    "gmail_compose_is_opt_in"
-  ],
-  "remaining_real_ga_blockers": [
-    "latest_ci_workflow_green_on_release_commit",
-    "latest_security_workflow_green_on_release_commit",
-    "release_artifact_checksum_and_sbom_match",
-    "cosign_verify_passed",
-    "slsa_provenance_verify_passed",
-    "web_admin_desktop_mobile_agent_smoke_passed",
-    "postgres_multi_instance_rate_limit_and_budget_abuse_load_test_passed",
-    "rollback_backup_restore_drill_evidence_attached"
-  ],
   "real_ga_attested": false
 }
