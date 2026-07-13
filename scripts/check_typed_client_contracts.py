@@ -233,6 +233,12 @@ def _check_contract_coverage(root: Path) -> list[str]:
                 f"typed client contract: {key[0]} {key[1]} signed surfaces must be a list"
             )
             signed_surfaces = []
+        unknown_signed = set(signed_surfaces) - declared_surfaces
+        if unknown_signed:
+            issues.append(
+                f"typed client contract: {key[0]} {key[1]} has unknown "
+                f"signed surfaces {sorted(unknown_signed)}"
+            )
         if key == STREAM_CONTRACT_KEY:
             stream_surfaces = set(client_surfaces)
             continue

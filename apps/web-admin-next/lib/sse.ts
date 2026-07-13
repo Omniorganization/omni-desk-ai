@@ -85,5 +85,8 @@ export async function consumeSse(
   } finally {
     reader.releaseLock();
   }
+  if (!completed) {
+    throw new Error(`chat_stream_incomplete:last_event_id=${lastEventId}`);
+  }
   return { lastEventId, completed };
 }
