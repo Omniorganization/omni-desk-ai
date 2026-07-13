@@ -186,9 +186,11 @@ class _Router:
         raise AssertionError("partial failed streams must not fall back")
 
 
+@pytest.mark.parametrize("finish_reason", ["failed", "incomplete", "error"])
 @pytest.mark.asyncio
 async def test_failed_provider_terminal_is_not_persisted_as_success(
     monkeypatch: pytest.MonkeyPatch,
+    finish_reason: str,
 ) -> None:
     async def failed_stream(_provider, _request):
         yield ModelDelta(
@@ -204,7 +206,7 @@ async def test_failed_provider_terminal_is_not_persisted_as_success(
             provider="test",
             model="test-model",
             profile="fast",
-            finish_reason="failed",
+            finish_reason=finish_reason,
             provider_request_id="req-failed",
             native=True,
         )

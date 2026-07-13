@@ -28,6 +28,59 @@ class FakeProvider:
         )
 
 
+class _StreamingResponse:
+    def __init__(self, lines: list[str]):
+        self.lines = lines
+        self.headers = {"request-id": "provider-request-1"}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self):
+        for line in self.lines:
+            yield line
+
+
+class _StreamingClient:
+    lines: list[str] = []
+    request_json: dict[str, object] | None = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def stream(self, _method: str, _url: str, **kwargs):
+        self.__class__.request_json = kwargs.get("json")
+        return _StreamingResponse(self.__class__.lines)
+
+
+class _NativeProvider:
+    def __init__(self, provider_name: str):
+        self.provider_name = provider_name
+        self.model = "test-model"
+        self.profile_name = "fast"
+        self.settings = SimpleNamespace(
+            api_key_env="TEST_MODEL_API_KEY",
+            base_url=None,
+            api_version=None,
+            temperature=0.1,
+            max_output_tokens=64,
+            extra_body=None,
+            extra_headers=None,
+        )
+
+
 @pytest.mark.asyncio
 async def test_unsupported_provider_uses_explicit_non_native_fallback() -> None:
     deltas = [item async for item in stream_provider(FakeProvider(), ModelRequest("s", "u"))]
@@ -36,6 +89,63 @@ async def test_unsupported_provider_uses_explicit_non_native_fallback() -> None:
     assert deltas[0].finish_reason == "stop"
     assert deltas[0].native is False
     assert deltas[0].provider_request_id == "provider-request-1"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_midstream_error_is_raised(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_MODEL_API_KEY", "key")
+    monkeypatch.setattr(
+        "omnidesk_agent.models.provider_streaming.httpx.AsyncClient",
+        _StreamingClient,
+    )
+    _StreamingClient.lines = [
+        'data: {"type":"content_block_delta","delta":{"text":"partial"}}',
+        'data: {"type":"error","error":{"type":"overloaded_error"}}',
+    ]
+
+    with pytest.raises(RuntimeError, match="overloaded_error"):
+        _ = [
+            delta
+            async for delta in stream_provider(
+                _NativeProvider("anthropic"),
+                ModelRequest("system", "user"),
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_gemini_native_stream_includes_validated_images(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("TEST_MODEL_API_KEY", "key")
+    monkeypatch.setattr(
+        "omnidesk_agent.models.provider_streaming.httpx.AsyncClient",
+        _StreamingClient,
+    )
+    image = tmp_path / "input.png"
+    image.write_bytes(b"not-empty")
+    _StreamingClient.lines = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}',
+    ]
+
+    deltas = [
+        delta
+        async for delta in stream_provider(
+            _NativeProvider("gemini"),
+            ModelRequest(
+                "system",
+                "user",
+                images=[str(image)],
+                metadata={"allowed_image_roots": [str(tmp_path)]},
+            ),
+        )
+    ]
+
+    assert "".join(delta.text for delta in deltas) == "ok"
+    body = _StreamingClient.request_json or {}
+    parts = body["contents"][0]["parts"]  # type: ignore[index]
+    assert parts[1]["inline_data"]["mime_type"] == "image/png"
 
 
 @dataclass

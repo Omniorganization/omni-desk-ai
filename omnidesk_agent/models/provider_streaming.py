@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from omnidesk_agent.models.base import ModelDelta, ModelRequest
-from omnidesk_agent.models.providers import env, msgs
+from omnidesk_agent.models.providers import _image_part_from_path, env, msgs
 
 
 def _delta(
@@ -276,6 +276,16 @@ async def _anthropic_stream(provider: Any, request: ModelRequest) -> AsyncIterat
                         usage.update(raw_usage)
                     if delta.get("stop_reason"):
                         finish_reason = str(delta["stop_reason"])
+                elif event_type == "error":
+                    error = (
+                        payload.get("error")
+                        if isinstance(payload.get("error"), dict)
+                        else {}
+                    )
+                    error_type = str(error.get("type") or "unknown")
+                    raise RuntimeError(
+                        f"Anthropic stream error: type={error_type}"
+                    )
     yield _delta(provider, sequence, usage=usage, finish_reason=finish_reason or "stop", provider_request_id=request_id)
 
 
@@ -285,6 +295,10 @@ async def _gemini_stream(provider: Any, request: ModelRequest) -> AsyncIterator[
     if not key:
         raise RuntimeError(f"Missing {settings.api_key_env}")
     parts = [{"text": f"{request.system}\n\n{request.user}"}]
+    for image in request.images:
+        parts.append(
+            _image_part_from_path(str(image), request.metadata)
+        )
     body = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
