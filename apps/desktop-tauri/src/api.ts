@@ -34,14 +34,14 @@ export interface ChatStreamEvent {
 }
 
 export interface StreamChatOptions {
-  conversationId: string;
+  conversationId?: string;
   content: string;
   modelProfile?: string;
   sourceDeviceId?: string;
   idempotencyKey?: string;
   lastEventId?: number;
   signal?: AbortSignal;
-  onEvent: (event: ChatStreamEvent) => void;
+  onEvent?: (event: ChatStreamEvent) => void;
 }
 
 const EXECUTABLE_CAPABILITIES = new Set([
@@ -174,7 +174,7 @@ export class OmniApiClient {
       model_profile: options.modelProfile || 'fast',
       source_device_id: options.sourceDeviceId,
     });
-    const key = options.idempotencyKey || `desktop-stream-${crypto.randomUUID()}`;
+    const key = options.idempotencyKey || `desktop-stream-${options.conversationId || 'new'}-${crypto.randomUUID()}`;
     const response = await fetch(`${this.options.baseUrl.replace(/\/$/, '')}${path}`, {
       method: 'POST',
       body,
@@ -203,7 +203,7 @@ export class OmniApiClient {
           buffer = buffer.slice(boundary + 2);
           if (event && event.id > lastEventId) {
             lastEventId = event.id;
-            options.onEvent(event);
+            options.onEvent?.(event);
             if (event.event === 'chat.completed') completed = true;
             if (event.event === 'chat.failed') throw new Error(String(event.data.code || 'chat_stream_failed'));
           }
@@ -215,6 +215,30 @@ export class OmniApiClient {
       reader.releaseLock();
     }
     return { lastEventId, completed };
+  }
+
+  async streamChatWithFallback(options: StreamChatOptions): Promise<{ streamed: boolean; result?: any; lastEventId: number }> {
+    let observed = false;
+    try {
+      const result = await this.streamChat({
+        ...options,
+        onEvent: event => {
+          observed = true;
+          options.onEvent?.(event);
+        },
+      });
+      return { streamed: true, lastEventId: result.lastEventId };
+    } catch (error) {
+      if (observed || options.signal?.aborted || !options.conversationId) throw error;
+      const result = await this.askConversation(
+        options.conversationId,
+        options.content,
+        options.modelProfile,
+        options.sourceDeviceId,
+        options.idempotencyKey,
+      );
+      return { streamed: false, result, lastEventId: options.lastEventId || 0 };
+    }
   }
 
   registerDesktop(deviceId: string, platform: string, capabilities: string[], publicKey?: string) {
