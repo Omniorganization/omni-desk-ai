@@ -164,6 +164,14 @@ class ChatTurnService:
             raise HTTPException(409, str(exc)) from exc
         if cached is None:
             return None
+        if cached.get("stream_status") in {"reserved", "streaming"}:
+            raise HTTPException(
+                409,
+                {
+                    "code": "stream_in_progress",
+                    "message": "The original stream is still in progress",
+                },
+            )
         return {"ok": True, **cached}
 
     def _prepare_turn(
@@ -251,14 +259,6 @@ class ChatTurnService:
             idempotency_key=idempotency_key,
         )
         if cached is not None:
-            if cached.get("stream_status") in {"reserved", "streaming"}:
-                raise HTTPException(
-                    409,
-                    {
-                        "code": "stream_in_progress",
-                        "message": "The original stream is still in progress",
-                    },
-                )
             return PreparedChatTurn(
                 conversation_id=conversation_id,
                 idempotency_key=idempotency_key,

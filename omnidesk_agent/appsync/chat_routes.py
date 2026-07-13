@@ -124,6 +124,7 @@ def register_first_class_chat_routes(
             payload=payload,
             actor=actor,
             role=role,
+            last_event_id=last_event_id,
         )
 
         async def events():

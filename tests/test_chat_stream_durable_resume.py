@@ -142,6 +142,38 @@ def test_in_progress_cached_stream_is_rejected_before_http_200(
     ) == message_count
 
 
+@pytest.mark.asyncio
+async def test_non_stream_fallback_rejects_in_progress_stream_cache(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, _AllowedRouter())
+    conversation_id = _conversation(service)
+    payload = {"conversation_id": conversation_id, "content": "hello"}
+    service.prepare_stream(
+        request=_request("fallback-in-progress"),
+        payload=payload,
+        actor="operator-1",
+        role="operator",
+    )
+    message_count = len(
+        service.store.list_messages(conversation_id, actor="operator-1")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.complete(
+            request=_request("fallback-in-progress"),
+            payload=payload,
+            actor="operator-1",
+            role="operator",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "stream_in_progress"
+    assert len(
+        service.store.list_messages(conversation_id, actor="operator-1")
+    ) == message_count
+
+
 def test_resume_without_reserved_state_is_rejected_without_second_message(
     tmp_path: Path,
 ) -> None:

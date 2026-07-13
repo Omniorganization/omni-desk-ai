@@ -105,6 +105,7 @@ def test_stream_route_shares_limit_and_never_drops_normal_terminator() -> None:
     assert "await queue.put(None)" in source
     assert "put_nowait(None)" not in source
     assert "prepared = stream_service.prepare_stream" in source
+    assert "last_event_id=last_event_id" in source
 
 
 class _Provider:
