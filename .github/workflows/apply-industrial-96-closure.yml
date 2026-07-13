@@ -32,11 +32,13 @@ jobs:
       - name: Detect bootstrap payload
         id: detect
         run: |
-          if [[ -f scripts/apply_industrial_96_closure.py && -f scripts/apply_industrial_96_product_closure.py ]]; then
+          if [[ -f scripts/apply_industrial_96_closure.py \
+            && -f scripts/apply_industrial_96_product_closure.py \
+            && ! -f omnidesk_agent/appsync/chat_routes.py ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Bootstrap scripts already consumed; no transformation required."
+            echo "Bootstrap already consumed or first-class chat routes already present; no transformation required."
           fi
 
       - if: steps.detect.outputs.enabled == 'true'
