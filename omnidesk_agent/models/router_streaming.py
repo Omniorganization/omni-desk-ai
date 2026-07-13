@@ -186,7 +186,7 @@ class GovernedStreamingRouter:
                     native=delta.native,
                 )
 
-        if final_reason in {"failed", "incomplete"}:
+        if final_reason in {"failed", "incomplete", "error"}:
             raise RuntimeError(
                 "provider stream terminated without a successful completion: "
                 f"profile={profile}; finish_reason={final_reason}; "

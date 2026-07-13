@@ -39,6 +39,13 @@ class _DeniedRouter:
         raise PermissionError("profile denied")
 
 
+class _TenantDeniedRouter:
+    def route_plan(self, _task: str, metadata: dict[str, object]) -> RoutePlan:
+        if metadata.get("organization_id") == "org_default":
+            raise PermissionError("tenant profile denied")
+        return RoutePlan(profiles=["restricted"], max_retries=0)
+
+
 def _service(tmp_path: Path, router: object) -> ChatTurnService:
     cfg = SimpleNamespace(
         app_sync=SimpleNamespace(require_idempotency=True),
@@ -80,6 +87,91 @@ def test_explicit_profile_acl_is_checked_before_user_message_persistence(
 
     assert exc_info.value.status_code == 403
     assert service.store.list_messages(conversation_id, actor="operator-1") == []
+
+
+def test_tenant_profile_acl_receives_org_before_message_persistence(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, _TenantDeniedRouter())
+    conversation_id = _conversation(service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.prepare_stream(
+            request=_request("tenant-denied"),
+            payload={
+                "conversation_id": conversation_id,
+                "content": "hello",
+                "model_profile": "restricted",
+            },
+            actor="operator-1",
+            role="operator",
+        )
+
+    assert exc_info.value.status_code == 403
+    assert service.store.list_messages(conversation_id, actor="operator-1") == []
+
+
+def test_in_progress_cached_stream_is_rejected_before_http_200(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, _AllowedRouter())
+    conversation_id = _conversation(service)
+    payload = {"conversation_id": conversation_id, "content": "hello"}
+    service.prepare_stream(
+        request=_request("in-progress"),
+        payload=payload,
+        actor="operator-1",
+        role="operator",
+    )
+    message_count = len(
+        service.store.list_messages(conversation_id, actor="operator-1")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.prepare_stream(
+            request=_request("in-progress"),
+            payload=payload,
+            actor="operator-1",
+            role="operator",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "stream_in_progress"
+    assert len(
+        service.store.list_messages(conversation_id, actor="operator-1")
+    ) == message_count
+
+
+@pytest.mark.asyncio
+async def test_non_stream_fallback_rejects_in_progress_stream_cache(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, _AllowedRouter())
+    conversation_id = _conversation(service)
+    payload = {"conversation_id": conversation_id, "content": "hello"}
+    service.prepare_stream(
+        request=_request("fallback-in-progress"),
+        payload=payload,
+        actor="operator-1",
+        role="operator",
+    )
+    message_count = len(
+        service.store.list_messages(conversation_id, actor="operator-1")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.complete(
+            request=_request("fallback-in-progress"),
+            payload=payload,
+            actor="operator-1",
+            role="operator",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "stream_in_progress"
+    assert len(
+        service.store.list_messages(conversation_id, actor="operator-1")
+    ) == message_count
 
 
 def test_resume_without_reserved_state_is_rejected_without_second_message(

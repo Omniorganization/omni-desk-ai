@@ -1378,6 +1378,19 @@ class AppSyncStore:
                 values = [v for v in values if v.actor == actor and self._normalize_org_id(v.organization_id) == organization_id]
             return [self._record(v) for v in sorted(values, key=lambda c: c.updated_at, reverse=True)]
 
+    def get_conversation(
+        self,
+        conversation_id: str,
+        *,
+        actor: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            conversation = self.conversations.get(conversation_id)
+            if not conversation:
+                raise KeyError("conversation not found")
+            self._require_actor_org(actor, conversation.organization_id)
+            return self._record(conversation)
+
     def list_messages(self, conversation_id: str, actor: Optional[str] = None) -> list[dict[str, Any]]:
         with self._lock:
             conversation = self.conversations.get(conversation_id)
