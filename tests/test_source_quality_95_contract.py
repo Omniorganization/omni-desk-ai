@@ -15,9 +15,14 @@ def test_desktop_capabilities_are_truthful_and_fail_closed() -> None:
     package = text("apps/desktop-tauri/package.json")
 
     assert "new BrowserAutomationExecutor()" not in executor
-    assert "new FileOperationExecutor()" not in executor
+    assert "new FileOperationExecutor()" in executor
     assert "new UiBridgeExecutor()" not in executor
     assert "unsupported runtime capability" in executor
+    assert "approved approval_id is required" in executor
+    assert "approval scope is required" in executor
+    assert "workspace_only filesystem policy is required" in executor
+    assert "network_policy none is required" in executor
+    assert "expectedSha256" in executor
     assert "contents and path omitted from status" in executor
     assert "names and path omitted from status" in executor
     assert "workspace read completed: ${relativePath}" not in executor
