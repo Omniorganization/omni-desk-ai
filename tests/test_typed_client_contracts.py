@@ -103,3 +103,44 @@ def test_typed_client_contract_signed_coverage_is_endpoint_specific(tmp_path: Pa
     assert checker._check_contract_coverage(tmp_path) == [
         "typed client contract: mobile must assert signed production route POST /app/devices/{device_id}/push-token"
     ]
+
+
+def test_typed_client_contract_rejects_unknown_signed_surface(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(checker, "STREAM_TEST_FILES", {})
+    monkeypatch.setattr(
+        checker,
+        "TYPED_TEST_FILES",
+        {
+            "web_admin": {
+                "path": "apps/web-admin-next/tests/api.test.ts",
+                "marker": "WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES",
+            }
+        },
+    )
+    _write_contract(
+        tmp_path,
+        [
+            {
+                "method": "GET",
+                "path": "/app/conversations",
+                "role": "operator",
+                "client_surfaces": ["web_admin"],
+                "signed_device_required_in_production": ["web-admn"],
+            }
+        ],
+    )
+    _write(
+        tmp_path,
+        "apps/web-admin-next/tests/api.test.ts",
+        "const WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES = ["
+        "{ method: 'GET', contractPath: '/app/conversations' }"
+        "];",
+    )
+
+    assert checker._check_contract_coverage(tmp_path) == [
+        "typed client contract: GET /app/conversations has unknown signed "
+        "surfaces ['web-admn']"
+    ]

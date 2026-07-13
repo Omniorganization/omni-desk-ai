@@ -108,3 +108,24 @@ test('streamChat fails closed after a visible chat.failed event', async () => {
   );
   assert.deepEqual(observed, ['chat.started', 'chat.failed']);
 });
+
+test('streamChat rejects an SSE response without chat.completed', async () => {
+  globalThis.fetch = async () => new Response(
+    'id: 1\nevent: chat.started\ndata: {"conversation_id":"conv-1"}\n\n'
+    + 'id: 2\nevent: chat.delta\ndata: {"text":"partial"}\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+
+  const observed: string[] = [];
+  const api = new OmniAdminApi({ csrfToken: 'csrf-token', role: 'operator' });
+  await assert.rejects(
+    () => api.streamChat({
+      conversationId: 'conv-1',
+      content: 'hello',
+      lastEventId: 0,
+      onEvent: (event) => observed.push(event.event),
+    }),
+    /chat_stream_incomplete:last_event_id=2/,
+  );
+  assert.deepEqual(observed, ['chat.started', 'chat.delta']);
+});
