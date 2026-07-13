@@ -13,6 +13,15 @@ def _write(root: Path, rel: str, text: str) -> None:
 
 
 def _write_contract(root: Path, endpoints: list[dict[str, object]]) -> None:
+    endpoints = [
+        *endpoints,
+        {
+            "method": "POST",
+            "path": "/api/chat/stream",
+            "role": "operator",
+            "client_surfaces": [],
+        },
+    ]
     _write(
         root,
         "apps/shared/omni-app-api.contract.json",
@@ -21,6 +30,7 @@ def _write_contract(root: Path, endpoints: list[dict[str, object]]) -> None:
 
 
 def test_typed_client_contract_coverage_is_method_specific(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(checker, "STREAM_TEST_FILES", {})
     monkeypatch.setattr(
         checker,
         "TYPED_TEST_FILES",
@@ -47,6 +57,7 @@ def test_typed_client_contract_coverage_is_method_specific(tmp_path: Path, monke
 
 
 def test_typed_client_contract_signed_coverage_is_endpoint_specific(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(checker, "STREAM_TEST_FILES", {})
     monkeypatch.setattr(
         checker,
         "TYPED_TEST_FILES",

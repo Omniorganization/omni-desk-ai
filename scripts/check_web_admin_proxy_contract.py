@@ -22,6 +22,7 @@ WEB_ADMIN_ROUTE_MAP = {
     "/app/devices/enrollment/{enrollment_id}/complete": "devices/enrollment/[enrollmentId]/complete/route.ts",
     "/app/devices/enrollment/{enrollment_id}/challenge": "devices/enrollment/[enrollmentId]/challenge/route.ts",
     "/app/devices/enrollment/{enrollment_id}/verify": "devices/enrollment/[enrollmentId]/verify/route.ts",
+    "/api/chat/stream": "chat/stream/route.ts",
 }
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
