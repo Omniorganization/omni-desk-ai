@@ -20,11 +20,6 @@ CHAT_PATH = "/api/chat"
 STREAM_PATH = "/api/chat/stream"
 STREAM_TIMEOUT_SECONDS = 120
 STREAM_CHUNK_CHARACTERS = 256
-SSE_HEADERS = {
-    "Cache-Control": "no-cache, no-transform",
-    "X-Accel-Buffering": "no",
-    "Connection": "keep-alive",
-}
 
 
 def _post_endpoint(app: FastAPI, path: str) -> Callable[[Request], Awaitable[Any]]:
@@ -67,33 +62,10 @@ def _install_stream_chat_classification() -> None:
     resource_guard_module._route_class = stream_aware_route_class
 
 
-def _request_with_json(request: Request, payload: dict[str, Any]) -> Request:
-    """Create a delegated request using only public ASGI/Starlette interfaces."""
-
+def _replace_request_json(request: Request, payload: dict[str, Any]) -> None:
     encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    delivered = False
-
-    async def receive() -> dict[str, Any]:
-        nonlocal delivered
-        if delivered:
-            return {"type": "http.request", "body": b"", "more_body": False}
-        delivered = True
-        return {"type": "http.request", "body": encoded, "more_body": False}
-
-    scope = dict(request.scope)
-    scope["path"] = CHAT_PATH
-    scope["raw_path"] = CHAT_PATH.encode("ascii")
-    scope["query_string"] = b""
-    headers = [
-        (key, value)
-        for key, value in scope.get("headers", [])
-        if key.lower() != b"content-length"
-    ]
-    headers.append((b"content-length", str(len(encoded)).encode("ascii")))
-    scope["headers"] = headers
-    delegated = Request(scope, receive=receive)
-    delegated.state.__dict__.update(request.state.__dict__)
-    return delegated
+    setattr(request, "_body", encoded)
+    setattr(request, "_json", payload)
 
 
 def _encode_sse(sequence: int, event: str, data: dict[str, Any]) -> bytes:
@@ -117,10 +89,6 @@ async def _result_events(
     text = str(message.get("content") or "")
     for offset in range(0, len(text), STREAM_CHUNK_CHARACTERS):
         if await request.is_disconnected():
-            logger.info(
-                "audited chat stream disconnected during delivery",
-                extra={"conversation_id": conversation_id, "sequence": sequence},
-            )
             return
         if sequence > last_event_id:
             yield _encode_sse(
@@ -129,7 +97,6 @@ async def _result_events(
                 {"text": text[offset : offset + STREAM_CHUNK_CHARACTERS]},
             )
         sequence += 1
-        await asyncio.sleep(0)
 
     if sequence > last_event_id:
         usage = result.get("usage")
@@ -172,28 +139,31 @@ def install_audited_stream_route(app: FastAPI, cfg: Any) -> None:
     @app.post(STREAM_PATH)
     async def api_chat_stream(request: Request):
         payload = await request.json()
-        if not isinstance(payload, dict):
-            raise HTTPException(422, "JSON object body is required")
         content = str(payload.get("content") or payload.get("message") or "").strip()
         if not content:
             raise HTTPException(422, "content is required")
 
+        # Validate the key before any conversation write. The delegated `/api/chat`
+        # endpoint then binds that key to both conversation creation and the turn.
         _require_idempotency(cfg, request, payload)
 
-        raw_last_event_id = request.headers.get("last-event-id", "0").strip() or "0"
         try:
-            last_event_id = int(raw_last_event_id)
+            last_event_id = max(
+                0,
+                int(request.headers.get("last-event-id", "0") or "0"),
+            )
         except ValueError as exc:
             raise HTTPException(400, "last-event-id must be an integer") from exc
-        if last_event_id < 0:
-            raise HTTPException(400, "last-event-id cannot be negative")
 
-        delegated_request = _request_with_json(request, {**payload, "stream": False})
+        normalized_payload = {**payload, "stream": False}
+        _replace_request_json(request, normalized_payload)
 
         try:
+            # Complete the audited turn before returning the response so the HTTP
+            # resource-guard lease covers model execution and spend accounting.
             async with stream_limit:
                 raw_result = await asyncio.wait_for(
-                    api_chat(delegated_request),
+                    api_chat(request),
                     timeout=STREAM_TIMEOUT_SECONDS,
                 )
         except HTTPException:
@@ -202,17 +172,14 @@ def install_audited_stream_route(app: FastAPI, cfg: Any) -> None:
             return StreamingResponse(
                 _failure_events("stream_timeout", last_event_id),
                 media_type="text/event-stream",
-                headers=SSE_HEADERS,
+                headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
             )
-        except asyncio.CancelledError:
-            logger.info("audited chat stream cancelled before delivery")
-            raise
         except Exception:
             logger.exception("audited chat stream failed before delivery")
             return StreamingResponse(
                 _failure_events("stream_failed", last_event_id),
                 media_type="text/event-stream",
-                headers=SSE_HEADERS,
+                headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
             )
 
         if not isinstance(raw_result, dict):
@@ -221,5 +188,5 @@ def install_audited_stream_route(app: FastAPI, cfg: Any) -> None:
         return StreamingResponse(
             _result_events(request, result, last_event_id),
             media_type="text/event-stream",
-            headers=SSE_HEADERS,
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
         )
