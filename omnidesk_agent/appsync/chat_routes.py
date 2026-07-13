@@ -116,15 +116,14 @@ def register_first_class_chat_routes(
 
         actor = _actor(decision)
         role = str(getattr(decision, "role", "operator"))
-        # This runs before StreamingResponse is created. Missing content,
-        # idempotency, resume state, conversation access and model-profile policy
-        # therefore preserve normal 4xx/503 HTTP semantics.
+        # This runs before StreamingResponse is created. Missing content or
+        # idempotency, unknown conversations, access denial and absent model
+        # routing therefore preserve their normal 4xx/503 HTTP contract.
         prepared = stream_service.prepare_stream(
             request=request,
             payload=payload,
             actor=actor,
             role=role,
-            last_event_id=last_event_id,
         )
 
         async def events():

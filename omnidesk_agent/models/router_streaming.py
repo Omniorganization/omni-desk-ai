@@ -8,8 +8,6 @@ from omnidesk_agent.models.provider_errors import classify_provider_error
 from omnidesk_agent.models.provider_streaming import stream_provider
 from omnidesk_agent.models.router import ModelRouter
 
-FAILED_FINISH_REASONS = {"failed", "incomplete", "error"}
-
 
 class GovernedStreamingRouter:
     """Streaming facade preserving ModelRouter ACL, budget, retry and ledger policy."""
@@ -82,8 +80,11 @@ class GovernedStreamingRouter:
                         continue
                     break
 
-        # Compatibility fallback is allowed only before a visible native delta.
-        # ModelRouter.complete remains the governance source of truth in this path.
+        # Some providers, staging fakes and older compatible endpoints expose a
+        # governed complete transport but no native stream transport. Falling back
+        # before the first delta preserves availability without risking duplicate
+        # visible output. ModelRouter.complete remains responsible for all normal
+        # ACL, budget, retry, ledger and cache behavior in this path.
         try:
             response = await self.router.complete(request)
         except asyncio.CancelledError:
@@ -156,29 +157,22 @@ class GovernedStreamingRouter:
         )
 
         text_parts: list[str] = []
-        reasoning_parts: list[str] = []
         final_usage: dict[str, Any] = {}
         final_reason = "stop"
         provider_request_id: str | None = None
         native = True
         final_sequence = 1
-        buffer_structured_output = bool(safe.json_mode)
         async for delta in stream_provider(provider, safe):
             final_sequence = max(final_sequence, int(delta.sequence))
             provider_request_id = delta.provider_request_id or provider_request_id
             native = native and bool(delta.native)
             if delta.text:
                 text_parts.append(delta.text)
-            if delta.reasoning:
-                reasoning_parts.append(delta.reasoning)
             if delta.usage:
                 final_usage.update(delta.usage)
             if delta.finish_reason:
                 final_reason = delta.finish_reason
-            if (
-                (delta.text or delta.reasoning)
-                and not buffer_structured_output
-            ):
+            if (delta.text or delta.reasoning) and not request.json_mode:
                 yield ModelDelta(
                     sequence=delta.sequence,
                     provider=str(
@@ -192,7 +186,7 @@ class GovernedStreamingRouter:
                     native=delta.native,
                 )
 
-        if final_reason.lower() in FAILED_FINISH_REASONS:
+        if final_reason in {"failed", "incomplete"}:
             raise RuntimeError(
                 "provider stream terminated without a successful completion: "
                 f"profile={profile}; finish_reason={final_reason}; "
@@ -200,46 +194,30 @@ class GovernedStreamingRouter:
             )
 
         text = "".join(text_parts)
-        if safe.json_mode:
-            streamed_response = ModelResponse(
-                text=text,
-                provider=str(getattr(provider, "provider_name", "unknown")),
-                model=str(provider.model),
-                profile=profile,
-                usage=final_usage,
-                raw={
-                    "provider_request_id": provider_request_id,
-                    "finish_reason": final_reason,
-                    "native_stream": native,
-                },
-            )
-            validated = await self.router._repair_structured_output_if_needed(
+        if request.json_mode:
+            repaired = await self.router._repair_structured_output_if_needed(
                 safe,
                 profile,
                 provider,
-                streamed_response,
-            )
-            repaired = validated is not streamed_response
-            text = validated.text
-            final_usage.update(validated.usage or {})
-            provider_request_id = str(
-                (validated.raw or {}).get("id")
-                or (validated.raw or {}).get("provider_request_id")
-                or provider_request_id
-                or ""
-            ) or None
-            final_sequence += 1
-            if text:
-                yield ModelDelta(
-                    sequence=final_sequence,
-                    provider=validated.provider,
-                    model=validated.model,
-                    profile=profile,
+                ModelResponse(
                     text=text,
-                    provider_request_id=provider_request_id,
-                    native=native and not repaired,
-                )
-
+                    provider=str(getattr(provider, "provider_name", "unknown")),
+                    model=str(provider.model),
+                    profile=profile,
+                    usage=final_usage,
+                    raw={"id": provider_request_id},
+                ),
+            )
+            text = repaired.text
+            yield ModelDelta(
+                sequence=final_sequence,
+                provider=repaired.provider,
+                model=repaired.model,
+                profile=repaired.profile,
+                text=text,
+                provider_request_id=provider_request_id,
+                native=False,
+            )
         self.router._record_success(profile)
         estimated_output_tokens = self.router.token_budget.estimate_tokens(text)
         self.router.token_budget.record_call(

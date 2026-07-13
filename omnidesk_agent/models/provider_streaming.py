@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from omnidesk_agent.models.base import ModelDelta, ModelRequest
-from omnidesk_agent.models.providers import _image_part_from_path, env, msgs
+from omnidesk_agent.models.providers import env, msgs
 
 
 def _delta(
@@ -46,20 +46,11 @@ async def _sse_payloads(response: httpx.Response) -> AsyncIterator[dict[str, Any
             payload = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if not isinstance(payload, dict):
-            continue
-        if str(payload.get("type") or "") == "error":
-            error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-            error_type = str(error.get("type") or "provider_stream_error")
-            message = str(error.get("message") or "provider stream returned an error event")
-            raise RuntimeError(f"{error_type}: {message}")
-        yield payload
+        if isinstance(payload, dict):
+            yield payload
 
 
-async def _openai_compatible_stream(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
+async def _openai_compatible_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     settings = provider.settings
     key = env(settings.api_key_env)
     if not key:
@@ -90,16 +81,9 @@ async def _openai_compatible_stream(
     final_reason: str | None = None
     request_id: str | None = None
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=None)) as client:
-        async with client.stream(
-            "POST",
-            f"{base}/chat/completions",
-            headers=headers,
-            json=body,
-        ) as response:
+        async with client.stream("POST", f"{base}/chat/completions", headers=headers, json=body) as response:
             response.raise_for_status()
-            request_id = response.headers.get("x-request-id") or response.headers.get(
-                "request-id"
-            )
+            request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
             async for payload in _sse_payloads(response):
                 request_id = str(payload.get("id") or request_id or "") or None
                 usage = payload.get("usage")
@@ -109,11 +93,7 @@ async def _openai_compatible_stream(
                 if not choices:
                     continue
                 choice = choices[0] if isinstance(choices[0], dict) else {}
-                delta = (
-                    choice.get("delta")
-                    if isinstance(choice.get("delta"), dict)
-                    else {}
-                )
+                delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
                 text = delta.get("content") or ""
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
                 finish = choice.get("finish_reason")
@@ -137,10 +117,7 @@ async def _openai_compatible_stream(
     )
 
 
-async def _openai_responses_stream(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
+async def _openai_responses_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     settings = provider.settings
     key = env(settings.api_key_env)
     if not key:
@@ -168,39 +145,17 @@ async def _openai_responses_stream(
         "Accept": "text/event-stream",
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=None)) as client:
-        async with client.stream(
-            "POST",
-            f"{base}/responses",
-            headers=headers,
-            json=body,
-        ) as response:
+        async with client.stream("POST", f"{base}/responses", headers=headers, json=body) as response:
             response.raise_for_status()
             request_id = response.headers.get("x-request-id")
             async for payload in _sse_payloads(response):
                 event_type = str(payload.get("type") or "")
-                response_obj = (
-                    payload.get("response")
-                    if isinstance(payload.get("response"), dict)
-                    else {}
-                )
-                request_id = str(
-                    response_obj.get("id")
-                    or payload.get("response_id")
-                    or request_id
-                    or ""
-                ) or None
-                if event_type in {
-                    "response.output_text.delta",
-                    "response.refusal.delta",
-                }:
+                response_obj = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+                request_id = str(response_obj.get("id") or payload.get("response_id") or request_id or "") or None
+                if event_type in {"response.output_text.delta", "response.refusal.delta"}:
                     text = str(payload.get("delta") or "")
                     if text:
-                        yield _delta(
-                            provider,
-                            sequence,
-                            text=text,
-                            provider_request_id=request_id,
-                        )
+                        yield _delta(provider, sequence, text=text, provider_request_id=request_id)
                         sequence += 1
                 elif event_type in {
                     "response.reasoning_text.delta",
@@ -208,26 +163,13 @@ async def _openai_responses_stream(
                 }:
                     reasoning = str(payload.get("delta") or "")
                     if reasoning:
-                        yield _delta(
-                            provider,
-                            sequence,
-                            reasoning=reasoning,
-                            provider_request_id=request_id,
-                        )
+                        yield _delta(provider, sequence, reasoning=reasoning, provider_request_id=request_id)
                         sequence += 1
-                elif event_type in {
-                    "response.completed",
-                    "response.incomplete",
-                    "response.failed",
-                }:
+                elif event_type in {"response.completed", "response.incomplete", "response.failed"}:
                     raw_usage = response_obj.get("usage")
                     if isinstance(raw_usage, dict):
                         usage = raw_usage
-                    finish_reason = (
-                        "stop"
-                        if event_type == "response.completed"
-                        else event_type.removeprefix("response.")
-                    )
+                    finish_reason = "stop" if event_type == "response.completed" else event_type.removeprefix("response.")
     yield _delta(
         provider,
         sequence,
@@ -237,10 +179,7 @@ async def _openai_responses_stream(
     )
 
 
-async def _azure_stream(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
+async def _azure_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     settings = provider.settings
     key = env(settings.api_key_env)
     endpoint = (settings.base_url or "").rstrip("/")
@@ -258,15 +197,8 @@ async def _azure_stream(
     }
     if request.json_mode:
         body["response_format"] = {"type": "json_object"}
-    headers = {
-        "api-key": key,
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-    url = (
-        f"{endpoint}/openai/deployments/{provider.model}/chat/completions"
-        f"?api-version={version}"
-    )
+    headers = {"api-key": key, "Content-Type": "application/json", "Accept": "text/event-stream"}
+    url = f"{endpoint}/openai/deployments/{provider.model}/chat/completions?api-version={version}"
     sequence = 1
     usage: dict[str, Any] | None = None
     finish_reason: str | None = None
@@ -274,9 +206,7 @@ async def _azure_stream(
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=None)) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             response.raise_for_status()
-            request_id = response.headers.get("x-request-id") or response.headers.get(
-                "apim-request-id"
-            )
+            request_id = response.headers.get("x-request-id") or response.headers.get("apim-request-id")
             async for payload in _sse_payloads(response):
                 raw_usage = payload.get("usage")
                 if isinstance(raw_usage, dict):
@@ -285,37 +215,18 @@ async def _azure_stream(
                 if not choices:
                     continue
                 choice = choices[0] if isinstance(choices[0], dict) else {}
-                delta = (
-                    choice.get("delta")
-                    if isinstance(choice.get("delta"), dict)
-                    else {}
-                )
+                delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
                 text = str(delta.get("content") or "")
                 reasoning = str(delta.get("reasoning_content") or "")
                 if choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
                 if text or reasoning:
-                    yield _delta(
-                        provider,
-                        sequence,
-                        text=text,
-                        reasoning=reasoning,
-                        provider_request_id=request_id,
-                    )
+                    yield _delta(provider, sequence, text=text, reasoning=reasoning, provider_request_id=request_id)
                     sequence += 1
-    yield _delta(
-        provider,
-        sequence,
-        usage=usage or {},
-        finish_reason=finish_reason or "stop",
-        provider_request_id=request_id,
-    )
+    yield _delta(provider, sequence, usage=usage or {}, finish_reason=finish_reason or "stop", provider_request_id=request_id)
 
 
-async def _anthropic_stream(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
+async def _anthropic_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     settings = provider.settings
     key = env(settings.api_key_env)
     if not key:
@@ -340,76 +251,40 @@ async def _anthropic_stream(
     finish_reason: str | None = None
     request_id: str | None = None
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=None)) as client:
-        async with client.stream(
-            "POST",
-            f"{base}/v1/messages",
-            headers=headers,
-            json=body,
-        ) as response:
+        async with client.stream("POST", f"{base}/v1/messages", headers=headers, json=body) as response:
             response.raise_for_status()
             request_id = response.headers.get("request-id")
             async for payload in _sse_payloads(response):
                 event_type = str(payload.get("type") or "")
                 if event_type == "message_start":
-                    message = (
-                        payload.get("message")
-                        if isinstance(payload.get("message"), dict)
-                        else {}
-                    )
+                    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
                     request_id = str(message.get("id") or request_id or "") or None
                     raw_usage = message.get("usage")
                     if isinstance(raw_usage, dict):
                         usage.update(raw_usage)
                 elif event_type == "content_block_delta":
-                    delta = (
-                        payload.get("delta")
-                        if isinstance(payload.get("delta"), dict)
-                        else {}
-                    )
+                    delta = payload.get("delta") if isinstance(payload.get("delta"), dict) else {}
                     text = str(delta.get("text") or "")
                     reasoning = str(delta.get("thinking") or "")
                     if text or reasoning:
-                        yield _delta(
-                            provider,
-                            sequence,
-                            text=text,
-                            reasoning=reasoning,
-                            provider_request_id=request_id,
-                        )
+                        yield _delta(provider, sequence, text=text, reasoning=reasoning, provider_request_id=request_id)
                         sequence += 1
                 elif event_type == "message_delta":
-                    delta = (
-                        payload.get("delta")
-                        if isinstance(payload.get("delta"), dict)
-                        else {}
-                    )
+                    delta = payload.get("delta") if isinstance(payload.get("delta"), dict) else {}
                     raw_usage = payload.get("usage")
                     if isinstance(raw_usage, dict):
                         usage.update(raw_usage)
                     if delta.get("stop_reason"):
                         finish_reason = str(delta["stop_reason"])
-    yield _delta(
-        provider,
-        sequence,
-        usage=usage,
-        finish_reason=finish_reason or "stop",
-        provider_request_id=request_id,
-    )
+    yield _delta(provider, sequence, usage=usage, finish_reason=finish_reason or "stop", provider_request_id=request_id)
 
 
-async def _gemini_stream(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
+async def _gemini_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     settings = provider.settings
     key = env(settings.api_key_env)
     if not key:
         raise RuntimeError(f"Missing {settings.api_key_env}")
-    parts: list[dict[str, Any]] = [
-        {"text": f"{request.system}\n\n{request.user}"}
-    ]
-    for image in request.images:
-        parts.append(_image_part_from_path(str(image), request.metadata))
+    parts = [{"text": f"{request.system}\n\n{request.user}"}]
     body = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
@@ -417,20 +292,13 @@ async def _gemini_stream(
             "maxOutputTokens": settings.max_output_tokens,
         },
     }
-    base = (
-        settings.base_url or "https://generativelanguage.googleapis.com"
-    ).rstrip("/")
+    base = (settings.base_url or "https://generativelanguage.googleapis.com").rstrip("/")
     url = f"{base}/v1beta/models/{provider.model}:streamGenerateContent"
     sequence = 1
     usage: dict[str, Any] | None = None
     finish_reason: str | None = None
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=None)) as client:
-        async with client.stream(
-            "POST",
-            url,
-            params={"key": key, "alt": "sse"},
-            json=body,
-        ) as response:
+        async with client.stream("POST", url, params={"key": key, "alt": "sse"}, json=body) as response:
             response.raise_for_status()
             async for payload in _sse_payloads(response):
                 raw_usage = payload.get("usageMetadata")
@@ -442,11 +310,7 @@ async def _gemini_stream(
                 candidate = candidates[0] if isinstance(candidates[0], dict) else {}
                 if candidate.get("finishReason"):
                     finish_reason = str(candidate["finishReason"])
-                content = (
-                    candidate.get("content")
-                    if isinstance(candidate.get("content"), dict)
-                    else {}
-                )
+                content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
                 text = "".join(
                     str(part.get("text") or "")
                     for part in content.get("parts", [])
@@ -455,18 +319,10 @@ async def _gemini_stream(
                 if text:
                     yield _delta(provider, sequence, text=text)
                     sequence += 1
-    yield _delta(
-        provider,
-        sequence,
-        usage=usage or {},
-        finish_reason=finish_reason or "stop",
-    )
+    yield _delta(provider, sequence, usage=usage or {}, finish_reason=finish_reason or "stop")
 
 
-async def _ollama_stream(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
+async def _ollama_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     settings = provider.settings
     base = (settings.base_url or "http://127.0.0.1:11434").rstrip("/")
     body = {
@@ -488,11 +344,7 @@ async def _ollama_stream(
                 if not line.strip():
                     continue
                 payload = json.loads(line)
-                message = (
-                    payload.get("message")
-                    if isinstance(payload.get("message"), dict)
-                    else {}
-                )
+                message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
                 text = str(message.get("content") or "")
                 if text:
                     yield _delta(provider, sequence, text=text)
@@ -504,18 +356,10 @@ async def _ollama_stream(
                         "eval_count": payload.get("eval_count", 0),
                         "total_duration": payload.get("total_duration", 0),
                     }
-    yield _delta(
-        provider,
-        sequence,
-        usage=usage,
-        finish_reason=finish_reason or "stop",
-    )
+    yield _delta(provider, sequence, usage=usage, finish_reason=finish_reason or "stop")
 
 
-async def _compatibility_stream(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
+async def _compatibility_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     response = await provider.complete(request)
     yield _delta(
         provider,
@@ -528,11 +372,12 @@ async def _compatibility_stream(
     )
 
 
-async def stream_provider(
-    provider: Any,
-    request: ModelRequest,
-) -> AsyncIterator[ModelDelta]:
-    """Use a provider-native transport where one is supported."""
+async def stream_provider(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
+    """Use a provider-native transport where one is supported.
+
+    OpenAI-compatible covers DeepSeek, Qwen/DashScope, Groq, Mistral,
+    OpenRouter and the other compatible profiles configured by this repository.
+    """
 
     name = str(getattr(provider, "provider_name", ""))
     if name == "openai":
