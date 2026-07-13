@@ -26,17 +26,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: agent/industrial-96-closure
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Detect bootstrap payload
         id: detect
         run: |
-          if [[ -f scripts/apply_industrial_96_closure.py && -f scripts/apply_industrial_96_product_closure.py ]]; then
+          if [[ -f scripts/apply_industrial_96_closure.py \
+            && -f scripts/apply_industrial_96_product_closure.py \
+            && ! -f omnidesk_agent/appsync/chat_routes.py ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Bootstrap scripts already consumed; no transformation required."
+            echo "Bootstrap already consumed or first-class chat routes already present; no transformation required."
           fi
 
       - if: steps.detect.outputs.enabled == 'true'

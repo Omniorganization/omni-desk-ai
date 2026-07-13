@@ -4,98 +4,69 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
-from fastapi.testclient import TestClient
 
-from omnidesk_agent.appsync.streaming import install_audited_stream_route
-from omnidesk_agent.security import resource_guard as resource_guard_module
+from omnidesk_agent.appsync.chat_routes import register_first_class_chat_routes
+from omnidesk_agent.security.chat_resource_guard import route_class
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _cfg(*, require_idempotency: bool = True) -> SimpleNamespace:
+def _cfg() -> SimpleNamespace:
     return SimpleNamespace(
-        app_sync=SimpleNamespace(require_idempotency=require_idempotency),
+        app_sync=SimpleNamespace(require_idempotency=True),
         api_resource_guard=SimpleNamespace(max_inflight_chat_requests=2),
     )
 
 
-def test_stream_adapter_replaces_provisional_route_and_classifies_chat() -> None:
+def test_first_class_chat_routes_are_registered_before_legacy_routes() -> None:
     app = FastAPI()
+    runtime = SimpleNamespace(app_sync=object(), model_router=None)
+
+    async def admin(_request: Request, _role: str):
+        return SimpleNamespace(actor="operator-1", role="operator")
+
+    register_first_class_chat_routes(app, _cfg(), runtime, None, admin)
 
     @app.post("/api/chat")
-    async def api_chat(request: Request):
-        payload = await request.json()
-        return {
-            "conversation_id": payload.get("conversation_id") or "conv_test",
-            "assistant_message": {"content": "ok"},
-            "usage": {},
-            "audit_trace_id": "trace_test",
-        }
+    async def legacy_chat():
+        return {"legacy": True}
 
     @app.post("/api/chat/stream")
-    async def provisional_stream():
-        return {"provisional": True}
+    async def legacy_stream():
+        return {"legacy": True}
 
-    install_audited_stream_route(app, _cfg())
-
-    stream_routes = [
+    chat_routes = [
         route
         for route in app.routes
-        if getattr(route, "path", None) == "/api/chat/stream"
+        if getattr(route, "path", None) in {"/api/chat", "/api/chat/stream"}
         and "POST" in (getattr(route, "methods", None) or set())
     ]
-    assert len(stream_routes) == 1
-    assert stream_routes[0].endpoint.__module__ == "omnidesk_agent.appsync.streaming"
-    assert resource_guard_module._route_class("/api/chat") == "chat"
-    assert resource_guard_module._route_class("/api/chat/stream") == "chat"
+    assert chat_routes[0].endpoint.__module__ == "omnidesk_agent.appsync.chat_routes"
+    assert chat_routes[1].endpoint.__module__ == "omnidesk_agent.appsync.chat_routes"
 
 
-def test_stream_rejects_invalid_writes_before_delegating_to_chat() -> None:
-    app = FastAPI()
-    calls = 0
+def test_stream_route_classification_is_static_and_import_order_independent() -> None:
+    assert route_class("/api/chat") == "chat"
+    assert route_class("/api/chat/stream") == "chat"
+    assert route_class("/app/conversations/conv-1/ask") == "chat"
+    assert route_class("/agent/run") == "agent"
+    assert route_class("/health") == "general"
 
-    @app.post("/api/chat")
-    async def api_chat(request: Request):
-        nonlocal calls
-        calls += 1
-        payload = await request.json()
-        assert payload["stream"] is False
-        return {
-            "conversation_id": "conv_idempotent",
-            "assistant_message": {"content": "audited response"},
-            "usage": {"output_tokens": 2},
-            "audit_trace_id": "trace_idempotent",
-        }
-
-    @app.post("/api/chat/stream")
-    async def provisional_stream():
-        return {"provisional": True}
-
-    install_audited_stream_route(app, _cfg())
-    client = TestClient(app)
-
-    missing_content = client.post(
-        "/api/chat/stream",
-        json={},
-        headers={"idempotency-key": "stream-missing-content"},
+    source = (ROOT / "omnidesk_agent/security/chat_resource_guard.py").read_text(
+        encoding="utf-8"
     )
-    assert missing_content.status_code == 422
-    assert calls == 0
+    assert "._route_class =" not in source
+    assert "setattr(" not in source
 
-    missing_key = client.post("/api/chat/stream", json={"content": "hello"})
-    assert missing_key.status_code == 428
-    assert calls == 0
 
-    response = client.post(
-        "/api/chat/stream",
-        json={"content": "hello"},
-        headers={"idempotency-key": "stream-valid"},
+def test_legacy_stream_route_replacement_module_is_removed() -> None:
+    assert not (ROOT / "omnidesk_agent/appsync/streaming.py").exists()
+    appsync_init = (ROOT / "omnidesk_agent/appsync/__init__.py").read_text(
+        encoding="utf-8"
     )
-    assert response.status_code == 200
-    assert "event: chat.started" in response.text
-    assert "event: chat.completed" in response.text
-    assert calls == 1
+    assert "install_audited_stream_route" not in appsync_init
+    assert "register_first_class_chat_routes" in appsync_init
 
 
 def test_container_liveness_and_readiness_contracts_remain_distinct() -> None:
