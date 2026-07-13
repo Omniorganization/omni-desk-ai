@@ -251,6 +251,14 @@ class ChatTurnService:
             idempotency_key=idempotency_key,
         )
         if cached is not None:
+            if cached.get("stream_status") in {"reserved", "streaming"}:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "stream_in_progress",
+                        "message": "The original stream is still in progress",
+                    },
+                )
             return PreparedChatTurn(
                 conversation_id=conversation_id,
                 idempotency_key=idempotency_key,
@@ -266,7 +274,22 @@ class ChatTurnService:
             )
         if self.streaming_router is None:
             raise HTTPException(503, "model router is not configured")
-        metadata: dict[str, Any] = {"actor": actor, "role": role}
+        try:
+            conversation = self.store.get_conversation(
+                conversation_id,
+                actor=actor,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        metadata: dict[str, Any] = {
+            "actor": actor,
+            "role": role,
+            "organization_id": conversation["organization_id"],
+            "conversation_id": conversation_id,
+            "source_device_id": payload.get("source_device_id"),
+        }
         model_profile = str(
             payload.get("model_profile") or payload.get("profile") or ""
         ).strip()
