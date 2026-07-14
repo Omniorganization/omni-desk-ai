@@ -47,9 +47,9 @@ jobs:
       - name: Enforce rustfmt result
         run: test "$(cat "$RUNNER_TEMP/rustfmt-diagnostic/status")" -eq 0
 
-  ios-simulator-diagnostic:
+  ios-project-remediation:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: apps/mobile-flutter
@@ -61,25 +61,40 @@ jobs:
           cache: true
       - name: Capture toolchain diagnostics
         run: |
-          evidence="$RUNNER_TEMP/ios-simulator-diagnostic"
+          evidence="$RUNNER_TEMP/ios-project-remediation"
           mkdir -p "$evidence"
           flutter doctor -v > "$evidence/flutter-doctor.txt" 2>&1 || true
           xcodebuild -version > "$evidence/xcode-version.txt" 2>&1 || true
-      - run: flutter pub get
-      - name: Capture iOS Simulator build
+      - name: Regenerate missing Xcode project structure
+        run: |
+          set -euo pipefail
+          rm -rf ios/Runner.xcodeproj ios/Runner.xcworkspace
+          flutter create \
+            --platforms=ios \
+            --org com.omnidesk \
+            --project-name omnidesk_mobile \
+            .
+          flutter pub get
+      - name: Build regenerated iOS Simulator project
         run: |
           set -o pipefail
-          evidence="$RUNNER_TEMP/ios-simulator-diagnostic"
+          evidence="$RUNNER_TEMP/ios-project-remediation"
           set +e
           flutter build ios --simulator --debug \
             2>&1 | tee "$evidence/build.log"
           status=${PIPESTATUS[0]}
           set -e
           echo "$status" > "$evidence/status"
+      - name: Collect generated project
+        if: always()
+        run: |
+          evidence="$RUNNER_TEMP/ios-project-remediation"
+          tar -czf "$evidence/generated-ios-project.tar.gz" ios
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
-          name: ios-simulator-diagnostic-${{ github.sha }}
-          path: ${{ runner.temp }}/ios-simulator-diagnostic/
+          name: ios-project-remediation-${{ github.sha }}
+          path: ${{ runner.temp }}/ios-project-remediation/
           if-no-files-found: error
-      - name: Enforce iOS Simulator result
-        run: test "$(cat "$RUNNER_TEMP/ios-simulator-diagnostic/status")" -eq 0
+      - name: Enforce regenerated iOS Simulator result
+        run: test "$(cat "$RUNNER_TEMP/ios-project-remediation/status")" -eq 0
