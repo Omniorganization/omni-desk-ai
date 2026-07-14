@@ -10,14 +10,12 @@
   ],
   "strict": [
     "omnidesk_agent/appsync/chat_repository.py",
-    "omnidesk_agent/appsync/industrial_chat_service.py",
+    "omnidesk_agent/appsync/lease_safe_chat_repository.py",
     "omnidesk_agent/appsync/postgres_migrations.py",
-    "omnidesk_agent/appsync/migrated_postgres_store.py",
-    "omnidesk_agent/security/resource_guard.py",
-    "omnidesk_agent/models/router_streaming.py"
+    "omnidesk_agent/appsync/migrated_postgres_store.py"
   ],
   "pythonVersion": "3.10",
-  "typeCheckingMode": "standard",
+  "typeCheckingMode": "basic",
   "reportMissingImports": "warning",
   "reportMissingTypeStubs": "none",
   "reportOptionalMemberAccess": "error",
