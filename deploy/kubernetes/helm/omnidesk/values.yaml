@@ -29,6 +29,7 @@ storage:
   backend: postgres
   namespace: production
   requireMultiInstanceSafe: true
+  postgresPoolSize: 12
   chatRequestLeaseSeconds: 180
 config:
   publicBaseUrl: https://omnidesk.ai.internal
