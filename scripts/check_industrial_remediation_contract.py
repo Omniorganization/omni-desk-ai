@@ -77,6 +77,7 @@ def check(root: Path) -> list[str]:
         for snippet in snippets:
             if snippet not in text:
                 issues.append(f"{rel} missing remediation contract: {snippet}")
+
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     for requirement in (
         "fastapi>=0.129,<1",
@@ -85,6 +86,17 @@ def check(root: Path) -> list[str]:
     ):
         if requirement not in pyproject:
             issues.append(f"pyproject.toml missing bounded dependency: {requirement}")
+
+    canonical = (root / "VERSION").read_text(encoding="utf-8").strip()
+    if f'version = "{canonical}"' not in pyproject:
+        issues.append("pyproject.toml does not match canonical VERSION")
+    package_init = (root / "omnidesk_agent/__init__.py").read_text(encoding="utf-8")
+    if f'__version__ = "{canonical}"' not in package_init:
+        issues.append("package __version__ does not match canonical VERSION")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    if f"当前版本是 `{canonical}`。" not in readme:
+        issues.append("README release boundary does not match canonical VERSION")
+
     templates = root / "deploy/kubernetes/helm/omnidesk/templates"
     for path in templates.glob("*.yaml"):
         if "namespace: omnidesk" in path.read_text(encoding="utf-8"):
