@@ -116,27 +116,7 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - name: Prepare CI evidence directory
         run: mkdir -p "reports/ci/${{ matrix.python-version }}"
-      - name: Full test and coverage gate
-        if: matrix.python-version == '3.11'
-        run: |
-          set -o pipefail
-          PYTHONPATH=. python -m pytest -q -W error \
-            --timeout=60 --timeout-method=thread \
-            --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json \
-            --cov-fail-under=80 \
-            2>&1 | tee "reports/ci/${{ matrix.python-version }}/pytest-coverage.txt"
-          cp "reports/ci/${{ matrix.python-version }}/pytest-coverage.txt" \
-            "reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
-      - name: Coverage gates
-        if: matrix.python-version == '3.11'
-        run: |
-          set -o pipefail
-          python scripts/check_coverage_gates.py coverage.json \
-            2>&1 | tee "reports/ci/${{ matrix.python-version }}/coverage-gates.txt"
-          python scripts/check_optional_connector_coverage.py coverage.json \
-            2>&1 | tee "reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt"
       - name: Python compatibility gate
-        if: matrix.python-version != '3.11'
         run: |
           set -o pipefail
           PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread \
@@ -145,38 +125,22 @@ jobs:
             tests/test_chat_stream_durable_resume.py \
             tests/test_appsync_industrial_contract.py \
             2>&1 | tee "reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
-      - name: Write CI evidence manifest
-        shell: bash
+      - name: Write compatibility evidence manifest
         run: |
-          set -euo pipefail
-          args=(
-            --output "reports/ci/${{ matrix.python-version }}/ci-evidence.json"
-            --python-version "${{ matrix.python-version }}"
-            --artifact-name "ci-evidence-${{ matrix.python-version }}"
+          python scripts/write_ci_evidence_manifest.py \
+            --output "reports/ci/${{ matrix.python-version }}/ci-evidence.json" \
+            --python-version "${{ matrix.python-version }}" \
+            --artifact-name "ci-evidence-${{ matrix.python-version }}" \
             --log "pytest=reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
-          )
-          if [[ "${{ matrix.python-version }}" == "3.11" ]]; then
-            args+=(
-              --coverage-json coverage.json
-              --coverage-xml coverage.xml
-              --log "coverage=reports/ci/${{ matrix.python-version }}/pytest-coverage.txt"
-              --log "coverage_gates=reports/ci/${{ matrix.python-version }}/coverage-gates.txt"
-              --log "optional_connector_coverage=reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt"
-            )
-          fi
-          python scripts/write_ci_evidence_manifest.py "${args[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: ci-evidence-${{ matrix.python-version }}
-          path: |
-            reports/ci/${{ matrix.python-version }}/
-            coverage.json
-            coverage.xml
+          path: reports/ci/${{ matrix.python-version }}/
           if-no-files-found: warn
 
-  postgres-integration:
-    name: PostgreSQL Atomicity
+  coverage:
+    name: Full Coverage + PostgreSQL Atomicity
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -203,21 +167,59 @@ jobs:
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install --require-hashes -r requirements.enterprise.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - run: PYTHONPATH=. python -m pytest -q -W error tests/test_postgres_appsync_atomic_chat.py
+      - run: mkdir -p reports/ci/coverage
+      - name: Full test and coverage gate
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q -W error \
+            --timeout=60 --timeout-method=thread \
+            --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json \
+            --cov-fail-under=80 \
+            2>&1 | tee reports/ci/coverage/pytest-coverage.txt
+          cp reports/ci/coverage/pytest-coverage.txt reports/ci/coverage/pytest-unit.txt
+      - name: Coverage gates
+        run: |
+          set -o pipefail
+          python scripts/check_coverage_gates.py coverage.json \
+            2>&1 | tee reports/ci/coverage/coverage-gates.txt
+          python scripts/check_optional_connector_coverage.py coverage.json \
+            2>&1 | tee reports/ci/coverage/optional-connector-coverage.txt
+      - name: Write full coverage evidence manifest
+        run: |
+          python scripts/write_ci_evidence_manifest.py \
+            --output reports/ci/coverage/ci-evidence.json \
+            --python-version "3.11" \
+            --artifact-name "ci-evidence-coverage" \
+            --coverage-json coverage.json \
+            --coverage-xml coverage.xml \
+            --log "pytest=reports/ci/coverage/pytest-unit.txt" \
+            --log "coverage=reports/ci/coverage/pytest-coverage.txt" \
+            --log "coverage_gates=reports/ci/coverage/coverage-gates.txt" \
+            --log "optional_connector_coverage=reports/ci/coverage/optional-connector-coverage.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ci-evidence-coverage
+          path: |
+            reports/ci/coverage/
+            coverage.json
+            coverage.xml
+          if-no-files-found: warn
 
   ci:
     name: CI
     runs-on: ubuntu-latest
-    needs: [governance, test, postgres-integration]
+    # Legacy status contract: needs: test remains represented in this aggregate dependency set.
+    needs: [governance, test, coverage]
     if: always()
     steps:
       - run: |
           failures=0
-          for result in "${{ needs.governance.result }}" "${{ needs.test.result }}" "${{ needs.postgres-integration.result }}"; do
+          for result in "${{ needs.governance.result }}" "${{ needs.test.result }}" "${{ needs.coverage.result }}"; do
             [[ "$result" == "success" ]] || failures=1
           done
           if [[ "$failures" -ne 0 ]]; then
-            echo "CI result: governance=${{ needs.governance.result }}, test=${{ needs.test.result }}, postgres=${{ needs.postgres-integration.result }}"
+            echo "CI result: governance=${{ needs.governance.result }}, test=${{ needs.test.result }}, coverage=${{ needs.coverage.result }}"
             exit 1
           fi
           echo "CI matrix passed"
