@@ -1,32 +1,30 @@
-name: CI Evidence Path Autofix
+name: CI Evidence Path Renderer
 
 on:
   pull_request:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: ci-evidence-path-autofix-${{ github.event.pull_request.number }}
+  group: ci-evidence-path-renderer-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  patch:
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+  render:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.event.pull_request.head.ref }}
-          token: ${{ github.token }}
-      - name: Move coverage evidence outside mutable repository paths
+      - name: Render coverage evidence path repair
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          path = Path(".github/workflows/ci.yml")
-          text = path.read_text(encoding="utf-8")
+          source = Path(".github/workflows/ci.yml")
+          text = source.read_text(encoding="utf-8")
           start = text.index("  coverage:\n")
           end = text.index("\n  ci:\n", start)
           replacement = '''  coverage:
@@ -48,7 +46,7 @@ jobs:
                     --health-retries 12
               env:
                 OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/omnidesk_test
-                OMNIDESK_COVERAGE_EVIDENCE_DIR: ${{ runner.temp }}/ci-coverage
+                OMNIDESK_COVERAGE_EVIDENCE_DIR: __RUNNER_TEMP_EXPR__/ci-coverage
               steps:
                 - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
                 - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -119,18 +117,22 @@ jobs:
                   if: always()
                   with:
                     name: ci-evidence-coverage
-                    path: ${{ runner.temp }}/ci-coverage/
+                    path: __RUNNER_TEMP_EXPR__/ci-coverage/
                     if-no-files-found: error
                 - name: Enforce full test result
                   if: always()
                   run: test "$(cat "$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-status")" -eq 0
           '''
-          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+          runner_temp_expression = "$" + "{{ runner.temp }}"
+          replacement = replacement.replace("__RUNNER_TEMP_EXPR__", runner_temp_expression)
+          rendered = text[:start] + replacement + text[end:]
+          target = Path(".rendered/ci.yml")
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_text(rendered, encoding="utf-8")
+          print(f"rendered {target} with {len(rendered.splitlines())} lines")
           PY
-      - name: Commit repaired CI workflow
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/ci.yml
-          git commit -m "Store coverage evidence outside mutable test paths"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rendered-ci-${{ github.sha }}
+          path: .rendered/ci.yml
+          if-no-files-found: error
