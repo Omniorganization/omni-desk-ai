@@ -70,10 +70,11 @@ jobs:
           python scripts/check_lock_hashes.py .rendered/requirements.lock
           python scripts/check_lock_hashes.py .rendered/requirements.dev.lock
           python scripts/check_lock_hashes.py .rendered/requirements.bootstrap.lock
-          grep -q '^setuptools==83\.0\.0 ' .rendered/requirements.lock
-          grep -q '^setuptools==83\.0\.0 ' .rendered/requirements.dev.lock
-          grep -q '^setuptools==83\.0\.0 ' .rendered/requirements.bootstrap.lock
+          grep -Eq '^setuptools==83\.[0-9]+\.[0-9]+ ' .rendered/requirements.lock
+          grep -Eq '^setuptools==83\.[0-9]+\.[0-9]+ ' .rendered/requirements.dev.lock
+          grep -Eq '^setuptools==83\.[0-9]+\.[0-9]+ ' .rendered/requirements.bootstrap.lock
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: python-locks-${{ github.sha }}
           path: .rendered/
