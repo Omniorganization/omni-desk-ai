@@ -158,6 +158,7 @@ jobs:
           --health-retries 12
     env:
       OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/omnidesk_test
+      OMNIDESK_COVERAGE_EVIDENCE_DIR: ${{ runner.temp }}/ci-coverage
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -167,7 +168,8 @@ jobs:
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install --require-hashes -r requirements.enterprise.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - run: mkdir -p reports/ci/coverage
+      - name: Prepare coverage evidence directories
+        run: mkdir -p "$OMNIDESK_COVERAGE_EVIDENCE_DIR" reports/ci/coverage
       - name: Full test and coverage gate
         id: full_tests
         run: |
@@ -175,48 +177,63 @@ jobs:
           set -o pipefail
           PYTHONPATH=. python -m pytest -q -W error \
             --timeout=60 --timeout-method=thread \
-            --tb=short --junitxml=reports/ci/coverage/junit.xml \
-            --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json \
+            --tb=short --junitxml="$OMNIDESK_COVERAGE_EVIDENCE_DIR/junit.xml" \
+            --cov=omnidesk_agent \
+            --cov-report=term-missing \
+            --cov-report=xml:"$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage.xml" \
+            --cov-report=json:"$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage.json" \
             --cov-fail-under=80 \
-            2>&1 | tee reports/ci/coverage/pytest-coverage.txt
-          status=${PIPESTATUS[0]}
-          set -e
-          cp reports/ci/coverage/pytest-coverage.txt reports/ci/coverage/pytest-unit.txt
-          echo "$status" > reports/ci/coverage/pytest-status
+            2>&1 | tee "$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-coverage.txt"
+          statuses=("${PIPESTATUS[@]}")
+          pytest_status="${statuses[0]}"
+          tee_status="${statuses[1]}"
+          status="$pytest_status"
+          if [[ "$status" -eq 0 && "$tee_status" -ne 0 ]]; then
+            status="$tee_status"
+          fi
+          cp "$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-coverage.txt" \
+            "$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-unit.txt"
+          echo "$status" > "$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-status"
           echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Coverage gates
         if: steps.full_tests.outputs.status == '0'
         run: |
           set -o pipefail
-          python scripts/check_coverage_gates.py coverage.json \
-            2>&1 | tee reports/ci/coverage/coverage-gates.txt
-          python scripts/check_optional_connector_coverage.py coverage.json \
-            2>&1 | tee reports/ci/coverage/optional-connector-coverage.txt
+          python scripts/check_coverage_gates.py \
+            "$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage.json" \
+            2>&1 | tee "$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage-gates.txt"
+          python scripts/check_optional_connector_coverage.py \
+            "$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage.json" \
+            2>&1 | tee "$OMNIDESK_COVERAGE_EVIDENCE_DIR/optional-connector-coverage.txt"
       - name: Write full coverage evidence manifest
         if: steps.full_tests.outputs.status == '0'
         run: |
           python scripts/write_ci_evidence_manifest.py \
-            --output reports/ci/coverage/ci-evidence.json \
+            --output "$OMNIDESK_COVERAGE_EVIDENCE_DIR/ci-evidence.json" \
             --python-version "3.11" \
             --artifact-name "ci-evidence-coverage" \
-            --coverage-json coverage.json \
-            --coverage-xml coverage.xml \
-            --log "pytest=reports/ci/coverage/pytest-unit.txt" \
-            --log "coverage=reports/ci/coverage/pytest-coverage.txt" \
-            --log "coverage_gates=reports/ci/coverage/coverage-gates.txt" \
-            --log "optional_connector_coverage=reports/ci/coverage/optional-connector-coverage.txt"
+            --coverage-json "$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage.json" \
+            --coverage-xml "$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage.xml" \
+            --log "pytest=$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-unit.txt" \
+            --log "coverage=$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-coverage.txt" \
+            --log "coverage_gates=$OMNIDESK_COVERAGE_EVIDENCE_DIR/coverage-gates.txt" \
+            --log "optional_connector_coverage=$OMNIDESK_COVERAGE_EVIDENCE_DIR/optional-connector-coverage.txt"
+      - name: Synchronize standard coverage evidence directory
+        if: always()
+        run: |
+          rm -rf reports/ci/coverage
+          mkdir -p reports/ci/coverage
+          cp -a "$OMNIDESK_COVERAGE_EVIDENCE_DIR/." reports/ci/coverage/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: ci-evidence-coverage
-          path: |
-            reports/ci/coverage/
-            coverage.json
-            coverage.xml
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/ci-coverage/
+          if-no-files-found: error
       - name: Enforce full test result
         if: always()
-        run: test "$(cat reports/ci/coverage/pytest-status)" -eq 0
+        run: test "$(cat "$OMNIDESK_COVERAGE_EVIDENCE_DIR/pytest-status")" -eq 0
 
   ci:
     name: CI
