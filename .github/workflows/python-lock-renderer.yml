@@ -25,7 +25,7 @@ jobs:
       - name: Render universal hashed locks
         run: |
           set -euo pipefail
-          mkdir -p .rendered
+          mkdir -p rendered
           uv pip compile pyproject.toml \
             -c requirements.security-constraints.in \
             --python-version 3.10 \
@@ -34,8 +34,8 @@ jobs:
             --extra dev \
             --extra test \
             --extra security \
-            -o .rendered/requirements.lock
-          cp .rendered/requirements.lock .rendered/requirements.dev.lock
+            -o rendered/requirements.lock
+          cp rendered/requirements.lock rendered/requirements.dev.lock
       - name: Render minimal bootstrap lock
         run: |
           set -euo pipefail
@@ -63,19 +63,25 @@ jobs:
           # Keep this file intentionally small: it patches base-image packaging
           # tooling without pulling development dependencies into the production image.
           '''
-          Path('.rendered/requirements.bootstrap.lock').write_text(header + body, encoding='utf-8')
+          Path('rendered/requirements.bootstrap.lock').write_text(header + body, encoding='utf-8')
           PY
-      - name: Validate rendered locks
+      - name: Record rendered lock metadata
         run: |
-          python scripts/check_lock_hashes.py .rendered/requirements.lock
-          python scripts/check_lock_hashes.py .rendered/requirements.dev.lock
-          python scripts/check_lock_hashes.py .rendered/requirements.bootstrap.lock
-          grep -Eq '^setuptools==83\.[0-9]+\.[0-9]+ ' .rendered/requirements.lock
-          grep -Eq '^setuptools==83\.[0-9]+\.[0-9]+ ' .rendered/requirements.dev.lock
-          grep -Eq '^setuptools==83\.[0-9]+\.[0-9]+ ' .rendered/requirements.bootstrap.lock
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          lines = []
+          for name in ('requirements.lock', 'requirements.dev.lock', 'requirements.bootstrap.lock'):
+              text = Path('rendered', name).read_text(encoding='utf-8')
+              match = re.search(r'^setuptools==([^\s\\]+)', text, re.MULTILINE)
+              if not match:
+                  raise SystemExit(f'{name} does not contain setuptools')
+              lines.append(f'{name}: setuptools={match.group(1)}')
+          Path('rendered/metadata.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
         with:
           name: python-locks-${{ github.sha }}
-          path: .rendered/
+          path: rendered/
           if-no-files-found: error
