@@ -14,6 +14,14 @@ from scripts.write_ci_evidence_manifest import main as write_ci_evidence_manifes
 
 VERSION = "1.12.7+root-monorepo-production-ga-candidate"
 SLUG = "Omni-desk-AI-1.12.7-root-monorepo-production-ga-candidate"
+PYTHON_LOCKFILES = [
+    "requirements.lock",
+    "requirements.runtime.lock",
+    "requirements.bootstrap.lock",
+    "requirements.dev.lock",
+    "requirements.security.lock",
+    "requirements.enterprise.lock",
+]
 
 
 def test_write_ci_evidence_manifest_binds_commit_run_logs_and_coverage(tmp_path: Path, monkeypatch) -> None:
@@ -26,7 +34,7 @@ def test_write_ci_evidence_manifest_binds_commit_run_logs_and_coverage(tmp_path:
         encoding="utf-8",
     )
     coverage_xml = tmp_path / "coverage.xml"
-    coverage_xml.write_text("<coverage line-rate=\"0.8\" />\n", encoding="utf-8")
+    coverage_xml.write_text('<coverage line-rate="0.8" />\n', encoding="utf-8")
     ruff_log = tmp_path / "ruff.txt"
     ruff_log.write_text("All checks passed!\n", encoding="utf-8")
     pytest_log = tmp_path / "pytest.txt"
@@ -78,24 +86,23 @@ def test_ci_and_security_workflow_policy_contracts_pass_current_tree() -> None:
 
 def test_security_workflow_dependency_review_and_all_python_locks_are_blocking() -> None:
     workflow = Path(".github/workflows/security.yml").read_text(encoding="utf-8")
-    dependency_review = workflow[workflow.index("actions/dependency-review-action@"):workflow.index("actions/dependency-review-action@") + 300]
-    assert "continue-on-error: true" not in dependency_review
-    allow_ghsa_lines = [
-        line.strip()
-        for line in workflow.splitlines()
-        if line.strip().startswith("allow-ghsas:")
+    dependency_review = workflow[
+        workflow.index("actions/dependency-review-action@") : workflow.index("actions/dependency-review-action@") + 300
     ]
+    assert "continue-on-error: true" not in dependency_review
+    allow_ghsa_lines = [line.strip() for line in workflow.splitlines() if line.strip().startswith("allow-ghsas:")]
     assert allow_ghsa_lines == ["allow-ghsas: GHSA-wrw7-89jp-8q8g"]
-    for lockfile in [
-        "requirements.lock",
-        "requirements.runtime.lock",
-        "requirements.bootstrap.lock",
-        "requirements.dev.lock",
-        "requirements.security.lock",
-        "requirements.enterprise.lock",
-    ]:
+
+    for lockfile in PYTHON_LOCKFILES:
         assert f"python scripts/check_lock_hashes.py {lockfile}" in workflow
-        assert f"pip-audit --disable-pip -r {lockfile}" in workflow
+        assert lockfile in workflow
+
+    assert "pip-audit --disable-pip" in workflow
+    assert '-r "$lockfile"' in workflow
+    assert "aggregate=0" in workflow
+    assert "aggregate=1" in workflow
+    assert 'echo "status=$aggregate" >> "$GITHUB_OUTPUT"' in workflow
+    assert 'test "${{ steps.python_audit.outputs.status }}" = "0"' in workflow
 
 
 def test_license_policy_skips_lockfile_packages_that_do_not_match_current_marker(tmp_path: Path) -> None:
