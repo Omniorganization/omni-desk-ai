@@ -229,7 +229,6 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - run: cd ios && pod install
       - run: flutter build ios --simulator --debug
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-source
 
@@ -246,6 +245,5 @@ jobs:
           flutter-version: "3.35.x"
           cache: true
       - run: flutter pub get
-      - run: cd ios && pod install
       - run: flutter build ipa --release
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-release
