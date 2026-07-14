@@ -6,14 +6,18 @@ on:
   schedule:
     - cron: "0 3 * * 1"
 
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: read
   security-events: write
 
 jobs:
-  security:
-    name: Security
+  security-core:
+    name: Security Core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -32,6 +36,8 @@ jobs:
           python scripts/check_lock_hashes.py requirements.enterprise.lock
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Prepare security evidence directory
+        run: mkdir -p reports/security
       - name: Install gitleaks
         run: go install github.com/zricethezav/gitleaks/v8@v8.28.0
       - name: Run gitleaks working-tree secret scan
@@ -41,28 +47,152 @@ jobs:
         run: |
           "$HOME/go/bin/gitleaks" detect --source . --redact --verbose --config .gitleaks.toml
       - run: python scripts/check_security_exceptions.py release/security-exceptions
-      - run: bandit -r omnidesk_agent -ll
-      - run: pip-audit --disable-pip -r requirements.lock
-      - run: pip-audit --disable-pip -r requirements.runtime.lock
-      - run: pip-audit --disable-pip -r requirements.bootstrap.lock
-      - run: pip-audit --disable-pip -r requirements.dev.lock
-      - run: pip-audit --disable-pip -r requirements.security.lock
-      - run: pip-audit --disable-pip -r requirements.enterprise.lock
+      - name: Bandit source audit
+        run: |
+          set +e
+          bandit -r omnidesk_agent -ll -f json -o reports/security/bandit.json
+          status=$?
+          set -e
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("reports/security/bandit.json").read_text())
+          print(json.dumps({
+              "metrics": report.get("metrics", {}).get("_totals", {}),
+              "results": report.get("results", []),
+          }, indent=2, sort_keys=True))
+          PY
+          exit "$status"
+      - name: Audit Python lock files
+        id: python_audit
+        run: |
+          set +e
+          aggregate=0
+          for lockfile in \
+            requirements.lock \
+            requirements.runtime.lock \
+            requirements.bootstrap.lock \
+            requirements.dev.lock \
+            requirements.security.lock \
+            requirements.enterprise.lock; do
+            stem="${lockfile%.lock}"
+            stem="${stem//./-}"
+            pip-audit --disable-pip \
+              --format json \
+              --output "reports/security/pip-audit-${stem}.json" \
+              -r "$lockfile" \
+              > "reports/security/pip-audit-${stem}.txt" 2>&1
+            status=$?
+            echo "$status" > "reports/security/pip-audit-${stem}.status"
+            if [[ "$status" -ne 0 ]]; then
+              aggregate=1
+            fi
+          done
+          set -e
+          echo "status=$aggregate" >> "$GITHUB_OUTPUT"
+          exit 0
       - run: python scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json
       - run: python scripts/check_security_workflow_policy.py .
       - run: python scripts/check_security_attack_surface.py .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: security-core-${{ github.sha }}
+          path: reports/security/
+          if-no-files-found: error
+      - name: Enforce Python dependency audit
+        if: always()
+        run: test "${{ steps.python_audit.outputs.status }}" = "0"
+
+  ecosystem-audit:
+    name: Ecosystem Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/web-admin-next/package-lock.json
+            apps/desktop-tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.35.x"
+          cache: true
+      - name: Prepare ecosystem evidence directory
+        run: mkdir -p reports/ecosystem-security
+      - name: Audit Web Admin npm graph
+        working-directory: apps/web-admin-next
+        run: |
+          npm ci
+          npm audit --audit-level=high
+      - name: Audit Desktop npm graph
+        working-directory: apps/desktop-tauri
+        run: |
+          npm ci
+          npm audit --audit-level=high
+      - name: Audit Rust dependency graph
+        id: rust_audit
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          set +e
+          cargo audit \
+            --file apps/desktop-tauri/src-tauri/Cargo.lock \
+            --ignore GHSA-wrw7-89jp-8q8g \
+            --json \
+            > reports/ecosystem-security/cargo-audit.json \
+            2> reports/ecosystem-security/cargo-audit.txt
+          status=$?
+          set -e
+          echo "$status" > reports/ecosystem-security/cargo-audit.status
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Audit Flutter dependency graph
+        id: flutter_audit
+        run: |
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.4.0
+          set +e
+          "$HOME/go/bin/osv-scanner" scan source -r apps/mobile-flutter \
+            --format json \
+            --output reports/ecosystem-security/flutter-osv.json \
+            > reports/ecosystem-security/flutter-osv.txt 2>&1
+          status=$?
+          set -e
+          echo "$status" > reports/ecosystem-security/flutter-osv.status
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ecosystem-security-${{ github.sha }}
+          path: reports/ecosystem-security/
+          if-no-files-found: error
+      - name: Enforce ecosystem dependency audits
+        if: always()
+        run: |
+          test "${{ steps.rust_audit.outputs.status }}" = "0"
+          test "${{ steps.flutter_audit.outputs.status }}" = "0"
 
   codeql:
-    name: CodeQL
+    name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7
         with:
-          languages: python
+          languages: ${{ matrix.language }}
       - uses: github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7
         with:
-          category: "/language:python"
+          category: "/language:${{ matrix.language }}"
 
   dependency-review:
     name: Dependency Review
@@ -72,8 +202,23 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
         with:
-          # Tauri 2.11's current Linux GTK stack pulls glib <0.20 through
-          # target-specific transitive deps. This exception is allowed only
-          # while release/security-exceptions/GHSA-wrw7-89jp-8q8g.md remains
-          # active, owned, bounded, and unexpired.
           allow-ghsas: GHSA-wrw7-89jp-8q8g
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    needs: [security-core, ecosystem-audit, codeql, dependency-review]
+    if: always()
+    steps:
+      - run: |
+          failures=0
+          for result in "${{ needs.security-core.result }}" "${{ needs.ecosystem-audit.result }}" "${{ needs.codeql.result }}"; do
+            [[ "$result" == "success" ]] || failures=1
+          done
+          review="${{ needs.dependency-review.result }}"
+          [[ "$review" == "success" || "$review" == "skipped" ]] || failures=1
+          if [[ "$failures" -ne 0 ]]; then
+            echo "Security result: core=${{ needs.security-core.result }}, ecosystem=${{ needs.ecosystem-audit.result }}, codeql=${{ needs.codeql.result }}, dependency-review=$review"
+            exit 1
+          fi
+          echo "All security ecosystems passed"

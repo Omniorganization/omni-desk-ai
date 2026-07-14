@@ -3,6 +3,8 @@ image:
   digest: "" # required: release pipeline must inject the final OmniDesk app OCI digest
   pullPolicy: IfNotPresent
 replicaCount: 2
+secrets:
+  name: omnidesk-secrets
 service:
   type: ClusterIP
   port: 18789
@@ -25,15 +27,28 @@ otel:
   endpoint: http://otel-collector:4318/v1/traces
 storage:
   backend: postgres
+  namespace: production
   requireMultiInstanceSafe: true
+  postgresPoolSize: 12
+  chatRequestLeaseSeconds: 180
 config:
   publicBaseUrl: https://omnidesk.ai.internal
   sandboxRunnerUrl: http://sandbox-runner:18890
-  # Empty means x-forwarded-for is ignored unless an ingress/LB IP or CIDR is configured.
   trustedProxyIps: []
 sandboxRunner:
   repository: ghcr.io/yinyufan0813-cmyk/omnidesk-sandbox-runner
   digest: "" # required: runner image digest must be pinned
+migrations:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 persistence:
   enabled: false
   accessMode: ReadWriteOnce

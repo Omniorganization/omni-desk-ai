@@ -4,6 +4,14 @@
     "omnidesk_agent/security",
     "omnidesk_agent/tools",
     "omnidesk_agent/self_upgrade",
+    "omnidesk_agent/storage",
+    "omnidesk_agent/repositories/postgres_state.py",
+    "omnidesk_agent/appsync/postgres_migrations.py",
+    "omnidesk_agent/appsync/migrate.py",
+    "omnidesk_agent/appsync/strict_json_store.py",
+    "omnidesk_agent/appsync/factory.py",
+    "omnidesk_agent/appsync/migrated_postgres_store.py",
+    "omnidesk_agent/models/router_streaming.py",
     "omnidesk_agent/server.py",
     "omnidesk_agent/daemon.py"
   ],
@@ -13,9 +21,15 @@
     "build",
     "dist"
   ],
+  "strict": [
+    "omnidesk_agent/appsync/postgres_migrations.py",
+    "omnidesk_agent/appsync/strict_json_store.py"
+  ],
   "pythonVersion": "3.10",
   "typeCheckingMode": "basic",
   "reportMissingImports": "warning",
-  "reportOptionalMemberAccess": "error",
-  "reportGeneralTypeIssues": "error"
+  "reportMissingTypeStubs": "none",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUntypedFunctionDecorator": "warning"
 }

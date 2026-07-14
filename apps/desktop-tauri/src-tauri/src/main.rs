@@ -8,7 +8,9 @@ const SERVICE: &str = "ai.omnidesk.desktop";
 #[tauri::command]
 fn secure_set(key: String, value: String) -> Result<(), String> {
     let entry = keyring::Entry::new(SERVICE, &key).map_err(|error| error.to_string())?;
-    entry.set_password(&value).map_err(|error| error.to_string())
+    entry
+        .set_password(&value)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -30,7 +32,9 @@ fn home_directory() -> Result<PathBuf, String> {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
             return Ok(PathBuf::from(profile));
         }
-        if let (Some(drive), Some(path)) = (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH")) {
+        if let (Some(drive), Some(path)) =
+            (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH"))
+        {
             let mut home = PathBuf::from(drive);
             home.push(path);
             return Ok(home);
@@ -48,7 +52,12 @@ fn validate_relative_path(relative_path: &str) -> Result<(), String> {
     }
     let relative = Path::new(relative_path);
     if relative.is_absolute()
-        || relative.components().any(|part| matches!(part, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+        || relative.components().any(|part| {
+            matches!(
+                part,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
     {
         return Err("path must be relative and cannot contain parent/root components".to_string());
     }
@@ -89,7 +98,9 @@ fn safe_workspace(workspace: &str) -> Result<PathBuf, String> {
     if !metadata.is_dir() {
         return Err("workspace root must be a directory".to_string());
     }
-    let path = requested.canonicalize().map_err(|error| error.to_string())?;
+    let path = requested
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     let approved = approved_workspace_root()?;
     if !path.starts_with(&approved) {
         return Err("workspace must be inside ~/OmniDesktopWorkspace".to_string());
@@ -105,7 +116,12 @@ fn reject_symlink_components(root: &Path, relative: &Path) -> Result<(), String>
             Component::Normal(segment) => current.push(segment),
             _ => return Err("invalid workspace path component".to_string()),
         }
-        if current.exists() && fs::symlink_metadata(&current).map_err(|error| error.to_string())?.file_type().is_symlink() {
+        if current.exists()
+            && fs::symlink_metadata(&current)
+                .map_err(|error| error.to_string())?
+                .file_type()
+                .is_symlink()
+        {
             return Err("workspace path cannot traverse symlinks".to_string());
         }
     }
@@ -117,7 +133,10 @@ fn safe_workspace_path(workspace: &str, relative_path: &str) -> Result<PathBuf, 
     validate_relative_path(relative_path)?;
     let relative = Path::new(relative_path);
     reject_symlink_components(&root, relative)?;
-    let resolved = root.join(relative).canonicalize().map_err(|error| error.to_string())?;
+    let resolved = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     if !resolved.starts_with(&root) {
         return Err("path escapes the approved workspace".to_string());
     }
@@ -136,7 +155,10 @@ fn read_workspace_file(workspace: String, relative_path: String) -> Result<Strin
 }
 
 #[tauri::command]
-fn list_workspace_directory(workspace: String, relative_path: String) -> Result<Vec<String>, String> {
+fn list_workspace_directory(
+    workspace: String,
+    relative_path: String,
+) -> Result<Vec<String>, String> {
     const MAX_ENTRIES: usize = 1000;
     let path = safe_workspace_path(&workspace, &relative_path)?;
     if !path.is_dir() {
@@ -145,7 +167,11 @@ fn list_workspace_directory(workspace: String, relative_path: String) -> Result<
     let mut entries = fs::read_dir(path)
         .map_err(|error| error.to_string())?
         .take(MAX_ENTRIES + 1)
-        .map(|entry| entry.map_err(|error| error.to_string()).map(|value| value.file_name().to_string_lossy().to_string()))
+        .map(|entry| {
+            entry
+                .map_err(|error| error.to_string())
+                .map(|value| value.file_name().to_string_lossy().to_string())
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if entries.len() > MAX_ENTRIES {
         return Err("workspace directory exceeds the 1000 entry output limit".to_string());
@@ -156,7 +182,12 @@ fn list_workspace_directory(workspace: String, relative_path: String) -> Result<
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![secure_get, secure_set, read_workspace_file, list_workspace_directory])
+        .invoke_handler(tauri::generate_handler![
+            secure_get,
+            secure_set,
+            read_workspace_file,
+            list_workspace_directory
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Omni Desktop App");
 }

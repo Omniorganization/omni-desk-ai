@@ -8,9 +8,6 @@ from pathlib import Path
 
 
 REQUIRED_SNIPPETS = {
-    "pyproject.toml": (
-        "enterprise = [\"psycopg[binary]>=3.2\"]",
-    ),
     "requirements.enterprise.lock": (
         "psycopg==",
         "psycopg-binary==",
@@ -41,16 +38,40 @@ def audit(root: Path) -> list[str]:
         for snippet in snippets:
             if snippet not in text:
                 failures.append(f"{rel} missing required snippet: {snippet}")
-    lock_text = _read(root, "requirements.enterprise.lock") if (root / "requirements.enterprise.lock").exists() else ""
-    if lock_text and not re.search(r"^psycopg==\d+\.\d+\.\d+", lock_text, re.MULTILINE):
+
+    try:
+        pyproject = _read(root, "pyproject.toml")
+    except FileNotFoundError:
+        failures.append("missing required file: pyproject.toml")
+        pyproject = ""
+    if pyproject and not re.search(
+        r'enterprise\s*=\s*\[[^\]]*"psycopg\[binary\]>=3\.2,<4"',
+        pyproject,
+        re.DOTALL,
+    ):
+        failures.append(
+            "pyproject.toml enterprise extra must bound psycopg to >=3.2,<4"
+        )
+
+    lock_path = root / "requirements.enterprise.lock"
+    lock_text = _read(root, "requirements.enterprise.lock") if lock_path.exists() else ""
+    if lock_text and not re.search(
+        r"^psycopg==\d+\.\d+\.\d+", lock_text, re.MULTILINE
+    ):
         failures.append("requirements.enterprise.lock must pin psycopg")
-    if lock_text and not re.search(r"^psycopg-binary==\d+\.\d+\.\d+", lock_text, re.MULTILINE):
+    if lock_text and not re.search(
+        r"^psycopg-binary==\d+\.\d+\.\d+", lock_text, re.MULTILINE
+    ):
         failures.append("requirements.enterprise.lock must pin psycopg-binary")
     return failures
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate enterprise dependency lock and production image wiring.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate enterprise dependency lock and production image wiring."
+        )
+    )
     parser.add_argument("root", nargs="?", default=".")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()

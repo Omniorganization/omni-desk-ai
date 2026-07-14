@@ -4,7 +4,9 @@ import atexit
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Literal
+
+SQLiteIsolationLevel = Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None
 
 _OPEN_CONNECTIONS: set["ClosingConnection"] = set()
 _OPEN_CONNECTIONS_LOCK = threading.Lock()
@@ -61,7 +63,12 @@ def close_all_open_connections() -> None:
 atexit.register(close_all_open_connections)
 
 
-def connect_sqlite(db_path: Path, *, timeout: float = 30.0, isolation_level: Optional[str] = None) -> ClosingConnection:
+def connect_sqlite(
+    db_path: Path,
+    *,
+    timeout: float = 30.0,
+    isolation_level: SQLiteIsolationLevel = None,
+) -> ClosingConnection:
     """Open a SQLite connection with production-safe defaults for local agents.
 
     Defaults:

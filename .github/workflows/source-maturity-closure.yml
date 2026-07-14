@@ -29,6 +29,7 @@ jobs:
       - run: mkdir -p dist/evidence
       - run: PYTHONPATH=. python scripts/check_source_maturity_closure.py . --write-report dist/evidence/source-maturity-closure.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: source-maturity-closure-${{ github.sha }}
           path: dist/evidence/source-maturity-closure.json

@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: omnidesk-config
-  namespace: omnidesk
+  namespace: {{ .Release.Namespace }}
 data:
   config.production.yaml: |
     gateway:
@@ -76,7 +76,7 @@ data:
       backend: postgres
       postgres_dsn_env: OMNIDESK_APPSYNC_POSTGRES_DSN
       secret_pepper_env: OMNIDESK_APPSYNC_SECRET_PEPPER
-      namespace: production
+      namespace: {{ .Values.storage.namespace | quote }}
       require_idempotency: true
       allow_websocket_query_auth: false
       require_device_public_key_in_production: true

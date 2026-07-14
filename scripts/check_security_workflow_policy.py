@@ -12,8 +12,8 @@ SECURITY_SNIPPETS = [
     "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
     "github.com/zricethezav/gitleaks/v8@v8.28.0",
     "fetch-depth: 0",
-    "gitleaks\" detect --source . --no-git --redact --verbose --config .gitleaks.toml",
-    "gitleaks\" detect --source . --redact --verbose --config .gitleaks.toml",
+    'gitleaks" detect --source . --no-git --redact --verbose --config .gitleaks.toml',
+    'gitleaks" detect --source . --redact --verbose --config .gitleaks.toml',
     "scripts/check_security_exceptions.py release/security-exceptions",
     "scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json",
     "scripts/check_security_workflow_policy.py .",
@@ -21,6 +21,14 @@ SECURITY_SNIPPETS = [
     "security-events: write",
     "pull-requests: read",
     "allow-ghsas: GHSA-wrw7-89jp-8q8g",
+    "pip-audit --disable-pip",
+    "cargo audit",
+    "--ignore GHSA-wrw7-89jp-8q8g",
+    "github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.4.0",
+    "Enforce Python dependency audit",
+    "Enforce ecosystem dependency audits",
+    "security-core-${{ github.sha }}",
+    "ecosystem-security-${{ github.sha }}",
 ]
 
 ATTACK_SURFACE_WORKFLOW_SNIPPETS = [
@@ -68,6 +76,14 @@ def _missing_snippets(path: Path, snippets: list[str]) -> list[str]:
     return [snippet for snippet in snippets if snippet not in text]
 
 
+def _audit_loop_contains_lockfile(security_text: str, lockfile: str) -> bool:
+    audit_start = security_text.find("- name: Audit Python lock files")
+    audit_end = security_text.find("- run: python scripts/check_license_policy.py", audit_start)
+    if audit_start < 0 or audit_end < 0:
+        return False
+    return lockfile in security_text[audit_start:audit_end]
+
+
 def check(root: Path) -> list[str]:
     issues: list[str] = []
     for rel in REQUIRED_FILES:
@@ -78,39 +94,64 @@ def check(root: Path) -> list[str]:
     if missing_security:
         issues.append("security.yml missing snippets: " + ", ".join(missing_security))
     attack_surface_workflow = root / ".github" / "workflows" / "security-attack-surface.yml"
-    missing_attack_surface = _missing_snippets(attack_surface_workflow, ATTACK_SURFACE_WORKFLOW_SNIPPETS)
+    missing_attack_surface = _missing_snippets(
+        attack_surface_workflow, ATTACK_SURFACE_WORKFLOW_SNIPPETS
+    )
     if missing_attack_surface:
-        issues.append("security-attack-surface.yml missing snippets: " + ", ".join(missing_attack_surface))
+        issues.append(
+            "security-attack-surface.yml missing snippets: "
+            + ", ".join(missing_attack_surface)
+        )
     security_text = security_workflow.read_text(encoding="utf-8") if security_workflow.exists() else ""
     for lockfile in LOCKFILES:
         if f"python scripts/check_lock_hashes.py {lockfile}" not in security_text:
             issues.append(f"security.yml must hash-check lockfile: {lockfile}")
-        if f"pip-audit --disable-pip -r {lockfile}" not in security_text:
+        if not _audit_loop_contains_lockfile(security_text, lockfile):
             issues.append(f"security.yml must pip-audit lockfile: {lockfile}")
+    if "pip-audit-${stem}.status" not in security_text:
+        issues.append("security.yml must preserve per-lockfile pip-audit status evidence")
+    if 'echo "status=$aggregate" >> "$GITHUB_OUTPUT"' not in security_text:
+        issues.append("security.yml must aggregate Python audit results before enforcement")
+    if 'echo "status=$status" >> "$GITHUB_OUTPUT"' not in security_text:
+        issues.append("security.yml must preserve ecosystem audit step status")
     dependency_review_index = security_text.find("actions/dependency-review-action@")
     if dependency_review_index >= 0:
-        dependency_review_block = security_text[dependency_review_index:dependency_review_index + 300]
+        dependency_review_block = security_text[
+            dependency_review_index : dependency_review_index + 300
+        ]
         if "continue-on-error: true" in dependency_review_block:
-            issues.append("dependency-review must be blocking; remove continue-on-error: true")
+            issues.append(
+                "dependency-review must be blocking; remove continue-on-error: true"
+            )
     allow_ghsa_lines = [
         line.strip()
         for line in security_text.splitlines()
         if line.strip().startswith("allow-ghsas:")
     ]
     if allow_ghsa_lines != ["allow-ghsas: GHSA-wrw7-89jp-8q8g"]:
-        issues.append("dependency-review allow-ghsas must stay limited to GHSA-wrw7-89jp-8q8g")
+        issues.append(
+            "dependency-review allow-ghsas must stay limited to GHSA-wrw7-89jp-8q8g"
+        )
     if "check_security_exceptions.py" not in security_text:
         issues.append("security.yml must validate governed security exceptions")
     if "Run gitleaks full-history secret scan" not in security_text:
         issues.append("security.yml must include a full-history gitleaks job")
-    missing_docker = _missing_snippets(root / ".github" / "workflows" / "docker-scan.yml", DOCKER_SCAN_SNIPPETS)
+    missing_docker = _missing_snippets(
+        root / ".github" / "workflows" / "docker-scan.yml", DOCKER_SCAN_SNIPPETS
+    )
     if missing_docker:
         issues.append("docker-scan.yml missing snippets: " + ", ".join(missing_docker))
     return issues
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify security workflows include CodeQL, secret scanning, dependency review, license policy, container scanning, and attack-surface gates.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Verify security workflows include CodeQL, secret scanning, dependency review, "
+            "license policy, fail-closed cross-ecosystem dependency audits, container scanning, "
+            "and attack-surface gates."
+        )
+    )
     parser.add_argument("root", nargs="?", default=".")
     args = parser.parse_args(argv)
     issues = check(Path(args.root))

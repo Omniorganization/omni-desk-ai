@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: omnidesk-agent
-  namespace: omnidesk
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: omnidesk-agent
 spec:
@@ -59,7 +59,7 @@ spec:
               containerPort: 18789
           envFrom:
             - secretRef:
-                name: omnidesk-secrets
+                name: {{ .Values.secrets.name | quote }}
           env:
             - name: OMNIDESK_ENV
               value: production
@@ -68,7 +68,11 @@ spec:
             - name: OMNIDESK_RUNNING_IN_CONTAINER
               value: "true"
             - name: OMNIDESK_OTLP_ENDPOINT
-              value: "{{ .Values.otel.endpoint }}"
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OMNIDESK_APPSYNC_CHAT_LEASE_SECONDS
+              value: {{ .Values.storage.chatRequestLeaseSeconds | quote }}
+            - name: OMNIDESK_APPSYNC_POSTGRES_POOL_SIZE
+              value: {{ .Values.storage.postgresPoolSize | quote }}
           volumeMounts:
             - name: config
               mountPath: /etc/omnidesk

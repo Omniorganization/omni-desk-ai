@@ -18,7 +18,14 @@ def test_tauri_desktop_does_not_enable_arbitrary_fs_shell_or_http_plugins() -> N
 def test_tauri_native_commands_are_allowlisted_and_workspace_scoped() -> None:
     main = Path("apps/desktop-tauri/src-tauri/src/main.rs").read_text(encoding="utf-8")
 
-    assert "read_workspace_file, list_workspace_directory" in main
+    assert "tauri::generate_handler![" in main
+    for command in (
+        "secure_get",
+        "secure_set",
+        "read_workspace_file",
+        "list_workspace_directory",
+    ):
+        assert command in main
     assert '.join("OmniDesktopWorkspace")' in main
     assert "workspace must be inside ~/OmniDesktopWorkspace" in main
     assert "relative.is_absolute()" in main

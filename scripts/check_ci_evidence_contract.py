@@ -7,20 +7,23 @@ from pathlib import Path
 
 
 REQUIRED_CI_SNIPPETS = [
-    "reports/ci/${{ matrix.python-version }}",
-    "ruff.txt",
-    "pyright.txt",
-    "pytest-unit.txt",
-    "pytest-coverage.txt",
-    "coverage-gates.txt",
-    "optional-connector-coverage.txt",
-    "coverage.json",
-    "coverage.xml",
+    "concurrency:",
+    "cancel-in-progress: true",
+    "governance:",
+    "coverage:",
+    "postgres:16-alpine",
+    "OMNIDESK_TEST_POSTGRES_DSN",
+    "tests/test_appsync_industrial_contract.py",
+    "--cov-fail-under=80",
+    "scripts/check_coverage_gates.py",
+    "scripts/check_optional_connector_coverage.py",
     "scripts/write_ci_evidence_manifest.py",
-    "ci-evidence.json",
-    "ci-evidence-${{ matrix.python-version }}",
-    "--artifact-name \"ci-evidence-${{ matrix.python-version }}\"",
+    'ci-evidence-${{ matrix.python-version }}',
+    '--artifact-name "ci-evidence-${{ matrix.python-version }}"',
+    'name: ci-evidence-coverage',
     "actions/upload-artifact@",
+    "needs: [governance, test, coverage]",
+    "CI matrix passed",
 ]
 
 REQUIRED_WRITER_SNIPPETS = [
@@ -36,17 +39,19 @@ def check(root: Path) -> list[str]:
     writer = root / "scripts" / "write_ci_evidence_manifest.py"
     if not workflow.exists():
         return ["missing CI workflow: .github/workflows/ci.yml"]
+    text = workflow.read_text(encoding="utf-8")
+    writer_text = writer.read_text(encoding="utf-8") if writer.exists() else ""
     if not writer.exists():
         issues.append("missing CI evidence writer: scripts/write_ci_evidence_manifest.py")
-        writer_text = ""
-    else:
-        writer_text = writer.read_text(encoding="utf-8")
-    text = workflow.read_text(encoding="utf-8")
     for snippet in REQUIRED_CI_SNIPPETS:
         if snippet not in text:
-            issues.append(f"CI evidence workflow missing snippet: {snippet}")
-    if "--cov-report=json" not in text or "--cov-report=xml" not in text:
-        issues.append("CI must emit both coverage JSON and coverage XML reports")
+            issues.append(f"CI workflow missing industrial evidence snippet: {snippet}")
+    if text.count("--cov=omnidesk_agent") != 1:
+        issues.append("full coverage suite must run exactly once")
+    if text.count("python scripts/check_version_consistency.py .") != 1:
+        issues.append("repository governance checks must run once in the governance job")
+    if text.count("postgres:16-alpine") != 1:
+        issues.append("PostgreSQL service must be provisioned only for the full coverage gate")
     if "set -o pipefail" not in text or "| tee" not in text:
         issues.append("CI evidence logs must be captured without masking command failures")
     for snippet in REQUIRED_WRITER_SNIPPETS:
@@ -56,7 +61,9 @@ def check(root: Path) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify CI uploads source-trunk evidence artifacts for every Python matrix cell.")
+    parser = argparse.ArgumentParser(
+        description="Verify split governance, compatibility, PostgreSQL coverage, and evidence CI gates."
+    )
     parser.add_argument("root", nargs="?", default=".")
     args = parser.parse_args(argv)
     issues = check(Path(args.root))
