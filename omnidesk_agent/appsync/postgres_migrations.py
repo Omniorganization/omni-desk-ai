@@ -2,13 +2,35 @@ from __future__ import annotations
 
 import hashlib
 import time
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Iterable
+from importlib import import_module
+from typing import Any, Iterable, Protocol, cast
 
 from omnidesk_agent.appsync.postgres_store import NORMALIZED_SCHEMA_SQL
 
 MIGRATION_TABLE = "omnidesk_appsync_schema_migrations"
 LATEST_SCHEMA_VERSION = 3
+
+
+class _Cursor(Protocol):
+    def execute(self, query: object, params: object = ...) -> Any: ...
+
+    def fetchall(self) -> list[tuple[Any, ...]]: ...
+
+    def fetchone(self) -> tuple[Any, ...] | None: ...
+
+
+class _Connection(Protocol):
+    def cursor(self) -> AbstractContextManager[_Cursor]: ...
+
+    def commit(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _PsycopgModule(Protocol):
+    def connect(self, dsn: str) -> _Connection: ...
 
 
 @dataclass(frozen=True)
@@ -96,13 +118,12 @@ def _advisory_lock_key(namespace: str) -> int:
     return int.from_bytes(digest[:8], "big", signed=True)
 
 
-def _table_query(template: str) -> Any:
-    from psycopg import sql  # type: ignore
+def _table_query(template: str) -> str:
+    """Format a query with the fixed, source-controlled migration table name."""
+    return template.format(table=MIGRATION_TABLE)
 
-    return sql.SQL(template).format(table=sql.Identifier(MIGRATION_TABLE))
 
-
-def _ensure_migration_table(cur: Any) -> None:
+def _ensure_migration_table(cur: _Cursor) -> None:
     cur.execute(
         _table_query(
             """
@@ -123,6 +144,13 @@ def _checksum(migration: PostgresMigration) -> str:
     return hashlib.sha256("\n;\n".join(migration.statements).encode()).hexdigest()
 
 
+def _load_psycopg() -> _PsycopgModule:
+    try:
+        return cast(_PsycopgModule, import_module("psycopg"))
+    except ModuleNotFoundError as exc:  # pragma: no cover
+        raise RuntimeError("psycopg is required for AppSync migration") from exc
+
+
 def apply_appsync_migrations(
     dsn: str,
     *,
@@ -131,76 +159,72 @@ def apply_appsync_migrations(
 ) -> list[int]:
     if not str(dsn or "").strip():
         raise RuntimeError("PostgreSQL DSN is required for AppSync migration")
-    try:
-        import psycopg  # type: ignore
-    except ModuleNotFoundError as exc:  # pragma: no cover
-        raise RuntimeError("psycopg is required for AppSync migration") from exc
     ordered = sorted(migrations, key=lambda item: item.version)
     applied_now: list[int] = []
-    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
-        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_lock_key(namespace),))
-        _ensure_migration_table(cur)
-        cur.execute(
-            _table_query(
-                "SELECT version, checksum FROM {table} WHERE namespace=%s"
-            ),
-            (namespace,),
-        )
-        applied = {int(row[0]): str(row[1]) for row in cur.fetchall()}
-        for migration in ordered:
-            checksum = _checksum(migration)
-            if migration.version in applied:
-                if applied[migration.version] != checksum:
-                    raise RuntimeError(
-                        f"AppSync migration {migration.version} checksum changed after application"
-                    )
-                continue
-            for statement in migration.statements:
-                cur.execute(statement)
+    conn = _load_psycopg().connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_lock_key(namespace),))
+            _ensure_migration_table(cur)
             cur.execute(
-                _table_query(
-                    "INSERT INTO {table}(namespace,version,name,checksum,applied_at) "
-                    "VALUES(%s,%s,%s,%s,%s)"
-                ),
-                (namespace, migration.version, migration.name, checksum, time.time()),
+                _table_query("SELECT version, checksum FROM {table} WHERE namespace=%s"),
+                (namespace,),
             )
-            applied_now.append(migration.version)
+            applied = {int(row[0]): str(row[1]) for row in cur.fetchall()}
+            for migration in ordered:
+                checksum = _checksum(migration)
+                if migration.version in applied:
+                    if applied[migration.version] != checksum:
+                        raise RuntimeError(
+                            f"AppSync migration {migration.version} checksum changed after application"
+                        )
+                    continue
+                for statement in migration.statements:
+                    cur.execute(statement)
+                cur.execute(
+                    _table_query(
+                        "INSERT INTO {table}(namespace,version,name,checksum,applied_at) "
+                        "VALUES(%s,%s,%s,%s,%s)"
+                    ),
+                    (namespace, migration.version, migration.name, checksum, time.time()),
+                )
+                applied_now.append(migration.version)
         conn.commit()
+    finally:
+        conn.close()
     return applied_now
 
 
-def assert_appsync_schema_current(conn: Any, *, namespace: str) -> None:
+def _schema_version(conn: _Connection, *, namespace: str) -> int:
     with conn.cursor() as cur:
-        try:
-            cur.execute(
-                _table_query(
-                    "SELECT COALESCE(MAX(version),0) FROM {table} WHERE namespace=%s"
-                ),
-                (namespace,),
-            )
-            version = int(cur.fetchone()[0])
-        except Exception as exc:
-            raise RuntimeError(
-                "AppSync schema is not initialized; run `python -m omnidesk_agent.appsync.migrate`"
-            ) from exc
+        cur.execute(
+            _table_query("SELECT COALESCE(MAX(version),0) FROM {table} WHERE namespace=%s"),
+            (namespace,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return 0
+    return int(row[0])
+
+
+def assert_appsync_schema_current(conn: _Connection, *, namespace: str) -> None:
+    try:
+        version = _schema_version(conn, namespace=namespace)
+    except Exception as exc:
+        raise RuntimeError(
+            "AppSync schema is not initialized; run `python -m omnidesk_agent.appsync.migrate`"
+        ) from exc
     if version < LATEST_SCHEMA_VERSION:
         raise RuntimeError(
             f"AppSync schema version {version} is behind required version {LATEST_SCHEMA_VERSION}"
         )
 
 
-def appsync_schema_status(conn: Any, *, namespace: str) -> dict[str, int | bool]:
-    with conn.cursor() as cur:
-        try:
-            cur.execute(
-                _table_query(
-                    "SELECT COALESCE(MAX(version),0) FROM {table} WHERE namespace=%s"
-                ),
-                (namespace,),
-            )
-            current = int(cur.fetchone()[0])
-        except Exception:
-            current = 0
+def appsync_schema_status(conn: _Connection, *, namespace: str) -> dict[str, int | bool]:
+    try:
+        current = _schema_version(conn, namespace=namespace)
+    except Exception:
+        current = 0
     return {
         "current": current,
         "required": LATEST_SCHEMA_VERSION,
