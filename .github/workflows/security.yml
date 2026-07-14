@@ -6,14 +6,18 @@ on:
   schedule:
     - cron: "0 3 * * 1"
 
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: read
   security-events: write
 
 jobs:
-  security:
-    name: Security
+  security-core:
+    name: Security Core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -52,17 +56,59 @@ jobs:
       - run: python scripts/check_security_workflow_policy.py .
       - run: python scripts/check_security_attack_surface.py .
 
-  codeql:
-    name: CodeQL
+  ecosystem-audit:
+    name: Ecosystem Dependency Audit
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/web-admin-next/package-lock.json
+            apps/desktop-tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.35.x"
+          cache: true
+      - name: Audit Web Admin npm graph
+        working-directory: apps/web-admin-next
+        run: |
+          npm ci
+          npm audit --audit-level=high
+      - name: Audit Desktop npm graph
+        working-directory: apps/desktop-tauri
+        run: |
+          npm ci
+          npm audit --audit-level=high
+      - name: Audit Rust dependency graph
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit --file apps/desktop-tauri/src-tauri/Cargo.lock --ignore GHSA-wrw7-89jp-8q8g
+      - name: Audit Flutter dependency graph
+        run: |
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.4.0
+          "$HOME/go/bin/osv-scanner" scan source -r apps/mobile-flutter
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7
         with:
-          languages: python
+          languages: ${{ matrix.language }}
       - uses: github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7
         with:
-          category: "/language:python"
+          category: "/language:${{ matrix.language }}"
 
   dependency-review:
     name: Dependency Review
@@ -72,8 +118,23 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
         with:
-          # Tauri 2.11's current Linux GTK stack pulls glib <0.20 through
-          # target-specific transitive deps. This exception is allowed only
-          # while release/security-exceptions/GHSA-wrw7-89jp-8q8g.md remains
-          # active, owned, bounded, and unexpired.
           allow-ghsas: GHSA-wrw7-89jp-8q8g
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    needs: [security-core, ecosystem-audit, codeql, dependency-review]
+    if: always()
+    steps:
+      - run: |
+          failures=0
+          for result in "${{ needs.security-core.result }}" "${{ needs.ecosystem-audit.result }}" "${{ needs.codeql.result }}"; do
+            [[ "$result" == "success" ]] || failures=1
+          done
+          review="${{ needs.dependency-review.result }}"
+          [[ "$review" == "success" || "$review" == "skipped" ]] || failures=1
+          if [[ "$failures" -ne 0 ]]; then
+            echo "Security result: core=${{ needs.security-core.result }}, ecosystem=${{ needs.ecosystem-audit.result }}, codeql=${{ needs.codeql.result }}, dependency-review=$review"
+            exit 1
+          fi
+          echo "All security ecosystems passed"
