@@ -1,0 +1,80 @@
+name: Python Lock Renderer
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-lock-renderer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip uv
+      - name: Render universal hashed locks
+        run: |
+          set -euo pipefail
+          mkdir -p .rendered
+          uv pip compile pyproject.toml \
+            -c requirements.security-constraints.in \
+            --python-version 3.10 \
+            --universal \
+            --generate-hashes \
+            --extra dev \
+            --extra test \
+            --extra security \
+            -o .rendered/requirements.lock
+          cp .rendered/requirements.lock .rendered/requirements.dev.lock
+      - name: Render minimal bootstrap lock
+        run: |
+          set -euo pipefail
+          cat > /tmp/requirements.bootstrap.in <<'EOF'
+          pip>=26.1.2
+          setuptools>=83.0.0,<84
+          packaging>=26.2
+          wheel>=0.47.0
+          EOF
+          uv pip compile /tmp/requirements.bootstrap.in \
+            --python-version 3.10 \
+            --universal \
+            --generate-hashes \
+            -o /tmp/requirements.bootstrap.generated.lock
+          python - <<'PY'
+          from pathlib import Path
+
+          generated = Path('/tmp/requirements.bootstrap.generated.lock').read_text(encoding='utf-8')
+          marker = generated.find('packaging==')
+          if marker < 0:
+              raise SystemExit('generated bootstrap lock is missing packaging')
+          body = generated[marker:]
+          header = '''# Hash-locked Python packaging tools for Docker build and runtime stages.
+          #
+          # Keep this file intentionally small: it patches base-image packaging
+          # tooling without pulling development dependencies into the production image.
+          '''
+          Path('.rendered/requirements.bootstrap.lock').write_text(header + body, encoding='utf-8')
+          PY
+      - name: Validate rendered locks
+        run: |
+          python scripts/check_lock_hashes.py .rendered/requirements.lock
+          python scripts/check_lock_hashes.py .rendered/requirements.dev.lock
+          python scripts/check_lock_hashes.py .rendered/requirements.bootstrap.lock
+          grep -q '^setuptools==83\.0\.0 ' .rendered/requirements.lock
+          grep -q '^setuptools==83\.0\.0 ' .rendered/requirements.dev.lock
+          grep -q '^setuptools==83\.0\.0 ' .rendered/requirements.bootstrap.lock
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: python-locks-${{ github.sha }}
+          path: .rendered/
+          if-no-files-found: error
