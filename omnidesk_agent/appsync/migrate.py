@@ -20,24 +20,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Environment variable containing the PostgreSQL DSN.",
     )
     parser.add_argument("--namespace", default="production")
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--check",
+        "--check-only",
+        dest="check_only",
+        action="store_true",
+        help="Verify that the AppSync schema is current without applying migrations.",
+    )
     args = parser.parse_args(argv)
 
     dsn = os.getenv(args.dsn_env, "").strip()
     if not dsn:
-        raise SystemExit(f"missing PostgreSQL DSN environment variable: {args.dsn_env}")
+        raise RuntimeError(
+            f"Missing PostgreSQL DSN environment variable: {args.dsn_env}"
+        )
 
-    if args.check:
+    if args.check_only:
         try:
             import psycopg  # type: ignore
         except ModuleNotFoundError as exc:  # pragma: no cover
-            raise SystemExit("psycopg is required") from exc
+            raise RuntimeError("psycopg is required for AppSync schema checks") from exc
         with psycopg.connect(dsn) as conn:
             status = appsync_schema_status(conn, namespace=args.namespace)
         print(json.dumps(status, sort_keys=True))
         return 0 if bool(status["ready"]) else 1
 
     applied = apply_appsync_migrations(dsn, namespace=args.namespace)
+    versions = ",".join(str(version) for version in applied) or "none"
+    print(f"applied AppSync migrations: {versions}")
     print(json.dumps({"namespace": args.namespace, "applied": applied}, sort_keys=True))
     return 0
 
