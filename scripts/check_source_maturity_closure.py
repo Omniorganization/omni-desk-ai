@@ -100,10 +100,42 @@ def _tri_app_engineering(root: Path) -> list[tuple[str, bool]]:
 
 
 def _offline_sync_reconnect(root: Path) -> list[tuple[str, bool]]:
+    factory = "omnidesk_agent/appsync/factory.py"
+    json_factory = _contains_any(
+        root,
+        factory,
+        ("ApplyingAppSyncStore", "StrictJsonAppSyncStore"),
+    )
+    postgres_factory = _contains_any(
+        root,
+        factory,
+        (
+            "ApplyingDurablePostgresAppSyncStore",
+            "MigratedMultiInstancePostgresAppSyncStore",
+        ),
+    )
+    strict_json_applies = _contains(
+        root,
+        "omnidesk_agent/appsync/strict_json_store.py",
+        "ApplyingAppSyncStore",
+        "class StrictJsonAppSyncStore(ApplyingAppSyncStore)",
+    )
+    migrated_postgres_applies = _contains(
+        root,
+        "omnidesk_agent/appsync/migrated_postgres_store.py",
+        "ApplyingDurablePostgresAppSyncStore",
+        "class MigratedMultiInstancePostgresAppSyncStore",
+    )
     return [
         ("offline sync applying store exists", _contains(root, "omnidesk_agent/appsync/offline_sync_apply.py", "ApplyingAppSyncStore", "apply_uploaded_operations")),
         ("postgres applying store exists", _contains(root, "omnidesk_agent/appsync/postgres_applying_sync.py", "ApplyingDurablePostgresAppSyncStore")),
-        ("factory routes to applying stores", _contains(root, "omnidesk_agent/appsync/factory.py", "ApplyingAppSyncStore", "ApplyingDurablePostgresAppSyncStore")),
+        (
+            "factory routes to applying stores",
+            json_factory
+            and postgres_factory
+            and strict_json_applies
+            and migrated_postgres_applies,
+        ),
         ("reconnect worker test exists", _file_exists(root, "tests/test_reconnect_sync_worker.py")),
         ("offline sync updater hardening test exists", _file_exists(root, "tests/test_offline_sync_updater_hardening.py")),
     ]
