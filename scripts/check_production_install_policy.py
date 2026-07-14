@@ -58,6 +58,20 @@ def _production_install_issues(rel: str, text: str) -> list[str]:
     return issues
 
 
+def _has_aggregate_python_audit(text: str) -> bool:
+    return all(
+        snippet in text
+        for snippet in (
+            "for lockfile in",
+            "pip-audit --disable-pip",
+            '-r "$lockfile"',
+            "Enforce Python dependency audit",
+            'steps.python_audit.outputs.status',
+            *LOCKFILES,
+        )
+    )
+
+
 def check(root: Path) -> list[str]:
     issues: list[str] = []
     for lockfile in LOCKFILES:
@@ -89,10 +103,12 @@ def check(root: Path) -> list[str]:
             issues.append(f"build_release.sh must generate SBOM from lockfiles: missing {snippet}")
 
     security = _read(root / ".github" / "workflows" / "security.yml")
+    aggregate_audit = _has_aggregate_python_audit(security)
     for lockfile in LOCKFILES:
         if f"python scripts/check_lock_hashes.py {lockfile}" not in security:
             issues.append(f"security.yml must hash-check lockfile: {lockfile}")
-        if f"pip-audit --disable-pip -r {lockfile}" not in security:
+        direct_audit = f"pip-audit --disable-pip -r {lockfile}" in security
+        if not direct_audit and not aggregate_audit:
             issues.append(f"security.yml must pip-audit lockfile: {lockfile}")
 
     for rel in PRODUCTION_SURFACES:
