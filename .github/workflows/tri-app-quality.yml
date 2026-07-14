@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: tri-app-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -73,7 +77,7 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  desktop-tauri:
+  desktop-tauri-linux:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -88,12 +92,72 @@ jobs:
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: stable
+          components: rustfmt, clippy
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo build --locked --manifest-path src-tauri/Cargo.toml
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode desktop-release
+
+  desktop-tauri-macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop-tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo build --locked --manifest-path src-tauri/Cargo.toml
+
+  desktop-tauri-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop-tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo build --locked --manifest-path src-tauri/Cargo.toml
+
+  desktop-tauri:
+    runs-on: ubuntu-latest
+    needs: [desktop-tauri-linux, desktop-tauri-macos, desktop-tauri-windows]
+    if: always()
+    steps:
+      - run: |
+          for result in "${{ needs.desktop-tauri-linux.result }}" "${{ needs.desktop-tauri-macos.result }}" "${{ needs.desktop-tauri-windows.result }}"; do
+            if [[ "$result" != "success" ]]; then
+              echo "Desktop platform build failed: $result"
+              exit 1
+            fi
+          done
+          echo "Desktop Linux, macOS, and Windows builds passed"
 
   mobile-flutter:
     runs-on: ubuntu-latest
@@ -151,7 +215,7 @@ jobs:
 
   mobile-ios-simulator:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/mobile-flutter
@@ -163,6 +227,9 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter analyze
+      - run: flutter test
+      - run: cd ios && pod install
+      - run: flutter build ios --simulator --debug
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-source
 
   mobile-ios-release:
