@@ -45,7 +45,30 @@ jobs:
         run: |
           "$HOME/go/bin/gitleaks" detect --source . --redact --verbose --config .gitleaks.toml
       - run: python scripts/check_security_exceptions.py release/security-exceptions
-      - run: bandit -r omnidesk_agent -ll
+      - name: Bandit source audit
+        run: |
+          mkdir -p reports/security
+          set +e
+          bandit -r omnidesk_agent -ll -f json -o reports/security/bandit.json
+          status=$?
+          set -e
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("reports/security/bandit.json").read_text())
+          print(json.dumps({
+              "metrics": report.get("metrics", {}).get("_totals", {}),
+              "results": report.get("results", []),
+          }, indent=2, sort_keys=True))
+          PY
+          exit "$status"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: security-core-${{ github.sha }}
+          path: reports/security/
+          if-no-files-found: warn
       - run: pip-audit --disable-pip -r requirements.lock
       - run: pip-audit --disable-pip -r requirements.runtime.lock
       - run: pip-audit --disable-pip -r requirements.bootstrap.lock
