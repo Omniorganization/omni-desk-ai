@@ -32,10 +32,9 @@ fn home_directory() -> Result<PathBuf, String> {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
             return Ok(PathBuf::from(profile));
         }
-        if let (Some(drive), Some(path)) = (
-            std::env::var_os("HOMEDRIVE"),
-            std::env::var_os("HOMEPATH"),
-        ) {
+        if let (Some(drive), Some(path)) =
+            (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH"))
+        {
             let mut home = PathBuf::from(drive);
             home.push(path);
             return Ok(home);
