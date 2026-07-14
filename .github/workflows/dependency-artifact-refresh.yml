@@ -1,0 +1,107 @@
+name: Dependency Artifact Refresh
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: github.head_ref == 'agent/industrial-p0-p1-p2-remediation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+      - run: python -m pip install --upgrade pip uv
+      - name: Render universal hashed Python locks
+        run: |
+          set -euo pipefail
+          cat > /tmp/security-build-tools.in <<'EOF'
+          setuptools>=83.0.0,<84
+          wheel>=0.47.0,<1
+          EOF
+          uv pip compile pyproject.toml /tmp/security-build-tools.in \
+            -c requirements.security-constraints.in \
+            --python-version 3.10 \
+            --universal \
+            --generate-hashes \
+            --extra dev \
+            --extra test \
+            --extra security \
+            -o requirements.lock
+          cp requirements.lock requirements.dev.lock
+          cat > /tmp/requirements.bootstrap.in <<'EOF'
+          pip>=26.1.2
+          setuptools>=83.0.0,<84
+          packaging>=26.2
+          wheel>=0.47.0,<1
+          EOF
+          uv pip compile /tmp/requirements.bootstrap.in \
+            --python-version 3.10 \
+            --universal \
+            --generate-hashes \
+            -o requirements.bootstrap.lock
+          python scripts/check_lock_hashes.py requirements.lock
+          python scripts/check_lock_hashes.py requirements.dev.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
+          grep -q '^httpx2==' requirements.dev.lock
+          grep -Eq '^cryptography==(4[8-9]|[5-9][0-9])\.' requirements.dev.lock
+      - name: Refresh Rust lock and enforce fixed quick-xml
+        working-directory: apps/desktop-tauri/src-tauri
+        run: |
+          set -euo pipefail
+          cargo update
+          cargo tree -i quick-xml
+          version="$(awk '/name = "quick-xml"/{found=1; next} found && /version = /{gsub(/[" ]/, "", $3); print $3; exit}' Cargo.lock)"
+          python - "$version" <<'PY'
+          import sys
+          version = tuple(map(int, sys.argv[1].split('.')[:3]))
+          if version < (0, 41, 0):
+              raise SystemExit(f'quick-xml remains vulnerable: {sys.argv[1]}')
+          PY
+      - name: Generate conservative DIB-backed Windows ICO
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import struct
+
+          width = height = 32
+          xor = bytearray()
+          for y in range(height):
+              for x in range(width):
+                  # BGRA, bottom-up. Simple opaque blue tile with a white center mark.
+                  white = 9 <= x <= 22 and 9 <= y <= 22
+                  xor += bytes((255, 255, 255, 255) if white else (180, 88, 28, 255))
+          and_mask = bytes(((width + 31) // 32) * 4 * height)
+          dib = struct.pack('<IIIHHIIIIII', 40, width, height * 2, 1, 32, 0, len(xor), 0, 0, 0, 0) + xor + and_mask
+          header = struct.pack('<HHH', 0, 1, 1)
+          entry = struct.pack('<BBBBHHII', width, height, 0, 0, 1, 32, len(dib), 22)
+          path = Path('apps/desktop-tauri/src-tauri/icons/icon.ico')
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_bytes(header + entry + dib)
+          PY
+      - name: Commit refreshed artifacts
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add requirements.lock requirements.dev.lock requirements.bootstrap.lock \
+            apps/desktop-tauri/src-tauri/Cargo.lock \
+            apps/desktop-tauri/src-tauri/icons/icon.ico
+          if git diff --cached --quiet; then
+            echo 'Artifacts already current'
+            exit 0
+          fi
+          git commit -m 'chore: refresh secure dependency locks and platform icon'
+          git push origin "HEAD:$BRANCH"
