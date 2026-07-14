@@ -7,10 +7,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: tri-app-diagnostics-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   windows-cargo-test:
     runs-on: windows-latest
