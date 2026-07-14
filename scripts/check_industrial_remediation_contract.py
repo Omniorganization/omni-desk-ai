@@ -35,8 +35,9 @@ CONTRACT: dict[str, tuple[str, ...]] = {
     ),
     ".github/workflows/ci.yml": (
         "governance:",
-        "postgres-integration:",
-        "matrix.python-version == '3.11'",
+        "coverage:",
+        "postgres:16-alpine",
+        "ci-evidence-coverage",
         "cancel-in-progress: true",
     ),
     ".github/workflows/security.yml": (
@@ -44,6 +45,7 @@ CONTRACT: dict[str, tuple[str, ...]] = {
         "npm audit --audit-level=high",
         "cargo-audit",
         "osv-scanner",
+        "reports/security/bandit.json",
     ),
     ".github/workflows/tri-app-quality.yml": (
         "desktop-tauri-macos:",
@@ -105,7 +107,9 @@ def check(root: Path) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify source-remediable P0/P1/P2 industrial closure.")
+    parser = argparse.ArgumentParser(
+        description="Verify source-remediable P0/P1/P2 industrial closure."
+    )
     parser.add_argument("root", nargs="?", default=".")
     args = parser.parse_args(argv)
     issues = check(Path(args.root))
