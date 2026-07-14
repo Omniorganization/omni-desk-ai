@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import plistlib
 import re
 import sys
 from pathlib import Path
@@ -24,6 +25,16 @@ def _regex(path: Path, pattern: str, label: str) -> str:
 
 def _json(path: Path) -> dict:
     return json.loads(_read(path))
+
+
+def _plist(path: Path) -> dict:
+    if not path.exists():
+        raise RuntimeError(f"missing file: {path}")
+    with path.open("rb") as handle:
+        loaded = plistlib.load(handle)
+    if not isinstance(loaded, dict):
+        raise RuntimeError(f"plist root must be a dictionary: {path}")
+    return loaded
 
 
 def _all_regex(path: Path, pattern: str, label: str) -> list[str]:
@@ -110,7 +121,6 @@ def main(argv: list[str] | None = None) -> int:
     chart_sources["apps/mobile-flutter/pubspec.yaml"] = _regex(root / "apps" / "mobile-flutter" / "pubspec.yaml", r'^version:\s*([0-9.]+)\+\d+', "mobile pubspec version")
     chart_sources["apps/mobile-flutter/android/app/build.gradle"] = _regex(root / "apps" / "mobile-flutter" / "android" / "app" / "build.gradle", r'versionName\s+"([^"]+)"', "Android versionName")
     chart_sources["apps/mobile-flutter/ios/Flutter/Generated.xcconfig"] = _regex(root / "apps" / "mobile-flutter" / "ios" / "Flutter" / "Generated.xcconfig", r'^FLUTTER_BUILD_NAME=([^\s]+)', "iOS Flutter build name")
-    chart_sources["apps/mobile-flutter/ios/Runner/Info.plist"] = _regex(root / "apps" / "mobile-flutter" / "ios" / "Runner" / "Info.plist", r'CFBundleShortVersionString</key><string>([^<]+)</string>', "iOS bundle short version")
 
     failures: list[str] = []
     for label, value in sorted(full_sources.items()):
@@ -122,6 +132,18 @@ def main(argv: list[str] | None = None) -> int:
     for label, value in sorted(chart_sources.items()):
         if value != native_version:
             failures.append(f"{label}: expected {native_version}, got {value}")
+
+    ios_info_path = root / "apps" / "mobile-flutter" / "ios" / "Runner" / "Info.plist"
+    ios_info = _plist(ios_info_path)
+    expected_ios_variables = {
+        "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
+        "CFBundleShortVersionString": "$(FLUTTER_BUILD_NAME)",
+        "CFBundleVersion": "$(FLUTTER_BUILD_NUMBER)",
+    }
+    for key, expected in expected_ios_variables.items():
+        actual = ios_info.get(key)
+        if actual != expected:
+            failures.append(f"{ios_info_path.relative_to(root)} {key}: expected {expected}, got {actual}")
 
     if failures:
         print("version consistency check failed:", file=sys.stderr)
