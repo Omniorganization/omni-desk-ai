@@ -1,0 +1,85 @@
+name: Remediation Diagnostics
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: remediation-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt-diagnostic:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Capture rustfmt patch
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/rustfmt-diagnostic"
+          mkdir -p "$evidence"
+          set +e
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check \
+            >"$evidence/rustfmt-check.txt" 2>&1
+          status=$?
+          set -e
+          echo "$status" > "$evidence/status"
+          if [[ "$status" -ne 0 ]]; then
+            cargo fmt --manifest-path src-tauri/Cargo.toml --all
+            git diff -- src-tauri > "$evidence/rustfmt.patch"
+            cp src-tauri/src/main.rs "$evidence/main.rs.formatted"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rustfmt-diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}/rustfmt-diagnostic/
+          if-no-files-found: error
+      - name: Enforce rustfmt result
+        run: test "$(cat "$RUNNER_TEMP/rustfmt-diagnostic/status")" -eq 0
+
+  ios-simulator-diagnostic:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/mobile-flutter
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.35.x"
+          cache: true
+      - name: Capture toolchain diagnostics
+        run: |
+          evidence="$RUNNER_TEMP/ios-simulator-diagnostic"
+          mkdir -p "$evidence"
+          flutter doctor -v > "$evidence/flutter-doctor.txt" 2>&1 || true
+          xcodebuild -version > "$evidence/xcode-version.txt" 2>&1 || true
+      - run: flutter pub get
+      - name: Capture iOS Simulator build
+        run: |
+          set -o pipefail
+          evidence="$RUNNER_TEMP/ios-simulator-diagnostic"
+          set +e
+          flutter build ios --simulator --debug \
+            2>&1 | tee "$evidence/build.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > "$evidence/status"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ios-simulator-diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}/ios-simulator-diagnostic/
+          if-no-files-found: error
+      - name: Enforce iOS Simulator result
+        run: test "$(cat "$RUNNER_TEMP/ios-simulator-diagnostic/status")" -eq 0
