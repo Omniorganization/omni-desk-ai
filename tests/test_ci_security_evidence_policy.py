@@ -93,14 +93,18 @@ def test_security_workflow_dependency_review_and_all_python_locks_are_blocking()
     allow_ghsa_lines = [line.strip() for line in workflow.splitlines() if line.strip().startswith("allow-ghsas:")]
     assert allow_ghsa_lines == ["allow-ghsas: GHSA-wrw7-89jp-8q8g"]
 
+    audit_start = workflow.index("for lockfile in")
+    audit_end = workflow.index("set -e", audit_start)
+    audit_block = workflow[audit_start:audit_end]
     for lockfile in PYTHON_LOCKFILES:
         assert f"python scripts/check_lock_hashes.py {lockfile}" in workflow
-        assert lockfile in workflow
+        assert lockfile in audit_block
 
-    assert "pip-audit --disable-pip" in workflow
-    assert '-r "$lockfile"' in workflow
+    assert "pip-audit --disable-pip" in audit_block
+    assert '-r "$lockfile"' in audit_block
     assert "aggregate=0" in workflow
-    assert "aggregate=1" in workflow
+    assert "aggregate=1" in audit_block
+    assert 'echo "$status" > "reports/security/pip-audit-${stem}.status"' in audit_block
     assert 'echo "status=$aggregate" >> "$GITHUB_OUTPUT"' in workflow
     assert 'test "${{ steps.python_audit.outputs.status }}" = "0"' in workflow
 
