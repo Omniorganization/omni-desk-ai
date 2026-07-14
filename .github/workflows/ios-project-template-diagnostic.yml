@@ -1,0 +1,39 @@
+name: iOS Project Template Diagnostic
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-project-template-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate-ios-template:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.35.x"
+          cache: true
+      - name: Generate canonical Flutter iOS project
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/omnidesk_mobile_template"
+          flutter create \
+            --platforms=ios \
+            --org com.omnidesk \
+            --project-name omnidesk_mobile \
+            "$target"
+          sed -i '' 's/com\.omnidesk\.omnideskMobile/com.omnidesk.mobile/g' \
+            "$target/ios/Runner.xcodeproj/project.pbxproj"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ios-project-template-${{ github.sha }}
+          path: ${{ runner.temp }}/omnidesk_mobile_template/ios/
+          if-no-files-found: error
