@@ -68,7 +68,11 @@ spec:
             - name: OMNIDESK_RUNNING_IN_CONTAINER
               value: "true"
             - name: OMNIDESK_OTLP_ENDPOINT
-              value: "{{ .Values.otel.endpoint }}"
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OMNIDESK_APPSYNC_CHAT_LEASE_SECONDS
+              value: {{ .Values.storage.chatRequestLeaseSeconds | quote }}
+            - name: OMNIDESK_APPSYNC_POSTGRES_POOL_SIZE
+              value: {{ .Values.storage.postgresPoolSize | quote }}
           volumeMounts:
             - name: config
               mountPath: /etc/omnidesk
