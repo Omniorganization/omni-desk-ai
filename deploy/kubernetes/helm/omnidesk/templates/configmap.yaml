@@ -70,7 +70,6 @@ data:
       secret_pepper_env: OMNIDESK_APPSYNC_SECRET_PEPPER
       namespace: {{ .Values.storage.namespace | quote }}
       require_idempotency: true
-      chat_request_lease_seconds: {{ .Values.storage.chatRequestLeaseSeconds }}
       allow_websocket_query_auth: false
       require_device_public_key_in_production: true
       reject_predictable_device_ids_in_production: true
