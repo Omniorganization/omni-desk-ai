@@ -11,6 +11,17 @@ from omnidesk_agent.appsync.strict_json_store import StrictJsonAppSyncStore
 from omnidesk_agent.validation.production import is_production_mode
 
 
+def _postgres_pool_size(app_sync_cfg: Any) -> int:
+    configured = getattr(app_sync_cfg, "postgres_pool_size", 12)
+    raw = os.getenv("OMNIDESK_APPSYNC_POSTGRES_POOL_SIZE", str(configured))
+    try:
+        return max(2, min(int(raw), 64))
+    except ValueError as exc:
+        raise RuntimeError(
+            "OMNIDESK_APPSYNC_POSTGRES_POOL_SIZE must be an integer"
+        ) from exc
+
+
 def create_appsync_store(cfg: Any) -> AppSyncStore:
     app_sync_cfg = getattr(cfg, "app_sync", None)
     backend = (
@@ -18,7 +29,9 @@ def create_appsync_store(cfg: Any) -> AppSyncStore:
         if app_sync_cfg is not None
         else "json"
     )
-    offline = bool(getattr(getattr(cfg, "runtime", None), "offline_mode", False))
+    offline = bool(
+        getattr(getattr(cfg, "runtime", None), "offline_mode", False)
+    )
 
     if backend == "postgres":
         dsn_env = getattr(
@@ -36,6 +49,7 @@ def create_appsync_store(cfg: Any) -> AppSyncStore:
             dsn=dsn,
             namespace=namespace,
             local_outbox_enabled=offline,
+            pool_size=_postgres_pool_size(app_sync_cfg),
         )
 
     storage_cfg = getattr(cfg, "storage", None)
