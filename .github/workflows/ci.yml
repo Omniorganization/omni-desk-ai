@@ -169,15 +169,23 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: mkdir -p reports/ci/coverage
       - name: Full test and coverage gate
+        id: full_tests
         run: |
+          set +e
           set -o pipefail
           PYTHONPATH=. python -m pytest -q -W error \
             --timeout=60 --timeout-method=thread \
+            --tb=short --junitxml=reports/ci/coverage/junit.xml \
             --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json \
             --cov-fail-under=80 \
             2>&1 | tee reports/ci/coverage/pytest-coverage.txt
+          status=${PIPESTATUS[0]}
+          set -e
           cp reports/ci/coverage/pytest-coverage.txt reports/ci/coverage/pytest-unit.txt
+          echo "$status" > reports/ci/coverage/pytest-status
+          echo "status=$status" >> "$GITHUB_OUTPUT"
       - name: Coverage gates
+        if: steps.full_tests.outputs.status == '0'
         run: |
           set -o pipefail
           python scripts/check_coverage_gates.py coverage.json \
@@ -185,6 +193,7 @@ jobs:
           python scripts/check_optional_connector_coverage.py coverage.json \
             2>&1 | tee reports/ci/coverage/optional-connector-coverage.txt
       - name: Write full coverage evidence manifest
+        if: steps.full_tests.outputs.status == '0'
         run: |
           python scripts/write_ci_evidence_manifest.py \
             --output reports/ci/coverage/ci-evidence.json \
@@ -205,6 +214,9 @@ jobs:
             coverage.json
             coverage.xml
           if-no-files-found: warn
+      - name: Enforce full test result
+        if: always()
+        run: test "$(cat reports/ci/coverage/pytest-status)" -eq 0
 
   ci:
     name: CI
