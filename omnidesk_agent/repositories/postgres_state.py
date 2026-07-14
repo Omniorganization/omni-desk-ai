@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
 from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
 from omnidesk_agent.security.webhook_security import WebhookSecurityConfig
@@ -804,26 +805,17 @@ class PostgresOutboundMessageStore:
         return self.state.update_locked(self.namespace, row["idempotency_key"], updater)
 
 
-class PostgresTokenBudgetManager:
+class PostgresTokenBudgetManager(TokenBudgetManager):
     namespace_cache = "llm_cache"
     namespace_usage = "llm_usage"
 
-    def __init__(self, state: _PostgresJsonState, config=None):
-        from omnidesk_agent.core.token_budget import TokenBudgetConfig
+    def __init__(
+        self,
+        state: _PostgresJsonState,
+        config: TokenBudgetConfig | None = None,
+    ) -> None:
         self.state = state
         self.config = config or TokenBudgetConfig()
-
-    estimate_tokens = staticmethod(__import__("omnidesk_agent.core.token_budget", fromlist=["TokenBudgetManager"]).TokenBudgetManager.estimate_tokens)
-    trim = staticmethod(__import__("omnidesk_agent.core.token_budget", fromlist=["TokenBudgetManager"]).TokenBudgetManager.trim)
-    _hash = staticmethod(__import__("omnidesk_agent.core.token_budget", fromlist=["TokenBudgetManager"]).TokenBudgetManager._hash)
-
-    def make_cache_key(self, model: str, system: str, user: str) -> str:
-        from omnidesk_agent.core.token_budget import TokenBudgetManager
-        return TokenBudgetManager.make_cache_key(self, model, system, user)
-
-    def decide(self, **kwargs):
-        from omnidesk_agent.core.token_budget import TokenBudgetManager
-        return TokenBudgetManager.decide(self, **kwargs)
 
     def get_cached(self, cache_key: str) -> Optional[str]:
         if not self.config.enable_cache:
@@ -1254,7 +1246,7 @@ class PostgresExperienceStore:
     def metrics_report(self, days: int = 7) -> dict[str, Any]:
         cutoff = time.time() - days * 86400
         rows = [r for r in self.state.list(self.namespace_metrics, limit=days + 10) if float(r.get("updated_at") or 0) >= cutoff]
-        totals = {"task_count": 0, "success_count": 0, "failure_count": 0, "manual_intervention_count": 0, "tool_error_count": 0, "repeat_failure_count": 0, "skill_reuse_count": 0, "rollback_count": 0, "security_violation_count": 0}
+        totals: dict[str, Any] = {"task_count": 0, "success_count": 0, "failure_count": 0, "manual_intervention_count": 0, "tool_error_count": 0, "repeat_failure_count": 0, "skill_reuse_count": 0, "rollback_count": 0, "security_violation_count": 0}
         for r in rows:
             for k in totals:
                 totals[k] += int(r.get(k) or 0)
