@@ -53,8 +53,16 @@ data:
       no_tty_mode: deny
       audit_log: /data/audit.log
       shell_backend: remote_docker
-      always_ask_tools: [computer, shell, channels, files, ui_bridge, browser, gmail]
-      require_dual_approval_for_risks: [critical]
+      always_ask_tools:
+        - computer
+        - shell
+        - channels
+        - files
+        - ui_bridge
+        - browser
+        - gmail
+      require_dual_approval_for_risks:
+        - critical
       break_glass_enabled: true
       audit_checkpoint_hmac_key_env: OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY
     sandbox:
@@ -87,12 +95,18 @@ data:
       default_sandbox: docker
       production_forbid_subprocess: true
     capabilities:
-      plugins: {enabled: true}
-      shell: {enabled: false}
-      browser: {enabled: false}
-      ui_bridge: {enabled: false}
-      gmail: {enabled: false}
-      channels: {enabled: false}
+      plugins:
+        enabled: true
+      shell:
+        enabled: false
+      browser:
+        enabled: false
+      ui_bridge:
+        enabled: false
+      gmail:
+        enabled: false
+      channels:
+        enabled: false
     memory_privacy:
       redact_pii: true
       isolate_by_actor: true
