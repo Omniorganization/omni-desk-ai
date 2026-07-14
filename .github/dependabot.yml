@@ -1,0 +1,64 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      python-runtime:
+        dependency-type: production
+      python-tooling:
+        dependency-type: development
+    labels: [dependencies, python]
+
+  - package-ecosystem: npm
+    directory: /apps/web-admin-next
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      web-admin:
+        patterns: ["*"]
+    labels: [dependencies, web-admin]
+
+  - package-ecosystem: npm
+    directory: /apps/desktop-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      desktop-frontend:
+        patterns: ["*"]
+    labels: [dependencies, desktop]
+
+  - package-ecosystem: cargo
+    directory: /apps/desktop-tauri/src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      desktop-rust:
+        patterns: ["*"]
+    labels: [dependencies, rust, desktop]
+
+  - package-ecosystem: pub
+    directory: /apps/mobile-flutter
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      mobile-flutter:
+        patterns: ["*"]
+    labels: [dependencies, flutter, mobile]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: [dependencies, github-actions]

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: omnidesk-agent
-  namespace: omnidesk
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: omnidesk-agent
 spec:
@@ -59,7 +59,7 @@ spec:
               containerPort: 18789
           envFrom:
             - secretRef:
-                name: omnidesk-secrets
+                name: {{ .Values.secrets.name | quote }}
           env:
             - name: OMNIDESK_ENV
               value: production

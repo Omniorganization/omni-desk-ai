@@ -1,11 +1,6 @@
 {
   "include": [
-    "omnidesk_agent/core",
-    "omnidesk_agent/security",
-    "omnidesk_agent/tools",
-    "omnidesk_agent/self_upgrade",
-    "omnidesk_agent/server.py",
-    "omnidesk_agent/daemon.py"
+    "omnidesk_agent"
   ],
   "exclude": [
     "**/__pycache__",
@@ -13,9 +8,21 @@
     "build",
     "dist"
   ],
+  "strict": [
+    "omnidesk_agent/appsync/chat_repository.py",
+    "omnidesk_agent/appsync/industrial_chat_service.py",
+    "omnidesk_agent/appsync/postgres_migrations.py",
+    "omnidesk_agent/appsync/migrated_postgres_store.py",
+    "omnidesk_agent/security/resource_guard.py",
+    "omnidesk_agent/models/router_streaming.py"
+  ],
   "pythonVersion": "3.10",
-  "typeCheckingMode": "basic",
+  "typeCheckingMode": "standard",
   "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none",
   "reportOptionalMemberAccess": "error",
-  "reportGeneralTypeIssues": "error"
+  "reportGeneralTypeIssues": "error",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUntypedFunctionDecorator": "warning"
 }

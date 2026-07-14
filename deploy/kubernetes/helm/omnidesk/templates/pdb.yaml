@@ -3,7 +3,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: omnidesk-agent
-  namespace: omnidesk
+  namespace: {{ .Release.Namespace }}
 spec:
   minAvailable: {{ .Values.pdb.minAvailable }}
   selector:

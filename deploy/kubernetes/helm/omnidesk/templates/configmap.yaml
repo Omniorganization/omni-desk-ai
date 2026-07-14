@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: omnidesk-config
-  namespace: omnidesk
+  namespace: {{ .Release.Namespace }}
 data:
   config.production.yaml: |
     gateway:
@@ -53,16 +53,8 @@ data:
       no_tty_mode: deny
       audit_log: /data/audit.log
       shell_backend: remote_docker
-      always_ask_tools:
-        - computer
-        - shell
-        - channels
-        - files
-        - ui_bridge
-        - browser
-        - gmail
-      require_dual_approval_for_risks:
-        - critical
+      always_ask_tools: [computer, shell, channels, files, ui_bridge, browser, gmail]
+      require_dual_approval_for_risks: [critical]
       break_glass_enabled: true
       audit_checkpoint_hmac_key_env: OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY
     sandbox:
@@ -76,8 +68,9 @@ data:
       backend: postgres
       postgres_dsn_env: OMNIDESK_APPSYNC_POSTGRES_DSN
       secret_pepper_env: OMNIDESK_APPSYNC_SECRET_PEPPER
-      namespace: production
+      namespace: {{ .Values.storage.namespace | quote }}
       require_idempotency: true
+      chat_request_lease_seconds: {{ .Values.storage.chatRequestLeaseSeconds }}
       allow_websocket_query_auth: false
       require_device_public_key_in_production: true
       reject_predictable_device_ids_in_production: true
@@ -95,18 +88,12 @@ data:
       default_sandbox: docker
       production_forbid_subprocess: true
     capabilities:
-      plugins:
-        enabled: true
-      shell:
-        enabled: false
-      browser:
-        enabled: false
-      ui_bridge:
-        enabled: false
-      gmail:
-        enabled: false
-      channels:
-        enabled: false
+      plugins: {enabled: true}
+      shell: {enabled: false}
+      browser: {enabled: false}
+      ui_bridge: {enabled: false}
+      gmail: {enabled: false}
+      channels: {enabled: false}
     memory_privacy:
       redact_pii: true
       isolate_by_actor: true
