@@ -26,7 +26,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p rendered
-          uv pip compile pyproject.toml \
+          cat > /tmp/security-build-tools.in <<'EOF'
+          setuptools>=83.0.0,<84
+          wheel>=0.47.0,<1
+          EOF
+          uv pip compile pyproject.toml /tmp/security-build-tools.in \
             -c requirements.security-constraints.in \
             --python-version 3.10 \
             --universal \
@@ -43,30 +47,19 @@ jobs:
           pip>=26.1.2
           setuptools>=83.0.0,<84
           packaging>=26.2
-          wheel>=0.47.0
+          wheel>=0.47.0,<1
           EOF
           uv pip compile /tmp/requirements.bootstrap.in \
             --python-version 3.10 \
             --universal \
             --generate-hashes \
-            -o /tmp/requirements.bootstrap.generated.lock
-          python - <<'PY'
-          from pathlib import Path
-
-          generated = Path('/tmp/requirements.bootstrap.generated.lock').read_text(encoding='utf-8')
-          marker = generated.find('packaging==')
-          if marker < 0:
-              raise SystemExit('generated bootstrap lock is missing packaging')
-          body = generated[marker:]
-          header = '''# Hash-locked Python packaging tools for Docker build and runtime stages.
-          #
-          # Keep this file intentionally small: it patches base-image packaging
-          # tooling without pulling development dependencies into the production image.
-          '''
-          Path('rendered/requirements.bootstrap.lock').write_text(header + body, encoding='utf-8')
-          PY
-      - name: Record rendered lock metadata
+            -o rendered/requirements.bootstrap.lock
+      - name: Validate and record rendered locks
         run: |
+          set -euo pipefail
+          python scripts/check_lock_hashes.py rendered/requirements.lock
+          python scripts/check_lock_hashes.py rendered/requirements.dev.lock
+          python scripts/check_lock_hashes.py rendered/requirements.bootstrap.lock
           python - <<'PY'
           from pathlib import Path
           import re
@@ -77,10 +70,14 @@ jobs:
               match = re.search(r'^setuptools==([^\s\\]+)', text, re.MULTILINE)
               if not match:
                   raise SystemExit(f'{name} does not contain setuptools')
+              major = int(match.group(1).split('.', 1)[0])
+              if major != 83:
+                  raise SystemExit(f'{name} resolved unsafe setuptools {match.group(1)}')
               lines.append(f'{name}: setuptools={match.group(1)}')
           Path('rendered/metadata.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: python-locks-${{ github.sha }}
           path: rendered/
