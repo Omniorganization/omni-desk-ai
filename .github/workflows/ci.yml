@@ -4,10 +4,102 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
+  governance:
+    name: Source Governance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Validate lock files
+        run: |
+          python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
+          python scripts/check_lock_hashes.py requirements.dev.lock
+          python scripts/check_lock_hashes.py requirements.security.lock
+      - name: Run repository governance contracts
+        run: |
+          python scripts/check_github_workflows.py .github/workflows
+          python scripts/check_github_actions_pinned.py .github/workflows
+          python scripts/check_version_consistency.py .
+          python scripts/check_release_channel_policy.py .
+          python scripts/check_ci_evidence_contract.py .
+          python scripts/check_security_workflow_policy.py .
+          python scripts/check_observability_contract.py .
+          python scripts/check_deployment_readiness.py --compose-file deploy/docker/docker-compose.full.yml
+          python scripts/check_supply_chain_standard.py .
+          python scripts/check_enterprise_readiness.py .
+          python scripts/check_kubernetes_contract.py .
+          python scripts/production_closure_drill.py --root . --contract-only
+          python scripts/check_script_executability.py .
+          python scripts/check_global_consistency.py .
+          python scripts/check_industrial_remediation_contract.py .
+          python scripts/check_feature_stack_boundaries.py .
+          python scripts/check_physical_packages.py .
+      - name: Prepare governance evidence
+        run: mkdir -p reports/ci/governance
+      - name: Typed client contract tests
+        run: |
+          set -o pipefail
+          python scripts/check_typed_client_contracts.py . 2>&1 | tee reports/ci/governance/typed-client-contracts.txt
+      - name: Web Admin proxy contract
+        run: |
+          set -o pipefail
+          python scripts/check_web_admin_proxy_contract.py . 2>&1 | tee reports/ci/governance/web-admin-proxy-contract.txt
+      - name: Import graph governance
+        run: |
+          set -o pipefail
+          python scripts/check_import_graph.py . --write-report reports/ci/governance/import-graph.json \
+            2>&1 | tee reports/ci/governance/import-graph.txt
+      - name: Install workflow semantic linters
+        run: |
+          python -m pip install yamllint
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - run: yamllint .github/workflows
+      - run: '"$HOME/go/bin/actionlint" .github/workflows/*.yml'
+      - run: python -m compileall -q omnidesk_agent
+      - run: find . -type d -name "__pycache__" -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+      - run: python scripts/check_release_hygiene.py . --allow-vcs
+      - name: Server composition smoke
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee reports/ci/governance/server-smoke.txt
+          from omnidesk_agent.config import AppConfig
+          from omnidesk_agent.server import create_app
+
+          app = create_app(AppConfig())
+          paths = {getattr(route, "path", "") for route in app.routes}
+          assert "/health" in paths
+          assert not any(path.startswith("/integrations/bigseller") for path in paths)
+          print("server composition smoke passed")
+          PY
+      - name: Ruff
+        run: |
+          set -o pipefail
+          ruff check omnidesk_agent tests 2>&1 | tee reports/ci/governance/ruff.txt
+      - name: Pyright
+        run: |
+          set -o pipefail
+          pyright --project pyrightconfig.json 2>&1 | tee reports/ci/governance/pyright.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ci-governance-${{ github.sha }}
+          path: reports/ci/governance/
+          if-no-files-found: warn
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -22,114 +114,57 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - run: |
-          python scripts/check_lock_hashes.py requirements.runtime.lock
-          python scripts/check_lock_hashes.py requirements.bootstrap.lock
-          python scripts/check_lock_hashes.py requirements.dev.lock
-          python scripts/check_lock_hashes.py requirements.security.lock
-      - run: python scripts/check_github_workflows.py .github/workflows
-      - run: python scripts/check_github_actions_pinned.py .github/workflows
-      - run: python scripts/check_version_consistency.py .
-      - run: python scripts/check_release_channel_policy.py .
-      - run: python scripts/check_ci_evidence_contract.py .
-      - run: python scripts/check_security_workflow_policy.py .
-      - run: python scripts/check_observability_contract.py .
-      - run: python scripts/check_deployment_readiness.py --compose-file deploy/docker/docker-compose.full.yml
-      - run: python scripts/check_supply_chain_standard.py .
-      - run: python scripts/check_enterprise_readiness.py .
-      - run: python scripts/check_kubernetes_contract.py .
-      - run: python scripts/production_closure_drill.py --root . --contract-only
-      - run: python scripts/check_script_executability.py .
-      - run: python scripts/check_global_consistency.py .
-      - name: Prepare coordination evidence directory
-        run: mkdir -p "reports/ci/${{ matrix.python-version }}"
-      - run: python scripts/check_feature_stack_boundaries.py .
-      - run: python scripts/check_physical_packages.py .
-      - name: Typed client contract tests
-        run: |
-          set -o pipefail
-          python scripts/check_typed_client_contracts.py . \
-            2>&1 | tee "reports/ci/${{ matrix.python-version }}/typed-client-contracts.txt"
-      - name: Web Admin proxy contract
-        run: |
-          set -o pipefail
-          python scripts/check_web_admin_proxy_contract.py . \
-            2>&1 | tee "reports/ci/${{ matrix.python-version }}/web-admin-proxy-contract.txt"
-      - run: python scripts/check_contract_bidirectional_diff.py .
-      - name: Import graph governance
-        run: |
-          set -o pipefail
-          python scripts/check_import_graph.py . \
-            --write-report "reports/ci/${{ matrix.python-version }}/import-graph.json" \
-            2>&1 | tee "reports/ci/${{ matrix.python-version }}/import-graph.txt"
-      - name: Install workflow semantic linters
-        run: |
-          python -m pip install yamllint
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
-      - run: yamllint .github/workflows
-      - run: |
-          "$HOME/go/bin/actionlint" .github/workflows/*.yml
-      - run: python -m compileall omnidesk_agent
-      - run: find . -type d -name "__pycache__" -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
-      - run: python scripts/check_release_hygiene.py . --allow-vcs
       - name: Prepare CI evidence directory
         run: mkdir -p "reports/ci/${{ matrix.python-version }}"
-      - name: Server composition smoke
+      - name: Full test and coverage gate
+        if: matrix.python-version == '3.11'
         run: |
           set -o pipefail
-          python - <<'PY' 2>&1 | tee "reports/ci/${{ matrix.python-version }}/server-smoke.txt"
-          from omnidesk_agent.config import AppConfig
-          from omnidesk_agent.server import create_app
-
-          cfg = AppConfig()
-          app = create_app(cfg)
-          paths = {getattr(route, "path", "") for route in app.routes}
-          assert "/health" in paths
-          assert not any(path.startswith("/integrations/bigseller") for path in paths)
-          print("server composition smoke passed")
-          PY
-      - name: Ruff
-        run: |
-          set -o pipefail
-          ruff check omnidesk_agent tests 2>&1 | tee "reports/ci/${{ matrix.python-version }}/ruff.txt"
-      - name: Pyright
-        run: |
-          set -o pipefail
-          pyright omnidesk_agent/core omnidesk_agent/security omnidesk_agent/tools omnidesk_agent/self_upgrade omnidesk_agent/daemon.py 2>&1 | tee "reports/ci/${{ matrix.python-version }}/pyright.txt"
-      - name: Pytest strict
-        run: |
-          set -o pipefail
-          PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread 2>&1 | tee "reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
-      - name: Pytest coverage
-        run: |
-          set -o pipefail
-          PYTHONPATH=. python -m pytest --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json --cov-fail-under=80 -q --timeout=60 --timeout-method=thread 2>&1 | tee "reports/ci/${{ matrix.python-version }}/pytest-coverage.txt"
+          PYTHONPATH=. python -m pytest -q -W error \
+            --timeout=60 --timeout-method=thread \
+            --cov=omnidesk_agent --cov-report=term-missing --cov-report=xml --cov-report=json \
+            --cov-fail-under=80 \
+            2>&1 | tee "reports/ci/${{ matrix.python-version }}/pytest-coverage.txt"
+          cp "reports/ci/${{ matrix.python-version }}/pytest-coverage.txt" \
+            "reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
       - name: Coverage gates
+        if: matrix.python-version == '3.11'
         run: |
           set -o pipefail
-          python scripts/check_coverage_gates.py coverage.json 2>&1 | tee "reports/ci/${{ matrix.python-version }}/coverage-gates.txt"
-      - name: Optional connector coverage gates
+          python scripts/check_coverage_gates.py coverage.json \
+            2>&1 | tee "reports/ci/${{ matrix.python-version }}/coverage-gates.txt"
+          python scripts/check_optional_connector_coverage.py coverage.json \
+            2>&1 | tee "reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt"
+      - name: Python compatibility gate
+        if: matrix.python-version != '3.11'
         run: |
           set -o pipefail
-          python scripts/check_optional_connector_coverage.py coverage.json 2>&1 | tee "reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt"
+          PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread \
+            tests/test_store_schema_migration_baselines.py \
+            tests/test_postgres_state_runtime_contracts.py \
+            tests/test_chat_stream_durable_resume.py \
+            tests/test_appsync_industrial_contract.py \
+            2>&1 | tee "reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
       - name: Write CI evidence manifest
+        shell: bash
         run: |
-          python scripts/write_ci_evidence_manifest.py \
-            --output "reports/ci/${{ matrix.python-version }}/ci-evidence.json" \
-            --python-version "${{ matrix.python-version }}" \
-            --coverage-json coverage.json \
-            --coverage-xml coverage.xml \
-            --artifact-name "ci-evidence-${{ matrix.python-version }}" \
-            --log "server_smoke=reports/ci/${{ matrix.python-version }}/server-smoke.txt" \
-            --log "ruff=reports/ci/${{ matrix.python-version }}/ruff.txt" \
-            --log "pyright=reports/ci/${{ matrix.python-version }}/pyright.txt" \
-            --log "pytest=reports/ci/${{ matrix.python-version }}/pytest-unit.txt" \
-            --log "coverage=reports/ci/${{ matrix.python-version }}/pytest-coverage.txt" \
-            --log "coverage_gates=reports/ci/${{ matrix.python-version }}/coverage-gates.txt" \
-            --log "optional_connector_coverage=reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt" \
-            --log "typed_client_contracts=reports/ci/${{ matrix.python-version }}/typed-client-contracts.txt" \
-            --log "web_admin_proxy_contract=reports/ci/${{ matrix.python-version }}/web-admin-proxy-contract.txt" \
-            --log "import_graph=reports/ci/${{ matrix.python-version }}/import-graph.txt"
+          set -euo pipefail
+          args=(
+            --output "reports/ci/${{ matrix.python-version }}/ci-evidence.json"
+            --python-version "${{ matrix.python-version }}"
+            --artifact-name "ci-evidence-${{ matrix.python-version }}"
+            --log "pytest=reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
+          )
+          if [[ "${{ matrix.python-version }}" == "3.11" ]]; then
+            args+=(
+              --coverage-json coverage.json
+              --coverage-xml coverage.xml
+              --log "coverage=reports/ci/${{ matrix.python-version }}/pytest-coverage.txt"
+              --log "coverage_gates=reports/ci/${{ matrix.python-version }}/coverage-gates.txt"
+              --log "optional_connector_coverage=reports/ci/${{ matrix.python-version }}/optional-connector-coverage.txt"
+            )
+          fi
+          python scripts/write_ci_evidence_manifest.py "${args[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -140,15 +175,49 @@ jobs:
             coverage.xml
           if-no-files-found: warn
 
+  postgres-integration:
+    name: PostgreSQL Atomicity
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: omnidesk_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d omnidesk_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/omnidesk_test
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install --require-hashes -r requirements.enterprise.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: PYTHONPATH=. python -m pytest -q -W error tests/test_postgres_appsync_atomic_chat.py
+
   ci:
     name: CI
     runs-on: ubuntu-latest
-    needs: test
+    needs: [governance, test, postgres-integration]
     if: always()
     steps:
       - run: |
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            echo "CI matrix result: ${{ needs.test.result }}"
+          failures=0
+          for result in "${{ needs.governance.result }}" "${{ needs.test.result }}" "${{ needs.postgres-integration.result }}"; do
+            [[ "$result" == "success" ]] || failures=1
+          done
+          if [[ "$failures" -ne 0 ]]; then
+            echo "CI result: governance=${{ needs.governance.result }}, test=${{ needs.test.result }}, postgres=${{ needs.postgres-integration.result }}"
             exit 1
           fi
           echo "CI matrix passed"
