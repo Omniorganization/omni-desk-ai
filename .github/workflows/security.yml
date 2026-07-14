@@ -36,6 +36,8 @@ jobs:
           python scripts/check_lock_hashes.py requirements.enterprise.lock
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Prepare security evidence directory
+        run: mkdir -p reports/security
       - name: Install gitleaks
         run: go install github.com/zricethezav/gitleaks/v8@v8.28.0
       - name: Run gitleaks working-tree secret scan
@@ -47,7 +49,6 @@ jobs:
       - run: python scripts/check_security_exceptions.py release/security-exceptions
       - name: Bandit source audit
         run: |
-          mkdir -p reports/security
           set +e
           bandit -r omnidesk_agent -ll -f json -o reports/security/bandit.json
           status=$?
@@ -63,21 +64,46 @@ jobs:
           }, indent=2, sort_keys=True))
           PY
           exit "$status"
+      - name: Audit Python lock files
+        id: python_audit
+        run: |
+          set +e
+          aggregate=0
+          for lockfile in \
+            requirements.lock \
+            requirements.runtime.lock \
+            requirements.bootstrap.lock \
+            requirements.dev.lock \
+            requirements.security.lock \
+            requirements.enterprise.lock; do
+            stem="${lockfile%.lock}"
+            stem="${stem//./-}"
+            pip-audit --disable-pip \
+              --format json \
+              --output "reports/security/pip-audit-${stem}.json" \
+              -r "$lockfile" \
+              > "reports/security/pip-audit-${stem}.txt" 2>&1
+            status=$?
+            echo "$status" > "reports/security/pip-audit-${stem}.status"
+            if [[ "$status" -ne 0 ]]; then
+              aggregate=1
+            fi
+          done
+          set -e
+          echo "status=$aggregate" >> "$GITHUB_OUTPUT"
+          exit 0
+      - run: python scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json
+      - run: python scripts/check_security_workflow_policy.py .
+      - run: python scripts/check_security_attack_surface.py .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: security-core-${{ github.sha }}
           path: reports/security/
-          if-no-files-found: warn
-      - run: pip-audit --disable-pip -r requirements.lock
-      - run: pip-audit --disable-pip -r requirements.runtime.lock
-      - run: pip-audit --disable-pip -r requirements.bootstrap.lock
-      - run: pip-audit --disable-pip -r requirements.dev.lock
-      - run: pip-audit --disable-pip -r requirements.security.lock
-      - run: pip-audit --disable-pip -r requirements.enterprise.lock
-      - run: python scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json
-      - run: python scripts/check_security_workflow_policy.py .
-      - run: python scripts/check_security_attack_surface.py .
+          if-no-files-found: error
+      - name: Enforce Python dependency audit
+        if: always()
+        run: test "${{ steps.python_audit.outputs.status }}" = "0"
 
   ecosystem-audit:
     name: Ecosystem Dependency Audit
@@ -98,6 +124,8 @@ jobs:
         with:
           flutter-version: "3.35.x"
           cache: true
+      - name: Prepare ecosystem evidence directory
+        run: mkdir -p reports/ecosystem-security
       - name: Audit Web Admin npm graph
         working-directory: apps/web-admin-next
         run: |
@@ -109,13 +137,46 @@ jobs:
           npm ci
           npm audit --audit-level=high
       - name: Audit Rust dependency graph
+        id: rust_audit
         run: |
           cargo install cargo-audit --locked --version 0.22.2
-          cargo audit --file apps/desktop-tauri/src-tauri/Cargo.lock --ignore GHSA-wrw7-89jp-8q8g
+          set +e
+          cargo audit \
+            --file apps/desktop-tauri/src-tauri/Cargo.lock \
+            --ignore GHSA-wrw7-89jp-8q8g \
+            --json \
+            > reports/ecosystem-security/cargo-audit.json \
+            2> reports/ecosystem-security/cargo-audit.txt
+          status=$?
+          set -e
+          echo "$status" > reports/ecosystem-security/cargo-audit.status
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Audit Flutter dependency graph
+        id: flutter_audit
         run: |
           go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.4.0
-          "$HOME/go/bin/osv-scanner" scan source -r apps/mobile-flutter
+          set +e
+          "$HOME/go/bin/osv-scanner" scan source -r apps/mobile-flutter \
+            --format json \
+            --output reports/ecosystem-security/flutter-osv.json \
+            > reports/ecosystem-security/flutter-osv.txt 2>&1
+          status=$?
+          set -e
+          echo "$status" > reports/ecosystem-security/flutter-osv.status
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ecosystem-security-${{ github.sha }}
+          path: reports/ecosystem-security/
+          if-no-files-found: error
+      - name: Enforce ecosystem dependency audits
+        if: always()
+        run: |
+          test "${{ steps.rust_audit.outputs.status }}" = "0"
+          test "${{ steps.flutter_audit.outputs.status }}" = "0"
 
   codeql:
     name: CodeQL (${{ matrix.language }})
