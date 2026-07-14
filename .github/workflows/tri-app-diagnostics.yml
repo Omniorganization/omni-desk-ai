@@ -1,0 +1,78 @@
+name: Tri-App Diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tri-app-diagnostics-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  windows-cargo-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+      - name: Run Windows cargo tests with complete evidence
+        run: |
+          set +e
+          set -o pipefail
+          cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/windows-cargo-test.txt"
+          statuses=("${PIPESTATUS[@]}")
+          status="${statuses[0]}"
+          echo "$status" > "$RUNNER_TEMP/windows-cargo-status"
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: windows-cargo-diagnostics-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/windows-cargo-test.txt
+            ${{ runner.temp }}/windows-cargo-status
+          if-no-files-found: error
+      - name: Enforce Windows cargo result
+        run: test "$(cat "$RUNNER_TEMP/windows-cargo-status")" -eq 0
+
+  ios-simulator-build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/mobile-flutter
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.35.x"
+          cache: true
+      - run: flutter pub get
+      - name: Run iOS Simulator build with complete evidence
+        run: |
+          set +e
+          set -o pipefail
+          flutter build ios --simulator --debug -v \
+            2>&1 | tee "$RUNNER_TEMP/ios-simulator-build.txt"
+          statuses=("${PIPESTATUS[@]}")
+          status="${statuses[0]}"
+          echo "$status" > "$RUNNER_TEMP/ios-simulator-status"
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ios-simulator-diagnostics-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ios-simulator-build.txt
+            ${{ runner.temp }}/ios-simulator-status
+          if-no-files-found: error
+      - name: Enforce iOS Simulator result
+        run: test "$(cat "$RUNNER_TEMP/ios-simulator-status")" -eq 0
