@@ -39,13 +39,18 @@ jobs:
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install --require-hashes -r requirements.enterprise.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - name: Run full suite with machine-readable failure evidence
+      - name: Reproduce instrumented full-suite gate
         run: |
           mkdir -p reports/full-test-diagnostic
           set +e
           PYTHONPATH=. python -m pytest -q -W error \
             --timeout=60 --timeout-method=thread \
             --tb=short --junitxml=reports/full-test-diagnostic/junit.xml \
+            --cov=omnidesk_agent \
+            --cov-report=term-missing \
+            --cov-report=xml:reports/full-test-diagnostic/coverage.xml \
+            --cov-report=json:reports/full-test-diagnostic/coverage.json \
+            --cov-fail-under=80 \
             > reports/full-test-diagnostic/pytest.txt 2>&1
           status=$?
           set -e
@@ -55,5 +60,5 @@ jobs:
           name: full-test-diagnostic-${{ github.sha }}
           path: reports/full-test-diagnostic/
           if-no-files-found: error
-      - name: Enforce full-suite result
+      - name: Enforce instrumented full-suite result
         run: test "$(cat reports/full-test-diagnostic/status)" -eq 0
