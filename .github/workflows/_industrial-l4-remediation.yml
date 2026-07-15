@@ -9,7 +9,7 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: industrial-l4-remediation
@@ -74,6 +74,9 @@ jobs:
             omnidesk_agent/appsync/lease_safe_chat_repository.py \
             omnidesk_agent/appsync/industrial_chat_service.py \
             omnidesk_agent/appsync/__init__.py \
+            omnidesk_agent/appsync/postgres_migrations.py \
+            omnidesk_agent/repositories/postgres_state.py \
+            omnidesk_agent/security/resource_guard.py \
             scripts/check_external_ga_evidence.py \
             scripts/check_real_ga_policy_consistency.py \
             scripts/check_unique_api_routes.py \
@@ -87,7 +90,7 @@ jobs:
           set -o pipefail
           {
             python -m compileall -q omnidesk_agent scripts &&
-            ruff check omnidesk_agent/appsync scripts/check_external_ga_evidence.py scripts/check_real_ga_policy_consistency.py scripts/check_unique_api_routes.py tests/test_postgres_appsync_atomic_chat.py &&
+            ruff check omnidesk_agent/appsync omnidesk_agent/repositories/postgres_state.py omnidesk_agent/security/resource_guard.py scripts/check_external_ga_evidence.py scripts/check_real_ga_policy_consistency.py scripts/check_unique_api_routes.py tests/test_postgres_appsync_atomic_chat.py &&
             pyright --project pyrightconfig.json &&
             python scripts/check_unique_api_routes.py &&
             python scripts/check_real_ga_policy_consistency.py &&
@@ -102,23 +105,39 @@ jobs:
           if [[ "$status" -eq 0 && "${statuses[1]}" -ne 0 ]]; then status="${statuses[1]}"; fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: Package validated permanent source
+        if: steps.validate.outputs.status == '0'
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/l4-remediation/source"
+          mkdir -p "$package"
+          files=(
+            .github/workflows/ci.yml
+            docs/INDUSTRIAL_L4_OPERATOR_RUNBOOK.md
+            omnidesk_agent/appsync/__init__.py
+            omnidesk_agent/appsync/chat_repository.py
+            omnidesk_agent/appsync/industrial_chat_service.py
+            omnidesk_agent/appsync/lease_safe_chat_repository.py
+            omnidesk_agent/appsync/postgres_migrations.py
+            omnidesk_agent/repositories/postgres_state.py
+            omnidesk_agent/security/resource_guard.py
+            release/evidence-policy-v1.json
+            release/real-ga-evidence-audit-1.12.7.json
+            scripts/check_external_ga_evidence.py
+            scripts/check_real_ga_policy_consistency.py
+            scripts/check_unique_api_routes.py
+            tests/test_postgres_appsync_atomic_chat.py
+          )
+          for file in "${files[@]}"; do
+            mkdir -p "$package/$(dirname "$file")"
+            cp "$file" "$package/$file"
+          done
+          printf '%s\n' "${files[@]}" > "$package/MANIFEST.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: industrial-l4-remediation-diagnostics-${{ github.sha }}
+          name: industrial-l4-validated-source-${{ github.sha }}
           path: ${{ runner.temp }}/l4-remediation/
           if-no-files-found: error
       - name: Enforce source validation
         run: test "${{ steps.validate.outputs.status }}" = "0"
-      - name: Remove temporary remediation scripts
-        run: |
-          git rm -f --ignore-unmatch \
-            scripts/_apply_industrial_l4_remediation.py \
-            scripts/_fix_l4_driver.py
-      - name: Commit remediation
-        run: |
-          git config user.name "omnidesk-remediation-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Close industrial L4 source gaps"
-          git push origin HEAD:agent/industrial-l4-remediation
