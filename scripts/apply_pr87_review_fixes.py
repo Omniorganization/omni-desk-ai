@@ -35,9 +35,15 @@ def main() -> None:
         "                    now + self.lease_seconds,\n                    now,\n                    now,\n",
         "                    lease_now + self.lease_seconds,\n                    now,\n                    now,\n",
     )
+    replace_once(chat_repository, "        user = dict(\n", "        user: dict[str, Any] = dict(\n")
 
     service = Path("omnidesk_agent/appsync/industrial_chat_service.py")
     replace_once(service, "from contextlib import suppress\n", "")
+    replace_once(
+        service,
+        "from typing import Any, AsyncIterator\n",
+        "from typing import Any, AsyncIterator, Awaitable, Callable, cast\n",
+    )
     replace_once(
         service,
         '''            except ChatLeaseLost:\n                logger.warning(\n                    "chat lease heartbeat stopped after lease loss",\n                    extra={"conversation_id": reservation.conversation_id},\n                )\n                return\n''',
@@ -48,6 +54,12 @@ def main() -> None:
         '''        task.cancel()\n        with suppress(asyncio.CancelledError):\n            await task\n''',
         '''        task.cancel()\n        try:\n            await task\n        except asyncio.CancelledError:\n            return\n        except Exception:\n            logger.exception("chat lease heartbeat task failed during cleanup")\n''',
     )
+    replace_once(
+        service,
+        '''        if not callable(complete):\n            self.atomic_repository.fail(reservation, {"code": "model_router_not_configured"})\n            raise HTTPException(503, "model router is not configured")\n        heartbeat = asyncio.create_task(\n''',
+        '''        if not callable(complete):\n            self.atomic_repository.fail(reservation, {"code": "model_router_not_configured"})\n            raise HTTPException(503, "model router is not configured")\n        complete_async = cast(Callable[[ModelRequest], Awaitable[ModelResponse]], complete)\n        heartbeat = asyncio.create_task(\n''',
+    )
+    replace_once(service, "            response = await complete(\n", "            response = await complete_async(\n")
 
     postgres_tests = Path("tests/test_postgres_appsync_atomic_chat.py")
     append_once(
