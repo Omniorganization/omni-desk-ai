@@ -56,4 +56,5 @@ jobs:
         with:
           name: exact-toolchain-workflows-${{ github.sha }}
           path: pinned-workflows/
+          include-hidden-files: true
           if-no-files-found: error
