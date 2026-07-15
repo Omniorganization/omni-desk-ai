@@ -5,6 +5,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -244,8 +245,8 @@ def test_reservation_uses_postgres_clock_for_lease_fencing(monkeypatch: pytest.M
         last_event_id=0,
     )
     monkeypatch.setattr(
-        "omnidesk_agent.appsync.chat_repository.time.time",
-        lambda: 9_999_999_999.0,
+        "omnidesk_agent.appsync.chat_repository.time",
+        SimpleNamespace(time=lambda: 9_999_999_999.0),
     )
     with pytest.raises(ChatRequestInProgress):
         repo.reserve(
