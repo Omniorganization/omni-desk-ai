@@ -1,0 +1,109 @@
+name: Apply Exact Toolchain Pins
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-toolchain-pins-pr-87
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    if: github.head_ref == 'agent/industrial-l4-remediation'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/industrial-l4-remediation
+      - name: Apply exact pins in working tree
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflows = [
+              ".github/workflows/apply-industrial-96-closure.yml",
+              ".github/workflows/browserstack-android-evidence.yml",
+              ".github/workflows/main-verification.yml",
+              ".github/workflows/release.yml",
+              ".github/workflows/security.yml",
+              ".github/workflows/source-maturity-closure.yml",
+              ".github/workflows/tri-app-quality.yml",
+          ]
+          replacements = {
+              'node-version: "22"': 'node-version: "22.17.0"',
+              'flutter-version: "3.35.x"': 'flutter-version: "3.35.7"',
+              'toolchain: stable': 'toolchain: "1.88.0"',
+          }
+          for rel in workflows:
+              path = Path(rel)
+              text = path.read_text(encoding="utf-8")
+              for old, new in replacements.items():
+                  text = text.replace(old, new)
+              path.write_text(text, encoding="utf-8")
+          PY
+      - name: Publish exact pins through Contents API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: agent/industrial-l4-remediation
+        run: |
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          files = [
+              ".github/workflows/apply-industrial-96-closure.yml",
+              ".github/workflows/browserstack-android-evidence.yml",
+              ".github/workflows/main-verification.yml",
+              ".github/workflows/release.yml",
+              ".github/workflows/security.yml",
+              ".github/workflows/source-maturity-closure.yml",
+              ".github/workflows/tri-app-quality.yml",
+          ]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          branch = os.environ["BRANCH_NAME"]
+          token = os.environ["GH_TOKEN"]
+          api = "https://api.github.com"
+
+          def request(method: str, url: str, payload=None):
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(url, data=data, method=method)
+              req.add_header("Authorization", f"Bearer {token}")
+              req.add_header("Accept", "application/vnd.github+json")
+              req.add_header("X-GitHub-Api-Version", "2022-11-28")
+              if data is not None:
+                  req.add_header("Content-Type", "application/json")
+              with urllib.request.urlopen(req) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          for path in files:
+              content = Path(path).read_bytes()
+              local_sha = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+              url = f"{api}/repos/{repo}/contents/{urllib.parse.quote(path)}"
+              current = request("GET", f"{url}?ref={urllib.parse.quote(branch)}")
+              current_sha = current.get("sha")
+              if current_sha == local_sha:
+                  print(f"unchanged {path}")
+                  continue
+              request(
+                  "PUT",
+                  url,
+                  {
+                      "message": f"Pin industrial toolchain: {path}",
+                      "content": base64.b64encode(content).decode("ascii"),
+                      "branch": branch,
+                      "sha": current_sha,
+                  },
+              )
+              print(f"published {path}")
+          PY
