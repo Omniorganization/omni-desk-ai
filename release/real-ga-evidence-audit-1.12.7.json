@@ -1,5 +1,5 @@
 {
-  "blocker_count": 7,
+  "blocker_count": 12,
   "categories": {
     "backup_restore_drill": {
       "files": [
@@ -15,6 +15,54 @@
         "missing evidence file: drills/backup-restore-drill.json"
       ],
       "label": "true backup/restore drill",
+      "ok": false
+    },
+    "bigseller_live_smoke": {
+      "files": [
+        {
+          "issues": [
+            "missing evidence file: integrations/bigseller-live-smoke.json"
+          ],
+          "ok": false,
+          "path": "integrations/bigseller-live-smoke.json"
+        }
+      ],
+      "issues": [
+        "missing evidence file: integrations/bigseller-live-smoke.json"
+      ],
+      "label": "true BigSeller staging smoke with auth, data, webhook, trace, audit, and leakage proof",
+      "ok": false
+    },
+    "live_branch_protection": {
+      "files": [
+        {
+          "issues": [
+            "missing evidence file: control-plane/github-branch-protection-live.json"
+          ],
+          "ok": false,
+          "path": "control-plane/github-branch-protection-live.json"
+        }
+      ],
+      "issues": [
+        "missing evidence file: control-plane/github-branch-protection-live.json"
+      ],
+      "label": "true GitHub branch protection control-plane verification",
+      "ok": false
+    },
+    "model_live_smoke": {
+      "files": [
+        {
+          "issues": [
+            "missing evidence file: model/model-live-smoke.json"
+          ],
+          "ok": false,
+          "path": "model/model-live-smoke.json"
+        }
+      ],
+      "issues": [
+        "missing evidence file: model/model-live-smoke.json"
+      ],
+      "label": "true live model Q&A smoke with audit and budget ledger evidence",
       "ok": false
     },
     "native_build": {
@@ -55,6 +103,22 @@
         "missing evidence file: native-build/rust-cargo-check-locked.json"
       ],
       "label": "true Flutter/Rust/Tauri native build",
+      "ok": false
+    },
+    "native_signed_artifact_bindings": {
+      "files": [
+        {
+          "issues": [
+            "missing evidence file: /home/runner/work/omni-desk-ai/omni-desk-ai/release/external-evidence/control-plane/native-signed-artifact-binding.json"
+          ],
+          "ok": false,
+          "path": "control-plane/native-signed-artifact-binding.json"
+        }
+      ],
+      "issues": [
+        "missing evidence file: /home/runner/work/omni-desk-ai/omni-desk-ai/release/external-evidence/control-plane/native-signed-artifact-binding.json"
+      ],
+      "label": "Main Verification binding for native build and signed artifact evidence",
       "ok": false
     },
     "postgres_soak": {
@@ -168,10 +232,26 @@
       ],
       "label": "true Android/iOS/Desktop signed artifacts",
       "ok": false
+    },
+    "team_governance_control_plane": {
+      "files": [
+        {
+          "issues": [
+            "missing evidence file: /home/runner/work/omni-desk-ai/omni-desk-ai/release/external-evidence/control-plane/github-team-governance-live.json"
+          ],
+          "ok": false,
+          "path": "control-plane/github-team-governance-live.json"
+        }
+      ],
+      "issues": [
+        "missing evidence file: /home/runner/work/omni-desk-ai/omni-desk-ai/release/external-evidence/control-plane/github-team-governance-live.json"
+      ],
+      "label": "true GitHub organization/team CODEOWNERS control-plane verification",
+      "ok": false
     }
   },
   "evidence_dir": "release/external-evidence",
-  "policy": "Customer-distribution GA requires every category to be verified from real external systems; source scaffolds are not evidence.",
+  "policy": "Customer-distribution Real GA requires external evidence plus live organization/team governance and native signed artifact binding evidence.",
   "status": "blocked_missing_external_evidence",
   "version": "1.12.7+root-monorepo-production-ga-candidate"
 }
