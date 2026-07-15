@@ -1,4 +1,4 @@
-name: Publish Release Toolchain Pin
+name: Stage Release Toolchain Commit
 
 on:
   pull_request:
@@ -6,21 +6,21 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: publish-release-toolchain-pin-pr-87
+  group: stage-release-toolchain-commit-pr-87
   cancel-in-progress: false
 
 jobs:
-  publish:
+  stage:
     if: github.head_ref == 'agent/industrial-l4-remediation'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: agent/industrial-l4-remediation
-      - name: Pin Release workflow in working tree
+      - name: Generate exact Release workflow
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -29,15 +29,17 @@ jobs:
           text = text.replace('node-version: "22"', 'node-version: "22.17.0"')
           text = text.replace('flutter-version: "3.35.x"', 'flutter-version: "3.35.7"')
           text = text.replace('toolchain: stable', 'toolchain: "1.88.0"')
+          if 'node-version: "22"' in text or 'flutter-version: "3.35.x"' in text or 'toolchain: stable' in text:
+              raise SystemExit('broad Release toolchain selector remains')
           path.write_text(text, encoding='utf-8')
           PY
-      - name: Publish Release workflow with governance token
+      - name: Create detached Git commit object
         env:
-          GH_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           BRANCH_NAME: agent/industrial-l4-remediation
         run: |
           set -euo pipefail
-          test -n "$GH_TOKEN"
+          mkdir -p "$RUNNER_TEMP/release-pin"
           python - <<'PY'
           import base64
           import json
@@ -46,11 +48,10 @@ jobs:
           import urllib.request
           from pathlib import Path
 
-          path = '.github/workflows/release.yml'
           repo = os.environ['GITHUB_REPOSITORY']
           branch = os.environ['BRANCH_NAME']
           token = os.environ['GH_TOKEN']
-          url = f"https://api.github.com/repos/{repo}/contents/{urllib.parse.quote(path)}"
+          api = f'https://api.github.com/repos/{repo}'
 
           def request(method: str, target: str, payload=None):
               data = None if payload is None else json.dumps(payload).encode('utf-8')
@@ -63,16 +64,53 @@ jobs:
               with urllib.request.urlopen(req) as response:
                   return json.loads(response.read().decode('utf-8'))
 
-          current = request('GET', f"{url}?ref={urllib.parse.quote(branch)}")
-          content = Path(path).read_bytes()
-          request(
-              'PUT',
-              url,
+          ref = request('GET', f"{api}/git/ref/heads/{urllib.parse.quote(branch, safe='')}")
+          head = ref['object']['sha']
+          commit = request('GET', f'{api}/git/commits/{head}')
+          base_tree = commit['tree']['sha']
+          release = Path('.github/workflows/release.yml').read_bytes()
+          blob = request(
+              'POST',
+              f'{api}/git/blobs',
+              {'content': base64.b64encode(release).decode('ascii'), 'encoding': 'base64'},
+          )
+          tree = request(
+              'POST',
+              f'{api}/git/trees',
               {
-                  'message': 'Pin Release build toolchains',
-                  'content': base64.b64encode(content).decode('ascii'),
-                  'branch': branch,
-                  'sha': current['sha'],
+                  'base_tree': base_tree,
+                  'tree': [
+                      {
+                          'path': '.github/workflows/release.yml',
+                          'mode': '100644',
+                          'type': 'blob',
+                          'sha': blob['sha'],
+                      }
+                  ],
               },
           )
+          staged = request(
+              'POST',
+              f'{api}/git/commits',
+              {
+                  'message': 'Pin Release build toolchains',
+                  'tree': tree['sha'],
+                  'parents': [head],
+              },
+          )
+          output = {
+              'parent_sha': head,
+              'base_tree_sha': base_tree,
+              'blob_sha': blob['sha'],
+              'tree_sha': tree['sha'],
+              'commit_sha': staged['sha'],
+          }
+          target = Path(os.environ['RUNNER_TEMP']) / 'release-pin' / 'staged-commit.json'
+          target.write_text(json.dumps(output, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(output, indent=2))
           PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: staged-release-toolchain-commit-${{ github.sha }}
+          path: ${{ runner.temp }}/release-pin/staged-commit.json
+          if-no-files-found: error
