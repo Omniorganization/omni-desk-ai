@@ -111,7 +111,11 @@ jobs:
       - name: Enforce source validation
         run: test "${{ steps.validate.outputs.status }}" = "0"
       - name: Remove temporary remediation assets
-        run: git rm scripts/_apply_industrial_l4_remediation.py scripts/_fix_l4_driver.py .github/workflows/_industrial-l4-remediation.yml
+        run: |
+          git rm -f --ignore-unmatch \
+            scripts/_apply_industrial_l4_remediation.py \
+            scripts/_fix_l4_driver.py \
+            .github/workflows/_industrial-l4-remediation.yml
       - name: Commit remediation
         run: |
           git config user.name "omnidesk-remediation-bot"
