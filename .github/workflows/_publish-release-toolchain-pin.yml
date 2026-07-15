@@ -44,7 +44,6 @@ jobs:
           import base64
           import json
           import os
-          import urllib.parse
           import urllib.request
           from pathlib import Path
 
@@ -64,7 +63,7 @@ jobs:
               with urllib.request.urlopen(req) as response:
                   return json.loads(response.read().decode('utf-8'))
 
-          ref = request('GET', f"{api}/git/ref/heads/{urllib.parse.quote(branch, safe='')}")
+          ref = request('GET', f'{api}/git/ref/heads/{branch}')
           head = ref['object']['sha']
           commit = request('GET', f'{api}/git/commits/{head}')
           base_tree = commit['tree']['sha']
