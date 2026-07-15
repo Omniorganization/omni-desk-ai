@@ -60,17 +60,20 @@ jobs:
             tests/test_industrial_chat_heartbeat.py \
             tests/test_postgres_appsync_atomic_chat.py \
             tests/test_release_governance_assets.py \
-            > "$RUNNER_TEMP/pr87-pytest.log" 2>&1
+            > pr87-pytest.log 2>&1
           status=$?
-          echo "$status" > "$RUNNER_TEMP/pr87-pytest.exit"
+          echo "$status" > pr87-pytest.exit
           exit "$status"
+      - name: Print pytest diagnostic
+        if: always()
+        run: cat pr87-pytest.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: pr87-pytest-diagnostic-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/pr87-pytest.log
-            ${{ runner.temp }}/pr87-pytest.exit
+            pr87-pytest.log
+            pr87-pytest.exit
           if-no-files-found: error
           retention-days: 7
       - name: Enforce pytest result
