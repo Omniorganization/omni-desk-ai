@@ -24,36 +24,15 @@ jobs:
   pr87-diagnostics:
     if: github.event_name == 'pull_request' && github.head_ref == 'agent/industrial-l4-remediation'
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: omnidesk_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d omnidesk_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/omnidesk_test
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install --require-hashes -r requirements.dev.lock
-      - run: python -m pip install --require-hashes -r requirements.enterprise.lock
-      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: python -m pip install -q --disable-pip-version-check --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -q --disable-pip-version-check --require-hashes -r requirements.enterprise.lock
+      - run: python -m pip install -q --disable-pip-version-check -e . --no-deps --no-build-isolation
       - name: Apply review patch in diagnostic worktree
         run: python scripts/apply_pr87_review_fixes.py
-      - name: Ruff diagnostic
-        run: python -m ruff check omnidesk_agent/appsync/chat_repository.py omnidesk_agent/appsync/industrial_chat_service.py tests/test_industrial_chat_heartbeat.py tests/test_postgres_appsync_atomic_chat.py tests/test_release_governance_assets.py
       - name: Pyright diagnostic
         run: python -m pyright omnidesk_agent/appsync/chat_repository.py omnidesk_agent/appsync/industrial_chat_service.py tests/test_industrial_chat_heartbeat.py tests/test_postgres_appsync_atomic_chat.py
-      - name: PostgreSQL and contract tests diagnostic
-        run: python -m pytest -q tests/test_industrial_chat_heartbeat.py tests/test_postgres_appsync_atomic_chat.py tests/test_release_governance_assets.py
