@@ -183,6 +183,11 @@ class PostgresChatRepository:
         with self._connect() as conn, conn.cursor() as cur:
             scope = f"{self.namespace}:{actor}:{endpoint}:{idempotency_key}"
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (_lock_key(scope),))
+            cur.execute("SELECT EXTRACT(EPOCH FROM clock_timestamp())")
+            clock_row = cur.fetchone()
+            if not clock_row:
+                raise RuntimeError("PostgreSQL clock is unavailable")
+            lease_now = float(clock_row[0])
             cur.execute(
                 "SELECT organization_id FROM omnidesk_appsync_users WHERE namespace=%s AND user_id=%s",
                 (self.namespace, actor),
@@ -239,7 +244,7 @@ class PostgresChatRepository:
                 if str(existing[0]) != digest:
                     raise IdempotencyConflict("idempotency key was reused with a different payload")
                 status = str(existing[3])
-                if status in ACTIVE and float(existing[5] or 0) > now:
+                if status in ACTIVE and float(existing[5] or 0) > lease_now:
                     raise ChatRequestInProgress("The original chat request is still in progress")
                 if status in ACTIVE:
                     self._interrupt_locked(
@@ -315,7 +320,7 @@ class PostgresChatRepository:
                     conversation_id,
                     message_id,
                     owner,
-                    now + self.lease_seconds,
+                    lease_now + self.lease_seconds,
                     now,
                     now,
                 ),
@@ -404,7 +409,7 @@ class PostgresChatRepository:
         message = cur.fetchone()
         if not message:
             raise RuntimeError("reserved user message is missing")
-        user = dict(
+        user: dict[str, Any] = dict(
             zip(
                 (
                     "message_id",

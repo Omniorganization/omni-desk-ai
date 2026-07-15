@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable, cast
 
 from fastapi import HTTPException, Request
 
@@ -83,13 +82,24 @@ class IndustrialChatTurnService(ChatTurnService):
                     extra={"conversation_id": reservation.conversation_id},
                 )
                 return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "chat lease heartbeat renewal failed; retrying",
+                    extra={"conversation_id": reservation.conversation_id},
+                )
 
     async def _cancel_heartbeat(self, task: asyncio.Task[None] | None) -> None:
         if task is None:
             return
         task.cancel()
-        with suppress(asyncio.CancelledError):
+        try:
             await task
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("chat lease heartbeat task failed during cleanup")
 
     def _preflight(
         self,
@@ -310,12 +320,13 @@ class IndustrialChatTurnService(ChatTurnService):
         if not callable(complete):
             self.atomic_repository.fail(reservation, {"code": "model_router_not_configured"})
             raise HTTPException(503, "model router is not configured")
+        complete_async = cast(Callable[[ModelRequest], Awaitable[ModelResponse]], complete)
         heartbeat = asyncio.create_task(
             self._lease_heartbeat(reservation),
             name=f"omnidesk-chat-lease-{reservation.idempotency_key}",
         )
         try:
-            response = await complete(
+            response = await complete_async(
                 self._model_request(
                     reservation,
                     role=role,

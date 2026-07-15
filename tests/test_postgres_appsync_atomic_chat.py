@@ -222,3 +222,41 @@ def test_strict_repository_rejects_unprovisioned_actor() -> None:
             last_event_id=0,
         )
     store.close()
+
+
+def test_reservation_uses_postgres_clock_for_lease_fencing(monkeypatch: pytest.MonkeyPatch) -> None:
+    dsn = _dsn()
+    namespace = f"test_{uuid.uuid4().hex}"
+    apply_appsync_migrations(dsn, namespace=namespace)
+    store = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+    repo = PostgresChatRepository(store, lease_seconds=30)
+    actor = f"operator-{uuid.uuid4().hex[:8]}"
+    payload = {"content": "clock-safe"}
+    repo.reserve(
+        actor=actor,
+        endpoint="conversations.ask",
+        idempotency_key="clock-key",
+        payload=payload,
+        conversation_id=None,
+        title="Clock",
+        source_device_id=None,
+        content="clock-safe",
+        last_event_id=0,
+    )
+    monkeypatch.setattr(
+        "omnidesk_agent.appsync.chat_repository.time.time",
+        lambda: 9_999_999_999.0,
+    )
+    with pytest.raises(ChatRequestInProgress):
+        repo.reserve(
+            actor=actor,
+            endpoint="conversations.ask",
+            idempotency_key="clock-key",
+            payload=payload,
+            conversation_id=None,
+            title="Clock",
+            source_device_id=None,
+            content="clock-safe",
+            last_event_id=0,
+        )
+    store.close()
