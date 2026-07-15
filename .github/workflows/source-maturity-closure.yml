@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "22"
+          node-version: "22.17.0"
           cache: npm
           cache-dependency-path: |
             apps/web-admin-next/package-lock.json
