@@ -53,10 +53,16 @@ jobs:
           set +e
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/l4-remediation"
-          python scripts/_apply_industrial_l4_remediation.py 2>&1 | tee "$RUNNER_TEMP/l4-remediation/apply.log"
-          statuses=("${PIPESTATUS[@]}")
-          status="${statuses[0]}"
-          if [[ "$status" -eq 0 && "${statuses[1]}" -ne 0 ]]; then status="${statuses[1]}"; fi
+          python scripts/_fix_l4_driver.py
+          fix_status=$?
+          if [[ "$fix_status" -eq 0 ]]; then
+            python scripts/_apply_industrial_l4_remediation.py 2>&1 | tee "$RUNNER_TEMP/l4-remediation/apply.log"
+            statuses=("${PIPESTATUS[@]}")
+            status="${statuses[0]}"
+            if [[ "$status" -eq 0 && "${statuses[1]}" -ne 0 ]]; then status="${statuses[1]}"; fi
+          else
+            status="$fix_status"
+          fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -64,7 +70,7 @@ jobs:
         with:
           name: industrial-l4-remediation-diagnostics-${{ github.sha }}
           path: ${{ runner.temp }}/l4-remediation/
-          if-no-files-found: error
+          if-no-files-found: warn
       - name: Enforce source remediation application
         run: test "${{ steps.apply.outputs.status }}" = "0"
       - name: Format changed Python
@@ -93,7 +99,7 @@ jobs:
             tests/test_postgres_state_runtime_contracts.py \
             tests/test_appsync_industrial_contract.py
       - name: Remove temporary remediation assets
-        run: git rm scripts/_apply_industrial_l4_remediation.py .github/workflows/_industrial-l4-remediation.yml
+        run: git rm scripts/_apply_industrial_l4_remediation.py scripts/_fix_l4_driver.py .github/workflows/_industrial-l4-remediation.yml
       - name: Commit remediation
         run: |
           git config user.name "omnidesk-remediation-bot"
