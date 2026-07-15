@@ -24,35 +24,55 @@ jobs:
   pr87-diagnostics:
     if: github.event_name == 'pull_request' && github.head_ref == 'agent/industrial-l4-remediation'
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: omnidesk_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d omnidesk_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     env:
-      GH_READ_TOKEN: ${{ github.token }}
+      OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/omnidesk_test
     steps:
-      - name: Run compact pytest diagnostic
-        shell: bash
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/industrial-l4-remediation
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -q --disable-pip-version-check --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -q --disable-pip-version-check --require-hashes -r requirements.enterprise.lock
+      - run: python -m pip install -q --disable-pip-version-check -e . --no-deps --no-build-isolation
+      - name: Capture pytest diagnostic
+        id: tests
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          docker run -d --rm --name pr87-postgres \
-            -e POSTGRES_USER=postgres \
-            -e POSTGRES_PASSWORD=postgres \
-            -e POSTGRES_DB=omnidesk_test \
-            -p 5432:5432 postgres:16-alpine >/dev/null
-          trap 'docker stop pr87-postgres >/dev/null 2>&1 || true' EXIT
-          for attempt in {1..30}; do
-            if docker exec pr87-postgres pg_isready -U postgres -d omnidesk_test >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-          git clone -q --depth 1 --branch agent/industrial-l4-remediation \
-            "https://x-access-token:${GH_READ_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
-          cd repo
-          python3 -m venv .venv
-          .venv/bin/python -m pip install -q --disable-pip-version-check --require-hashes -r requirements.dev.lock
-          .venv/bin/python -m pip install -q --disable-pip-version-check --require-hashes -r requirements.enterprise.lock
-          .venv/bin/python -m pip install -q --disable-pip-version-check -e . --no-deps --no-build-isolation
-          .venv/bin/python scripts/apply_pr87_review_fixes.py
-          OMNIDESK_TEST_POSTGRES_DSN=postgresql://postgres:postgres@127.0.0.1:5432/omnidesk_test \
-            .venv/bin/python -m pytest -q \
-              tests/test_industrial_chat_heartbeat.py \
-              tests/test_postgres_appsync_atomic_chat.py \
-              tests/test_release_governance_assets.py
+          python scripts/apply_pr87_review_fixes.py
+          set +e
+          python -m pytest -q \
+            tests/test_industrial_chat_heartbeat.py \
+            tests/test_postgres_appsync_atomic_chat.py \
+            tests/test_release_governance_assets.py \
+            > "$RUNNER_TEMP/pr87-pytest.log" 2>&1
+          status=$?
+          echo "$status" > "$RUNNER_TEMP/pr87-pytest.exit"
+          exit "$status"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: pr87-pytest-diagnostic-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pr87-pytest.log
+            ${{ runner.temp }}/pr87-pytest.exit
+          if-no-files-found: error
+          retention-days: 7
+      - name: Enforce pytest result
+        if: steps.tests.outcome != 'success'
+        run: exit 1
