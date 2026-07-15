@@ -45,9 +45,7 @@ class ChatReservation:
         return self.status in TERMINAL
 
 
-def canonical_chat_payload(
-    payload: dict[str, Any], conversation_id: str | None
-) -> dict[str, Any]:
+def canonical_chat_payload(payload: dict[str, Any], conversation_id: str | None) -> dict[str, Any]:
     result = {key: value for key, value in payload.items() if key != "stream"}
     if conversation_id:
         result["conversation_id"] = conversation_id
@@ -70,22 +68,25 @@ def _id(prefix: str) -> str:
 
 
 def _lock_key(scope: str) -> int:
-    return int.from_bytes(
-        hashlib.sha256(scope.encode()).digest()[:8], "big", signed=True
-    )
+    return int.from_bytes(hashlib.sha256(scope.encode()).digest()[:8], "big", signed=True)
 
 
 class PostgresChatRepository:
     """Direct transactional repository for the high-volume chat write path."""
 
-    def __init__(self, store: Any, *, lease_seconds: int = 180) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        lease_seconds: int = 180,
+        allow_implicit_provisioning: bool = True,
+    ) -> None:
         if not getattr(store, "dsn", None):
-            raise TypeError(
-                "PostgresChatRepository requires a PostgreSQL AppSync store"
-            )
+            raise TypeError("PostgresChatRepository requires a PostgreSQL AppSync store")
         self.store = store
         self.namespace = str(getattr(store, "namespace", "production"))
         self.lease_seconds = max(30, min(int(lease_seconds), 1800))
+        self.allow_implicit_provisioning = bool(allow_implicit_provisioning)
 
     def _connect(self) -> Any:
         return self.store._connect()
@@ -93,16 +94,17 @@ class PostgresChatRepository:
     def organization_for_actor(self, actor: str) -> str:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT organization_id FROM omnidesk_appsync_users "
-                "WHERE namespace=%s AND user_id=%s",
+                "SELECT organization_id FROM omnidesk_appsync_users WHERE namespace=%s AND user_id=%s",
                 (self.namespace, actor),
             )
             row = cur.fetchone()
-            return str(row[0] if row else "org_default")
+            if row:
+                return str(row[0])
+            if not self.allow_implicit_provisioning:
+                raise PermissionError("identity_not_provisioned")
+            return "org_default"
 
-    def get_conversation(
-        self, actor: str, conversation_id: str
-    ) -> dict[str, Any]:
+    def get_conversation(self, actor: str, conversation_id: str) -> dict[str, Any]:
         organization_id = self.organization_for_actor(actor)
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -131,9 +133,7 @@ class PostgresChatRepository:
                 )
             )
 
-    def list_messages(
-        self, actor: str, conversation_id: str
-    ) -> list[dict[str, Any]]:
+    def list_messages(self, actor: str, conversation_id: str) -> list[dict[str, Any]]:
         organization_id = self.organization_for_actor(actor)
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -184,12 +184,13 @@ class PostgresChatRepository:
             scope = f"{self.namespace}:{actor}:{endpoint}:{idempotency_key}"
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (_lock_key(scope),))
             cur.execute(
-                "SELECT organization_id FROM omnidesk_appsync_users "
-                "WHERE namespace=%s AND user_id=%s",
+                "SELECT organization_id FROM omnidesk_appsync_users WHERE namespace=%s AND user_id=%s",
                 (self.namespace, actor),
             )
             row = cur.fetchone()
             organization_id = str(row[0] if row else "org_default")
+            if not row and not self.allow_implicit_provisioning:
+                raise PermissionError("identity_not_provisioned")
             if not row:
                 cur.execute(
                     "INSERT INTO omnidesk_appsync_organizations"
@@ -236,14 +237,10 @@ class PostgresChatRepository:
             existing = cur.fetchone()
             if existing:
                 if str(existing[0]) != digest:
-                    raise IdempotencyConflict(
-                        "idempotency key was reused with a different payload"
-                    )
+                    raise IdempotencyConflict("idempotency key was reused with a different payload")
                 status = str(existing[3])
                 if status in ACTIVE and float(existing[5] or 0) > now:
-                    raise ChatRequestInProgress(
-                        "The original chat request is still in progress"
-                    )
+                    raise ChatRequestInProgress("The original chat request is still in progress")
                 if status in ACTIVE:
                     self._interrupt_locked(
                         cur,
@@ -254,18 +251,12 @@ class PostgresChatRepository:
                         "stale_request_lease",
                     )
                 conn.commit()
-                return self._load(
-                    organization_id, actor, endpoint, idempotency_key
-                )
+                return self._load(organization_id, actor, endpoint, idempotency_key)
             if last_event_id > 0:
-                raise ChatResumeStateMissing(
-                    "No durable stream state exists for Last-Event-ID"
-                )
+                raise ChatResumeStateMissing("No durable stream state exists for Last-Event-ID")
             if conversation_id:
                 cur.execute(
-                    "SELECT organization_id "
-                    "FROM omnidesk_appsync_conversations "
-                    "WHERE namespace=%s AND conversation_id=%s FOR SHARE",
+                    "SELECT organization_id FROM omnidesk_appsync_conversations WHERE namespace=%s AND conversation_id=%s FOR SHARE",
                     (self.namespace, conversation_id),
                 )
                 conversation = cur.fetchone()
@@ -330,9 +321,7 @@ class PostgresChatRepository:
                 ),
             )
             conn.commit()
-            return self._load(
-                organization_id, actor, endpoint, idempotency_key
-            )
+            return self._load(organization_id, actor, endpoint, idempotency_key)
 
     def _interrupt_locked(
         self,
@@ -389,15 +378,11 @@ class PostgresChatRepository:
             ),
         )
 
-    def _load(
-        self, org: str, actor: str, endpoint: str, key: str
-    ) -> ChatReservation:
+    def _load(self, org: str, actor: str, endpoint: str, key: str) -> ChatReservation:
         with self._connect() as conn, conn.cursor() as cur:
             return self._load_locked(cur, org, actor, endpoint, key)
 
-    def _load_locked(
-        self, cur: Any, org: str, actor: str, endpoint: str, key: str
-    ) -> ChatReservation:
+    def _load_locked(self, cur: Any, org: str, actor: str, endpoint: str, key: str) -> ChatReservation:
         cur.execute(
             "SELECT payload_hash,conversation_id,user_message_id,status,"
             "lease_owner,response,error "
