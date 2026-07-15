@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import time
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Iterable, Protocol, cast
@@ -22,7 +21,7 @@ class _Cursor(Protocol):
 
 
 class _Connection(Protocol):
-    def cursor(self) -> AbstractContextManager[_Cursor]: ...
+    def cursor(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def commit(self) -> None: ...
 
@@ -175,17 +174,12 @@ def apply_appsync_migrations(
                 checksum = _checksum(migration)
                 if migration.version in applied:
                     if applied[migration.version] != checksum:
-                        raise RuntimeError(
-                            f"AppSync migration {migration.version} checksum changed after application"
-                        )
+                        raise RuntimeError(f"AppSync migration {migration.version} checksum changed after application")
                     continue
                 for statement in migration.statements:
                     cur.execute(statement)
                 cur.execute(
-                    _table_query(
-                        "INSERT INTO {table}(namespace,version,name,checksum,applied_at) "
-                        "VALUES(%s,%s,%s,%s,%s)"
-                    ),
+                    _table_query("INSERT INTO {table}(namespace,version,name,checksum,applied_at) VALUES(%s,%s,%s,%s,%s)"),
                     (namespace, migration.version, migration.name, checksum, time.time()),
                 )
                 applied_now.append(migration.version)
@@ -211,13 +205,9 @@ def assert_appsync_schema_current(conn: _Connection, *, namespace: str) -> None:
     try:
         version = _schema_version(conn, namespace=namespace)
     except Exception as exc:
-        raise RuntimeError(
-            "AppSync schema is not initialized; run `python -m omnidesk_agent.appsync.migrate`"
-        ) from exc
+        raise RuntimeError("AppSync schema is not initialized; run `python -m omnidesk_agent.appsync.migrate`") from exc
     if version < LATEST_SCHEMA_VERSION:
-        raise RuntimeError(
-            f"AppSync schema version {version} is behind required version {LATEST_SCHEMA_VERSION}"
-        )
+        raise RuntimeError(f"AppSync schema version {version} is behind required version {LATEST_SCHEMA_VERSION}")
 
 
 def appsync_schema_status(conn: _Connection, *, namespace: str) -> dict[str, int | bool]:
