@@ -1,0 +1,185 @@
+name: Pin Industrial Toolchains
+
+on:
+  push:
+    branches:
+      - agent/industrial-l4-remediation
+    paths:
+      - .github/workflows/_pin-industrial-toolchains.yml
+
+permissions:
+  contents: write
+
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/industrial-l4-remediation
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Apply exact toolchain pins
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          workflows = [
+              ".github/workflows/apply-industrial-96-closure.yml",
+              ".github/workflows/browserstack-android-evidence.yml",
+              ".github/workflows/main-verification.yml",
+              ".github/workflows/release.yml",
+              ".github/workflows/security.yml",
+              ".github/workflows/source-maturity-closure.yml",
+              ".github/workflows/tri-app-quality.yml",
+          ]
+          replacements = {
+              'node-version: "22"': 'node-version: "22.17.0"',
+              'flutter-version: "3.35.x"': 'flutter-version: "3.35.7"',
+              'toolchain: stable': 'toolchain: "1.88.0"',
+          }
+          for rel in workflows:
+              path = Path(rel)
+              text = path.read_text(encoding="utf-8")
+              for old, new in replacements.items():
+                  text = text.replace(old, new)
+              path.write_text(text, encoding="utf-8")
+
+          contract = {
+              "schema": "omnidesk-toolchains/v1",
+              "node": "22.17.0",
+              "rust": "1.88.0",
+              "flutter": "3.35.7",
+          }
+          Path(".github/toolchains.json").write_text(
+              json.dumps(contract, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          Path("scripts/check_toolchain_pins.py").write_text('''#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+
+def main(root: str = ".") -> int:
+    base = Path(root)
+    contract = json.loads((base / ".github/toolchains.json").read_text(encoding="utf-8"))
+    expected = {
+        "node-version": str(contract["node"]),
+        "flutter-version": str(contract["flutter"]),
+        "toolchain": str(contract["rust"]),
+    }
+    issues: list[str] = []
+    for path in sorted((base / ".github/workflows").glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        if "actions/setup-node@" in text:
+            for value in re.findall(r"(?m)^\s*node-version:\s*[\"']?([^\"'\s]+)", text):
+                if value != expected["node-version"]:
+                    issues.append(f"{path}: node-version {value} != {expected['node-version']}")
+        if "subosito/flutter-action@" in text:
+            for value in re.findall(r"(?m)^\s*flutter-version:\s*[\"']?([^\"'\s]+)", text):
+                if value != expected["flutter-version"]:
+                    issues.append(f"{path}: flutter-version {value} != {expected['flutter-version']}")
+        if "dtolnay/rust-toolchain@" in text:
+            for value in re.findall(r"(?m)^\s*toolchain:\s*[\"']?([^\"'\s]+)", text):
+                if value != expected["toolchain"]:
+                    issues.append(f"{path}: Rust toolchain {value} != {expected['toolchain']}")
+    if issues:
+        print("\n".join(issues), file=sys.stderr)
+        return 1
+    print(f"toolchain pins verified: node={contract['node']} rust={contract['rust']} flutter={contract['flutter']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(*(sys.argv[1:] or [])))
+''', encoding="utf-8")
+
+          ci = Path(".github/workflows/ci.yml")
+          ci_text = ci.read_text(encoding="utf-8")
+          marker = "          python scripts/check_github_actions_pinned.py .github/workflows\n"
+          addition = marker + "          python scripts/check_toolchain_pins.py .\n"
+          if "python scripts/check_toolchain_pins.py ." not in ci_text:
+              if ci_text.count(marker) != 1:
+                  raise RuntimeError("CI action pin marker is not unique")
+              ci.write_text(ci_text.replace(marker, addition, 1), encoding="utf-8")
+          PY
+      - name: Validate workflow and toolchain contracts
+        run: |
+          python scripts/check_toolchain_pins.py .
+          python scripts/check_github_workflows.py .github/workflows
+          python scripts/check_github_actions_pinned.py .github/workflows
+          python -m compileall -q scripts/check_toolchain_pins.py
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$HOME/go/bin/actionlint" .github/workflows/*.yml
+      - name: Publish pinned workflow files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: agent/industrial-l4-remediation
+        run: |
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          files = [
+              ".github/toolchains.json",
+              ".github/workflows/apply-industrial-96-closure.yml",
+              ".github/workflows/browserstack-android-evidence.yml",
+              ".github/workflows/ci.yml",
+              ".github/workflows/main-verification.yml",
+              ".github/workflows/release.yml",
+              ".github/workflows/security.yml",
+              ".github/workflows/source-maturity-closure.yml",
+              ".github/workflows/tri-app-quality.yml",
+              "scripts/check_toolchain_pins.py",
+          ]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          branch = os.environ["BRANCH_NAME"]
+          token = os.environ["GH_TOKEN"]
+          api = "https://api.github.com"
+
+          def request(method: str, url: str, payload=None):
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(url, data=data, method=method)
+              req.add_header("Authorization", f"Bearer {token}")
+              req.add_header("Accept", "application/vnd.github+json")
+              req.add_header("X-GitHub-Api-Version", "2022-11-28")
+              if data is not None:
+                  req.add_header("Content-Type", "application/json")
+              with urllib.request.urlopen(req) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          for path in files:
+              content = Path(path).read_bytes()
+              local_sha = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+              url = f"{api}/repos/{repo}/contents/{urllib.parse.quote(path)}"
+              current_sha = None
+              try:
+                  current = request("GET", f"{url}?ref={urllib.parse.quote(branch)}")
+                  current_sha = current.get("sha")
+              except urllib.error.HTTPError as exc:
+                  if exc.code != 404:
+                      raise
+              if current_sha == local_sha:
+                  continue
+              payload = {
+                  "message": f"Pin industrial toolchain: {path}",
+                  "content": base64.b64encode(content).decode("ascii"),
+                  "branch": branch,
+              }
+              if current_sha:
+                  payload["sha"] = current_sha
+              request("PUT", url, payload)
+              print(f"published {path}")
+          PY
