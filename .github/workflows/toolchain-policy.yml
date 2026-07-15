@@ -1,0 +1,24 @@
+name: Toolchain Policy
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchain-policy-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  toolchain-policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python scripts/check_toolchain_pins.py .
+      - run: python scripts/check_github_workflows.py .github/workflows
+      - run: python scripts/check_github_actions_pinned.py .github/workflows
