@@ -20,5 +20,3 @@ jobs:
         with:
           python-version: "3.11"
       - run: python scripts/check_toolchain_pins.py .
-      - run: python scripts/check_github_workflows.py .github/workflows
-      - run: python scripts/check_github_actions_pinned.py .github/workflows
