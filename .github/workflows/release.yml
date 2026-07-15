@@ -44,7 +44,7 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "22"
+          node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/web-admin-next/package-lock.json
       - run: npm ci
@@ -91,12 +91,12 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "22"
+          node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
-          toolchain: stable
+          toolchain: "1.88.0"
           components: clippy
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
@@ -144,7 +144,7 @@ jobs:
           python-version: "3.11"
       - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.35.7"
           cache: true
       - run: flutter pub get
       - run: dart analyze
@@ -219,7 +219,7 @@ jobs:
           python-version: "3.11"
       - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.35.7"
           cache: true
       - run: flutter pub get
       - run: cd ios && pod install
