@@ -38,11 +38,11 @@ jobs:
       run:
         working-directory: apps/web-admin-next
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.11"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
           cache: npm
@@ -66,7 +66,7 @@ jobs:
             --artifact-root "$RUNNER_TEMP/release-web-admin/payload" \
             --source-commit "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/release-web-admin/native-artifact-manifest.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-web-admin
           path: ${{ runner.temp }}/release-web-admin
@@ -85,16 +85,16 @@ jobs:
             artifact: desktop-windows
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.11"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: stable
           components: clippy
@@ -125,7 +125,7 @@ jobs:
             --artifact-root "$RUNNER_TEMP/release-${{ matrix.artifact }}/payload" \
             --source-commit "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/release-${{ matrix.artifact }}/native-artifact-manifest.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-${{ matrix.artifact }}
           path: ${{ runner.temp }}/release-${{ matrix.artifact }}
@@ -138,11 +138,11 @@ jobs:
       run:
         working-directory: apps/mobile-flutter
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.11"
-      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: "3.35.x"
           cache: true
@@ -201,7 +201,7 @@ jobs:
             --artifact-root "$RUNNER_TEMP/release-mobile-android/payload" \
             --source-commit "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/release-mobile-android/native-artifact-manifest.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-mobile-android
           path: ${{ runner.temp }}/release-mobile-android
@@ -213,11 +213,11 @@ jobs:
       run:
         working-directory: apps/mobile-flutter
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.11"
-      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: "3.35.x"
           cache: true
@@ -305,7 +305,7 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/omnidesk.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/distribution.p12" "$RUNNER_TEMP/omnidesk.mobileprovision" "$RUNNER_TEMP/ExportOptions.plist"
           rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/omnidesk.mobileprovision"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-mobile-ios
           path: ${{ runner.temp }}/release-mobile-ios
@@ -319,15 +319,15 @@ jobs:
       - mobile-ios-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - name: Download all native application release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: release-*
           path: ${{ runner.temp }}/tri-app-native-input
@@ -618,11 +618,11 @@ jobs:
           python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
             gh attestation sign "$artifact" --repo "$GITHUB_REPOSITORY"
           done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-and-sbom
           path: dist/**
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: real-ga-evidence-import-reports
           path: |
