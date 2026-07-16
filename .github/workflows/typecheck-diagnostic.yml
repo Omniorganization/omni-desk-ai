@@ -1,9 +1,7 @@
 name: Typecheck Diagnostic
 
 on:
-  push:
-    branches:
-      - dependabot/npm_and_yarn/apps/web-admin-next/web-admin-69ce3572d7
+  pull_request:
 
 permissions:
   contents: read
