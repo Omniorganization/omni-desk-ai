@@ -1,0 +1,40 @@
+name: Typecheck Diagnostic
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop-tauri/package-lock.json
+      - run: npm ci
+      - name: Capture typecheck output
+        id: typecheck
+        shell: bash
+        run: |
+          set +e
+          npm run typecheck > "$RUNNER_TEMP/typecheck.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/typecheck.log"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: desktop-typecheck-diagnostic
+          path: ${{ runner.temp }}/typecheck.log
+          if-no-files-found: error
+      - name: Enforce typecheck result
+        run: exit "${{ steps.typecheck.outputs.status }}"
