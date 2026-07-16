@@ -52,7 +52,7 @@ jobs:
           python-version: "3.11"
       - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.38.x"
           cache: true
 
       - name: Flutter dependencies and source checks
@@ -73,7 +73,7 @@ jobs:
           license_status=$?
           set -o pipefail
           test "$license_status" -eq 0
-          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
 
       - name: Generate non-production Android signing key
         working-directory: apps/mobile-flutter
