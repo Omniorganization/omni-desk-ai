@@ -1,21 +1,20 @@
-name: Mobile Toolchain Consistency Fix
+name: Mobile Toolchain Consistency Artifact
 
 on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  align-mobile-toolchain:
+  render-mobile-toolchain-files:
     if: github.head_ref == 'fix/mobile-flutter-dependency-upgrades'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: fix/mobile-flutter-dependency-upgrades
-          fetch-depth: 0
-      - name: Align Flutter and Android NDK pins in all mobile workflows
+      - name: Render consistent mobile workflow files
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -30,19 +29,17 @@ jobs:
           ]
           for path in paths:
               text = path.read_text(encoding='utf-8')
-              updated = text.replace('flutter-version: "3.35.x"', 'flutter-version: "3.38.x"')
-              updated = updated.replace('"ndk;27.0.12077973"', '"ndk;28.2.13676358"')
-              path.write_text(updated, encoding='utf-8')
-              print(f'{path}: aligned')
+              text = text.replace('flutter-version: "3.35.x"', 'flutter-version: "3.38.x"')
+              text = text.replace('"ndk;27.0.12077973"', '"ndk;28.2.13676358"')
+              path.write_text(text, encoding='utf-8')
           PY
-      - name: Remove one-shot workflow
-        run: rm -f .github/workflows/mobile-toolchain-consistency-fix.yml
-      - name: Commit mobile toolchain consistency
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet && exit 0
-          git commit -m "ci(mobile): align Flutter and NDK pins across workflows"
-          git push origin HEAD:fix/mobile-flutter-dependency-upgrades
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mobile-toolchain-consistency-files
+          path: |
+            .github/workflows/tri-app-quality.yml
+            .github/workflows/apply-industrial-96-closure.yml
+            .github/workflows/browserstack-android-evidence.yml
+            .github/workflows/security.yml
+            .github/workflows/release.yml
+          if-no-files-found: error
