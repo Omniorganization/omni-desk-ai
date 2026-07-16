@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     _check("catch (_)" in mobile_push and "return null" in mobile_push, "Mobile push service degrades when platform Firebase config is unavailable", failures, ok)
     mobile_gradle = _read(apps/"mobile-flutter"/"android/app/build.gradle")
     _check("compileSdk 36" in mobile_gradle or "compileSdk = 36" in mobile_gradle, "Android release build compiles against SDK 36", failures, ok)
-    _check('ndkVersion "27.0.12077973"' in mobile_gradle or 'ndkVersion = "27.0.12077973"' in mobile_gradle, "Android release build pins NDK 27 for native plugins", failures, ok)
+    _check('ndkVersion "28.2.13676358"' in mobile_gradle or 'ndkVersion = "28.2.13676358"' in mobile_gradle, "Android release build pins NDK 28.2 for native plugins", failures, ok)
     _check("minSdk 24" in mobile_gradle or "minSdkVersion 24" in mobile_gradle, "Android release build minSdk satisfies local_auth_android", failures, ok)
     _check("sourceCompatibility JavaVersion.VERSION_17" in mobile_gradle and "targetCompatibility JavaVersion.VERSION_17" in mobile_gradle and 'jvmTarget = "17"' in mobile_gradle, "Android release Java and Kotlin JVM targets are aligned to 17", failures, ok)
     _check("com.google.gms.google-services\" apply false" in mobile_gradle and "hasGoogleServicesConfig" in mobile_gradle, "Android Google Services plugin is conditional on Firebase config", failures, ok)
