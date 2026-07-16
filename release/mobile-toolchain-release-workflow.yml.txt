@@ -1,0 +1,639 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_channel:
+        description: "candidate permits external-evidence audit; real-ga requires fail-closed evidence"
+        type: choice
+        required: true
+        default: candidate
+        options:
+          - candidate
+          - real-ga
+      external_evidence_run_id:
+        description: "Enforced Main Verification run id that uploaded the complete bound external evidence artifact"
+        required: false
+        default: ""
+      external_evidence_artifact_name:
+        description: "Bound external evidence artifact name from Main Verification"
+        required: false
+        default: external-ga-evidence-bound
+
+permissions:
+  contents: write
+  actions: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  EXPECTED_VERSION: 1.12.7+root-monorepo-production-ga-candidate
+  RELEASE_CHANNEL: ${{ inputs.release_channel || 'candidate' }}
+
+jobs:
+  web-admin-release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web-admin-next
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web-admin-next/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Build and export Web Admin OCI image
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-web-admin/payload"
+          docker pull node:22-bookworm-slim
+          NODE_BASE_IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' node:22-bookworm-slim)"
+          test -n "$NODE_BASE_IMAGE"
+          docker build --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" -f apps/web-admin-next/Dockerfile -t omnidesk-web-admin:${{ github.sha }} apps/web-admin-next
+          docker save omnidesk-web-admin:${{ github.sha }} | gzip -9 > "$RUNNER_TEMP/release-web-admin/payload/omnidesk-web-admin-${{ github.sha }}.tar.gz"
+          python scripts/write_native_artifact_manifest.py \
+            --platform web-admin \
+            --artifact-root "$RUNNER_TEMP/release-web-admin/payload" \
+            --source-commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/release-web-admin/native-artifact-manifest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-web-admin
+          path: ${{ runner.temp }}/release-web-admin
+          if-no-files-found: error
+
+  desktop-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: desktop-linux
+          - os: macos-latest
+            artifact: desktop-macos
+          - os: windows-latest
+            artifact: desktop-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop-tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+        working-directory: apps/desktop-tauri
+      - run: npm run typecheck
+        working-directory: apps/desktop-tauri
+      - run: npm test
+        working-directory: apps/desktop-tauri
+      - run: cargo test --locked --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml -- -D warnings
+      - run: npm run tauri:build
+        working-directory: apps/desktop-tauri
+      - name: Collect digest-bound Tauri bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_root="apps/desktop-tauri/src-tauri/target/release/bundle"
+          test -d "$bundle_root"
+          test -n "$(find "$bundle_root" -type f -print -quit)"
+          mkdir -p "$RUNNER_TEMP/release-${{ matrix.artifact }}/payload"
+          (cd "$bundle_root" && tar -cf - .) | (cd "$RUNNER_TEMP/release-${{ matrix.artifact }}/payload" && tar -xf -)
+          python scripts/write_native_artifact_manifest.py \
+            --platform "${{ matrix.artifact }}" \
+            --artifact-root "$RUNNER_TEMP/release-${{ matrix.artifact }}/payload" \
+            --source-commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/release-${{ matrix.artifact }}/native-artifact-manifest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/release-${{ matrix.artifact }}
+          if-no-files-found: error
+
+  mobile-android-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: apps/mobile-flutter
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.38.x"
+          cache: true
+      - run: flutter pub get
+      - run: dart analyze
+      - run: flutter test
+      - name: Prepare Android release SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$sdkmanager" --licenses >/dev/null
+          license_status=$?
+          set -o pipefail
+          test "$license_status" -eq 0
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+      - name: Restore Android release signing key
+        env:
+          OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}
+          OMNI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.OMNI_ANDROID_KEYSTORE_PASSWORD }}
+          OMNI_ANDROID_KEY_ALIAS: ${{ secrets.OMNI_ANDROID_KEY_ALIAS }}
+          OMNI_ANDROID_KEY_PASSWORD: ${{ secrets.OMNI_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$OMNI_ANDROID_KEYSTORE_BASE64"
+          test -n "$OMNI_ANDROID_KEYSTORE_PASSWORD"
+          test -n "$OMNI_ANDROID_KEY_ALIAS"
+          test -n "$OMNI_ANDROID_KEY_PASSWORD"
+          printf '%s' "$OMNI_ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/omnidesk-release.keystore"
+          {
+            echo "OMNI_ANDROID_KEYSTORE=$RUNNER_TEMP/omnidesk-release.keystore"
+            echo "OMNI_ANDROID_KEYSTORE_PASSWORD=$OMNI_ANDROID_KEYSTORE_PASSWORD"
+            echo "OMNI_ANDROID_KEY_ALIAS=$OMNI_ANDROID_KEY_ALIAS"
+            echo "OMNI_ANDROID_KEY_PASSWORD=$OMNI_ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+      - name: Restore Android Firebase config
+        env:
+          OMNI_ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.OMNI_ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$OMNI_ANDROID_GOOGLE_SERVICES_JSON"
+          printf '%s' "$OMNI_ANDROID_GOOGLE_SERVICES_JSON" > android/app/google-services.json
+      - run: flutter build appbundle --release
+        timeout-minutes: 20
+      - name: Verify and collect signed Android App Bundle
+        working-directory: .
+        run: |
+          set -euo pipefail
+          aab="$(find apps/mobile-flutter/build/app/outputs/bundle/release -type f -name '*.aab' -print -quit)"
+          test -n "$aab"
+          jarsigner -verify -verbose -certs "$aab"
+          mkdir -p "$RUNNER_TEMP/release-mobile-android/payload"
+          cp "$aab" "$RUNNER_TEMP/release-mobile-android/payload/"
+          python scripts/write_native_artifact_manifest.py \
+            --platform mobile-android \
+            --artifact-root "$RUNNER_TEMP/release-mobile-android/payload" \
+            --source-commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/release-mobile-android/native-artifact-manifest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-mobile-android
+          path: ${{ runner.temp }}/release-mobile-android
+          if-no-files-found: error
+
+  mobile-ios-release:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/mobile-flutter
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.38.x"
+          cache: true
+      - run: flutter pub get
+      - run: cd ios && pod install
+      - name: Restore iOS distribution signing material
+        env:
+          OMNI_IOS_DISTRIBUTION_CERT_BASE64: ${{ secrets.OMNI_IOS_DISTRIBUTION_CERT_BASE64 }}
+          OMNI_IOS_DISTRIBUTION_CERT_PASSWORD: ${{ secrets.OMNI_IOS_DISTRIBUTION_CERT_PASSWORD }}
+          OMNI_IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.OMNI_IOS_PROVISIONING_PROFILE_BASE64 }}
+          OMNI_IOS_EXPORT_OPTIONS_PLIST_BASE64: ${{ secrets.OMNI_IOS_EXPORT_OPTIONS_PLIST_BASE64 }}
+          OMNI_IOS_KEYCHAIN_PASSWORD: ${{ secrets.OMNI_IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" == "real-ga" ]]; then
+            test -n "$OMNI_IOS_DISTRIBUTION_CERT_BASE64"
+            test -n "$OMNI_IOS_DISTRIBUTION_CERT_PASSWORD"
+            test -n "$OMNI_IOS_PROVISIONING_PROFILE_BASE64"
+            test -n "$OMNI_IOS_EXPORT_OPTIONS_PLIST_BASE64"
+            test -n "$OMNI_IOS_KEYCHAIN_PASSWORD"
+          fi
+          if [[ -n "${OMNI_IOS_DISTRIBUTION_CERT_BASE64:-}" ]]; then
+            python - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          for env_name, target in (
+              ("OMNI_IOS_DISTRIBUTION_CERT_BASE64", Path(os.environ["RUNNER_TEMP"]) / "distribution.p12"),
+              ("OMNI_IOS_PROVISIONING_PROFILE_BASE64", Path(os.environ["RUNNER_TEMP"]) / "omnidesk.mobileprovision"),
+              ("OMNI_IOS_EXPORT_OPTIONS_PLIST_BASE64", Path(os.environ["RUNNER_TEMP"]) / "ExportOptions.plist"),
+          ):
+              target.write_bytes(base64.b64decode(os.environ[env_name]))
+          PY
+            keychain="$RUNNER_TEMP/omnidesk.keychain-db"
+            security create-keychain -p "$OMNI_IOS_KEYCHAIN_PASSWORD" "$keychain"
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$OMNI_IOS_KEYCHAIN_PASSWORD" "$keychain"
+            security default-keychain -s "$keychain"
+            security import "$RUNNER_TEMP/distribution.p12" -k "$keychain" -P "$OMNI_IOS_DISTRIBUTION_CERT_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$OMNI_IOS_KEYCHAIN_PASSWORD" "$keychain"
+            mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+            cp "$RUNNER_TEMP/omnidesk.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/omnidesk.mobileprovision"
+            security find-identity -v -p codesigning "$keychain"
+            echo "OMNI_IOS_SIGNED_BUILD=1" >> "$GITHUB_ENV"
+          else
+            echo "OMNI_IOS_SIGNED_BUILD=0" >> "$GITHUB_ENV"
+          fi
+      - name: Build signed IPA or candidate no-codesign app
+        run: |
+          set -euo pipefail
+          if [[ "$OMNI_IOS_SIGNED_BUILD" == "1" ]]; then
+            flutter build ipa --release --export-options-plist="$RUNNER_TEMP/ExportOptions.plist"
+            ipa="$(find build/ios/ipa -type f -name '*.ipa' -print -quit)"
+            test -n "$ipa"
+            rm -rf "$RUNNER_TEMP/ipa-verify"
+            mkdir -p "$RUNNER_TEMP/ipa-verify"
+            unzip -q "$ipa" -d "$RUNNER_TEMP/ipa-verify"
+            app="$(find "$RUNNER_TEMP/ipa-verify/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+            test -n "$app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+          else
+            flutter build ios --release --no-codesign
+          fi
+      - name: Collect digest-bound iOS payload
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-mobile-ios/payload"
+          if [[ "$OMNI_IOS_SIGNED_BUILD" == "1" ]]; then
+            ipa="$(find apps/mobile-flutter/build/ios/ipa -type f -name '*.ipa' -print -quit)"
+            cp "$ipa" "$RUNNER_TEMP/release-mobile-ios/payload/"
+          else
+            ditto -c -k --sequesterRsrc --keepParent \
+              apps/mobile-flutter/build/ios/iphoneos/Runner.app \
+              "$RUNNER_TEMP/release-mobile-ios/payload/Runner-candidate-nosign.zip"
+          fi
+          python scripts/write_native_artifact_manifest.py \
+            --platform mobile-ios \
+            --artifact-root "$RUNNER_TEMP/release-mobile-ios/payload" \
+            --source-commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/release-mobile-ios/native-artifact-manifest.json"
+      - name: Remove temporary iOS signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/omnidesk.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/distribution.p12" "$RUNNER_TEMP/omnidesk.mobileprovision" "$RUNNER_TEMP/ExportOptions.plist"
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/omnidesk.mobileprovision"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-mobile-ios
+          path: ${{ runner.temp }}/release-mobile-ios
+          if-no-files-found: error
+
+  build:
+    needs:
+      - web-admin-release
+      - desktop-release
+      - mobile-android-release
+      - mobile-ios-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Download all native application release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/tri-app-native-input
+          merge-multiple: false
+      - name: Run tri-app release configuration preflight scopes
+        run: |
+          python scripts/check_release_configuration.py --scope web-admin --format json --report-path dist/web-admin-preflight.json
+          python scripts/check_release_configuration.py --scope desktop --format json --report-path dist/desktop-preflight.json
+          python scripts/check_release_configuration.py --scope mobile --format json --report-path dist/mobile-preflight.json
+          python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+      - name: Download complete external evidence artifact
+        if: ${{ inputs.external_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release/external-evidence
+          gh run download "${{ inputs.external_evidence_run_id }}" \
+            --name "${{ inputs.external_evidence_artifact_name }}" \
+            --dir release/external-evidence
+      - name: Import complete external GA evidence raw directory
+        env:
+          EXTERNAL_GA_EVIDENCE_RAW_DIR: ${{ vars.EXTERNAL_GA_EVIDENCE_RAW_DIR }}
+          EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION: 1.12.7+root-monorepo-production-ga-candidate
+        run: |
+          set -euo pipefail
+          if [[ -n "${EXTERNAL_GA_EVIDENCE_RAW_DIR:-}" ]]; then
+            python scripts/check_release_configuration.py \
+              --scope external-ga-evidence \
+              --format json \
+              --report-path dist/external-ga-evidence-preflight.json
+            python scripts/import_external_ga_evidence.py \
+              --raw-dir "$EXTERNAL_GA_EVIDENCE_RAW_DIR" \
+              --expected-version "$EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION" \
+              --copy \
+              --write-report release/external-ga-evidence-import-report.json
+          else
+            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"EXTERNAL_GA_EVIDENCE_RAW_DIR is not set; use external_evidence_run_id or specialized importers"}; Path("dist/external-ga-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/external-ga-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+          fi
+      - name: Import iOS real-device evidence
+        env:
+          IOS_EVIDENCE_RAW_DIR: ${{ vars.IOS_EVIDENCE_RAW_DIR }}
+          IOS_EVIDENCE_EXPECTED_VERSION: 1.12.7+root-monorepo-production-ga-candidate
+        run: |
+          set -euo pipefail
+          if [[ -n "${IOS_EVIDENCE_RAW_DIR:-}" ]]; then
+            python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
+            python scripts/import_ios_real_device_evidence.py \
+              --raw-dir "$IOS_EVIDENCE_RAW_DIR" \
+              --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" \
+              --copy \
+              --write-report release/ios-real-device-evidence-import-report.json
+          else
+            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"IOS_EVIDENCE_RAW_DIR is not set"}; Path("dist/ios-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/ios-real-device-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+          fi
+      - name: Import tri-app live smoke evidence
+        env:
+          TRI_APP_ADMIN_TOKEN: ${{ secrets.TRI_APP_ADMIN_TOKEN }}
+          TRI_APP_MOBILE_APPROVAL_TOKEN: ${{ secrets.TRI_APP_MOBILE_APPROVAL_TOKEN }}
+          TRI_APP_DESKTOP_AGENT_TOKEN: ${{ secrets.TRI_APP_DESKTOP_AGENT_TOKEN }}
+          TRI_APP_AUDIT_HMAC_SECRET: ${{ secrets.TRI_APP_AUDIT_HMAC_SECRET }}
+          TRI_APP_BACKEND_BASE_URL: ${{ vars.TRI_APP_BACKEND_BASE_URL }}
+          TRI_APP_WEB_ADMIN_BASE_URL: ${{ vars.TRI_APP_WEB_ADMIN_BASE_URL }}
+          TRI_APP_MOBILE_CALLBACK_URL: ${{ vars.TRI_APP_MOBILE_CALLBACK_URL }}
+          TRI_APP_DESKTOP_AGENT_URL: ${{ vars.TRI_APP_DESKTOP_AGENT_URL }}
+          TRI_APP_ORG_ID: ${{ vars.TRI_APP_ORG_ID }}
+          TRI_APP_LIVE_SMOKE_SCENARIO_ID: ${{ vars.TRI_APP_LIVE_SMOKE_SCENARIO_ID }}
+          TRI_APP_LIVE_SMOKE_REPORT_PATH: ${{ vars.TRI_APP_LIVE_SMOKE_REPORT_PATH }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${TRI_APP_LIVE_SMOKE_REPORT_PATH:-}" ]]; then
+            python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+            python scripts/import_tri_app_live_smoke_evidence.py \
+              --report "$TRI_APP_LIVE_SMOKE_REPORT_PATH" \
+              --expected-org-id "$TRI_APP_ORG_ID" \
+              --expected-scenario-id "$TRI_APP_LIVE_SMOKE_SCENARIO_ID" \
+              --copy \
+              --write-report release/tri-app-live-smoke-evidence-import-report.json
+          else
+            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"TRI_APP_LIVE_SMOKE_REPORT_PATH is not set"}; Path("dist/tri-app-live-smoke-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/tri-app-live-smoke-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+          fi
+      - run: python scripts/check_workflow_governance.py . --require-real-workflows
+      - run: python scripts/check_team_governance_contract.py .
+      - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
+      - run: |
+          python scripts/check_lock_hashes.py requirements.lock
+          python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
+          python scripts/check_lock_hashes.py requirements.dev.lock
+          python scripts/check_lock_hashes.py requirements.security.lock
+          python scripts/check_lock_hashes.py requirements.enterprise.lock
+      - run: python scripts/check_production_install_policy.py .
+      - run: python scripts/check_ga_release_gate.py .
+      - name: Verify live branch and team governance before Real GA
+        env:
+          TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          audit_args=()
+          if [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
+            audit_args+=(--audit-only)
+          fi
+          mkdir -p release/external-evidence/control-plane
+          python scripts/check_live_branch_protection_contract.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --token-env TEAM_GOVERNANCE_TOKEN \
+            --write-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            "${audit_args[@]}"
+          python scripts/check_github_team_governance_live.py . \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch-protection-report release/external-evidence/control-plane/github-branch-protection-live.json \
+            --write-report release/external-evidence/control-plane/github-team-governance-live.json \
+            "${audit_args[@]}"
+      - name: Bind current Release-built native files to enforced Main Verification evidence
+        run: |
+          set -euo pipefail
+          audit_args=()
+          if [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
+            audit_args+=(--audit-only)
+          fi
+          python scripts/check_current_release_artifact_binding.py \
+            --artifact-root "$RUNNER_TEMP/tri-app-native-input" \
+            --evidence-root release/external-evidence \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --release-run-id "$GITHUB_RUN_ID" \
+            --main-verification-run-id "${{ inputs.external_evidence_run_id }}" \
+            --write-report dist/current-release-artifact-binding.json \
+            "${audit_args[@]}"
+      - name: Run complete Real GA evidence and final Customer GA gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" == "real-ga" ]]; then
+            test -n "${{ inputs.external_evidence_run_id }}" || { echo "real-ga release requires an enforced Main Verification evidence run id" >&2; exit 64; }
+            python scripts/check_real_ga_complete.py . --write-report release/real-ga-evidence-audit-1.12.7.json
+            python scripts/check_customer_distribution_ga.py . \
+              --repository "$GITHUB_REPOSITORY" \
+              --commit "$GITHUB_SHA" \
+              --current-release-binding-report dist/current-release-artifact-binding.json \
+              --write-live-report dist/main-verification-live-artifact.json \
+              --write-report release/real-ga-evidence-audit-1.12.7.json
+          elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
+            python scripts/check_real_ga_complete.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json
+            python scripts/check_customer_distribution_ga.py . \
+              --audit-only \
+              --repository "$GITHUB_REPOSITORY" \
+              --commit "$GITHUB_SHA" \
+              --current-release-binding-report dist/current-release-artifact-binding.json \
+              --write-live-report dist/main-verification-live-artifact.json \
+              --write-report release/real-ga-evidence-audit-1.12.7.json
+          else
+            echo "release_channel must be candidate or real-ga" >&2
+            exit 64
+          fi
+          cp release/real-ga-evidence-audit-1.12.7.json dist/external-ga-evidence-audit.json
+          python scripts/write_real_ga_evidence_summary.py . \
+            --audit-report release/real-ga-evidence-audit-1.12.7.json \
+            --output release/real-ga-evidence-summary-1.12.7.json \
+            --source-commit "$GITHUB_SHA"
+          cp release/real-ga-evidence-summary-1.12.7.json dist/external-ga-evidence-summary.json
+
+      - name: Verify release channel policy after external evidence gate
+        run: |
+          python scripts/check_release_channel_policy.py . \
+            --release-channel "$RELEASE_CHANNEL" \
+            --package-version "$EXPECTED_VERSION" \
+            --package-slug "$EXPECTED_VERSION"
+
+      - name: Build and push release image, then capture registry digest
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo_lc="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${repo_lc}/omnidesk-agent:${GITHUB_SHA}"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build \
+            --build-arg OMNIDESK_VERSION="$EXPECTED_VERSION" \
+            --build-arg OMNIDESK_BUILD_SHA="$GITHUB_SHA" \
+            --build-arg OMNIDESK_ARTIFACT_SHA256="set-by-release-metadata" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t "$image_ref" .
+          docker push "$image_ref"
+          digest="$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "registry did not return a valid image digest for $image_ref: $digest" >&2
+            exit 65
+          fi
+          echo "OMNIDESK_IMAGE_REF=$image_ref" >> "$GITHUB_ENV"
+          echo "OMNIDESK_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "Release image: $image_ref@$digest"
+
+      - run: bash scripts/build_release.sh
+        env:
+          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          OMNIDESK_IMAGE_REF: ${{ env.OMNIDESK_IMAGE_REF }}
+          OMNIDESK_IMAGE_DIGEST: ${{ env.OMNIDESK_IMAGE_DIGEST }}
+
+      - name: Bind all native application artifacts into the signed release payload
+        env:
+          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          native_root="$RUNNER_TEMP/tri-app-native-input"
+          test -d "$native_root"
+          manifest_count="$(find "$native_root" -type f -name native-artifact-manifest.json | wc -l | tr -d ' ')"
+          test "$manifest_count" -eq 6
+          python scripts/write_native_artifact_manifest.py \
+            --platform tri-app-release \
+            --artifact-root "$native_root" \
+            --source-commit "$GITHUB_SHA" \
+            --output dist/tri-app-native-artifacts.json
+          tar -czf dist/tri-app-native-artifacts.tar.gz -C "$native_root" .
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root = Path("dist")
+          excluded = {"checksums.txt", "release_signatures.json"}
+          artifacts = [
+              path for path in sorted(root.iterdir())
+              if path.is_file() and path.name not in excluded and not path.name.endswith(".sig")
+          ]
+          lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}" for path in artifacts]
+          (root / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          python scripts/sign_release.py dist
+          python scripts/verify_release_signatures.py dist
+          python scripts/verify_release_artifact.py dist --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+
+      - name: Render locked Helm production values
+        env:
+          OMNIDESK_SANDBOX_RUNNER_DIGEST: ${{ vars.OMNIDESK_SANDBOX_RUNNER_DIGEST }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${OMNIDESK_SANDBOX_RUNNER_DIGEST:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Set vars.OMNIDESK_SANDBOX_RUNNER_DIGEST to the final sandbox-runner OCI digest" >&2
+            exit 66
+          fi
+          python scripts/render_locked_helm_values.py \
+            --app-digest "$OMNIDESK_IMAGE_DIGEST" \
+            --sandbox-runner-digest "$OMNIDESK_SANDBOX_RUNNER_DIGEST" \
+            --output dist/values.production.locked.yaml
+          python scripts/check_kubernetes_contract.py . --locked-values dist/values.production.locked.yaml
+
+      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+
+      - name: Write SLSA provenance before external signing
+        run: python scripts/write_slsa_provenance.py dist --builder-id "$GITHUB_WORKFLOW@$GITHUB_RUN_ID" --source-ref "$GITHUB_REF" --image-ref "$OMNIDESK_IMAGE_REF" --image-digest "$OMNIDESK_IMAGE_DIGEST"
+
+      - name: Install Cosign
+        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
+      - name: Cosign keyless sign release container image digest
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          test -n "$OMNIDESK_IMAGE_REF"
+          test -n "$OMNIDESK_IMAGE_DIGEST"
+          cosign sign --yes "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
+          cosign attest --yes --predicate dist/sbom.json --type spdx "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
+          cosign attest --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
+
+      - name: Cosign keyless sign complete release payload artifact set
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
+            cosign sign-blob --yes "$artifact" --output-signature "$artifact.cosign.sig" --output-certificate "$artifact.cosign.pem"
+          done
+      - name: Cosign attest SBOM and SLSA provenance
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          cosign attest-blob --yes --predicate dist/sbom.json --type spdx "$wheel" --output-signature dist/sbom.intoto.sig --output-certificate dist/sbom.intoto.pem
+          cosign attest-blob --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$wheel" --output-signature dist/slsa.intoto.sig --output-certificate dist/slsa.intoto.pem
+
+      - name: Generate artifact attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -f dist/release_metadata.json
+          test -f dist/release_signatures.json
+          python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
+            gh attestation sign "$artifact" --repo "$GITHUB_REPOSITORY"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dist-and-sbom
+          path: dist/**
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-ga-evidence-import-reports
+          path: |
+            release/real-ga-evidence-audit-1.12.7.json
+            release/real-ga-evidence-summary-1.12.7.json
+            release/external-ga-evidence-import-report.json
+            release/ios-real-device-evidence-import-report.json
+            release/tri-app-live-smoke-evidence-import-report.json
+            release/external-evidence/control-plane/github-branch-protection-live.json
+            release/external-evidence/control-plane/github-team-governance-live.json
+            dist/current-release-artifact-binding.json
+            dist/external-ga-evidence-preflight.json
+            dist/ios-evidence-preflight.json
+            dist/tri-app-live-smoke-preflight.json
