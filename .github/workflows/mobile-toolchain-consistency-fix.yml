@@ -17,6 +17,7 @@ jobs:
       - name: Render consistent mobile workflow files
         run: |
           set -euo pipefail
+          git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/base-tree-sha.txt"
           python - <<'PY'
           from pathlib import Path
 
@@ -37,6 +38,7 @@ jobs:
         with:
           name: mobile-toolchain-consistency-files
           path: |
+            ${{ runner.temp }}/base-tree-sha.txt
             .github/workflows/tri-app-quality.yml
             .github/workflows/apply-industrial-96-closure.yml
             .github/workflows/browserstack-android-evidence.yml
