@@ -1,0 +1,39 @@
+name: Mobile Analyze Diagnostic
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mobile-analyze:
+    if: github.head_ref == 'fix/mobile-flutter-dependency-upgrades'
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/mobile-flutter
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
+        with:
+          flutter-version: "3.38.x"
+          cache: true
+      - run: flutter pub get
+      - name: Capture Flutter analyze output
+        shell: bash
+        run: |
+          set +e
+          flutter analyze > "$RUNNER_TEMP/flutter-analyze.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/flutter-analyze.log"
+          echo "$status" > "$RUNNER_TEMP/flutter-analyze.status"
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mobile-analyze-diagnostic
+          path: |
+            ${{ runner.temp }}/flutter-analyze.log
+            ${{ runner.temp }}/flutter-analyze.status
+          if-no-files-found: error
