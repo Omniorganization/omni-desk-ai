@@ -170,7 +170,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.38.x"
           cache: true
       - run: flutter pub get
       - run: flutter analyze
@@ -224,7 +224,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.38.x"
           cache: true
       - run: flutter pub get
       - run: flutter analyze
@@ -242,7 +242,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.38.x"
           cache: true
       - run: flutter pub get
       - run: flutter build ipa --release
