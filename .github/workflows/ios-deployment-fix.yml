@@ -1,0 +1,59 @@
+name: iOS Deployment Target Fix
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-ios-deployment-target:
+    if: github.head_ref == 'fix/mobile-flutter-dependency-upgrades'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: fix/mobile-flutter-dependency-upgrades
+          fetch-depth: 0
+      - name: Raise iOS deployment target to Firebase minimum
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              Path('apps/mobile-flutter/ios/Runner.xcodeproj/project.pbxproj'): (
+                  'IPHONEOS_DEPLOYMENT_TARGET = 14.0;',
+                  'IPHONEOS_DEPLOYMENT_TARGET = 15.0;',
+              ),
+              Path('apps/mobile-flutter/ios/Flutter/AppFrameworkInfo.plist'): (
+                  '<string>14.0</string>',
+                  '<string>15.0</string>',
+              ),
+              Path('tests/test_mobile_ios_project_contract.py'): (
+                  '14.0',
+                  '15.0',
+              ),
+          }
+          for path, (old, new) in replacements.items():
+              text = path.read_text(encoding='utf-8')
+              if old not in text:
+                  if new in text:
+                      print(f'{path}: already updated')
+                      continue
+                  raise SystemExit(f'{path}: expected deployment target not found')
+              path.write_text(text.replace(old, new), encoding='utf-8')
+              print(f'{path}: updated')
+          PY
+      - name: Remove temporary diagnostic workflows
+        run: |
+          rm -f .github/workflows/ios-build-diagnostic.yml
+          rm -f .github/workflows/ios-deployment-fix.yml
+          rm -f apps/mobile-flutter/.ios-deployment-fix-trigger
+      - name: Commit iOS deployment target fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "fix(ios): raise deployment target to 15.0"
+          git push origin HEAD:fix/mobile-flutter-dependency-upgrades
