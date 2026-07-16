@@ -64,7 +64,7 @@ jobs:
       - if: steps.detect.outputs.enabled == 'true'
         uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.38.x"
           cache: true
 
       - name: Install native desktop build dependencies
