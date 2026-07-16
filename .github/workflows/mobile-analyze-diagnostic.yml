@@ -1,14 +1,15 @@
 name: Mobile Local Auth Fix
 
 on:
-  pull_request:
+  push:
+    branches:
+      - fix/mobile-flutter-dependency-upgrades
 
 permissions:
   contents: write
 
 jobs:
   fix-local-auth-api:
-    if: github.head_ref == 'fix/mobile-flutter-dependency-upgrades'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
