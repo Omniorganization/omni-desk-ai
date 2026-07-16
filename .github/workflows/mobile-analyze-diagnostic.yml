@@ -1,39 +1,54 @@
-name: Mobile Analyze Diagnostic
+name: Mobile Local Auth Fix
 
 on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  mobile-analyze:
+  fix-local-auth-api:
     if: github.head_ref == 'fix/mobile-flutter-dependency-upgrades'
     runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: apps/mobile-flutter
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046
         with:
-          flutter-version: "3.38.x"
-          cache: true
-      - run: flutter pub get
-      - name: Capture Flutter analyze output
-        shell: bash
+          ref: fix/mobile-flutter-dependency-upgrades
+      - name: Migrate local_auth 3.x authenticate arguments
         run: |
-          set +e
-          flutter analyze > "$RUNNER_TEMP/flutter-analyze.log" 2>&1
-          status=$?
-          cat "$RUNNER_TEMP/flutter-analyze.log"
-          echo "$status" > "$RUNNER_TEMP/flutter-analyze.status"
-          exit 0
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: mobile-analyze-diagnostic
-          path: |
-            ${{ runner.temp }}/flutter-analyze.log
-            ${{ runner.temp }}/flutter-analyze.status
-          if-no-files-found: error
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('apps/mobile-flutter/lib/main.dart')
+          text = path.read_text(encoding='utf-8')
+          old = """      return _auth.authenticate(
+        localizedReason: 'Confirm Omni approval decision',
+        options: const AuthenticationOptions(
+          biometricOnly: false,
+          stickyAuth: true,
+        ),
+      );
+"""
+          new = """      return _auth.authenticate(
+        localizedReason: 'Confirm Omni approval decision',
+        biometricOnly: false,
+        persistAcrossBackgrounding: true,
+      );
+"""
+          if old not in text:
+              if new in text:
+                  print('local_auth API already migrated.')
+                  raise SystemExit(0)
+              raise SystemExit('Expected local_auth authentication block was not found.')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Commit local_auth migration
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/mobile-flutter/lib/main.dart
+          git commit -m "fix(mobile): migrate local_auth 3.x authenticate API"
+          git push origin HEAD:fix/mobile-flutter-dependency-upgrades
