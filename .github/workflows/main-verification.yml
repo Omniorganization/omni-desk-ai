@@ -29,11 +29,11 @@ jobs:
   main-verification:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.11"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
           cache: npm
@@ -169,7 +169,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload required Main Verification evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: main-verification-evidence-${{ github.sha }}
           path: |
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload enforced final Real GA audit
         if: ${{ inputs.external_evidence_run_id != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: main-verification-final-audit-${{ github.sha }}
           path: dist/evidence/external-ga-evidence-final-audit.json
@@ -192,7 +192,7 @@ jobs:
 
       - name: Upload complete bound external evidence bundle
         if: ${{ inputs.external_evidence_run_id != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: external-ga-evidence-bound
           path: release/external-evidence/**

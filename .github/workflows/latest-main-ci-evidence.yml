@@ -13,12 +13,12 @@ jobs:
     if: ${{ github.ref_name == 'main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Generate latest-main CI evidence
         run: |
           python scripts/write_latest_main_ci_evidence.py \
             --output reports/ci/latest-main-ci-evidence.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: latest-main-ci-evidence-${{ github.sha }}
           path: reports/ci/latest-main-ci-evidence.json
