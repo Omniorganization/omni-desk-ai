@@ -1,21 +1,20 @@
-name: Mobile Local Auth Fix
+name: Mobile Patched Main Artifact
 
 on:
-  push:
-    branches:
-      - fix/mobile-flutter-dependency-upgrades
+  pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  fix-local-auth-api:
+  build-patched-main:
+    if: github.head_ref == 'fix/mobile-flutter-dependency-upgrades'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: fix/mobile-flutter-dependency-upgrades
-      - name: Migrate local_auth 3.x authenticate arguments
+      - name: Produce patched main.dart
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -39,17 +38,13 @@ jobs:
           if old not in text:
               if new in text:
                   print('local_auth API already migrated.')
-                  raise SystemExit(0)
-              raise SystemExit('Expected local_auth authentication block was not found.')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+              else:
+                  raise SystemExit('Expected local_auth authentication block was not found.')
+          else:
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
-      - name: Commit local_auth migration
-        run: |
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apps/mobile-flutter/lib/main.dart
-          git commit -m "fix(mobile): migrate local_auth 3.x authenticate API"
-          git push origin HEAD:fix/mobile-flutter-dependency-upgrades
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: patched-mobile-main-dart-v2
+          path: apps/mobile-flutter/lib/main.dart
+          if-no-files-found: error
