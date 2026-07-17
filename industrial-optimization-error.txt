@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/tmp/apply_industrial_runtime_optimization.py", line 635, in <module>
+    raise RuntimeError('job claim block changed')
+RuntimeError: job claim block changed
