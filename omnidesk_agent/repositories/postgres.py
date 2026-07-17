@@ -4,10 +4,14 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from omnidesk_agent.repositories.base import RepositoryCapabilities
+from omnidesk_agent.repositories.postgres_pool import (
+    PostgresUnavailable,
+    SharedPostgresConnectionPool,
+)
 
 
 POSTGRES_OUTBOX_SCHEMA = """
@@ -23,37 +27,31 @@ CREATE TABLE IF NOT EXISTS transactional_outbox (
   updated_at DOUBLE PRECISION NOT NULL,
   last_error TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_transactional_outbox_status ON transactional_outbox(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_status
+  ON transactional_outbox(status, created_at);
 """
 
 
-class PostgresUnavailable(RuntimeError):
-    pass
-
-
 class PostgresTransactionalOutboxRepository:
-    """PostgreSQL transactional outbox skeleton for multi-instance deployments.
-
-    The implementation uses psycopg when installed. Import is delayed so the
-    local-first package can run without a PostgreSQL client dependency.
-    """
-
-    def __init__(self, dsn: str | None = None):
-        self.dsn = dsn or os.getenv("OMNIDESK_POSTGRES_DSN", "")
-        if not self.dsn:
-            raise PostgresUnavailable("OMNIDESK_POSTGRES_DSN is required for postgres repository backend")
+    def __init__(self, dsn_or_pool: str | SharedPostgresConnectionPool):
+        self._owns_pool = isinstance(dsn_or_pool, str)
+        self.pool = (
+            SharedPostgresConnectionPool(dsn_or_pool)
+            if isinstance(dsn_or_pool, str)
+            else dsn_or_pool
+        )
+        self._schema_ready = False
 
     def _connect(self):  # type: ignore[no-untyped-def]
-        try:
-            import psycopg  # type: ignore
-        except Exception as exc:  # pragma: no cover - optional dependency
-            raise PostgresUnavailable("Install psycopg to use postgres repository backend") from exc
-        return psycopg.connect(self.dsn)
+        return self.pool.connection()
 
     def init_schema(self) -> None:
+        if self._schema_ready:
+            return
         with self._connect() as con:
             with con.cursor() as cur:
                 cur.execute(POSTGRES_OUTBOX_SCHEMA)
+        self._schema_ready = True
 
     def enqueue(self, *, topic: str, payload: dict[str, Any], dedupe_key: str | None = None) -> str:
         now = time.time()
@@ -95,14 +93,17 @@ class PostgresTransactionalOutboxRepository:
                     (cutoff, int(limit), now, now),
                 )
                 return [
-                    {"id": str(row[0]), "topic": str(row[1]), "payload": row[2], "retry_count": int(row[3])}
+                    {'id': str(row[0]), 'topic': str(row[1]), 'payload': row[2], 'retry_count': int(row[3])}
                     for row in cur.fetchall()
                 ]
 
     def mark_done(self, event_id: str) -> None:
         with self._connect() as con:
             with con.cursor() as cur:
-                cur.execute("UPDATE transactional_outbox SET status='done', updated_at=%s, locked_at=NULL WHERE id=%s", (time.time(), event_id))
+                cur.execute(
+                    "UPDATE transactional_outbox SET status='done', updated_at=%s, locked_at=NULL WHERE id=%s",
+                    (time.time(), event_id),
+                )
 
     def mark_failed(self, event_id: str, error: str) -> None:
         with self._connect() as con:
@@ -116,30 +117,59 @@ class PostgresTransactionalOutboxRepository:
                     (time.time(), str(error)[:1000], event_id),
                 )
 
+    def close(self) -> None:
+        if self._owns_pool:
+            self.pool.close()
+
 
 @dataclass
 class PostgresRepositoryFactory:
     dsn: str | None = None
+    pool_size: int | None = None
     capabilities: RepositoryCapabilities = RepositoryCapabilities(
-        backend="postgres",
+        backend='postgres',
         multi_instance_safe=True,
         transactional_outbox=True,
         advisory_locks=True,
         row_level_locking=True,
     )
+    _pool: SharedPostgresConnectionPool | None = field(default=None, init=False, repr=False)
+    _runtime: Any | None = field(default=None, init=False, repr=False)
+    _outbox: PostgresTransactionalOutboxRepository | None = field(default=None, init=False, repr=False)
 
     def _dsn(self) -> str:
-        dsn = self.dsn or os.getenv("OMNIDESK_POSTGRES_DSN", "")
+        dsn = self.dsn or os.getenv('OMNIDESK_POSTGRES_DSN', '')
         if not dsn:
-            raise PostgresUnavailable("OMNIDESK_POSTGRES_DSN is required for postgres repository backend")
+            raise PostgresUnavailable('OMNIDESK_POSTGRES_DSN is required for postgres repository backend')
         return dsn
 
+    def _pool_limit(self) -> int:
+        raw = self.pool_size or os.getenv('OMNIDESK_CORE_POSTGRES_POOL_SIZE', '12')
+        try:
+            return max(2, min(int(raw), 64))
+        except (TypeError, ValueError) as exc:
+            raise PostgresUnavailable('OMNIDESK_CORE_POSTGRES_POOL_SIZE must be an integer') from exc
+
+    def _connection_pool(self) -> SharedPostgresConnectionPool:
+        if self._pool is None:
+            self._pool = SharedPostgresConnectionPool(
+                self._dsn(),
+                max_size=self._pool_limit(),
+                acquire_timeout_seconds=float(os.getenv('OMNIDESK_CORE_POSTGRES_POOL_TIMEOUT_SECONDS', '5')),
+            )
+        return self._pool
+
     def transactional_outbox(self) -> PostgresTransactionalOutboxRepository:
-        return PostgresTransactionalOutboxRepository(self._dsn())
+        if self._outbox is None:
+            self._outbox = PostgresTransactionalOutboxRepository(self._connection_pool())
+        return self._outbox
 
     def _runtime_state(self):
-        from omnidesk_agent.repositories.postgres_state import PostgresRuntimeStateStores
-        return PostgresRuntimeStateStores(self._dsn())
+        if self._runtime is None:
+            from omnidesk_agent.repositories.postgres_state import PostgresRuntimeStateStores
+
+            self._runtime = PostgresRuntimeStateStores(self._connection_pool())
+        return self._runtime
 
     def dual_approval_store(self):
         return self._runtime_state().dual_approval_store()
@@ -180,6 +210,20 @@ class PostgresRepositoryFactory:
     def model_cost_store(self):
         return self._runtime_state().model_cost_store()
 
-    def health_check(self) -> dict:
-        self.transactional_outbox().init_schema()
-        return self._runtime_state().health_check()
+    def readiness_check(self) -> dict[str, Any]:
+        return self._connection_pool().ping()
+
+    def health_check(self) -> dict[str, Any]:
+        report = self._runtime_state().health_check()
+        report['pool'] = self.pool_stats()
+        return report
+
+    def pool_stats(self) -> dict[str, Any]:
+        return self._connection_pool().stats()
+
+    def close(self) -> None:
+        runtime = self._runtime
+        if runtime is not None:
+            runtime.close()
+        if self._pool is not None:
+            self._pool.close()

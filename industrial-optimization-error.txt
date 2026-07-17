@@ -1,2 +1,0 @@
-run=29568035106
-BLOCKER /home/runner/work/omni-desk-ai/omni-desk-ai/omnidesk_agent/repositories/postgres_state.py: missing return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)

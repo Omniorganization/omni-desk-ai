@@ -15,7 +15,7 @@ from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManag
 from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
 from omnidesk_agent.security.webhook_security import WebhookSecurityConfig
-from omnidesk_agent.repositories.postgres import PostgresUnavailable
+from omnidesk_agent.repositories.postgres_pool import PostgresUnavailable, SharedPostgresConnectionPool
 
 STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS omnidesk_core_state (
@@ -34,6 +34,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_omnidesk_jobs_dedupe
   ON omnidesk_core_state ((value_json->>'dedupe_key')) WHERE namespace='jobs';
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_omnidesk_outbound_idempotency
   ON omnidesk_core_state ((value_json->>'idempotency_key')) WHERE namespace='outbound_messages';
+CREATE INDEX IF NOT EXISTS idx_omnidesk_runs_waiting_approval
+  ON omnidesk_core_state ((value_json->>'waiting_approval_id'))
+  WHERE namespace='runs' AND value_json->>'waiting_approval_id' IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_omnidesk_jobs_ready
+  ON omnidesk_core_state (((value_json->>'next_retry_at')::double precision), created_at)
+  WHERE namespace='jobs' AND value_json->>'status' IN ('pending', 'retry');
+CREATE INDEX IF NOT EXISTS idx_omnidesk_outbound_ready
+  ON omnidesk_core_state (((value_json->>'next_retry_at')::double precision), created_at)
+  WHERE namespace='outbound_messages' AND value_json->>'status' IN ('pending', 'retry');
 CREATE TABLE IF NOT EXISTS omnidesk_model_cost_events (
   id TEXT PRIMARY KEY,
   task_id TEXT,
@@ -69,21 +78,36 @@ def _loads(value: Any) -> dict[str, Any]:
 
 
 class _PostgresJsonState:
-    def __init__(self, dsn: str):
-        self.dsn = dsn
+    def __init__(self, dsn_or_pool: str | SharedPostgresConnectionPool):
+        self._owns_pool = isinstance(dsn_or_pool, str)
+        self.pool = (
+            SharedPostgresConnectionPool(dsn_or_pool)
+            if isinstance(dsn_or_pool, str)
+            else dsn_or_pool
+        )
+        self._schema_ready = False
         self._ensure_schema()
 
     def _connect(self):  # type: ignore[no-untyped-def]
-        try:
-            import psycopg  # type: ignore
-        except Exception as exc:  # pragma: no cover - optional runtime dependency
-            raise PostgresUnavailable("Install psycopg[binary] to use postgres runtime state stores") from exc
-        return psycopg.connect(self.dsn)
+        return self.pool.connection()
 
     def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
         with self._connect() as con:
             with con.cursor() as cur:
                 cur.execute(STATE_SCHEMA)
+        self._schema_ready = True
+
+    def ping(self) -> dict[str, Any]:
+        return self.pool.ping()
+
+    def pool_stats(self) -> dict[str, Any]:
+        return self.pool.stats()
+
+    def close(self) -> None:
+        if self._owns_pool:
+            self.pool.close()
 
     def put(self, namespace: str, key: str, value: dict[str, Any]) -> None:
         now = time.time()
@@ -216,6 +240,57 @@ class _PostgresJsonState:
                     (json.dumps(updated, ensure_ascii=False, default=str), time.time(), namespace, key),
                 )
                 return updated
+
+
+def claim_ready_by_status(
+    self,
+    namespace: str,
+    *,
+    statuses: tuple[str, ...],
+    ready_before: float,
+    updater,
+    deadline_field: str | None = None,
+) -> Optional[dict[str, Any]]:  # type: ignore[no-untyped-def]
+    if not statuses:
+        return None
+    if deadline_field not in {None, "delivery_deadline_at"}:
+        raise ValueError(f"unsupported deadline field: {deadline_field}")
+    placeholders = ", ".join(["%s"] * len(statuses))
+    deadline_clause = ""
+    params: list[Any] = [namespace, *statuses, float(ready_before)]
+    if deadline_field:
+        deadline_clause = (
+            f" AND (value_json->>'{deadline_field}' IS NULL "
+            f"OR NULLIF(value_json->>'{deadline_field}', '')::double precision >= %s)"
+        )
+        params.append(float(ready_before))
+    query = f"""
+        SELECT key, value_json FROM omnidesk_core_state
+        WHERE namespace=%s
+          AND value_json->>'status' IN ({placeholders})
+          AND COALESCE(NULLIF(value_json->>'next_retry_at', '')::double precision, 0) <= %s
+          {deadline_clause}
+        ORDER BY created_at ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+    """  # nosec B608 - field names and placeholders are constrained above
+    with self._connect() as con:
+        with con.cursor() as cur:
+            cur.execute(query, tuple(params))
+            row = cur.fetchone()
+            if not row:
+                return None
+            key, raw = row
+            current = _loads(raw)
+            updated = updater(dict(current))
+            cur.execute(
+                """
+                UPDATE omnidesk_core_state SET value_json=%s::jsonb, updated_at=%s
+                WHERE namespace=%s AND key=%s
+                """,
+                (json.dumps(updated, ensure_ascii=False, default=str), time.time(), namespace, key),
+            )
+            return current
 
     def claim_one(self, namespace: str, predicate, updater) -> Optional[dict[str, Any]]:  # type: ignore[no-untyped-def]
         with self._connect() as con:
@@ -545,12 +620,7 @@ class PostgresRunStore:
         return self.state.get(self.namespace, run_id)
 
     def get_by_approval(self, approval_id: str) -> Optional[dict[str, Any]]:
-        rows = self.state.list(self.namespace, limit=1000)
-        for row in rows:
-            if row.get("waiting_approval_id") == approval_id:
-                return row
-        return None
-
+        return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)
 
 class PostgresBreakGlassStore:
     namespace = "break_glass_sessions"
@@ -719,8 +789,10 @@ class PostgresJobQueue:
             row["updated_at"] = now
             return row
 
+        claim_ready = getattr(self.state, "claim_ready_by_status", None)
+        if callable(claim_ready):
+            return claim_ready(self.namespace, statuses=("pending", "retry"), ready_before=now, updater=upd)
         return self.state.claim_one(self.namespace, pred, upd)
-
     def recover_stale_running(self, *, lease_seconds: int = 300) -> int:
         cutoff = time.time() - max(0, int(lease_seconds))
         recovered = 0
@@ -873,8 +945,16 @@ class PostgresOutboundMessageStore:
             row["updated_at"] = now
             return row
 
+        claim_ready = getattr(self.state, "claim_ready_by_status", None)
+        if callable(claim_ready):
+            return claim_ready(
+                self.namespace,
+                statuses=("pending", "retry"),
+                ready_before=now,
+                updater=upd,
+                deadline_field="delivery_deadline_at",
+            )
         return self.state.claim_one(self.namespace, pred, upd)
-
     def mark_sent(self, message_id: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None) -> None:
         self._update_by_id(
             message_id,
@@ -997,11 +1077,7 @@ class PostgresOutboundMessageStore:
         return count
 
     def get(self, message_id: str) -> Optional[dict[str, Any]]:
-        for row in self.state.list(self.namespace, limit=1000):
-            if row.get("id") == message_id:
-                return row
-        return None
-
+        return self.state.find_by_field(self.namespace, "id", message_id)
     def find_by_idempotency_key(self, idempotency_key: str) -> Optional[dict[str, Any]]:
         return self.state.get(self.namespace, idempotency_key)
 
@@ -1664,8 +1740,8 @@ class PostgresExperienceStore:
 
 
 class PostgresRuntimeStateStores:
-    def __init__(self, dsn: str):
-        self.state = _PostgresJsonState(dsn)
+    def __init__(self, dsn_or_pool: str | SharedPostgresConnectionPool):
+        self.state = _PostgresJsonState(dsn_or_pool)
         self._dual: PostgresDualApprovalStore | None = None
 
     def dual_approval_store(self) -> PostgresDualApprovalStore:
@@ -1751,3 +1827,9 @@ class PostgresRuntimeStateStores:
                 "learning_experiments",
             ],
         }
+
+def readiness_check(self) -> dict[str, Any]:
+    return self.state.ping()
+
+def close(self) -> None:
+    self.state.close()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 import importlib
 import os
 import time
@@ -223,103 +224,131 @@ def create_app(cfg: AppConfig) -> FastAPI:
         )
         return decision
 
-    def _readiness_snapshot() -> dict:
-        multi_instance_safe = bool(
-            getattr(rt.storage_plan, "multi_instance_safe", False)
+
+readiness_cache: dict[str, object] = {"expires_at": 0.0, "snapshot": None}
+readiness_lock = asyncio.Lock()
+
+def _readiness_snapshot_sync(*, deep: bool) -> dict:
+    multi_instance_safe = bool(
+        getattr(rt.storage_plan, "multi_instance_safe", False)
+    )
+    checks: dict[str, object] = {
+        "runtime": True,
+        "storage_backend": cfg.storage.backend,
+        "multi_instance_safe": multi_instance_safe,
+        "multi_instance_required": bool(
+            cfg.storage.require_multi_instance_safe
+        ),
+    }
+    if cfg.storage.require_multi_instance_safe:
+        checks["multi_instance_requirement"] = multi_instance_safe
+    try:
+        caps = getattr(rt.repository_factory, "capabilities", None)
+        checks["repository"] = None if caps is None else caps.__dict__
+        health_name = "health_check" if deep else "readiness_check"
+        health = getattr(
+            rt.repository_factory,
+            health_name,
+            getattr(rt.repository_factory, "health_check", lambda: {"ok": True}),
+        )()
+        checks["runtime_state"] = health
+        checks["database"] = (
+            bool(health.get("ok", False)) if isinstance(health, dict) else True
         )
-        checks: dict[str, object] = {
-            "runtime": True,
-            "storage_backend": cfg.storage.backend,
-            "multi_instance_safe": multi_instance_safe,
-            "multi_instance_required": bool(
-                cfg.storage.require_multi_instance_safe
-            ),
-        }
-        if cfg.storage.require_multi_instance_safe:
-            checks["multi_instance_requirement"] = multi_instance_safe
-        try:
-            caps = getattr(rt.repository_factory, "capabilities", None)
-            checks["repository"] = None if caps is None else caps.__dict__
-            health = getattr(
-                rt.repository_factory,
-                "health_check",
-                lambda: {"ok": True},
-            )()
-            checks["runtime_state"] = health
-            checks["database"] = (
-                bool(health.get("ok", False)) if isinstance(health, dict) else True
+        pool = health.get("pool", {}) if isinstance(health, dict) else {}
+        if isinstance(pool, dict):
+            checks["postgres_pool"] = pool
+            metrics.set(
+                "omnidesk_postgres_pool_waiters",
+                float(pool.get("waiters", 0) or 0),
             )
-        except Exception as exc:
-            checks["database"] = False
-            checks["database_error"] = str(exc)[:200]
+    except Exception as exc:
+        checks["database"] = False
+        checks["database_error"] = str(exc)[:200]
 
-        checks["sandbox_backend"] = cfg.sandbox.backend
-        if cfg.sandbox.backend == "remote_docker":
-            runner_url = str(cfg.sandbox.runner_url or "").rstrip("/")
-            checks["sandbox_runner_configured"] = bool(runner_url)
-            if runner_url and os.getenv("OMNIDESK_STRICT_READINESS_SANDBOX", "1") != "0":
-                try:
-                    import urllib.request
+    checks["sandbox_backend"] = cfg.sandbox.backend
+    if cfg.sandbox.backend == "remote_docker":
+        runner_url = str(cfg.sandbox.runner_url or "").rstrip("/")
+        checks["sandbox_runner_configured"] = bool(runner_url)
+        if runner_url and os.getenv("OMNIDESK_STRICT_READINESS_SANDBOX", "1") != "0":
+            try:
+                import urllib.request
 
-                    with urllib.request.urlopen(  # nosec B310 - operator-supplied internal runner URL
-                        runner_url + "/ready",
-                        timeout=2,
-                    ) as response:
-                        checks["sandbox_runner"] = response.status < 500
-                except Exception as exc:
-                    checks["sandbox_runner"] = False
-                    checks["sandbox_runner_error"] = str(exc)[:200]
-        else:
-            checks["sandbox_runner_configured"] = True
+                with urllib.request.urlopen(  # nosec B310 - operator-supplied internal runner URL
+                    runner_url + "/ready",
+                    timeout=2,
+                ) as response:
+                    checks["sandbox_runner"] = response.status < 500
+            except Exception as exc:
+                checks["sandbox_runner"] = False
+                checks["sandbox_runner_error"] = str(exc)[:200]
+    else:
+        checks["sandbox_runner_configured"] = True
 
-        required_secret_envs = [
-            cfg.gateway.admin_token_env,
-            cfg.gateway.shared_secret_env,
-        ]
-        if cfg.storage.backend == "postgres":
-            required_secret_envs.append(cfg.storage.postgres_dsn_env)
-        if cfg.memory_privacy.encrypt_at_rest:
-            required_secret_envs.append(cfg.memory_privacy.encryption_key_env)
-        if cfg.sandbox.backend == "remote_docker":
-            required_secret_envs.extend(
-                [
-                    cfg.sandbox.runner_token_env,
-                    cfg.sandbox.runner_hmac_secret_env,
-                ]
-            )
-        if cfg.permissions.break_glass_enabled:
-            required_secret_envs.append(
-                cfg.permissions.audit_checkpoint_hmac_key_env
-            )
-        missing = [
-            name
-            for name in dict.fromkeys(required_secret_envs)
-            if not os.getenv(name, "")
-        ]
-        checks["secrets"] = not missing
-        if missing:
-            checks["missing_secrets"] = missing
-
-        checks["plugins"] = (not cfg.plugins.enabled) or bool(
-            cfg.capabilities.plugins.enabled
+    required_secret_envs = [
+        cfg.gateway.admin_token_env,
+        cfg.gateway.shared_secret_env,
+    ]
+    if cfg.storage.backend == "postgres":
+        required_secret_envs.append(cfg.storage.postgres_dsn_env)
+    if cfg.memory_privacy.encrypt_at_rest:
+        required_secret_envs.append(cfg.memory_privacy.encryption_key_env)
+    if cfg.sandbox.backend == "remote_docker":
+        required_secret_envs.extend(
+            [
+                cfg.sandbox.runner_token_env,
+                cfg.sandbox.runner_hmac_secret_env,
+            ]
         )
-        checks["schema_version"] = True
-        critical_checks = {
-            "runtime",
-            "database",
-            "sandbox_runner_configured",
-            "sandbox_runner",
-            "secrets",
-            "plugins",
-            "schema_version",
-            "multi_instance_requirement",
-        }
-        ok = all(
-            value is not False
-            for key, value in checks.items()
-            if key in critical_checks
+    if cfg.permissions.break_glass_enabled:
+        required_secret_envs.append(
+            cfg.permissions.audit_checkpoint_hmac_key_env
         )
-        return {"ok": ok, "checks": checks}
+    missing = [
+        name
+        for name in dict.fromkeys(required_secret_envs)
+        if not os.getenv(name, "")
+    ]
+    checks["secrets"] = not missing
+    if missing:
+        checks["missing_secrets"] = missing
+
+    checks["plugins"] = (not cfg.plugins.enabled) or bool(
+        cfg.capabilities.plugins.enabled
+    )
+    checks["schema_version"] = True
+    critical_checks = {
+        "runtime",
+        "database",
+        "sandbox_runner_configured",
+        "sandbox_runner",
+        "secrets",
+        "plugins",
+        "schema_version",
+        "multi_instance_requirement",
+    }
+    ok = all(
+        value is not False
+        for key, value in checks.items()
+        if key in critical_checks
+    )
+    return {"ok": ok, "checks": checks}
+
+async def _readiness_snapshot(*, deep: bool = False) -> dict:
+    now = time.monotonic()
+    cached = readiness_cache.get("snapshot")
+    if not deep and cached is not None and float(readiness_cache["expires_at"]) > now:
+        return cached  # type: ignore[return-value]
+    async with readiness_lock:
+        now = time.monotonic()
+        cached = readiness_cache.get("snapshot")
+        if not deep and cached is not None and float(readiness_cache["expires_at"]) > now:
+            return cached  # type: ignore[return-value]
+        snapshot = await asyncio.to_thread(_readiness_snapshot_sync, deep=deep)
+        if not deep:
+            readiness_cache["snapshot"] = snapshot
+            readiness_cache["expires_at"] = now + 5.0
+        return snapshot
 
     dashboard_router = create_dashboard_router(rt, admin_auth=rt.admin_auth)
     if dashboard_router is not None:
@@ -331,7 +360,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.get("/ready")
     async def ready():
-        snapshot = _readiness_snapshot()
+        snapshot = await _readiness_snapshot()
         if not snapshot["ok"]:
             raise HTTPException(status_code=503, detail={"ok": False})
         return {"ok": True}
@@ -339,7 +368,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
     @app.get("/admin/ready")
     async def admin_ready(request: Request):
         await _admin(request, "viewer")
-        snapshot = _readiness_snapshot()
+        snapshot = await _readiness_snapshot(deep=True)
         if not snapshot["ok"]:
             raise HTTPException(status_code=503, detail=snapshot)
         return snapshot

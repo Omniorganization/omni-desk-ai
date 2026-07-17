@@ -149,32 +149,36 @@ class OmniDeskRuntime:
         self.reconnect_worker: ReconnectSyncWorker | None = None
         self._reconnect_task: asyncio.Task | None = None
 
-    def _build_channel_adapters(self) -> dict:
-        return {
-            "telegram": TelegramChannel(self.cfg.channels.telegram),
-            "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
-            "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official),
-            "meta_graph": MetaGraphChannel(self.cfg.channels.meta_graph),
-            "dingtalk": DingTalkChannel(self.cfg.channels.dingtalk),
-            "lark": LarkChannel(self.cfg.channels.lark),
-            "feishu": FeishuChannel(self.cfg.channels.feishu),
-            "line": LineChannel(self.cfg.channels.line),
-            "x": XChannel(self.cfg.channels.x),
-            "slack": SlackChannel(self.cfg.channels.slack),
-            "discord": DiscordChannel(self.cfg.channels.discord),
-            "google_chat": GoogleChatChannel(self.cfg.channels.google_chat),
-            "signal": SignalChannel(self.cfg.channels.signal),
-            "imessage": IMessageChannel(self.cfg.channels.imessage),
-            "microsoft_teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
-            "matrix": MatrixChannel(self.cfg.channels.matrix),
-            "qq": QQChannel(self.cfg.channels.qq),
-            # Convenience aliases keep user-facing channel names predictable while
-            # preserving the existing canonical adapter keys used by storage.
-            "whatsapp": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
-            "wechat": WeChatOfficialChannel(self.cfg.channels.wechat_official),
-            "teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
-            "gmail": GmailChannel(self.cfg.channels.gmail),
+
+def _build_channel_adapters(self) -> dict:
+    adapters = {
+        "telegram": TelegramChannel(self.cfg.channels.telegram),
+        "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
+        "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official),
+        "meta_graph": MetaGraphChannel(self.cfg.channels.meta_graph),
+        "dingtalk": DingTalkChannel(self.cfg.channels.dingtalk),
+        "lark": LarkChannel(self.cfg.channels.lark),
+        "feishu": FeishuChannel(self.cfg.channels.feishu),
+        "line": LineChannel(self.cfg.channels.line),
+        "x": XChannel(self.cfg.channels.x),
+        "slack": SlackChannel(self.cfg.channels.slack),
+        "discord": DiscordChannel(self.cfg.channels.discord),
+        "google_chat": GoogleChatChannel(self.cfg.channels.google_chat),
+        "signal": SignalChannel(self.cfg.channels.signal),
+        "imessage": IMessageChannel(self.cfg.channels.imessage),
+        "microsoft_teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
+        "matrix": MatrixChannel(self.cfg.channels.matrix),
+        "qq": QQChannel(self.cfg.channels.qq),
+        "gmail": GmailChannel(self.cfg.channels.gmail),
+    }
+    adapters.update(
+        {
+            "whatsapp": adapters["whatsapp_cloud"],
+            "wechat": adapters["wechat_official"],
+            "teams": adapters["microsoft_teams"],
         }
+    )
+    return adapters
 
     def _register_builtin_tools(self) -> None:
         # Register the smallest runtime capability surface. Tools still keep
@@ -261,6 +265,7 @@ class OmniDeskRuntime:
             getattr(self, "break_glass_store", None),
             self.webhook_security,
             getattr(self, "transactional_outbox", None),
+            getattr(self, "repository_factory", None),
         ):
             close = getattr(resource, "close", None)
             if callable(close):
@@ -331,6 +336,7 @@ class OmniDeskRuntime:
             "channels": sorted(self.adapters),
             "audit_log": str(self.cfg.permissions.audit_log),
             "storage": {"backend": self.storage_plan.backend, "multi_instance_safe": self.storage_plan.multi_instance_safe},
+            "repository_pool": getattr(self.repository_factory, "pool_stats", lambda: {})(),
             "resource_guard": {
                 "enabled": bool(self.cfg.api_resource_guard.enabled),
                 "backend": resource_guard_backend,
