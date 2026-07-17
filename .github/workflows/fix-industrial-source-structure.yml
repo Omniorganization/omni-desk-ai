@@ -84,7 +84,8 @@ jobs:
           PYTHONPATH=. python -m pytest -q \
             tests/test_industrial_runtime_optimization.py \
             tests/test_postgres_state_runtime_contracts.py \
-            tests/test_server_routes_split.py
+            tests/test_health_admin_status.py \
+            tests/test_public_ready_redaction.py
           git checkout HEAD -- .github/workflows/fix-industrial-source-structure.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
