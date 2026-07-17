@@ -36,6 +36,11 @@ jobs:
               begin = next(i for i, line in enumerate(lines) if line.startswith(f'{variable} ='))
               finish = next(i for i in range(begin + 1, len(lines)) if lines[i].startswith(next_marker))
               lines[begin:finish] = [f'# {variable} replacement is applied structurally by the trigger workflow']
+          lines = [
+              line for line in lines
+              if 'text = text.replace(old_job_claim' not in line
+              and 'text = text.replace(old_outbound_claim' not in line
+          ]
           script = '\n'.join(lines) + '\n'
           Path('/tmp/apply_industrial_runtime_optimization.py').write_text(script, encoding='utf-8')
           PY
