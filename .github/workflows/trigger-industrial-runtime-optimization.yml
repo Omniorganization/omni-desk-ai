@@ -21,6 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import re
           from pathlib import Path
 
           source = Path('.github/workflows/apply-industrial-runtime-optimization.yml').read_text(encoding='utf-8')
@@ -29,13 +30,17 @@ jobs:
           end = source.index("\n          PY\n", start)
           lines = source[start:end].splitlines()
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
-          script = script.replace(
-              "if old_job_claim not in text:\n    raise RuntimeError('job claim block changed')\ntext = text.replace(old_job_claim, new_job_claim, 1)",
+          script = re.sub(
+              r"if old_job_claim not in text:\n\s+raise RuntimeError\('job claim block changed'\)\ntext = text\.replace\(old_job_claim, new_job_claim, 1\)",
               "pass  # queue claim is structurally rewritten by the trigger workflow",
+              script,
+              count=1,
           )
-          script = script.replace(
-              "if old_outbound_claim not in text:\n    raise RuntimeError('outbound claim block changed')\ntext = text.replace(old_outbound_claim, new_outbound_claim, 1)",
+          script = re.sub(
+              r"if old_outbound_claim not in text:\n\s+raise RuntimeError\('outbound claim block changed'\)\ntext = text\.replace\(old_outbound_claim, new_outbound_claim, 1\)",
               "pass  # outbound claim is structurally rewritten by the trigger workflow",
+              script,
+              count=1,
           )
           Path('/tmp/apply_industrial_runtime_optimization.py').write_text(script, encoding='utf-8')
           PY
@@ -44,7 +49,8 @@ jobs:
           patch_status=$?
           set -e
           if [[ "$patch_status" -ne 0 ]]; then
-            cp /tmp/industrial-patch.log industrial-optimization-error.txt
+            printf 'run=%s\n' "$GITHUB_RUN_ID" > industrial-optimization-error.txt
+            cat /tmp/industrial-patch.log >> industrial-optimization-error.txt
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add industrial-optimization-error.txt
