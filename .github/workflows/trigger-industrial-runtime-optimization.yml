@@ -158,3 +158,9 @@ jobs:
           git add -A
           git commit -m 'perf(runtime): industrialize postgres and readiness paths'
           git push origin HEAD:agent/industrial-runtime-optimization-20260717
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: industrial-optimization-diagnostic-${{ github.run_id }}
+          path: /tmp/industrial-patch.log
+          if-no-files-found: warn
