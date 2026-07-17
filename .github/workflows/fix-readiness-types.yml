@@ -1,0 +1,59 @@
+name: Fix Readiness Cache Types
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.head_ref == 'agent/industrial-runtime-optimization-20260717' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/industrial-runtime-optimization-20260717
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Type readiness cache precisely
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('omnidesk_agent/server.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'import weakref\n\nfrom fastapi',
+              'import weakref\nfrom typing import Any, TypedDict\n\nfrom fastapi',
+              1,
+          )
+          marker = 'TRUE_VALUES = {"1", "true", "yes", "y", "on"}\n'
+          typed = '''class _ReadinessCache(TypedDict):
+    expires_at: float
+    snapshot: dict[str, Any] | None
+
+
+'''
+          if typed not in text:
+              text = text.replace(marker, typed + marker, 1)
+          text = text.replace(
+              '    readiness_cache: dict[str, object] = {"expires_at": 0.0, "snapshot": None}\n',
+              '    readiness_cache: _ReadinessCache = {"expires_at": 0.0, "snapshot": None}\n',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          python -m py_compile omnidesk_agent/server.py
+          pyright --project pyrightconfig.json
+          git checkout HEAD -- .github/workflows/fix-readiness-types.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add omnidesk_agent/server.py
+          git commit -m 'fix(readiness): type cached snapshots precisely'
+          git push origin HEAD:agent/industrial-runtime-optimization-20260717
