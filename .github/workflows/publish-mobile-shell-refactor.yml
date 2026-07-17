@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: publish-mobile-shell-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -29,18 +33,36 @@ jobs:
           flutter pub get
           flutter analyze
           flutter test
-      - name: Commit source changes
+      - name: Commit and publish source changes
+        id: publish
         run: |
-          rm -f scripts/apply_mobile_shell_refactor.py
-          git checkout HEAD -- \
-            .github/workflows/publish-mobile-shell-refactor.yml \
-            .github/workflows/refactor-mobile-shell.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            apps/mobile-flutter/lib/main.dart \
-            apps/mobile-flutter/lib/app_models.dart \
-            apps/mobile-flutter/lib/mobile_security_service.dart \
-            scripts/apply_mobile_shell_refactor.py
-          git commit -m 'refactor(mobile): separate models and security services'
-          git push origin HEAD:agent/industrial-runtime-optimization-20260717
+          set +e
+          mkdir -p reports/mobile-shell-publication
+          {
+            rm -f scripts/apply_mobile_shell_refactor.py
+            git checkout HEAD -- .github/workflows/publish-mobile-shell-refactor.yml
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add \
+              apps/mobile-flutter/lib/main.dart \
+              apps/mobile-flutter/lib/app_models.dart \
+              apps/mobile-flutter/lib/mobile_security_service.dart \
+              scripts/apply_mobile_shell_refactor.py
+            git commit -m 'refactor(mobile): separate models and security services'
+            git fetch origin agent/industrial-runtime-optimization-20260717
+            git rebase origin/agent/industrial-runtime-optimization-20260717
+            git push origin HEAD:agent/industrial-runtime-optimization-20260717
+          } > reports/mobile-shell-publication/publish.txt 2>&1
+          status=$?
+          set -e
+          cat reports/mobile-shell-publication/publish.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: mobile-shell-publication-${{ github.run_id }}
+          path: reports/mobile-shell-publication/
+          if-no-files-found: error
+      - name: Enforce publication
+        if: always()
+        run: test "${{ steps.publish.outputs.status }}" = "0"
