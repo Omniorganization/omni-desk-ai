@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: refactor-mobile-shell-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -11,7 +15,7 @@ jobs:
   refactor:
     if: github.head_ref == 'agent/industrial-runtime-optimization-20260717' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -22,96 +26,24 @@ jobs:
           flutter-version: "3.38.8"
           cache: true
       - name: Extract mobile models and security services
+        run: python scripts/apply_mobile_shell_refactor.py
+      - name: Validate Flutter source
+        working-directory: apps/mobile-flutter
         run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('apps/mobile-flutter/lib/main.dart')
-          text = path.read_text(encoding='utf-8')
-          text = text.replace("import 'package:flutter_secure_storage/flutter_secure_storage.dart';\n", '')
-          text = text.replace("import 'package:firebase_messaging/firebase_messaging.dart';\n", '')
-          text = text.replace("import 'package:local_auth/local_auth.dart';\n", '')
-          text = text.replace(
-              "import 'omni_api.dart';\nimport 'device_identity.dart';\n",
-              "import 'omni_api.dart';\nimport 'device_identity.dart';\nimport 'app_models.dart';\nimport 'mobile_security_service.dart';\n",
-              1,
-          )
-          model_start = text.index('class ProjectItem {')
-          app_main = text.index('Future<void> main() async {', model_start)
-          text = text[:model_start] + text[app_main:]
-          text = text.replace(
-              '  static const _storage = FlutterSecureStorage();\n  final _auth = LocalAuthentication();\n',
-              '  final securityService = MobileSecurityService();\n',
-              1,
-          )
-          text = text.replace(
-              '  DeviceIdentityStore get identityStore => DeviceIdentityStore(_storage);\n',
-              '  DeviceIdentityStore get identityStore =>\n      DeviceIdentityStore(securityService.storage);\n',
-              1,
-          )
-          restore_start = text.index('  Future<void> _restoreSession() async {')
-          save_start = text.index('  Future<void> _saveSession() async {', restore_start)
-          restore = '''  Future<void> _restoreSession() async {
-    final restored = await securityService.restoreSession(
-      fallbackGateway: gatewayController.text,
-      fallbackActor: actorController.text,
-    );
-    gatewayController.text = restored.gateway;
-    tokenController.text = restored.token;
-    actorController.text = restored.actor;
-    if (mounted) setState(() {});
-  }
-
-'''
-          text = text[:restore_start] + restore + text[save_start:]
-          save_start = text.index('  Future<void> _saveSession() async {')
-          operation_start = text.index('  String _operationKey(', save_start)
-          save = '''  Future<void> _saveSession() async {
-    await securityService.saveSession(
-      gateway: gatewayController.text,
-      token: tokenController.text,
-      actor: actorController.text,
-    );
-  }
-
-'''
-          text = text[:save_start] + save + text[operation_start:]
-          confirm_start = text.index('  Future<bool> _confirmSensitiveAction() async {')
-          push_start = text.index('  Future<String?> _resolvePushToken() async {', confirm_start)
-          confirm = '''  Future<bool> _confirmSensitiveAction() async {
-    try {
-      return await securityService.confirmSensitiveAction();
-    } catch (_) {
-      return false;
-    }
-  }
-
-'''
-          text = text[:confirm_start] + confirm + text[push_start:]
-          push_start = text.index('  Future<String?> _resolvePushToken() async {')
-          active_project_start = text.index('  ProjectItem? get activeProject {', push_start)
-          push = '''  Future<String?> _resolvePushToken() async {
-    try {
-      return await securityService.resolvePushToken();
-    } catch (_) {
-      return null;
-    }
-  }
-
-'''
-          text = text[:push_start] + push + text[active_project_start:]
-          path.write_text(text, encoding='utf-8')
-          PY
-          cd apps/mobile-flutter
           dart format lib/main.dart lib/app_models.dart lib/mobile_security_service.dart
           flutter pub get
           flutter analyze
           flutter test
-          cd ../..
+      - name: Publish validated refactor
+        run: |
+          rm -f scripts/apply_mobile_shell_refactor.py
           git checkout HEAD -- .github/workflows/refactor-mobile-shell.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add apps/mobile-flutter/lib/main.dart apps/mobile-flutter/lib/app_models.dart apps/mobile-flutter/lib/mobile_security_service.dart
+          git add \
+            apps/mobile-flutter/lib/main.dart \
+            apps/mobile-flutter/lib/app_models.dart \
+            apps/mobile-flutter/lib/mobile_security_service.dart \
+            scripts/apply_mobile_shell_refactor.py
           git commit -m 'refactor(mobile): separate models and security services'
           git push origin HEAD:agent/industrial-runtime-optimization-20260717
