@@ -1,8 +1,12 @@
-name: Fix Readiness Cache Types
+name: Fix Remaining Pyright Blockers
 
 on:
   pull_request:
     branches: [main]
+
+concurrency:
+  group: fix-remaining-pyright-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -11,6 +15,7 @@ jobs:
   fix:
     if: github.head_ref == 'agent/industrial-runtime-optimization-20260717' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -21,34 +26,98 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
-      - name: Type readiness cache precisely
+      - name: Repair readiness and PostgreSQL claim typing
         run: |
+          set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('omnidesk_agent/server.py')
-          text = path.read_text(encoding='utf-8')
-          text = text.replace(
+          server_path = Path('omnidesk_agent/server.py')
+          server = server_path.read_text(encoding='utf-8')
+          server = server.replace(
               'import weakref\n\nfrom fastapi',
               'import weakref\nfrom typing import Any, TypedDict\n\nfrom fastapi',
               1,
           )
           marker = 'TRUE_VALUES = {"1", "true", "yes", "y", "on"}\n'
-          typed = 'class _ReadinessCache(TypedDict):\n    expires_at: float\n    snapshot: dict[str, Any] | None\n\n\n'
-          if typed not in text:
-              text = text.replace(marker, typed + marker, 1)
-          text = text.replace(
+          typed = (
+              'class _ReadinessCache(TypedDict):\n'
+              '    expires_at: float\n'
+              '    snapshot: dict[str, Any] | None\n\n\n'
+          )
+          if typed not in server:
+              server = server.replace(marker, typed + marker, 1)
+          server = server.replace(
               '    readiness_cache: dict[str, object] = {"expires_at": 0.0, "snapshot": None}\n',
               '    readiness_cache: _ReadinessCache = {"expires_at": 0.0, "snapshot": None}\n',
               1,
           )
-          path.write_text(text, encoding='utf-8')
+          server = server.replace(
+              'float(readiness_cache["expires_at"])',
+              'readiness_cache["expires_at"]',
+          )
+          server_path.write_text(server, encoding='utf-8')
+
+          state_path = Path('omnidesk_agent/repositories/postgres_state.py')
+          state = state_path.read_text(encoding='utf-8')
+          state = state.replace(
+              'from typing import Any, Optional, Union\n',
+              'from typing import Any, Optional, Union, cast\n',
+              1,
+          )
+          state = state.replace(
+              '        if callable(claim_ready):\n'
+              '            return claim_ready(self.namespace, statuses=("pending", "retry"), ready_before=now, updater=upd)\n',
+              '        if callable(claim_ready):\n'
+              '            claimed = claim_ready(\n'
+              '                self.namespace,\n'
+              '                statuses=("pending", "retry"),\n'
+              '                ready_before=now,\n'
+              '                updater=upd,\n'
+              '            )\n'
+              '            return cast(Optional[dict[str, Any]], claimed)\n',
+              1,
+          )
+          state = state.replace(
+              '        if callable(claim_ready):\n'
+              '            return claim_ready(\n'
+              '                self.namespace,\n'
+              '                statuses=("pending", "retry"),\n'
+              '                ready_before=now,\n'
+              '                updater=upd,\n'
+              '                deadline_field="delivery_deadline_at",\n'
+              '            )\n',
+              '        if callable(claim_ready):\n'
+              '            claimed = claim_ready(\n'
+              '                self.namespace,\n'
+              '                statuses=("pending", "retry"),\n'
+              '                ready_before=now,\n'
+              '                updater=upd,\n'
+              '                deadline_field="delivery_deadline_at",\n'
+              '            )\n'
+              '            return cast(Optional[dict[str, Any]], claimed)\n',
+              1,
+          )
+          state_path.write_text(state, encoding='utf-8')
           PY
-          python -m py_compile omnidesk_agent/server.py
+          python -m py_compile \
+            omnidesk_agent/server.py \
+            omnidesk_agent/repositories/postgres_state.py
+          ruff check \
+            omnidesk_agent/server.py \
+            omnidesk_agent/repositories/postgres_state.py
           pyright --project pyrightconfig.json
-          git checkout HEAD -- .github/workflows/fix-readiness-types.yml
+          PYTHONPATH=. python -m pytest -q \
+            tests/test_industrial_runtime_optimization.py \
+            tests/test_postgres_state_runtime_contracts.py \
+            tests/test_health_admin_status.py \
+            tests/test_public_ready_redaction.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add omnidesk_agent/server.py
-          git commit -m 'fix(readiness): type cached snapshots precisely'
+          git add \
+            omnidesk_agent/server.py \
+            omnidesk_agent/repositories/postgres_state.py
+          git commit -m 'fix(types): resolve readiness and postgres claim blockers'
+          git fetch origin agent/industrial-runtime-optimization-20260717
+          git rebase origin/agent/industrial-runtime-optimization-20260717
           git push origin HEAD:agent/industrial-runtime-optimization-20260717
