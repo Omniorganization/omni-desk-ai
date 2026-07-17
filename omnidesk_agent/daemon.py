@@ -149,8 +149,9 @@ class OmniDeskRuntime:
         self.reconnect_worker: ReconnectSyncWorker | None = None
         self._reconnect_task: asyncio.Task | None = None
 
+
     def _build_channel_adapters(self) -> dict:
-        return {
+        adapters = {
             "telegram": TelegramChannel(self.cfg.channels.telegram),
             "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
             "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official),
@@ -168,14 +169,16 @@ class OmniDeskRuntime:
             "microsoft_teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
             "matrix": MatrixChannel(self.cfg.channels.matrix),
             "qq": QQChannel(self.cfg.channels.qq),
-            # Convenience aliases keep user-facing channel names predictable while
-            # preserving the existing canonical adapter keys used by storage.
-            "whatsapp": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
-            "wechat": WeChatOfficialChannel(self.cfg.channels.wechat_official),
-            "teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
             "gmail": GmailChannel(self.cfg.channels.gmail),
         }
-
+        adapters.update(
+            {
+                "whatsapp": adapters["whatsapp_cloud"],
+                "wechat": adapters["wechat_official"],
+                "teams": adapters["microsoft_teams"],
+            }
+        )
+        return adapters
     def _register_builtin_tools(self) -> None:
         # Register the smallest runtime capability surface. Tools still keep
         # their own internal gates; this layer prevents disabled capabilities
@@ -261,6 +264,7 @@ class OmniDeskRuntime:
             getattr(self, "break_glass_store", None),
             self.webhook_security,
             getattr(self, "transactional_outbox", None),
+            getattr(self, "repository_factory", None),
         ):
             close = getattr(resource, "close", None)
             if callable(close):
@@ -331,6 +335,7 @@ class OmniDeskRuntime:
             "channels": sorted(self.adapters),
             "audit_log": str(self.cfg.permissions.audit_log),
             "storage": {"backend": self.storage_plan.backend, "multi_instance_safe": self.storage_plan.multi_instance_safe},
+            "repository_pool": getattr(self.repository_factory, "pool_stats", lambda: {})(),
             "resource_guard": {
                 "enabled": bool(self.cfg.api_resource_guard.enabled),
                 "backend": resource_guard_backend,

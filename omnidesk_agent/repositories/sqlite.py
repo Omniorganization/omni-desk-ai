@@ -69,7 +69,10 @@ class SQLiteTransactionalOutboxRepository:
             ).fetchall()
             ids = [str(row[0]) for row in rows]
             if ids:
-                con.executemany("UPDATE transactional_outbox SET status='running', locked_at=?, updated_at=? WHERE id=?", [(now, now, event_id) for event_id in ids])
+                con.executemany(
+                    "UPDATE transactional_outbox SET status='running', locked_at=?, updated_at=? WHERE id=?",
+                    [(now, now, event_id) for event_id in ids],
+                )
             con.commit()
         return [
             {"id": str(row[0]), "topic": str(row[1]), "payload": json.loads(row[2]), "retry_count": int(row[3])}
@@ -112,55 +115,84 @@ class SQLiteRepositoryFactory:
     # must use the matching methods on PostgresRepositoryFactory instead.
     def dual_approval_store(self):
         from omnidesk_agent.security.dual_approval import DualApprovalStore
+
         return DualApprovalStore(self.workspace_root / "dual_approvals.sqlite3")
 
     def approval_store(self, *, ttl_seconds: int, dual_approval_store=None):
         from omnidesk_agent.security.approval_store import ApprovalStore
+
         return ApprovalStore(self.workspace_root / "approvals.sqlite3", ttl_seconds=ttl_seconds, dual_approval_store=dual_approval_store)
 
     def break_glass_store(self, *, audit_log: Path):
         from omnidesk_agent.security.break_glass import BreakGlassStore
+
         return BreakGlassStore(self.workspace_root / "break_glass.sqlite3", audit_log=audit_log)
 
     def webhook_security(self):
         from omnidesk_agent.security.webhook_security import WebhookSecurity
+
         return WebhookSecurity(self.workspace_root / "webhooks.sqlite3")
 
     def job_queue(self):
         from omnidesk_agent.core.job_queue import JobQueue
+
         return JobQueue(self.workspace_root / "jobs.sqlite3")
 
     def outbound_messages(self):
         from omnidesk_agent.core.outbound_messages import OutboundMessageStore
+
         return OutboundMessageStore(self.workspace_root / "outbound_messages.sqlite3")
 
     def run_store(self):
         from omnidesk_agent.core.run_store import RunStore
+
         return RunStore(self.workspace_root / "runs.sqlite3")
 
     def agent_run_idempotency_store(self):
         from omnidesk_agent.security.agent_run_idempotency import SQLiteAgentRunIdempotencyStore
+
         return SQLiteAgentRunIdempotencyStore(self.workspace_root / "agent_run_idempotency.sqlite3")
 
     def side_effect_idempotency_store(self):
         from omnidesk_agent.security.idempotency import SQLiteSideEffectIdempotencyStore
+
         return SQLiteSideEffectIdempotencyStore(self.workspace_root / "side_effect_idempotency.sqlite3")
 
     def learning_experiments(self):
         from omnidesk_agent.self_learning.experiments.experiment_manager import ExperimentManager
+
         return ExperimentManager(self.workspace_root / "learning_experiments.sqlite3")
 
     def memory_store(self, privacy_config=None):
         from omnidesk_agent.memory.experience import ExperienceStore
+
         return ExperienceStore(self.workspace_root / "memory.sqlite3", privacy_config)
 
     def token_budget_manager(self, config=None):
         from omnidesk_agent.core.token_budget import TokenBudgetManager
+
         return TokenBudgetManager(self.workspace_root / "token_budget.sqlite3", config)
 
     def model_cost_store(self):
         from omnidesk_agent.models.cost_store import ModelCostStore
+
         return ModelCostStore(self.workspace_root / "model_costs.sqlite3")
 
-    def health_check(self) -> dict:
+    def readiness_check(self) -> dict[str, Any]:
+        return self.health_check()
+
+    def health_check(self) -> dict[str, Any]:
         return {"ok": True, "backend": "sqlite", "multi_instance_safe": False}
+
+    def pool_stats(self) -> dict[str, Any]:
+        return {
+            "backend": "sqlite",
+            "pooled": False,
+            "waiters": 0,
+            "in_use": 0,
+        }
+
+    def close(self) -> None:
+        # SQLite stores own short-lived connections; the factory has no persistent
+        # connection resource to close.
+        return None

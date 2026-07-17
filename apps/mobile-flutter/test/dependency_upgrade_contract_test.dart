@@ -7,6 +7,8 @@ void main() {
   test('Flutter 3.38 dependency upgrade remains evidenced and native-compatible', () {
     final pubspec = File('pubspec.yaml').readAsStringSync();
     final mainSource = File('lib/main.dart').readAsStringSync();
+    final securitySource = File('lib/mobile_security_service.dart')
+        .readAsStringSync();
     final podfile = File('ios/Podfile').readAsStringSync();
     final workflow = File('../../.github/workflows/tri-app-quality.yml')
         .readAsStringSync();
@@ -18,7 +20,8 @@ void main() {
     expect(pubspec, contains('firebase_core: ^4.12.1'));
     expect(pubspec, contains('firebase_messaging: ^16.4.3'));
     expect(mainSource, isNot(contains('AuthenticationOptions(')));
-    expect(mainSource, contains('persistAcrossBackgrounding: true'));
+    expect(securitySource, isNot(contains('AuthenticationOptions(')));
+    expect(securitySource, contains('persistAcrossBackgrounding: true'));
     expect(podfile, contains("platform :ios, '15.0'"));
     expect(
       podfile,

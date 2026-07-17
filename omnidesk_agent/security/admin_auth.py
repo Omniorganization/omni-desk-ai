@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
@@ -139,7 +140,13 @@ class AdminAuth:
     async def verify_request(self, request: Any, required_role: str = "viewer") -> AdminAuthDecision:
         host = getattr(getattr(request, "client", None), "host", None)
         path = str(getattr(getattr(request, "url", None), "path", ""))
-        return self.verify_headers(request.headers, host, required_role=required_role, path=path)
+        return await asyncio.to_thread(
+            self.verify_headers,
+            request.headers,
+            host,
+            required_role,
+            path,
+        )
 
     @staticmethod
     def _actor_from_headers(headers: Any) -> str:
