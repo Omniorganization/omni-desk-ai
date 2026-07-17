@@ -1,0 +1,49 @@
+name: Trigger Industrial Runtime Optimization
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/industrial-runtime-optimization-20260717' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/industrial-runtime-optimization-20260717
+          fetch-depth: 0
+      - name: Extract and execute staged patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('.github/workflows/apply-industrial-runtime-optimization.yml').read_text(encoding='utf-8')
+          marker = "          python - <<'PY'\n"
+          start = source.index(marker) + len(marker)
+          end = source.index("\n          PY\n", start)
+          lines = source[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          Path('/tmp/apply_industrial_runtime_optimization.py').write_text(script, encoding='utf-8')
+          PY
+          python /tmp/apply_industrial_runtime_optimization.py
+          rm -f .github/workflows/trigger-industrial-runtime-optimization.yml
+          python -m py_compile \
+            omnidesk_agent/repositories/postgres_pool.py \
+            omnidesk_agent/repositories/postgres.py \
+            omnidesk_agent/repositories/postgres_state.py \
+            omnidesk_agent/server.py \
+            omnidesk_agent/daemon.py \
+            scripts/check_industrial_runtime_optimization.py \
+            tests/test_industrial_runtime_optimization.py
+          python scripts/check_industrial_runtime_optimization.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'perf(runtime): industrialize postgres and readiness paths'
+          git push origin HEAD:agent/industrial-runtime-optimization-20260717
