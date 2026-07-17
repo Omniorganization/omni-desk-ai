@@ -56,6 +56,15 @@ jobs:
           def indent_method(source: str) -> str:
               return '\n'.join('    ' + line if line else '' for line in dedent(source).strip().splitlines())
 
+          run_class = text.index('class PostgresRunStore:')
+          run_get_start = text.index('    def get_by_approval(self, approval_id: str) -> Optional[dict[str, Any]]:\n', run_class)
+          run_get_end = text.index('\n\nclass PostgresBreakGlassStore:', run_get_start)
+          run_lookup = indent_method('''
+          def get_by_approval(self, approval_id: str) -> Optional[dict[str, Any]]:
+              return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)
+          ''')
+          text = text[:run_get_start] + run_lookup + text[run_get_end:]
+
           job_class = text.index('class PostgresJobQueue:')
           job_start = text.index('    def claim_next(self) -> Optional[dict[str, Any]]:\n', job_class)
           job_end = text.index('\n    def recover_stale_running', job_start)
@@ -111,6 +120,14 @@ jobs:
               return self.state.claim_one(self.namespace, pred, upd)
           ''')
           text = text[:outbound_start] + outbound_claim + text[outbound_end:]
+
+          outbound_get_start = text.index('    def get(self, message_id: str) -> Optional[dict[str, Any]]:\n', outbound_class)
+          outbound_get_end = text.index('\n    def find_by_idempotency_key', outbound_get_start)
+          outbound_lookup = indent_method('''
+          def get(self, message_id: str) -> Optional[dict[str, Any]]:
+              return self.state.find_by_field(self.namespace, "id", message_id)
+          ''')
+          text = text[:outbound_get_start] + outbound_lookup + text[outbound_get_end:]
           path.write_text(text, encoding='utf-8')
           PY
             rm -f .github/workflows/trigger-industrial-runtime-optimization.yml industrial-optimization-error.txt
