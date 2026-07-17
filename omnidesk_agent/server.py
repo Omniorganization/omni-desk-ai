@@ -6,6 +6,7 @@ import importlib
 import os
 import time
 import weakref
+from typing import Any, TypedDict
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -38,6 +39,11 @@ from omnidesk_agent.server_routes.agent_routes import (
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
 from omnidesk_agent.validation.production import assert_production_config_safe
+
+
+class _ReadinessCache(TypedDict):
+    expires_at: float
+    snapshot: dict[str, Any] | None
 
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
@@ -225,7 +231,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         return decision
 
 
-    readiness_cache: dict[str, object] = {"expires_at": 0.0, "snapshot": None}
+    readiness_cache: _ReadinessCache = {"expires_at": 0.0, "snapshot": None}
     readiness_lock = asyncio.Lock()
 
     def _readiness_snapshot_sync(*, deep: bool) -> dict:
@@ -337,12 +343,12 @@ def create_app(cfg: AppConfig) -> FastAPI:
     async def _readiness_snapshot(*, deep: bool = False) -> dict:
         now = time.monotonic()
         cached = readiness_cache.get("snapshot")
-        if not deep and cached is not None and float(readiness_cache["expires_at"]) > now:
+        if not deep and cached is not None and readiness_cache["expires_at"] > now:
             return cached  # type: ignore[return-value]
         async with readiness_lock:
             now = time.monotonic()
             cached = readiness_cache.get("snapshot")
-            if not deep and cached is not None and float(readiness_cache["expires_at"]) > now:
+            if not deep and cached is not None and readiness_cache["expires_at"] > now:
                 return cached  # type: ignore[return-value]
             snapshot = await asyncio.to_thread(_readiness_snapshot_sync, deep=deep)
             if not deep:

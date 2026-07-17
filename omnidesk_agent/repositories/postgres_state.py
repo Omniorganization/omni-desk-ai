@@ -8,7 +8,7 @@ import uuid
 import secrets
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
@@ -790,7 +790,13 @@ class PostgresJobQueue:
 
         claim_ready = getattr(self.state, "claim_ready_by_status", None)
         if callable(claim_ready):
-            return claim_ready(self.namespace, statuses=("pending", "retry"), ready_before=now, updater=upd)
+            claimed = claim_ready(
+                self.namespace,
+                statuses=("pending", "retry"),
+                ready_before=now,
+                updater=upd,
+            )
+            return cast(Optional[dict[str, Any]], claimed)
         return self.state.claim_one(self.namespace, pred, upd)
     def recover_stale_running(self, *, lease_seconds: int = 300) -> int:
         cutoff = time.time() - max(0, int(lease_seconds))
@@ -946,13 +952,14 @@ class PostgresOutboundMessageStore:
 
         claim_ready = getattr(self.state, "claim_ready_by_status", None)
         if callable(claim_ready):
-            return claim_ready(
+            claimed = claim_ready(
                 self.namespace,
                 statuses=("pending", "retry"),
                 ready_before=now,
                 updater=upd,
                 deadline_field="delivery_deadline_at",
             )
+            return cast(Optional[dict[str, Any]], claimed)
         return self.state.claim_one(self.namespace, pred, upd)
     def mark_sent(self, message_id: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None) -> None:
         self._update_by_id(
