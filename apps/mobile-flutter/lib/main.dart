@@ -150,10 +150,8 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       if (!canCheck) return false;
       return _auth.authenticate(
         localizedReason: 'Confirm Omni approval decision',
-        options: const AuthenticationOptions(
-          biometricOnly: false,
-          stickyAuth: true,
-        ),
+        biometricOnly: false,
+        persistAcrossBackgrounding: true,
       );
     } catch (_) {
       return false;

@@ -170,7 +170,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.7"
+          flutter-version: "3.38.8"
           cache: true
       - run: flutter pub get
       - run: flutter analyze
@@ -184,7 +184,7 @@ jobs:
           license_status=$?
           set -o pipefail
           test "$license_status" -eq 0
-          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
       - name: Generate non-production Android signing key
         env:
           OMNI_ANDROID_KEYSTORE_PASSWORD: omnidesk-ci-store-password
@@ -224,7 +224,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.7"
+          flutter-version: "3.38.8"
           cache: true
       - run: flutter pub get
       - run: flutter analyze
@@ -242,7 +242,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.7"
+          flutter-version: "3.38.8"
           cache: true
       - run: flutter pub get
       - run: flutter build ipa --release

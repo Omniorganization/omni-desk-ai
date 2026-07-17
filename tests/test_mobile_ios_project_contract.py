@@ -14,7 +14,7 @@ def test_ios_xcode_project_has_real_build_configuration_graph() -> None:
     assert "XCConfigurationList" in project
     assert "buildConfigurationList" in project
     assert "PRODUCT_BUNDLE_IDENTIFIER = com.omnidesk.mobile;" in project
-    assert "IPHONEOS_DEPLOYMENT_TARGET = 14.0;" in project
+    assert "IPHONEOS_DEPLOYMENT_TARGET = 15.0;" in project
     assert "GeneratedPluginRegistrant.m in Sources" in project
 
 
@@ -23,7 +23,7 @@ def test_ios_podfile_applies_flutter_build_settings() -> None:
     assert "post_install do |installer|" in podfile
     assert "flutter_additional_ios_build_settings(target)" in podfile
     assert "use_frameworks! :linkage => :static" in podfile
-    assert "IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'" in podfile
+    assert "IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'" in podfile
 
 
 def test_ios_info_plist_uses_release_build_variables() -> None:
