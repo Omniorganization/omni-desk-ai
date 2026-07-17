@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 import importlib
 import os
 import time
 import weakref
+from typing import Any, TypedDict
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -37,6 +39,11 @@ from omnidesk_agent.server_routes.agent_routes import (
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
 from omnidesk_agent.validation.production import assert_production_config_safe
+
+
+class _ReadinessCache(TypedDict):
+    expires_at: float
+    snapshot: dict[str, Any] | None
 
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
@@ -223,7 +230,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
         )
         return decision
 
-    def _readiness_snapshot() -> dict:
+
+    readiness_cache: _ReadinessCache = {"expires_at": 0.0, "snapshot": None}
+    readiness_lock = asyncio.Lock()
+
+    def _readiness_snapshot_sync(*, deep: bool) -> dict:
         multi_instance_safe = bool(
             getattr(rt.storage_plan, "multi_instance_safe", False)
         )
@@ -240,15 +251,23 @@ def create_app(cfg: AppConfig) -> FastAPI:
         try:
             caps = getattr(rt.repository_factory, "capabilities", None)
             checks["repository"] = None if caps is None else caps.__dict__
+            health_name = "health_check" if deep else "readiness_check"
             health = getattr(
                 rt.repository_factory,
-                "health_check",
-                lambda: {"ok": True},
+                health_name,
+                getattr(rt.repository_factory, "health_check", lambda: {"ok": True}),
             )()
             checks["runtime_state"] = health
             checks["database"] = (
                 bool(health.get("ok", False)) if isinstance(health, dict) else True
             )
+            pool = health.get("pool", {}) if isinstance(health, dict) else {}
+            if isinstance(pool, dict):
+                checks["postgres_pool"] = pool
+                metrics.set(
+                    "omnidesk_postgres_pool_waiters",
+                    float(pool.get("waiters", 0) or 0),
+                )
         except Exception as exc:
             checks["database"] = False
             checks["database_error"] = str(exc)[:200]
@@ -321,6 +340,22 @@ def create_app(cfg: AppConfig) -> FastAPI:
         )
         return {"ok": ok, "checks": checks}
 
+    async def _readiness_snapshot(*, deep: bool = False) -> dict:
+        now = time.monotonic()
+        cached = readiness_cache.get("snapshot")
+        if not deep and cached is not None and readiness_cache["expires_at"] > now:
+            return cached  # type: ignore[return-value]
+        async with readiness_lock:
+            now = time.monotonic()
+            cached = readiness_cache.get("snapshot")
+            if not deep and cached is not None and readiness_cache["expires_at"] > now:
+                return cached  # type: ignore[return-value]
+            snapshot = await asyncio.to_thread(_readiness_snapshot_sync, deep=deep)
+            if not deep:
+                readiness_cache["snapshot"] = snapshot
+                readiness_cache["expires_at"] = now + 5.0
+            return snapshot
+
     dashboard_router = create_dashboard_router(rt, admin_auth=rt.admin_auth)
     if dashboard_router is not None:
         app.include_router(dashboard_router)
@@ -331,7 +366,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.get("/ready")
     async def ready():
-        snapshot = _readiness_snapshot()
+        snapshot = await _readiness_snapshot()
         if not snapshot["ok"]:
             raise HTTPException(status_code=503, detail={"ok": False})
         return {"ok": True}
@@ -339,7 +374,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
     @app.get("/admin/ready")
     async def admin_ready(request: Request):
         await _admin(request, "viewer")
-        snapshot = _readiness_snapshot()
+        snapshot = await _readiness_snapshot(deep=True)
         if not snapshot["ok"]:
             raise HTTPException(status_code=503, detail=snapshot)
         return snapshot
