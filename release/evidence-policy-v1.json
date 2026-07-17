@@ -1,0 +1,88 @@
+{
+  "base_categories": {
+    "backup_restore_drill": {
+      "files": [
+        "drills/backup-restore-drill.json"
+      ],
+      "label": "true backup/restore drill"
+    },
+    "bigseller_live_smoke": {
+      "files": [
+        "integrations/bigseller-live-smoke.json"
+      ],
+      "label": "true BigSeller staging smoke with auth, data, webhook, trace, audit, and leakage proof"
+    },
+    "live_branch_protection": {
+      "files": [
+        "control-plane/github-branch-protection-live.json"
+      ],
+      "label": "true GitHub branch protection control-plane verification"
+    },
+    "model_live_smoke": {
+      "files": [
+        "model/model-live-smoke.json"
+      ],
+      "label": "true live model Q&A smoke with audit and budget ledger evidence"
+    },
+    "native_build": {
+      "files": [
+        "native-build/flutter-android-release.json",
+        "native-build/flutter-ios-release.json",
+        "native-build/tauri-desktop-release.json",
+        "native-build/rust-cargo-check-locked.json"
+      ],
+      "label": "true Flutter/Rust/Tauri native build",
+      "requires_artifact": true
+    },
+    "postgres_soak": {
+      "files": [
+        "drills/postgres-multi-instance-soak.json"
+      ],
+      "label": "true multi-instance Postgres soak"
+    },
+    "push_delivery": {
+      "files": [
+        "push/apns-live-delivery.json",
+        "push/fcm-live-delivery.json"
+      ],
+      "label": "true APNS/FCM push delivery"
+    },
+    "rollback_drill": {
+      "files": [
+        "drills/rollback-drill.json"
+      ],
+      "label": "true rollback drill"
+    },
+    "self_healing_failure_injection": {
+      "files": [
+        "drills/self-healing-failure-injection.json"
+      ],
+      "label": "true self-healing failure injection report"
+    },
+    "signed_artifacts": {
+      "files": [
+        "signed-artifacts/android-signed-aab.json",
+        "signed-artifacts/ios-signed-ipa.json",
+        "signed-artifacts/desktop-macos-notarized.json",
+        "signed-artifacts/desktop-windows-signed.json"
+      ],
+      "label": "true Android/iOS/Desktop signed artifacts",
+      "requires_artifact": true
+    }
+  },
+  "extended_categories": {
+    "native_signed_artifact_bindings": {
+      "files": [
+        "control-plane/native-signed-artifact-binding.json"
+      ],
+      "label": "Main Verification binding for native build and signed artifact evidence"
+    },
+    "team_governance_control_plane": {
+      "files": [
+        "control-plane/github-team-governance-live.json"
+      ],
+      "label": "true GitHub organization/team CODEOWNERS control-plane verification"
+    }
+  },
+  "schema": "omnidesk-real-ga-evidence-policy/v1"
+}

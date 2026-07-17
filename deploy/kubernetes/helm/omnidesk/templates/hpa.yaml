@@ -11,6 +11,21 @@ spec:
     name: omnidesk-agent
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.behavior.scaleUp.stabilizationWindowSeconds }}
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: {{ .Values.autoscaling.behavior.scaleUp.percent }}
+          periodSeconds: {{ .Values.autoscaling.behavior.scaleUp.periodSeconds }}
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.behavior.scaleDown.stabilizationWindowSeconds }}
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: {{ .Values.autoscaling.behavior.scaleDown.percent }}
+          periodSeconds: {{ .Values.autoscaling.behavior.scaleDown.periodSeconds }}
   metrics:
     - type: Resource
       resource:
@@ -18,4 +33,26 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+{{- if .Values.autoscaling.customMetrics.enabled }}
+    - type: Pods
+      pods:
+        metric:
+          name: omnidesk_active_chat_streams
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.customMetrics.activeChatStreamsAverageValue | quote }}
+    - type: Pods
+      pods:
+        metric:
+          name: omnidesk_postgres_pool_waiters
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.customMetrics.postgresPoolWaitersAverageValue | quote }}
+{{- end }}
 {{- end }}

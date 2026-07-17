@@ -2,7 +2,7 @@ image:
   repository: ghcr.io/yinyufan0813-cmyk/omni-desk-ai
   digest: "" # required: release pipeline must inject the final OmniDesk app OCI digest
   pullPolicy: IfNotPresent
-replicaCount: 2
+replicaCount: 3
 secrets:
   name: omnidesk-secrets
 service:
@@ -17,12 +17,26 @@ resources:
     memory: 1Gi
 autoscaling:
   enabled: true
-  minReplicas: 2
+  minReplicas: 3
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      percent: 100
+      periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      percent: 25
+      periodSeconds: 60
+  customMetrics:
+    enabled: false
+    activeChatStreamsAverageValue: "40"
+    postgresPoolWaitersAverageValue: "2"
 pdb:
   enabled: true
-  minAvailable: 1
+  minAvailable: 2
 otel:
   endpoint: http://otel-collector:4318/v1/traces
 storage:
@@ -31,6 +45,12 @@ storage:
   requireMultiInstanceSafe: true
   postgresPoolSize: 12
   chatRequestLeaseSeconds: 180
+postgresConnectionBudget:
+  maxConnections: 120
+  reservedAdminConnections: 10
+  workerConnections: 20
+  migrationConnections: 2
+  monitoringConnections: 4
 config:
   publicBaseUrl: https://omnidesk.ai.internal
   sandboxRunnerUrl: http://sandbox-runner:18890

@@ -242,3 +242,9 @@ def test_verify_release_artifact_rejects_signature_set_mismatch(tmp_path):
     (dist / "release_signatures.json").write_text(json.dumps({"artifacts": [{"name": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}]}), encoding="utf-8")
 
     assert verify_release_artifact_main([str(dist), "--require-signatures"]) == 1
+
+
+def test_production_promotion_uses_complete_real_ga_gate() -> None:
+    workflow = Path(".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+    assert "check_real_ga_complete.py . --evidence-dir dist/external-evidence" in workflow
+    assert "check_external_ga_evidence.py . --evidence-dir dist/external-evidence" not in workflow

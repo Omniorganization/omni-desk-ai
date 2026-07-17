@@ -56,12 +56,18 @@ def test_ga17_enterprise_dependencies_are_hash_locked_and_dockerfile_uses_only_l
 def test_ga17_kubernetes_ha_defaults_are_stateless_app_pods():
     values = Path("deploy/kubernetes/helm/omnidesk/values.yaml").read_text(encoding="utf-8")
     deploy = Path("deploy/kubernetes/helm/omnidesk/templates/deployment.yaml").read_text(encoding="utf-8")
-    assert "replicaCount: 2" in values
+    pdb = Path("deploy/kubernetes/helm/omnidesk/templates/pdb.yaml").read_text(encoding="utf-8")
+    assert "replicaCount: 3" in values
+    assert "minReplicas: 3" in values
+    assert "maxReplicas: 6" in values
+    assert "minAvailable: 2" in values
     assert "backend: postgres" in values
     assert "requireMultiInstanceSafe: true" in values
     assert "persistence:\n  enabled: false" in values
     assert "if .Values.persistence.enabled" in deploy
     assert "emptyDir:" in deploy
+    assert "DoNotSchedule" in deploy
+    assert "minAvailable: {{ .Values.pdb.minAvailable }}" in pdb
 
 
 def test_ga17_readiness_checks_runtime_state_sandbox_and_secrets():

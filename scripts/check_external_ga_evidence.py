@@ -12,60 +12,21 @@ from typing import Any
 OK_STATUSES = {"ok", "passed", "success", "succeeded", "verified"}
 PLACEHOLDER_RE = re.compile(r"\b(todo|tbd|placeholder|example|mock|fake|sample)\b", re.IGNORECASE)
 
-REQUIRED_EVIDENCE: dict[str, dict[str, Any]] = {
-    "native_build": {
-        "label": "true Flutter/Rust/Tauri native build",
-        "files": [
-            "native-build/flutter-android-release.json",
-            "native-build/flutter-ios-release.json",
-            "native-build/tauri-desktop-release.json",
-            "native-build/rust-cargo-check-locked.json",
-        ],
-        "requires_artifact": True,
-    },
-    "signed_artifacts": {
-        "label": "true Android/iOS/Desktop signed artifacts",
-        "files": [
-            "signed-artifacts/android-signed-aab.json",
-            "signed-artifacts/ios-signed-ipa.json",
-            "signed-artifacts/desktop-macos-notarized.json",
-            "signed-artifacts/desktop-windows-signed.json",
-        ],
-        "requires_artifact": True,
-    },
-    "live_branch_protection": {
-        "label": "true GitHub branch protection control-plane verification",
-        "files": ["control-plane/github-branch-protection-live.json"],
-    },
-    "model_live_smoke": {
-        "label": "true live model Q&A smoke with audit and budget ledger evidence",
-        "files": ["model/model-live-smoke.json"],
-    },
-    "bigseller_live_smoke": {
-        "label": "true BigSeller staging smoke with auth, data, webhook, trace, audit, and leakage proof",
-        "files": ["integrations/bigseller-live-smoke.json"],
-    },
-    "push_delivery": {
-        "label": "true APNS/FCM push delivery",
-        "files": ["push/apns-live-delivery.json", "push/fcm-live-delivery.json"],
-    },
-    "postgres_soak": {
-        "label": "true multi-instance Postgres soak",
-        "files": ["drills/postgres-multi-instance-soak.json"],
-    },
-    "rollback_drill": {
-        "label": "true rollback drill",
-        "files": ["drills/rollback-drill.json"],
-    },
-    "backup_restore_drill": {
-        "label": "true backup/restore drill",
-        "files": ["drills/backup-restore-drill.json"],
-    },
-    "self_healing_failure_injection": {
-        "label": "true self-healing failure injection report",
-        "files": ["drills/self-healing-failure-injection.json"],
-    },
-}
+EVIDENCE_POLICY_PATH = Path(__file__).resolve().parents[1] / "release/evidence-policy-v1.json"
+
+
+def _load_required_evidence() -> dict[str, dict[str, Any]]:
+    policy = json.loads(EVIDENCE_POLICY_PATH.read_text(encoding="utf-8"))
+    categories = policy.get("base_categories")
+    if not isinstance(categories, dict) or not categories:
+        raise RuntimeError("Real GA evidence policy has no base_categories")
+    return categories
+
+
+REQUIRED_EVIDENCE: dict[str, dict[str, Any]] = _load_required_evidence()
+
+
+# Evidence category paths and labels are loaded from release/evidence-policy-v1.json.
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -182,7 +143,11 @@ def _category_specific(category: str, doc: dict[str, Any]) -> list[str]:
         if "macos" in str(doc.get("platform", "")).lower() and not _bool_true(doc.get("notarization_verified")):
             issues.append("macOS notarization must be verified")
     elif category == "live_branch_protection":
-        if doc.get("schema") not in {"omnidesk-live-branch-protection/v1", "omnidesk-live-branch-protection/v2", "omnidesk-live-branch-protection/v3"}:
+        if doc.get("schema") not in {
+            "omnidesk-live-branch-protection/v1",
+            "omnidesk-live-branch-protection/v2",
+            "omnidesk-live-branch-protection/v3",
+        }:
             issues.append("schema must be omnidesk-live-branch-protection/v1, v2 or v3")
         issues.extend(_require_fields(doc, ("repository", "branch")))
         if doc.get("failures") not in ([], None):
@@ -190,10 +155,29 @@ def _category_specific(category: str, doc: dict[str, Any]) -> list[str]:
     elif category == "model_live_smoke":
         if doc.get("schema") not in (None, "omnidesk-model-live-smoke/v1"):
             issues.append("schema must be omnidesk-model-live-smoke/v1 when present")
-        issues.extend(_require_fields(doc, ("environment", "backend_base_url", "scenario_id", "model_request_id", "trace_id", "audit_event_id", "cost_ledger_entry_id")))
+        issues.extend(
+            _require_fields(
+                doc,
+                (
+                    "environment",
+                    "backend_base_url",
+                    "scenario_id",
+                    "model_request_id",
+                    "trace_id",
+                    "audit_event_id",
+                    "cost_ledger_entry_id",
+                ),
+            )
+        )
         if str(doc.get("environment", "")).strip().lower() not in {"staging", "production", "prod"}:
             issues.append("environment must be staging or production")
-        for field in ("response_non_empty", "audit_logged", "cost_ledger_recorded", "budget_enforced", "approval_required_on_budget_exceeded"):
+        for field in (
+            "response_non_empty",
+            "audit_logged",
+            "cost_ledger_recorded",
+            "budget_enforced",
+            "approval_required_on_budget_exceeded",
+        ):
             if not _bool_true(doc.get(field)):
                 issues.append(f"{field} must be true")
         try:
@@ -312,7 +296,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate external GA evidence for customer-distribution readiness.")
     parser.add_argument("root", nargs="?", default=".")
     parser.add_argument("--evidence-dir", default="release/external-evidence")
-    parser.add_argument("--audit-only", action="store_true", help="Return 0 even when evidence is missing; useful for source-package audits.")
+    parser.add_argument(
+        "--audit-only", action="store_true", help="Return 0 even when evidence is missing; useful for source-package audits."
+    )
     parser.add_argument("--write-report", help="Write JSON audit report to this path.")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()

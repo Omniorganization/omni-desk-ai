@@ -52,7 +52,7 @@ jobs:
           python-version: "3.11"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.35.7"
           cache: true
 
       - name: Flutter dependencies and source checks

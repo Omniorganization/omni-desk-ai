@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable, cast
 
 from fastapi import HTTPException, Request
 
@@ -26,6 +27,7 @@ from omnidesk_agent.appsync.conversation_context import (
 )
 from omnidesk_agent.appsync.store import IdempotencyConflict
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
+from omnidesk_agent.validation.production import is_production_mode
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +42,7 @@ def _lease_seconds(cfg: Any) -> int:
     try:
         return max(30, min(int(raw), 1800))
     except ValueError as exc:
-        raise RuntimeError(
-            "OMNIDESK_APPSYNC_CHAT_LEASE_SECONDS must be an integer"
-        ) from exc
+        raise RuntimeError("OMNIDESK_APPSYNC_CHAT_LEASE_SECONDS must be an integer") from exc
 
 
 @dataclass(frozen=True)
@@ -59,14 +59,47 @@ class IndustrialChatTurnService(ChatTurnService):
             PostgresChatRepository(
                 self.store,
                 lease_seconds=_lease_seconds(self.cfg),
+                allow_implicit_provisioning=not is_production_mode(self.cfg),
             )
             if getattr(self.store, "dsn", None)
             else None
         )
         self.context_builder = ConversationContextBuilder()
-        self._active: ContextVar[ChatReservation | None] = ContextVar(
-            "omnidesk_chat_reservation", default=None
-        )
+        self._active: ContextVar[ChatReservation | None] = ContextVar("omnidesk_chat_reservation", default=None)
+
+    async def _lease_heartbeat(self, reservation: ChatReservation) -> None:
+        repository = self.atomic_repository
+        if repository is None:
+            return
+        interval = max(5.0, min(float(repository.lease_seconds) / 3.0, 60.0))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await asyncio.to_thread(repository.renew_lease, reservation)
+            except ChatLeaseLost:
+                logger.warning(
+                    "chat lease heartbeat stopped after lease loss",
+                    extra={"conversation_id": reservation.conversation_id},
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "chat lease heartbeat renewal failed; retrying",
+                    extra={"conversation_id": reservation.conversation_id},
+                )
+
+    async def _cancel_heartbeat(self, task: asyncio.Task[None] | None) -> None:
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("chat lease heartbeat task failed during cleanup")
 
     def _preflight(
         self,
@@ -82,11 +115,7 @@ class IndustrialChatTurnService(ChatTurnService):
         if repository is None:
             return
         organization_id = (
-            str(
-                repository.get_conversation(actor, conversation_id)[
-                    "organization_id"
-                ]
-            )
+            str(repository.get_conversation(actor, conversation_id)["organization_id"])
             if conversation_id
             else repository.organization_for_actor(actor)
         )
@@ -97,9 +126,7 @@ class IndustrialChatTurnService(ChatTurnService):
             "conversation_id": conversation_id,
             "source_device_id": payload.get("source_device_id"),
         }
-        profile = str(
-            payload.get("model_profile") or payload.get("profile") or ""
-        ).strip()
+        profile = str(payload.get("model_profile") or payload.get("profile") or "").strip()
         if profile:
             metadata["profile"] = profile
         route_plan = getattr(self.streaming_router.router, "route_plan", None)
@@ -132,11 +159,7 @@ class IndustrialChatTurnService(ChatTurnService):
                 428,
                 "idempotency-key is required for this write operation",
             )
-        conversation_id = (
-            conversation_id
-            or str(payload.get("conversation_id") or "").strip()
-            or None
-        )
+        conversation_id = conversation_id or str(payload.get("conversation_id") or "").strip() or None
         self._preflight(
             actor=actor,
             role=role,
@@ -185,13 +208,9 @@ class IndustrialChatTurnService(ChatTurnService):
         content: str,
     ) -> ModelRequest:
         assert self.atomic_repository is not None
-        history = self.atomic_repository.list_messages(
-            reservation.actor, reservation.conversation_id
-        )
+        history = self.atomic_repository.list_messages(reservation.actor, reservation.conversation_id)
         current_id = str(reservation.user_message.get("message_id") or "")
-        context = self.context_builder.build(
-            history, current_message_id=current_id
-        )
+        context = self.context_builder.build(history, current_message_id=current_id)
         metadata: dict[str, Any] = {
             "actor": reservation.actor,
             "role": role,
@@ -199,22 +218,14 @@ class IndustrialChatTurnService(ChatTurnService):
             "conversation_id": reservation.conversation_id,
             "source_device_id": payload.get("source_device_id"),
         }
-        profile = str(
-            payload.get("model_profile") or payload.get("profile") or ""
-        ).strip()
+        profile = str(payload.get("model_profile") or payload.get("profile") or "").strip()
         if profile:
             metadata["profile"] = profile
         return ModelRequest(
-            system=(
-                "You are OmniDesk AI inside the enterprise Gateway. "
-                "Keep security and approval boundaries explicit.\n\n"
-                + context
-            ),
+            system=("You are OmniDesk AI inside the enterprise Gateway. Keep security and approval boundaries explicit.\n\n" + context),
             user=content,
             task="chat",
-            task_id=(
-                f"chat-{reservation.conversation_id}-{current_id}"
-            ),
+            task_id=(f"chat-{reservation.conversation_id}-{current_id}"),
             metadata=metadata,
         )
 
@@ -266,9 +277,7 @@ class IndustrialChatTurnService(ChatTurnService):
                     content=content,
                 )
             ),
-            idempotency_payload=canonical_chat_payload(
-                payload, reservation.conversation_id
-            ),
+            idempotency_payload=canonical_chat_payload(payload, reservation.conversation_id),
             reservation=reservation,
         )
 
@@ -305,19 +314,19 @@ class IndustrialChatTurnService(ChatTurnService):
                 return {"ok": True, **reservation.response}
             raise HTTPException(
                 502,
-                reservation.response.get("error")
-                or {"code": "previous_chat_request_failed"},
+                reservation.response.get("error") or {"code": "previous_chat_request_failed"},
             )
-        complete = getattr(
-            getattr(self.runtime, "model_router", None), "complete", None
-        )
+        complete = getattr(getattr(self.runtime, "model_router", None), "complete", None)
         if not callable(complete):
-            self.atomic_repository.fail(
-                reservation, {"code": "model_router_not_configured"}
-            )
+            self.atomic_repository.fail(reservation, {"code": "model_router_not_configured"})
             raise HTTPException(503, "model router is not configured")
+        complete_async = cast(Callable[[ModelRequest], Awaitable[ModelResponse]], complete)
+        heartbeat = asyncio.create_task(
+            self._lease_heartbeat(reservation),
+            name=f"omnidesk-chat-lease-{reservation.idempotency_key}",
+        )
         try:
-            response = await complete(
+            response = await complete_async(
                 self._model_request(
                     reservation,
                     role=role,
@@ -349,6 +358,8 @@ class IndustrialChatTurnService(ChatTurnService):
                 },
             )
             raise HTTPException(502, error) from exc
+        finally:
+            await self._cancel_heartbeat(heartbeat)
         try:
             result = self.atomic_repository.complete(reservation, response)
         except ChatLeaseLost as exc:
@@ -369,9 +380,7 @@ class IndustrialChatTurnService(ChatTurnService):
         status: str = "streaming",
     ) -> None:
         reservation = getattr(prepared, "reservation", None)
-        if self.atomic_repository is None or not isinstance(
-            reservation, ChatReservation
-        ):
+        if self.atomic_repository is None or not isinstance(reservation, ChatReservation):
             return super()._append_stream_event(
                 actor=actor,
                 prepared=prepared,
@@ -418,9 +427,7 @@ class IndustrialChatTurnService(ChatTurnService):
             raise RuntimeError("atomic stream reservation is missing")
         return {
             "ok": True,
-            **self.atomic_repository.complete(
-                reservation, response, status="finalizing"
-            ),
+            **self.atomic_repository.complete(reservation, response, status="finalizing"),
         }
 
     async def stream_prepared(
@@ -432,9 +439,13 @@ class IndustrialChatTurnService(ChatTurnService):
         last_event_id: int = 0,
     ) -> AsyncIterator[ChatStreamEvent]:
         reservation = getattr(prepared, "reservation", None)
-        token = (
-            self._active.set(reservation)
-            if isinstance(reservation, ChatReservation)
+        token = self._active.set(reservation) if isinstance(reservation, ChatReservation) else None
+        heartbeat = (
+            asyncio.create_task(
+                self._lease_heartbeat(reservation),
+                name=f"omnidesk-chat-stream-lease-{reservation.idempotency_key}",
+            )
+            if isinstance(reservation, ChatReservation) and not reservation.terminal
             else None
         )
         try:
@@ -446,5 +457,6 @@ class IndustrialChatTurnService(ChatTurnService):
             ):
                 yield event
         finally:
+            await self._cancel_heartbeat(heartbeat)
             if token is not None:
                 self._active.reset(token)
