@@ -126,14 +126,18 @@ jobs:
       - name: Commit repaired sources
         if: steps.repair.outputs.status == '0'
         run: |
+          set -euo pipefail
+          git diff --binary -- \
+            omnidesk_agent/server.py \
+            omnidesk_agent/repositories/postgres_state.py \
+            > /tmp/pyright-repair.patch
+          test -s /tmp/pyright-repair.patch
+          git fetch origin agent/industrial-runtime-optimization-20260717
+          git reset --hard origin/agent/industrial-runtime-optimization-20260717
+          git apply --index /tmp/pyright-repair.patch
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            omnidesk_agent/server.py \
-            omnidesk_agent/repositories/postgres_state.py
           git commit -m 'fix(types): resolve readiness and postgres claim blockers'
-          git fetch origin agent/industrial-runtime-optimization-20260717
-          git rebase origin/agent/industrial-runtime-optimization-20260717
           git push origin HEAD:agent/industrial-runtime-optimization-20260717
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
