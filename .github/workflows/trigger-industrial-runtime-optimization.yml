@@ -31,7 +31,7 @@ jobs:
           lines = [line[10:] if line.startswith('          ') else line for line in raw_lines]
           for variable, next_marker in (
               ('old_job_claim', 'old_outbound_claim ='),
-              ('old_outbound_claim', "text = text.replace(\n    dedent('''\n        def get(self, message_id"),
+              ('old_outbound_claim', 'text = text.replace('),
           ):
               begin = next(i for i, line in enumerate(lines) if line.startswith(f'{variable} ='))
               finish = next(i for i in range(begin + 1, len(lines)) if lines[i].startswith(next_marker))
