@@ -21,28 +21,43 @@ class ChatLeaseLost(RuntimeError):
     """A stale worker attempted to mutate a request it no longer owns."""
 
 
+class ChatEventSequenceConflict(RuntimeError):
+    """A stream sequence was reused with different event content."""
+
+
 class PostgresChatRepository(BasePostgresChatRepository):
     """Lease-fenced extension of the direct transactional chat repository."""
 
     def _lock_owned_request(self, cur: Any, reservation: ChatReservation) -> str:
         cur.execute(
-            "SELECT status,lease_owner FROM omnidesk_appsync_chat_requests "
+            "UPDATE omnidesk_appsync_chat_requests "
+            "SET lease_expires_at=EXTRACT(EPOCH FROM clock_timestamp())+%s,"
+            "updated_at=EXTRACT(EPOCH FROM clock_timestamp()) "
             "WHERE namespace=%s AND organization_id=%s AND actor=%s "
-            "AND endpoint=%s AND idempotency_key=%s FOR UPDATE",
+            "AND endpoint=%s AND idempotency_key=%s "
+            "AND status IN ('reserved','running','finalizing') "
+            "AND lease_owner=%s "
+            "AND lease_expires_at>EXTRACT(EPOCH FROM clock_timestamp()) "
+            "RETURNING status",
             (
+                self.lease_seconds,
                 reservation.namespace,
                 reservation.organization_id,
                 reservation.actor,
                 reservation.endpoint,
                 reservation.idempotency_key,
+                reservation.lease_owner,
             ),
         )
         row = cur.fetchone()
         if not row:
-            raise ChatLeaseLost("chat request no longer exists")
-        if str(row[0]) not in ACTIVE or row[1] != reservation.lease_owner:
-            raise ChatLeaseLost("chat request lease is no longer owned")
+            raise ChatLeaseLost("chat request lease is expired or no longer owned")
         return str(row[0])
+
+    def renew_lease(self, reservation: ChatReservation) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            self._lock_owned_request(cur, reservation)
+            conn.commit()
 
     def append_event(
         self,
@@ -65,7 +80,7 @@ class PostgresChatRepository(BasePostgresChatRepository):
                 "(namespace,organization_id,actor,endpoint,idempotency_key,"
                 "sequence,event_type,payload,created_at) "
                 "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT DO NOTHING",
+                "ON CONFLICT DO NOTHING RETURNING sequence",
                 (
                     reservation.namespace,
                     reservation.organization_id,
@@ -78,19 +93,41 @@ class PostgresChatRepository(BasePostgresChatRepository):
                     now,
                 ),
             )
+            inserted = cur.fetchone()
+            if not inserted:
+                cur.execute(
+                    "SELECT event_type,payload "
+                    "FROM omnidesk_appsync_chat_stream_events "
+                    "WHERE namespace=%s AND organization_id=%s AND actor=%s "
+                    "AND endpoint=%s AND idempotency_key=%s AND sequence=%s",
+                    (
+                        reservation.namespace,
+                        reservation.organization_id,
+                        reservation.actor,
+                        reservation.endpoint,
+                        reservation.idempotency_key,
+                        sequence,
+                    ),
+                )
+                existing = cur.fetchone()
+                existing_payload = existing[1] if existing and isinstance(existing[1], dict) else {}
+                if not existing or str(existing[0]) != event or existing_payload != data:
+                    raise ChatEventSequenceConflict(f"stream sequence {sequence} was reused with different content")
             terminal = status in TERMINAL
             cur.execute(
                 "UPDATE omnidesk_appsync_chat_requests "
                 "SET status=%s,last_sequence=GREATEST(last_sequence,%s),"
-                "lease_owner=%s,lease_expires_at=%s,updated_at=%s "
+                "lease_owner=%s,"
+                "lease_expires_at=CASE WHEN %s THEN NULL ELSE EXTRACT(EPOCH FROM clock_timestamp())+%s END,"
+                "updated_at=EXTRACT(EPOCH FROM clock_timestamp()) "
                 "WHERE namespace=%s AND organization_id=%s AND actor=%s "
                 "AND endpoint=%s AND idempotency_key=%s",
                 (
                     status,
                     sequence,
                     None if terminal else reservation.lease_owner,
-                    None if terminal else now + self.lease_seconds,
-                    now,
+                    terminal,
+                    self.lease_seconds,
                     reservation.namespace,
                     reservation.organization_id,
                     reservation.actor,
@@ -162,15 +199,16 @@ class PostgresChatRepository(BasePostgresChatRepository):
             cur.execute(
                 "UPDATE omnidesk_appsync_chat_requests "
                 "SET status=%s,response=%s,lease_owner=%s,"
-                "lease_expires_at=%s,updated_at=%s "
+                "lease_expires_at=CASE WHEN %s THEN NULL ELSE EXTRACT(EPOCH FROM clock_timestamp())+%s END,"
+                "updated_at=EXTRACT(EPOCH FROM clock_timestamp()) "
                 "WHERE namespace=%s AND organization_id=%s AND actor=%s "
                 "AND endpoint=%s AND idempotency_key=%s",
                 (
                     status,
                     Jsonb(result),
                     None if terminal else reservation.lease_owner,
-                    None if terminal else now + self.lease_seconds,
-                    now,
+                    terminal,
+                    self.lease_seconds,
                     reservation.namespace,
                     reservation.organization_id,
                     reservation.actor,
@@ -197,13 +235,12 @@ class PostgresChatRepository(BasePostgresChatRepository):
             cur.execute(
                 "UPDATE omnidesk_appsync_chat_requests "
                 "SET status=%s,error=%s,lease_owner=NULL,"
-                "lease_expires_at=NULL,updated_at=%s "
+                "lease_expires_at=NULL,updated_at=EXTRACT(EPOCH FROM clock_timestamp()) "
                 "WHERE namespace=%s AND organization_id=%s AND actor=%s "
                 "AND endpoint=%s AND idempotency_key=%s",
                 (
                     status,
                     Jsonb(error),
-                    time.time(),
                     reservation.namespace,
                     reservation.organization_id,
                     reservation.actor,
@@ -215,6 +252,7 @@ class PostgresChatRepository(BasePostgresChatRepository):
 
 
 __all__ = [
+    "ChatEventSequenceConflict",
     "ChatLeaseLost",
     "ChatRequestInProgress",
     "ChatReservation",

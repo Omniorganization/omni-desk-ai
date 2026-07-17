@@ -112,17 +112,17 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: "22"
+          node-version: "22.17.0"
           cache: npm
           cache-dependency-path: |
             apps/web-admin-next/package-lock.json
             apps/desktop-tauri/package-lock.json
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: stable
+          toolchain: "1.88.0"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.x"
+          flutter-version: "3.35.7"
           cache: true
       - name: Prepare ecosystem evidence directory
         run: mkdir -p reports/ecosystem-security

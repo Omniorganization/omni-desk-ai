@@ -109,8 +109,8 @@ jobs:
           find dist -maxdepth 1 -type f -print0 | sort -z | while IFS= read -r -d '' artifact; do
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
           done
-      - name: Require real external GA evidence before production promotion
-        run: python scripts/check_external_ga_evidence.py . --evidence-dir dist/external-evidence
+      - name: Require complete Real GA evidence before production promotion
+        run: python scripts/check_real_ga_complete.py . --evidence-dir dist/external-evidence
       - name: Deploy signed artifact to production
         env:
           OMNIDESK_DEPLOY_MODE: ${{ inputs.deploy_mode }}

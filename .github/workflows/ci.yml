@@ -46,6 +46,8 @@ jobs:
           python scripts/check_script_executability.py .
           python scripts/check_global_consistency.py .
           python scripts/check_industrial_remediation_contract.py .
+          python scripts/check_unique_api_routes.py
+          python scripts/check_real_ga_policy_consistency.py
           python scripts/check_feature_stack_boundaries.py .
           python scripts/check_physical_packages.py .
       - name: Prepare governance evidence

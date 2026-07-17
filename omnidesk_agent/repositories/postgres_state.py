@@ -253,14 +253,18 @@ class PostgresDualApprovalStore:
 
     def open(self, approval_id: str, proposal: dict[str, Any]) -> None:
         now = time.time()
-        self.state.insert_once(self.namespace, approval_id, {
-            "approval_id": approval_id,
-            "proposal": proposal,
-            "first_approver": None,
-            "second_approver": None,
-            "created_at": now,
-            "updated_at": now,
-        })
+        self.state.insert_once(
+            self.namespace,
+            approval_id,
+            {
+                "approval_id": approval_id,
+                "proposal": proposal,
+                "first_approver": None,
+                "second_approver": None,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
 
     def approve(self, approval_id: str, approver: str) -> DualApprovalDecision:
         approver = str(approver).strip()
@@ -291,7 +295,9 @@ class PostgresDualApprovalStore:
             raise KeyError(f"dual approval not found: {approval_id}")
         first = row.get("first_approver")
         second = row.get("second_approver")
-        return DualApprovalDecision(bool(first and second), approval_id, first, second, "ready" if first and second else "waiting_for_second_approver")
+        return DualApprovalDecision(
+            bool(first and second), approval_id, first, second, "ready" if first and second else "waiting_for_second_approver"
+        )
 
 
 class PostgresApprovalStore:
@@ -364,7 +370,9 @@ class PostgresApprovalStore:
         self._validate_expected_proposal(approval, expected_proposal)
         return approval
 
-    def consume_approved(self, approval_id: str, expected_proposal: Optional[dict[str, Any]] = None, *, consumed_by_run_id: Optional[str] = None) -> dict[str, Any]:
+    def consume_approved(
+        self, approval_id: str, expected_proposal: Optional[dict[str, Any]] = None, *, consumed_by_run_id: Optional[str] = None
+    ) -> dict[str, Any]:
         def update(row: dict[str, Any]) -> dict[str, Any]:
             if row.get("expires_at") and time.time() > float(row["expires_at"]):
                 raise PermissionError(f"approval expired: {approval_id}")
@@ -405,7 +413,14 @@ class PostgresApprovalStore:
 class PostgresRunStore:
     namespace = "runs"
     UPDATE_FIELDS = {
-        "approval_proposal_json", "current_step_index", "plan_json", "results_json", "resume_token", "status", "updated_at", "waiting_approval_id"
+        "approval_proposal_json",
+        "current_step_index",
+        "plan_json",
+        "results_json",
+        "resume_token",
+        "status",
+        "updated_at",
+        "waiting_approval_id",
     }
 
     def __init__(self, state: _PostgresJsonState):
@@ -414,19 +429,23 @@ class PostgresRunStore:
     def create(self, original_message: dict[str, Any]) -> str:
         run_id = str(uuid.uuid4())
         now = time.time()
-        self.state.put(self.namespace, run_id, {
-            "id": run_id,
-            "status": "planned",
-            "original_message": original_message,
-            "plan_json": None,
-            "current_step_index": 0,
-            "results": [],
-            "waiting_approval_id": None,
-            "approval_proposal": None,
-            "resume_token": None,
-            "created_at": now,
-            "updated_at": now,
-        })
+        self.state.put(
+            self.namespace,
+            run_id,
+            {
+                "id": run_id,
+                "status": "planned",
+                "original_message": original_message,
+                "plan_json": None,
+                "current_step_index": 0,
+                "results": [],
+                "waiting_approval_id": None,
+                "approval_proposal": None,
+                "resume_token": None,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
         return run_id
 
     def require_resume_token(self, run_id: str, resume_token: Optional[str]) -> None:
@@ -445,17 +464,28 @@ class PostgresRunStore:
         if expected:
             raise PermissionError("resume_token should not exist for non-waiting run")
 
-    def save_waiting(self, run_id: str, plan_json: dict[str, Any], current_step_index: int, results: list[dict[str, Any]], approval_id: str, approval_proposal: Optional[dict[str, Any]] = None) -> str:
+    def save_waiting(
+        self,
+        run_id: str,
+        plan_json: dict[str, Any],
+        current_step_index: int,
+        results: list[dict[str, Any]],
+        approval_id: str,
+        approval_proposal: Optional[dict[str, Any]] = None,
+    ) -> str:
         token = secrets.token_urlsafe(32)
-        self.update(run_id, {
-            "status": "waiting_approval",
-            "plan_json": plan_json,
-            "current_step_index": current_step_index,
-            "results_json": results,
-            "waiting_approval_id": approval_id,
-            "approval_proposal_json": approval_proposal or {},
-            "resume_token": token,
-        })
+        self.update(
+            run_id,
+            {
+                "status": "waiting_approval",
+                "plan_json": plan_json,
+                "current_step_index": current_step_index,
+                "results_json": results,
+                "waiting_approval_id": approval_id,
+                "approval_proposal_json": approval_proposal or {},
+                "resume_token": token,
+            },
+        )
         return token
 
     def consume_resume_token(self, run_id: str, resume_token: Optional[str]) -> None:
@@ -486,7 +516,10 @@ class PostgresRunStore:
         return [row for row in rows if float(row.get("updated_at") or 0) <= cutoff]
 
     def complete(self, run_id: str, status: str, results: list[dict[str, Any]]) -> None:
-        self.update(run_id, {"status": status, "results_json": results, "waiting_approval_id": None, "approval_proposal_json": None, "resume_token": None})
+        self.update(
+            run_id,
+            {"status": status, "results_json": results, "waiting_approval_id": None, "approval_proposal_json": None, "resume_token": None},
+        )
 
     def update(self, run_id: str, fields: dict[str, Any]) -> None:
         unknown = set(fields) - self.UPDATE_FIELDS
@@ -527,7 +560,9 @@ class PostgresBreakGlassStore:
         self.audit_log = Path(audit_log).expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
 
-    def open(self, *, session_id: str, actor: str, reason: str, approved_by: str, ttl_seconds: int = 900, metadata: dict[str, Any] | None = None) -> BreakGlassSession:
+    def open(
+        self, *, session_id: str, actor: str, reason: str, approved_by: str, ttl_seconds: int = 900, metadata: dict[str, Any] | None = None
+    ) -> BreakGlassSession:
         actor = actor.strip()
         approved_by = approved_by.strip()
         reason = reason.strip()
@@ -537,7 +572,16 @@ class PostgresBreakGlassStore:
             raise ValueError("break-glass ttl must be between 1 and 3600 seconds")
         now = time.time()
         expires_at = now + int(ttl_seconds)
-        row = {"session_id": session_id, "actor": actor, "reason": reason, "approved_by": approved_by, "created_at": now, "expires_at": expires_at, "revoked_at": None, "metadata": metadata or {}}
+        row = {
+            "session_id": session_id,
+            "actor": actor,
+            "reason": reason,
+            "approved_by": approved_by,
+            "created_at": now,
+            "expires_at": expires_at,
+            "revoked_at": None,
+            "metadata": metadata or {},
+        }
         if not self.state.insert_once(self.namespace, session_id, row):
             raise ValueError("break-glass session already exists")
         session = BreakGlassSession(session_id, actor, reason, expires_at, approved_by, True)
@@ -562,7 +606,9 @@ class PostgresBreakGlassStore:
         if not row:
             raise KeyError(f"break-glass session not found: {session_id}")
         active = bool(row.get("revoked_at") is None and float(row.get("expires_at") or 0) > time.time())
-        return BreakGlassSession(str(row["session_id"]), str(row["actor"]), str(row["reason"]), float(row["expires_at"]), str(row["approved_by"]), active)
+        return BreakGlassSession(
+            str(row["session_id"]), str(row["actor"]), str(row["reason"]), float(row["expires_at"]), str(row["approved_by"]), active
+        )
 
     def assert_active(self, session_id: str, *, actor: str) -> BreakGlassSession:
         session = self.get(session_id)
@@ -583,11 +629,15 @@ class PostgresWebhookSecurity:
         self.state = state
         self.cfg = cfg or WebhookSecurityConfig()
 
-    def guard(self, *, channel: str, body: bytes, source_key: str, message_id: Optional[str] = None, timestamp: Optional[float] = None) -> dict[str, Any]:
+    def guard(
+        self, *, channel: str, body: bytes, source_key: str, message_id: Optional[str] = None, timestamp: Optional[float] = None
+    ) -> dict[str, Any]:
         self._check_timestamp(timestamp)
         self._check_rate(channel, source_key)
         digest = hashlib.sha256(channel.encode("utf-8") + b":" + (message_id.encode("utf-8") if message_id else body)).hexdigest()
-        inserted = self.state.insert_once("webhook_seen", digest, {"digest": digest, "channel": channel, "created_at": time.time(), "status": "seen"})
+        inserted = self.state.insert_once(
+            "webhook_seen", digest, {"digest": digest, "channel": channel, "created_at": time.time(), "status": "seen"}
+        )
         if not inserted:
             raise PermissionError(f"duplicate webhook blocked: {channel}")
         return {"ok": True, "digest": digest}
@@ -629,10 +679,21 @@ class PostgresJobQueue:
         dedupe_key = hashlib.sha256(seed.encode("utf-8")).hexdigest()
         job_id = str(uuid.uuid4())
         row = {
-            "id": job_id, "dedupe_key": dedupe_key, "channel": message.channel, "message_id": message.message_id,
-            "source_key": source, "payload_json": payload_json, "status": "pending", "retry_count": 0,
-            "max_retries": self.max_retries, "next_retry_at": 0.0, "locked_at": None, "created_at": now,
-            "updated_at": now, "last_error": None, "result_json": None,
+            "id": job_id,
+            "dedupe_key": dedupe_key,
+            "channel": message.channel,
+            "message_id": message.message_id,
+            "source_key": source,
+            "payload_json": payload_json,
+            "status": "pending",
+            "retry_count": 0,
+            "max_retries": self.max_retries,
+            "next_retry_at": 0.0,
+            "locked_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "last_error": None,
+            "result_json": None,
         }
         existing = self.state.find_by_field(self.namespace, "dedupe_key", dedupe_key)
         if existing:
@@ -648,13 +709,16 @@ class PostgresJobQueue:
 
     def claim_next(self) -> Optional[dict[str, Any]]:
         now = time.time()
+
         def pred(row: dict[str, Any]) -> bool:
             return row.get("status") in {"pending", "retry"} and float(row.get("next_retry_at") or 0) <= now
+
         def upd(row: dict[str, Any]) -> dict[str, Any]:
             row["status"] = "running"
             row["locked_at"] = now
             row["updated_at"] = now
             return row
+
         return self.state.claim_one(self.namespace, pred, upd)
 
     def recover_stale_running(self, *, lease_seconds: int = 300) -> int:
@@ -673,6 +737,7 @@ class PostgresJobQueue:
             row["locked_at"] = None
             row["updated_at"] = time.time()
             return row
+
         self.state.update_locked_by_field(self.namespace, "id", job_id, upd)
 
     def fail(self, job_id: str, error: Union[BaseException, str]) -> dict[str, Any]:
@@ -680,25 +745,51 @@ class PostgresJobQueue:
             retry_count = int(row.get("retry_count") or 0) + 1
             max_retries = int(row.get("max_retries") or self.max_retries)
             status = "dead_letter" if retry_count > max_retries else "retry"
-            row.update({"status": status, "retry_count": retry_count, "next_retry_at": 0 if status == "dead_letter" else time.time() + self.base_retry_seconds * (2 ** max(0, retry_count - 1)), "locked_at": None, "updated_at": time.time(), "last_error": str(error)[:4000]})
+            row.update(
+                {
+                    "status": status,
+                    "retry_count": retry_count,
+                    "next_retry_at": 0
+                    if status == "dead_letter"
+                    else time.time() + self.base_retry_seconds * (2 ** max(0, retry_count - 1)),
+                    "locked_at": None,
+                    "updated_at": time.time(),
+                    "last_error": str(error)[:4000],
+                }
+            )
             return row
+
         row = self.state.update_locked_by_field(self.namespace, "id", job_id, upd)
         return {"job_id": row["id"], "status": row["status"], "retry_count": row["retry_count"], "next_retry_at": row["next_retry_at"]}
 
     def get(self, job_id: str) -> Optional[dict[str, Any]]:
         return self.state.find_by_field(self.namespace, "id", job_id)
+
     def list(self, *, status: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
         return self.state.list(self.namespace, status=status, limit=limit)
+
     def list_dead_letters(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self.list(status="dead_letter", limit=limit)
+
     def requeue_dead_letter(self, job_id: str) -> dict[str, Any]:
         def upd(row: dict[str, Any]) -> dict[str, Any]:
             if row.get("status") != "dead_letter":
                 raise ValueError(f"job is not dead_letter: {job_id}")
-            row.update({"status": "pending", "retry_count": 0, "next_retry_at": 0, "locked_at": None, "last_error": None, "updated_at": time.time()})
+            row.update(
+                {
+                    "status": "pending",
+                    "retry_count": 0,
+                    "next_retry_at": 0,
+                    "locked_at": None,
+                    "last_error": None,
+                    "updated_at": time.time(),
+                }
+            )
             return row
+
         self.state.update_locked_by_field(self.namespace, "id", job_id, upd)
         return {"job_id": job_id, "status": "pending"}
+
     def purge_dead_letter(self, job_id: str) -> dict[str, Any]:
         row = self.get(job_id)
         if not row:
@@ -708,22 +799,52 @@ class PostgresJobQueue:
         # The generic state table is keyed by UUID job id for jobs.
         self.state.delete(self.namespace, job_id)
         return {"job_id": job_id, "purged": True}
+
     def stats(self) -> dict[str, int]:
         return self.state.stats_by_status(self.namespace)
 
 
 class PostgresOutboundMessageStore:
     namespace = "outbound_messages"
+
     def __init__(self, state: _PostgresJsonState, *, max_retries: int = 3, base_retry_seconds: int = 30):
         self.state = state
         self.max_retries = max(0, int(max_retries))
         self.base_retry_seconds = max(1, int(base_retry_seconds))
         self.metrics: Any = None
-    def create(self, *, channel: str, recipient: str, payload: dict[str, Any], max_retries: Optional[int] = None, delivery_deadline_at: Optional[float] = None, idempotency_key: Optional[str] = None) -> str:
+
+    def create(
+        self,
+        *,
+        channel: str,
+        recipient: str,
+        payload: dict[str, Any],
+        max_retries: Optional[int] = None,
+        delivery_deadline_at: Optional[float] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> str:
         now = time.time()
         message_id = str(uuid.uuid4())
         idem_key = str(idempotency_key or message_id)
-        row = {"id": message_id, "idempotency_key": idem_key, "channel": channel, "recipient": recipient, "payload_json": json.dumps(payload, ensure_ascii=False, default=str), "status": "pending", "provider_message_id": None, "provider_request_id": None, "retry_count": 0, "max_retries": self.max_retries if max_retries is None else max(0, int(max_retries)), "next_retry_at": 0.0, "locked_at": None, "delivery_deadline_at": delivery_deadline_at, "last_error": None, "error_category": None, "created_at": now, "updated_at": now}
+        row = {
+            "id": message_id,
+            "idempotency_key": idem_key,
+            "channel": channel,
+            "recipient": recipient,
+            "payload_json": json.dumps(payload, ensure_ascii=False, default=str),
+            "status": "pending",
+            "provider_message_id": None,
+            "provider_request_id": None,
+            "retry_count": 0,
+            "max_retries": self.max_retries if max_retries is None else max(0, int(max_retries)),
+            "next_retry_at": 0.0,
+            "locked_at": None,
+            "delivery_deadline_at": delivery_deadline_at,
+            "last_error": None,
+            "error_category": None,
+            "created_at": now,
+            "updated_at": now,
+        }
         existing = self.state.find_by_field(self.namespace, "idempotency_key", idem_key)
         if existing:
             return existing["id"]
@@ -735,48 +856,137 @@ class PostgresOutboundMessageStore:
                 return existing["id"]
             raise
         return row["id"]
+
     def claim_next(self) -> Optional[dict[str, Any]]:
         now = time.time()
+
         def pred(row: dict[str, Any]) -> bool:
-            return row.get("status") in {"pending", "retry"} and float(row.get("next_retry_at") or 0) <= now and (row.get("delivery_deadline_at") is None or float(row.get("delivery_deadline_at") or 0) >= now)
+            return (
+                row.get("status") in {"pending", "retry"}
+                and float(row.get("next_retry_at") or 0) <= now
+                and (row.get("delivery_deadline_at") is None or float(row.get("delivery_deadline_at") or 0) >= now)
+            )
+
         def upd(row: dict[str, Any]) -> dict[str, Any]:
             row["status"] = "running"
             row["locked_at"] = now
             row["updated_at"] = now
             return row
+
         return self.state.claim_one(self.namespace, pred, upd)
+
     def mark_sent(self, message_id: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None) -> None:
-        self._update_by_id(message_id, lambda row: {**row, "status": "sent", "provider_message_id": provider_message_id, "provider_request_id": provider_request_id, "locked_at": None, "updated_at": time.time(), "last_error": None})
-    def mark_sent_by_idempotency_key(self, idempotency_key: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None) -> None:
-        self.state.update_locked(self.namespace, idempotency_key, lambda row: {**row, "status": "sent", "provider_message_id": provider_message_id, "provider_request_id": provider_request_id, "locked_at": None, "updated_at": time.time(), "last_error": None})
+        self._update_by_id(
+            message_id,
+            lambda row: {
+                **row,
+                "status": "sent",
+                "provider_message_id": provider_message_id,
+                "provider_request_id": provider_request_id,
+                "locked_at": None,
+                "updated_at": time.time(),
+                "last_error": None,
+            },
+        )
+
+    def mark_sent_by_idempotency_key(
+        self, idempotency_key: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None
+    ) -> None:
+        self.state.update_locked(
+            self.namespace,
+            idempotency_key,
+            lambda row: {
+                **row,
+                "status": "sent",
+                "provider_message_id": provider_message_id,
+                "provider_request_id": provider_request_id,
+                "locked_at": None,
+                "updated_at": time.time(),
+                "last_error": None,
+            },
+        )
+
     def mark_failed(self, message_id: str, error: str, *, dead_letter: bool = False, category: str = "unknown") -> dict[str, Any]:
         def upd(row: dict[str, Any]) -> dict[str, Any]:
             retry_count = int(row.get("retry_count") or 0) + 1
             max_retries = int(row.get("max_retries") or self.max_retries)
             status = "dead_letter" if dead_letter or retry_count > max_retries else "retry"
-            row.update({"status": status, "retry_count": retry_count, "next_retry_at": 0 if status == "dead_letter" else time.time() + self.base_retry_seconds * (2 ** max(0, retry_count - 1)), "locked_at": None, "last_error": str(error)[:4000], "error_category": category, "updated_at": time.time()})
+            row.update(
+                {
+                    "status": status,
+                    "retry_count": retry_count,
+                    "next_retry_at": 0
+                    if status == "dead_letter"
+                    else time.time() + self.base_retry_seconds * (2 ** max(0, retry_count - 1)),
+                    "locked_at": None,
+                    "last_error": str(error)[:4000],
+                    "error_category": category,
+                    "updated_at": time.time(),
+                }
+            )
             return row
+
         row = self._update_by_id(message_id, upd)
         return {"id": message_id, "status": row["status"], "retry_count": row["retry_count"], "next_retry_at": row["next_retry_at"]}
-    def mark_ambiguous(self, message_id: str, error: str, *, category: str = "ambiguous_send", provider_request_id: Optional[str] = None) -> dict[str, Any]:
-        row = self._update_by_id(message_id, lambda r: {**r, "status": "ambiguous", "provider_request_id": provider_request_id or r.get("provider_request_id"), "locked_at": None, "next_retry_at": 0, "last_error": str(error)[:4000], "error_category": category, "updated_at": time.time()})
+
+    def mark_ambiguous(
+        self, message_id: str, error: str, *, category: str = "ambiguous_send", provider_request_id: Optional[str] = None
+    ) -> dict[str, Any]:
+        row = self._update_by_id(
+            message_id,
+            lambda r: {
+                **r,
+                "status": "ambiguous",
+                "provider_request_id": provider_request_id or r.get("provider_request_id"),
+                "locked_at": None,
+                "next_retry_at": 0,
+                "last_error": str(error)[:4000],
+                "error_category": category,
+                "updated_at": time.time(),
+            },
+        )
         return {"id": message_id, "status": "ambiguous", "retry_count": int(row.get("retry_count") or 0), "requires_reconciliation": True}
+
     def requeue(self, message_id: str) -> dict[str, Any]:
         row = self.get(message_id)
         if not row:
             raise KeyError(message_id)
         if row.get("status") == "sent":
             raise ValueError(f"sent outbound message cannot be retried: {message_id}")
-        self._update_by_id(message_id, lambda r: {**r, "status": "pending", "retry_count": 0, "next_retry_at": 0, "locked_at": None, "last_error": None, "error_category": None, "updated_at": time.time()})
+        self._update_by_id(
+            message_id,
+            lambda r: {
+                **r,
+                "status": "pending",
+                "retry_count": 0,
+                "next_retry_at": 0,
+                "locked_at": None,
+                "last_error": None,
+                "error_category": None,
+                "updated_at": time.time(),
+            },
+        )
         return {"id": message_id, "status": "pending"}
+
     def cancel(self, message_id: str) -> dict[str, Any]:
         row = self.get(message_id)
         if not row:
             raise KeyError(message_id)
         if row.get("status") in {"sent", "cancelled"}:
             raise ValueError(f"outbound message cannot be cancelled from status {row.get('status')}: {message_id}")
-        self._update_by_id(message_id, lambda r: {**r, "status": "cancelled", "locked_at": None, "updated_at": time.time(), "last_error": None, "error_category": None})
+        self._update_by_id(
+            message_id,
+            lambda r: {
+                **r,
+                "status": "cancelled",
+                "locked_at": None,
+                "updated_at": time.time(),
+                "last_error": None,
+                "error_category": None,
+            },
+        )
         return {"id": message_id, "status": "cancelled"}
+
     def recover_stale_running(self, *, lease_seconds: int = 300) -> int:
         cutoff = time.time() - max(0, int(lease_seconds))
         count = 0
@@ -785,19 +995,25 @@ class PostgresOutboundMessageStore:
                 self.mark_failed(row["id"], f"stale running outbound recovered after {lease_seconds}s lease")
                 count += 1
         return count
+
     def get(self, message_id: str) -> Optional[dict[str, Any]]:
         for row in self.state.list(self.namespace, limit=1000):
             if row.get("id") == message_id:
                 return row
         return None
+
     def find_by_idempotency_key(self, idempotency_key: str) -> Optional[dict[str, Any]]:
         return self.state.get(self.namespace, idempotency_key)
+
     def list(self, *, status: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
         return self.state.list(self.namespace, status=status, limit=limit)
+
     def list_ambiguous(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self.list(status="ambiguous", limit=limit)
+
     def stats(self) -> dict[str, int]:
         return self.state.stats_by_status(self.namespace)
+
     def _update_by_id(self, message_id: str, updater) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         row = self.get(message_id)
         if not row:
@@ -830,18 +1046,37 @@ class PostgresTokenBudgetManager(TokenBudgetManager):
     def put_cached(self, *, cache_key: str, model: str, response: str) -> None:
         if not self.config.enable_cache:
             return
-        self.state.put(self.namespace_cache, cache_key, {"cache_key": cache_key, "model": model, "response": response, "created_at": time.time()})
+        self.state.put(
+            self.namespace_cache, cache_key, {"cache_key": cache_key, "model": model, "response": response, "created_at": time.time()}
+        )
 
-    def record_call(self, *, task_id: str, model: str, estimated_input_tokens: int, estimated_output_tokens: int, verified_required: bool, budget_overridden: bool, reason: str) -> None:
+    def record_call(
+        self,
+        *,
+        task_id: str,
+        model: str,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+        verified_required: bool,
+        budget_overridden: bool,
+        reason: str,
+    ) -> None:
         event_id = str(uuid.uuid4())
-        self.state.put(self.namespace_usage, event_id, {
-            "id": event_id, "task_id": task_id, "model": model,
-            "estimated_input_tokens": int(estimated_input_tokens),
-            "estimated_output_tokens": int(estimated_output_tokens),
-            "verified_required": bool(verified_required),
-            "budget_overridden": bool(budget_overridden),
-            "reason": reason, "created_at": time.time(),
-        })
+        self.state.put(
+            self.namespace_usage,
+            event_id,
+            {
+                "id": event_id,
+                "task_id": task_id,
+                "model": model,
+                "estimated_input_tokens": int(estimated_input_tokens),
+                "estimated_output_tokens": int(estimated_output_tokens),
+                "verified_required": bool(verified_required),
+                "budget_overridden": bool(budget_overridden),
+                "reason": reason,
+                "created_at": time.time(),
+            },
+        )
 
     def close(self) -> None:
         return None
@@ -922,7 +1157,16 @@ class PostgresModelCostStore:
                 bucket["input_tokens"] += int(r.get("input_tokens") or 0)
                 bucket["output_tokens"] += int(r.get("output_tokens") or 0)
                 bucket["estimated_cost_usd"] += float(r.get("estimated_cost_usd") or 0.0)
-        return {"days": days, "calls": calls, "input_tokens": input_tokens, "output_tokens": output_tokens, "estimated_cost_usd": cost, "cache_hits": cache_hits, "group_by": group_by, "groups": grouped}
+        return {
+            "days": days,
+            "calls": calls,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "estimated_cost_usd": cost,
+            "cache_hits": cache_hits,
+            "group_by": group_by,
+            "groups": grouped,
+        }
 
     def _summary_sql(self, *, days: int, since: float, group_by: Optional[str]) -> dict[str, Any]:
         allowed_columns = {"provider": "provider", "actor": "actor", "task": "task_id", "profile": "profile", "model": "model"}
@@ -940,15 +1184,19 @@ class PostgresModelCostStore:
                 grouped: dict[str, dict[str, Any]] = {}
                 column = allowed_columns.get(str(group_by or ""))
                 if column:
-                    # Column name is selected from allowed_columns, never raw caller input.
+                    from psycopg import sql
+
+                    column_identifier = sql.Identifier(column)
                     cur.execute(
-                        f"""
-                        SELECT COALESCE({column}, ''), COUNT(*), COALESCE(SUM(input_tokens),0),
-                               COALESCE(SUM(output_tokens),0), COALESCE(SUM(estimated_cost_usd),0)
-                        FROM omnidesk_model_cost_events
-                        WHERE created_at >= %s
-                        GROUP BY COALESCE({column}, '')
-                        """,  # nosec B608
+                        sql.SQL(
+                            """
+                            SELECT COALESCE({column}, ''), COUNT(*), COALESCE(SUM(input_tokens),0),
+                                   COALESCE(SUM(output_tokens),0), COALESCE(SUM(estimated_cost_usd),0)
+                            FROM omnidesk_model_cost_events
+                            WHERE created_at >= %s
+                            GROUP BY COALESCE({column}, '')
+                            """
+                        ).format(column=column_identifier),
                         (since,),
                     )
                     for item in cur.fetchall():
@@ -981,6 +1229,7 @@ class PostgresExperimentManager:
         from omnidesk_agent.self_learning.experiments.cohort_assignment import CohortAssigner
         from omnidesk_agent.self_learning.experiments.metric_collector import ExperimentMetricCollector
         from omnidesk_agent.self_learning.experiments.winner_selector import WinnerSelector
+
         self.state = state
         self.assigner = CohortAssigner()
         self.collector = ExperimentMetricCollector()
@@ -1010,13 +1259,24 @@ class PostgresExperimentManager:
 
     def observations(self, experiment_id: str) -> list[Any]:
         from omnidesk_agent.self_learning.experiments.metric_collector import ExperimentObservation
-        rows = [r for r in self.state.list(self.namespace_observations, limit=10000, ascending=True) if r.get("experiment_id") == experiment_id]
-        return [ExperimentObservation(
-            experiment_id=str(r["experiment_id"]), unit_id=str(r["unit_id"]), arm=str(r["arm"]),
-            success=bool(r["success"]), reward=float(r["reward"]), cost=float(r["cost"]),
-            latency_ms=float(r["latency_ms"]), safety_violation=bool(r["safety_violation"]),
-            metadata=dict(r.get("metadata") or {}),
-        ) for r in rows]
+
+        rows = [
+            r for r in self.state.list(self.namespace_observations, limit=10000, ascending=True) if r.get("experiment_id") == experiment_id
+        ]
+        return [
+            ExperimentObservation(
+                experiment_id=str(r["experiment_id"]),
+                unit_id=str(r["unit_id"]),
+                arm=str(r["arm"]),
+                success=bool(r["success"]),
+                reward=float(r["reward"]),
+                cost=float(r["cost"]),
+                latency_ms=float(r["latency_ms"]),
+                safety_violation=bool(r["safety_violation"]),
+                metadata=dict(r.get("metadata") or {}),
+            )
+            for r in rows
+        ]
 
     def summary(self, experiment_id: str) -> dict[str, dict[str, float]]:
         return self.collector.summarize(self.observations(experiment_id))
@@ -1035,20 +1295,31 @@ class PostgresExperienceStore:
     namespace_audit = "memory_governance_audit"
 
     SENSITIVE_LEGACY_FIELDS = ["task", "plan", "outcome", "tags"]
-    SENSITIVE_STRUCTURED_FIELDS = ["goal", "failure_reason", "solution_attempted", "recommended_next_action", "human_feedback", "tags", "raw_trace"]
+    SENSITIVE_STRUCTURED_FIELDS = [
+        "goal",
+        "failure_reason",
+        "solution_attempted",
+        "recommended_next_action",
+        "human_feedback",
+        "tags",
+        "raw_trace",
+    ]
 
     def __init__(self, state: _PostgresJsonState, privacy_config=None, encryption=None):
         from omnidesk_agent.config import MemoryPrivacyConfig
         from omnidesk_agent.privacy.encryption import EncryptionProvider
         from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter
         from omnidesk_agent.memory.governed_writer import GovernedMemoryWriter
+
         self.state = state
         self.privacy = MemoryPrivacyFilter()
         self.privacy_config = privacy_config or MemoryPrivacyConfig()
         if encryption is not None:
             self.encryption = encryption
         elif self.privacy_config.encrypt_at_rest:
-            self.encryption = EncryptionProvider.from_env(self.privacy_config.encryption_key_env, required=True, key_id=self.privacy_config.encryption_key_id)
+            self.encryption = EncryptionProvider.from_env(
+                self.privacy_config.encryption_key_env, required=True, key_id=self.privacy_config.encryption_key_id
+            )
         else:
             self.encryption = EncryptionProvider.disabled()
         self.governed_writer = GovernedMemoryWriter()
@@ -1078,11 +1349,30 @@ class PostgresExperienceStore:
         event.setdefault("created_at", time.time())
         self.state.put(self.namespace_audit, str(uuid.uuid4()), event)
 
-    def add(self, task: str, plan: str = "", outcome: str = "", tags: Optional[list[str]] = None, *, channel: str = "unknown", actor: str = "unknown", privacy_level: str = "normal") -> int:
-        self._audit_memory_governance({"event": "memory_governance_decision", "allow_write": True, "namespace": f"{channel}:{actor}", "privacy_level": privacy_level, "reason": "legacy task trace redacted before persistence"})
+    def add(
+        self,
+        task: str,
+        plan: str = "",
+        outcome: str = "",
+        tags: Optional[list[str]] = None,
+        *,
+        channel: str = "unknown",
+        actor: str = "unknown",
+        privacy_level: str = "normal",
+    ) -> int:
+        self._audit_memory_governance(
+            {
+                "event": "memory_governance_decision",
+                "allow_write": True,
+                "namespace": f"{channel}:{actor}",
+                "privacy_level": privacy_level,
+                "reason": "legacy task trace redacted before persistence",
+            }
+        )
         eid = self._next_id(self.namespace_legacy)
         row = {
-            "id": eid, "created_at": time.time(),
+            "id": eid,
+            "created_at": time.time(),
             "task": self._encrypt_text(self.privacy.redact_text(task)),
             "plan": self._encrypt_text(self.privacy.redact_text(plan)),
             "outcome": self._encrypt_text(self.privacy.redact_text(outcome)),
@@ -1104,17 +1394,32 @@ class PostgresExperienceStore:
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         q = query.lower()
         rows = [self._decode_legacy(r) for r in self.state.list(self.namespace_legacy, limit=max(limit * 20, limit))]
-        return [r for r in rows if q in str(r.get("task", "")).lower() or q in str(r.get("plan", "")).lower() or q in str(r.get("outcome", "")).lower() or q in str(r.get("tags", "")).lower()][:limit]
+        return [
+            r
+            for r in rows
+            if q in str(r.get("task", "")).lower()
+            or q in str(r.get("plan", "")).lower()
+            or q in str(r.get("outcome", "")).lower()
+            or q in str(r.get("tags", "")).lower()
+        ][:limit]
 
     def add_experience(self, experience: dict[str, Any], *, channel: str = "unknown", actor: str = "unknown") -> int:
-        governed = self.governed_writer.prepare(experience, channel=channel, actor=actor, privacy_level=str(experience.get("privacy_level", "normal")), audit=self._audit_memory_governance)
+        governed = self.governed_writer.prepare(
+            experience,
+            channel=channel,
+            actor=actor,
+            privacy_level=str(experience.get("privacy_level", "normal")),
+            audit=self._audit_memory_governance,
+        )
         if not governed.ok:
             return -1
         experience = governed.payload
         now = time.time()
         eid = self._next_id(self.namespace_structured)
         values = {
-            "id": eid, "created_at": now, "updated_at": now,
+            "id": eid,
+            "created_at": now,
+            "updated_at": now,
             "task_type": experience.get("task_type", "unknown"),
             "goal": experience.get("goal", ""),
             "success": bool(experience.get("success")),
@@ -1162,7 +1467,14 @@ class PostgresExperienceStore:
         rows = [self._decode_structured(r) for r in self.state.list(self.namespace_structured, limit=max(limit * 20, limit))]
         if only_reusable:
             rows = [r for r in rows if r.get("reusable_skill")]
-        matched = [r for r in rows if q in str(r.get("goal", "")).lower() or q in str(r.get("failure_reason", "")).lower() or q in str(r.get("recommended_next_action", "")).lower() or q in str(r.get("tags", "")).lower()]
+        matched = [
+            r
+            for r in rows
+            if q in str(r.get("goal", "")).lower()
+            or q in str(r.get("failure_reason", "")).lower()
+            or q in str(r.get("recommended_next_action", "")).lower()
+            or q in str(r.get("tags", "")).lower()
+        ]
         return matched[:limit]
 
     def retrieve_for_task(self, task: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -1189,12 +1501,25 @@ class PostgresExperienceStore:
 
     def list_structured(self, *, days: int = 30, limit: int = 200, statuses: Optional[list[str]] = None) -> list[dict[str, Any]]:
         since = time.time() - days * 86400
-        rows = [self._decode_structured(r) for r in self.state.list(self.namespace_structured, limit=max(limit, 1000)) if float(r.get("created_at") or 0) >= since]
+        rows = [
+            self._decode_structured(r)
+            for r in self.state.list(self.namespace_structured, limit=max(limit, 1000))
+            if float(r.get("created_at") or 0) >= since
+        ]
         if statuses:
             rows = [r for r in rows if r.get("memory_status") in statuses]
         return rows[:limit]
 
-    def update_memory_review(self, experience_id: int, *, memory_status: str, confidence: float, reason: str = "", contradiction: bool = False, stale: bool = False) -> None:
+    def update_memory_review(
+        self,
+        experience_id: int,
+        *,
+        memory_status: str,
+        confidence: float,
+        reason: str = "",
+        contradiction: bool = False,
+        stale: bool = False,
+    ) -> None:
         key = str(experience_id)
         current = self.state.get(self.namespace_structured, key)
         if not current:
@@ -1202,14 +1527,34 @@ class PostgresExperienceStore:
         current["memory_status"] = memory_status
         current["confidence"] = max(0.0, min(1.0, confidence))
         current["validation_count"] = int(current.get("validation_count") or 0) + (1 if memory_status in {"validated", "trusted"} else 0)
-        current["negative_example_count"] = int(current.get("negative_example_count") or 0) + (1 if memory_status in {"deprecated", "blocked"} or contradiction else 0)
+        current["negative_example_count"] = int(current.get("negative_example_count") or 0) + (
+            1 if memory_status in {"deprecated", "blocked"} or contradiction else 0
+        )
         current["last_reviewed_at"] = time.time()
         current["promotion_reason"] = reason
         current["updated_at"] = time.time()
         self.state.put(self.namespace_structured, key, current)
-        self._audit_memory_governance({"event": "memory_curator_review", "experience_id": experience_id, "memory_status": memory_status, "confidence": current["confidence"], "reason": reason, "contradiction": contradiction, "stale": stale})
+        self._audit_memory_governance(
+            {
+                "event": "memory_curator_review",
+                "experience_id": experience_id,
+                "memory_status": memory_status,
+                "confidence": current["confidence"],
+                "reason": reason,
+                "contradiction": contradiction,
+                "stale": stale,
+            }
+        )
 
-    def purge_expired(self, *, dry_run: bool = True, now: Optional[float] = None, channel: Optional[str] = None, actor: Optional[str] = None, limit: int = 1000) -> dict[str, Any]:
+    def purge_expired(
+        self,
+        *,
+        dry_run: bool = True,
+        now: Optional[float] = None,
+        channel: Optional[str] = None,
+        actor: Optional[str] = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
         cutoff = time.time() if now is None else float(now)
         candidates = []
         for raw in self.state.list(self.namespace_structured, limit=max(limit, 10000)):
@@ -1228,16 +1573,64 @@ class PostgresExperienceStore:
             for eid in ids:
                 if self.state.delete(self.namespace_structured, str(eid)):
                     deleted_count += 1
-        event = {"event": "memory_retention_purge", "dry_run": bool(dry_run), "cutoff": cutoff, "candidate_count": len(candidates), "deleted_count": deleted_count, "ids": ids, "channel": channel, "actor": actor, "namespace_filter_applied": channel is not None or actor is not None}
+        event = {
+            "event": "memory_retention_purge",
+            "dry_run": bool(dry_run),
+            "cutoff": cutoff,
+            "candidate_count": len(candidates),
+            "deleted_count": deleted_count,
+            "ids": ids,
+            "channel": channel,
+            "actor": actor,
+            "namespace_filter_applied": channel is not None or actor is not None,
+        }
         self._audit_memory_governance(event)
-        return {"dry_run": bool(dry_run), "cutoff": cutoff, "candidate_count": len(candidates), "deleted_count": deleted_count, "ids": ids, "items": candidates, "channel": channel, "actor": actor, "namespace_filter_applied": channel is not None or actor is not None}
+        return {
+            "dry_run": bool(dry_run),
+            "cutoff": cutoff,
+            "candidate_count": len(candidates),
+            "deleted_count": deleted_count,
+            "ids": ids,
+            "items": candidates,
+            "channel": channel,
+            "actor": actor,
+            "namespace_filter_applied": channel is not None or actor is not None,
+        }
 
-    def record_metric(self, *, success: bool, manual_intervention: bool = False, tool_error: bool = False, repeat_failure: bool = False, skill_reuse: bool = False, rollback: bool = False, security_violation: bool = False) -> None:
+    def record_metric(
+        self,
+        *,
+        success: bool,
+        manual_intervention: bool = False,
+        tool_error: bool = False,
+        repeat_failure: bool = False,
+        skill_reuse: bool = False,
+        rollback: bool = False,
+        security_violation: bool = False,
+    ) -> None:
         day = time.strftime("%Y-%m-%d", time.gmtime())
-        current = self.state.get(self.namespace_metrics, day) or {"day": day, "task_count": 0, "success_count": 0, "failure_count": 0, "manual_intervention_count": 0, "tool_error_count": 0, "repeat_failure_count": 0, "skill_reuse_count": 0, "rollback_count": 0, "security_violation_count": 0}
+        current = self.state.get(self.namespace_metrics, day) or {
+            "day": day,
+            "task_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "manual_intervention_count": 0,
+            "tool_error_count": 0,
+            "repeat_failure_count": 0,
+            "skill_reuse_count": 0,
+            "rollback_count": 0,
+            "security_violation_count": 0,
+        }
         current["task_count"] += 1
         current["success_count" if success else "failure_count"] += 1
-        for flag, field in [(manual_intervention, "manual_intervention_count"), (tool_error, "tool_error_count"), (repeat_failure, "repeat_failure_count"), (skill_reuse, "skill_reuse_count"), (rollback, "rollback_count"), (security_violation, "security_violation_count")]:
+        for flag, field in [
+            (manual_intervention, "manual_intervention_count"),
+            (tool_error, "tool_error_count"),
+            (repeat_failure, "repeat_failure_count"),
+            (skill_reuse, "skill_reuse_count"),
+            (rollback, "rollback_count"),
+            (security_violation, "security_violation_count"),
+        ]:
             if flag:
                 current[field] += 1
         current["updated_at"] = time.time()
@@ -1246,7 +1639,17 @@ class PostgresExperienceStore:
     def metrics_report(self, days: int = 7) -> dict[str, Any]:
         cutoff = time.time() - days * 86400
         rows = [r for r in self.state.list(self.namespace_metrics, limit=days + 10) if float(r.get("updated_at") or 0) >= cutoff]
-        totals: dict[str, Any] = {"task_count": 0, "success_count": 0, "failure_count": 0, "manual_intervention_count": 0, "tool_error_count": 0, "repeat_failure_count": 0, "skill_reuse_count": 0, "rollback_count": 0, "security_violation_count": 0}
+        totals: dict[str, Any] = {
+            "task_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "manual_intervention_count": 0,
+            "tool_error_count": 0,
+            "repeat_failure_count": 0,
+            "skill_reuse_count": 0,
+            "rollback_count": 0,
+            "security_violation_count": 0,
+        }
         for r in rows:
             for k in totals:
                 totals[k] += int(r.get(k) or 0)
@@ -1269,22 +1672,34 @@ class PostgresRuntimeStateStores:
         if self._dual is None:
             self._dual = PostgresDualApprovalStore(self.state)
         return self._dual
+
     def approval_store(self, *, ttl_seconds: int, dual_approval_store: Any | None = None) -> PostgresApprovalStore:
-        return PostgresApprovalStore(self.state, ttl_seconds=ttl_seconds, dual_approval_store=dual_approval_store or self.dual_approval_store())
+        return PostgresApprovalStore(
+            self.state, ttl_seconds=ttl_seconds, dual_approval_store=dual_approval_store or self.dual_approval_store()
+        )
+
     def break_glass_store(self, *, audit_log: Path) -> PostgresBreakGlassStore:
         return PostgresBreakGlassStore(self.state, audit_log=audit_log)
+
     def run_store(self) -> PostgresRunStore:
         return PostgresRunStore(self.state)
+
     def agent_run_idempotency_store(self):
         from omnidesk_agent.security.agent_run_idempotency import JsonStateAgentRunIdempotencyStore
+
         return JsonStateAgentRunIdempotencyStore(self.state)
+
     def side_effect_idempotency_store(self):
         from omnidesk_agent.security.idempotency import JsonStateSideEffectIdempotencyStore
+
         return JsonStateSideEffectIdempotencyStore(self.state)
+
     def job_queue(self) -> PostgresJobQueue:
         return PostgresJobQueue(self.state)
+
     def outbound_messages(self) -> PostgresOutboundMessageStore:
         return PostgresOutboundMessageStore(self.state)
+
     def webhook_security(self) -> PostgresWebhookSecurity:
         return PostgresWebhookSecurity(self.state)
 
@@ -1318,4 +1733,21 @@ class PostgresRuntimeStateStores:
         self.state.list("llm_usage", limit=1)
         self.model_cost_store().summary(days=1)
         self.state.list("learning_experiments", limit=1)
-        return {"ok": True, "stores": ["approvals", "dual_approvals", "break_glass", "webhooks", "jobs", "outbound", "runs", "agent_run_idempotency", "side_effect_idempotency", "memory", "token_budget", "model_cost", "learning_experiments"]}
+        return {
+            "ok": True,
+            "stores": [
+                "approvals",
+                "dual_approvals",
+                "break_glass",
+                "webhooks",
+                "jobs",
+                "outbound",
+                "runs",
+                "agent_run_idempotency",
+                "side_effect_idempotency",
+                "memory",
+                "token_budget",
+                "model_cost",
+                "learning_experiments",
+            ],
+        }

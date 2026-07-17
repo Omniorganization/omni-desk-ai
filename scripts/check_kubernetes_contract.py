@@ -40,12 +40,23 @@ REQUIRED_SNIPPETS = {
         "terminationGracePeriodSeconds:",
         "preStop:",
         "topologySpreadConstraints:",
+        "topology.kubernetes.io/zone",
+        "whenUnsatisfiable: DoNotSchedule",
         "podAntiAffinity:",
         "configMap:",
     ],
     "deploy/kubernetes/helm/omnidesk/templates/service.yaml": ["kind: Service", "targetPort: http"],
     "deploy/kubernetes/helm/omnidesk/templates/pdb.yaml": ["PodDisruptionBudget", "minAvailable"],
-    "deploy/kubernetes/helm/omnidesk/templates/hpa.yaml": ["HorizontalPodAutoscaler", "minReplicas", "maxReplicas"],
+    "deploy/kubernetes/helm/omnidesk/templates/hpa.yaml": [
+        "HorizontalPodAutoscaler",
+        "minReplicas",
+        "maxReplicas",
+        "name: cpu",
+        "name: memory",
+        "behavior:",
+        "omnidesk_active_chat_streams",
+        "omnidesk_postgres_pool_waiters",
+    ],
     "deploy/kubernetes/helm/omnidesk/templates/configmap.yaml": ["storage:", "backend: postgres", "postgres_dsn_env", "require_multi_instance_safe: true"],
 }
 DIGEST_RE = re.compile(r"(?:sha256:|@sha256:)([a-f0-9]{64})")
@@ -54,6 +65,11 @@ BAD_DIGESTS = {"0" * 64, "f" * 64, "a" * 64, "0123456789abcdef" * 4}
 
 def _bad_digest(digest: str) -> bool:
     return digest in BAD_DIGESTS or len(set(digest)) == 1
+
+
+def _integer(text: str, key: str) -> int | None:
+    match = re.search(rf"(?m)^\s*{re.escape(key)}:\s*(\d+)\s*$", text)
+    return int(match.group(1)) if match else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,14 +95,39 @@ def main(argv: list[str] | None = None) -> int:
     locked_values_path = Path(args.locked_values) if args.locked_values else root / "deploy/kubernetes/helm/omnidesk/values.production.locked.yaml"
     if values_path.exists():
         text = values_path.read_text(encoding="utf-8")
-        # Source values are intentionally a safe template. The chart deployment must
-        # require release-pipeline injected digests, while this source template must not
-        # pretend to contain final OCI image digests. When a locked production values
-        # file is present, validate its real sha256 pins below.
-        if "digest: """ not in text:
+        if 'digest: ""' not in text:
             issues.append("Helm source values must leave image digests empty for release injection")
-        if "replicaCount: 1" in text:
-            issues.append("Helm production values must not default to a single replica")
+        replica_count = _integer(text, "replicaCount")
+        min_replicas = _integer(text, "minReplicas")
+        max_replicas = _integer(text, "maxReplicas")
+        pool_size = _integer(text, "postgresPoolSize")
+        max_connections = _integer(text, "maxConnections")
+        reserve_keys = (
+            "reservedAdminConnections",
+            "workerConnections",
+            "migrationConnections",
+            "monitoringConnections",
+        )
+        reserves = [_integer(text, key) for key in reserve_keys]
+        if replica_count is None or replica_count < 3:
+            issues.append("Helm production values must default to at least three gateway replicas")
+        if min_replicas is None or min_replicas < 3:
+            issues.append("HPA minReplicas must be at least three for production HA")
+        if max_replicas is None or min_replicas is None or max_replicas < min_replicas:
+            issues.append("HPA maxReplicas must be greater than or equal to minReplicas")
+        if None in (pool_size, max_connections, *reserves):
+            issues.append("Helm values must declare the complete PostgreSQL connection budget")
+        else:
+            assert pool_size is not None and max_connections is not None and max_replicas is not None
+            reserved_total = sum(value for value in reserves if value is not None)
+            gateway_budget = max_connections - reserved_total
+            required_gateway_connections = max_replicas * pool_size
+            if gateway_budget <= 0:
+                issues.append("PostgreSQL reserved connection budget must leave capacity for gateways")
+            if required_gateway_connections > gateway_budget:
+                issues.append(
+                    "HPA maxReplicas multiplied by postgresPoolSize exceeds the available PostgreSQL gateway connection budget"
+                )
         if "backend: postgres" not in text or "requireMultiInstanceSafe: true" not in text:
             issues.append("Helm values must default HA storage to postgres with requireMultiInstanceSafe=true")
         if "persistence:" not in text or "enabled: false" not in text:
@@ -115,10 +156,12 @@ def main(argv: list[str] | None = None) -> int:
                 issues.append("locked Helm production values contain placeholder or weak sha256 digest")
 
     network_text = "\n".join(
-        p.read_text(encoding="utf-8") for p in [
+        p.read_text(encoding="utf-8")
+        for p in [
             root / "deploy/kubernetes/networkpolicy.yaml",
             root / "deploy/kubernetes/helm/omnidesk/templates/networkpolicy.yaml",
-        ] if p.exists()
+        ]
+        if p.exists()
     )
     if "namespaceSelector: {}" in network_text:
         issues.append("NetworkPolicy must not allow all namespaces with namespaceSelector: {}")

@@ -170,6 +170,8 @@ class PostgresRateLimiter:
                     (key, now, now, window_seconds, now, now, window_seconds),
                 )
                 row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError("PostgreSQL rate limiter did not return a count")
                 return int(row[0]) <= limit
 
     def size(self) -> int:
@@ -177,6 +179,8 @@ class PostgresRateLimiter:
             with con.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM omnidesk_api_resource_rate_limits")
                 row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError("PostgreSQL rate limiter size query returned no row")
                 return int(row[0])
 
 
