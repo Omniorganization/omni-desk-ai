@@ -150,36 +150,35 @@ class OmniDeskRuntime:
         self._reconnect_task: asyncio.Task | None = None
 
 
-def _build_channel_adapters(self) -> dict:
-    adapters = {
-        "telegram": TelegramChannel(self.cfg.channels.telegram),
-        "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
-        "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official),
-        "meta_graph": MetaGraphChannel(self.cfg.channels.meta_graph),
-        "dingtalk": DingTalkChannel(self.cfg.channels.dingtalk),
-        "lark": LarkChannel(self.cfg.channels.lark),
-        "feishu": FeishuChannel(self.cfg.channels.feishu),
-        "line": LineChannel(self.cfg.channels.line),
-        "x": XChannel(self.cfg.channels.x),
-        "slack": SlackChannel(self.cfg.channels.slack),
-        "discord": DiscordChannel(self.cfg.channels.discord),
-        "google_chat": GoogleChatChannel(self.cfg.channels.google_chat),
-        "signal": SignalChannel(self.cfg.channels.signal),
-        "imessage": IMessageChannel(self.cfg.channels.imessage),
-        "microsoft_teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
-        "matrix": MatrixChannel(self.cfg.channels.matrix),
-        "qq": QQChannel(self.cfg.channels.qq),
-        "gmail": GmailChannel(self.cfg.channels.gmail),
-    }
-    adapters.update(
-        {
-            "whatsapp": adapters["whatsapp_cloud"],
-            "wechat": adapters["wechat_official"],
-            "teams": adapters["microsoft_teams"],
+    def _build_channel_adapters(self) -> dict:
+        adapters = {
+            "telegram": TelegramChannel(self.cfg.channels.telegram),
+            "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
+            "wechat_official": WeChatOfficialChannel(self.cfg.channels.wechat_official),
+            "meta_graph": MetaGraphChannel(self.cfg.channels.meta_graph),
+            "dingtalk": DingTalkChannel(self.cfg.channels.dingtalk),
+            "lark": LarkChannel(self.cfg.channels.lark),
+            "feishu": FeishuChannel(self.cfg.channels.feishu),
+            "line": LineChannel(self.cfg.channels.line),
+            "x": XChannel(self.cfg.channels.x),
+            "slack": SlackChannel(self.cfg.channels.slack),
+            "discord": DiscordChannel(self.cfg.channels.discord),
+            "google_chat": GoogleChatChannel(self.cfg.channels.google_chat),
+            "signal": SignalChannel(self.cfg.channels.signal),
+            "imessage": IMessageChannel(self.cfg.channels.imessage),
+            "microsoft_teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
+            "matrix": MatrixChannel(self.cfg.channels.matrix),
+            "qq": QQChannel(self.cfg.channels.qq),
+            "gmail": GmailChannel(self.cfg.channels.gmail),
         }
-    )
-    return adapters
-
+        adapters.update(
+            {
+                "whatsapp": adapters["whatsapp_cloud"],
+                "wechat": adapters["wechat_official"],
+                "teams": adapters["microsoft_teams"],
+            }
+        )
+        return adapters
     def _register_builtin_tools(self) -> None:
         # Register the smallest runtime capability surface. Tools still keep
         # their own internal gates; this layer prevents disabled capabilities
