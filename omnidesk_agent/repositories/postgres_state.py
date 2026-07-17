@@ -15,7 +15,7 @@ from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManag
 from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
 from omnidesk_agent.security.webhook_security import WebhookSecurityConfig
-from omnidesk_agent.repositories.postgres_pool import PostgresUnavailable, SharedPostgresConnectionPool
+from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
 
 STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS omnidesk_core_state (
