@@ -20,7 +20,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+          set +e
+          (
+            python - <<'PY'
           from pathlib import Path
 
           source = Path('.github/workflows/apply-industrial-runtime-optimization.yml').read_text(encoding='utf-8')
@@ -44,8 +46,8 @@ jobs:
           script = '\n'.join(lines) + '\n'
           Path('/tmp/apply_industrial_runtime_optimization.py').write_text(script, encoding='utf-8')
           PY
-          set +e
-          python /tmp/apply_industrial_runtime_optimization.py > /tmp/industrial-patch.log 2>&1
+            python /tmp/apply_industrial_runtime_optimization.py
+          ) > /tmp/industrial-patch.log 2>&1
           patch_status=$?
           set -e
           if [[ "$patch_status" -ne 0 ]]; then
