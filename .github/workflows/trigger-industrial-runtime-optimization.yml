@@ -157,7 +157,8 @@ jobs:
           fi
           git checkout HEAD -- \
             .github/workflows/apply-industrial-runtime-optimization.yml \
-            .github/workflows/trigger-industrial-runtime-optimization.yml
+            .github/workflows/trigger-industrial-runtime-optimization.yml \
+            .github/workflows/ci.yml
           git add -A
           git commit -m 'perf(runtime): industrialize postgres and readiness paths'
           git push origin HEAD:agent/industrial-runtime-optimization-20260717
