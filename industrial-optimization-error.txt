@@ -1,6 +1,2 @@
-run=29567725702
-Traceback (most recent call last):
-  File "/tmp/apply_industrial_runtime_optimization.py", line 598, in <module>
-    text = text.replace(old_outbound_claim, new_outbound_claim, 1)
-                        ^^^^^^^^^^^^^^^^^^
-NameError: name 'old_outbound_claim' is not defined
+run=29568035106
+BLOCKER /home/runner/work/omni-desk-ai/omni-desk-ai/omnidesk_agent/repositories/postgres_state.py: missing return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)
