@@ -34,12 +34,7 @@ jobs:
               1,
           )
           marker = 'TRUE_VALUES = {"1", "true", "yes", "y", "on"}\n'
-          typed = '''class _ReadinessCache(TypedDict):
-    expires_at: float
-    snapshot: dict[str, Any] | None
-
-
-'''
+          typed = 'class _ReadinessCache(TypedDict):\n    expires_at: float\n    snapshot: dict[str, Any] | None\n\n\n'
           if typed not in text:
               text = text.replace(marker, typed + marker, 1)
           text = text.replace(
