@@ -74,8 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root).resolve()
 
     full_sources: dict[str, str] = {}
+    full_sources["VERSION"] = _read(root / "VERSION").strip()
     full_sources["pyproject.toml"] = _regex(root / "pyproject.toml", r'^version\s*=\s*"([^"]+)"', "project version")
-    full_version = full_sources["pyproject.toml"]
+    full_version = full_sources["VERSION"]
     app_version = full_version.split("+", 1)[0]
     native_version = _native_version(app_version)
     app_sources: dict[str, str] = {}
