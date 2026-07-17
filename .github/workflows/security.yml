@@ -122,7 +122,7 @@ jobs:
           toolchain: "1.88.0"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.7"
+          flutter-version: "3.38.8"
           cache: true
       - name: Prepare ecosystem evidence directory
         run: mkdir -p reports/ecosystem-security

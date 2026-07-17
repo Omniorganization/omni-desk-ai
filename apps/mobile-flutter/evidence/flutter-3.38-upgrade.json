@@ -1,0 +1,31 @@
+{
+  "schema": "omnidesk-dependency-upgrade-evidence/v1",
+  "scope": [
+    "Flutter 3.38.8 and Dart 3.10.7 toolchain",
+    "Firebase Core 4.12.1",
+    "Firebase Messaging 16.4.3",
+    "flutter_secure_storage 10.3.1",
+    "local_auth 3.0.2",
+    "flutter_lints 6.0.0",
+    "iOS 15 deployment target"
+  ],
+  "tests": [
+    "flutter pub get",
+    "flutter analyze",
+    "flutter test",
+    "flutter build appbundle --release",
+    "flutter build ios --simulator --debug",
+    "repository required CI, Security, Tri-App, Main Verification, and Release Policy checks"
+  ],
+  "risk_notes": [
+    "FlutterFire 4.x and Firebase Apple SDK 12 require a newer Flutter/Dart toolchain and iOS 15 minimum target.",
+    "local_auth 3.x changes the authenticate call signature and background persistence option.",
+    "Native plugin upgrades can alter Android and iOS build-time integration even when Dart analysis passes."
+  ],
+  "rollback_steps": [
+    "Revert the pull request commit.",
+    "Restore pubspec.yaml, pubspec.lock, main.dart, Podfile, and tri-app workflow from the parent main commit.",
+    "Run flutter pub get, flutter analyze, flutter test, Android release build, and iOS simulator build before redeployment."
+  ],
+  "validation_boundary": "GitHub required checks on the pull-request head are authoritative and fail closed."
+}

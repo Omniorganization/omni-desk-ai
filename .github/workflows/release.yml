@@ -144,7 +144,7 @@ jobs:
           python-version: "3.11"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.7"
+          flutter-version: "3.38.8"
           cache: true
       - run: flutter pub get
       - run: dart analyze
@@ -158,7 +158,7 @@ jobs:
           license_status=$?
           set -o pipefail
           test "$license_status" -eq 0
-          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
       - name: Restore Android release signing key
         env:
           OMNI_ANDROID_KEYSTORE_BASE64: ${{ secrets.OMNI_ANDROID_KEYSTORE_BASE64 }}
@@ -219,7 +219,7 @@ jobs:
           python-version: "3.11"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: "3.35.7"
+          flutter-version: "3.38.8"
           cache: true
       - run: flutter pub get
       - run: cd ios && pod install
