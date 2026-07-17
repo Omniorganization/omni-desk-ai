@@ -29,6 +29,14 @@ jobs:
           end = source.index("\n          PY\n", start)
           lines = source[start:end].splitlines()
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          script = script.replace(
+              "if old_job_claim not in text:\n    raise RuntimeError('job claim block changed')\ntext = text.replace(old_job_claim, new_job_claim, 1)",
+              "pass  # queue claim is structurally rewritten by the trigger workflow",
+          )
+          script = script.replace(
+              "if old_outbound_claim not in text:\n    raise RuntimeError('outbound claim block changed')\ntext = text.replace(old_outbound_claim, new_outbound_claim, 1)",
+              "pass  # outbound claim is structurally rewritten by the trigger workflow",
+          )
           Path('/tmp/apply_industrial_runtime_optimization.py').write_text(script, encoding='utf-8')
           PY
           set +e
@@ -45,6 +53,77 @@ jobs:
             cat /tmp/industrial-patch.log
             exit "$patch_status"
           fi
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          path = Path('omnidesk_agent/repositories/postgres_state.py')
+          text = path.read_text(encoding='utf-8')
+
+          job_class = text.index('class PostgresJobQueue:')
+          job_start = text.index('    def claim_next(self) -> Optional[dict[str, Any]]:\n', job_class)
+          job_end = text.index('\n    def recover_stale_running', job_start)
+          job_claim = dedent('''
+              def claim_next(self) -> Optional[dict[str, Any]]:
+                  now = time.time()
+
+                  def pred(row: dict[str, Any]) -> bool:
+                      return row.get("status") in {"pending", "retry"} and float(row.get("next_retry_at") or 0) <= now
+
+                  def upd(row: dict[str, Any]) -> dict[str, Any]:
+                      row["status"] = "running"
+                      row["locked_at"] = now
+                      row["updated_at"] = now
+                      return row
+
+                  claim_ready = getattr(self.state, "claim_ready_by_status", None)
+                  if callable(claim_ready):
+                      return claim_ready(
+                          self.namespace,
+                          statuses=("pending", "retry"),
+                          ready_before=now,
+                          updater=upd,
+                      )
+                  return self.state.claim_one(self.namespace, pred, upd)
+          ''').rstrip()
+          job_claim = '\n'.join('    ' + line if line else '' for line in job_claim.splitlines())
+          text = text[:job_start] + job_claim + text[job_end:]
+
+          outbound_class = text.index('class PostgresOutboundMessageStore:')
+          outbound_start = text.index('    def claim_next(self) -> Optional[dict[str, Any]]:\n', outbound_class)
+          outbound_end = text.index('\n    def mark_sent(', outbound_start)
+          outbound_claim = dedent('''
+              def claim_next(self) -> Optional[dict[str, Any]]:
+                  now = time.time()
+
+                  def pred(row: dict[str, Any]) -> bool:
+                      return (
+                          row.get("status") in {"pending", "retry"}
+                          and float(row.get("next_retry_at") or 0) <= now
+                          and (row.get("delivery_deadline_at") is None or float(row.get("delivery_deadline_at") or 0) >= now)
+                      )
+
+                  def upd(row: dict[str, Any]) -> dict[str, Any]:
+                      row["status"] = "running"
+                      row["locked_at"] = now
+                      row["updated_at"] = now
+                      return row
+
+                  claim_ready = getattr(self.state, "claim_ready_by_status", None)
+                  if callable(claim_ready):
+                      return claim_ready(
+                          self.namespace,
+                          statuses=("pending", "retry"),
+                          ready_before=now,
+                          updater=upd,
+                          deadline_field="delivery_deadline_at",
+                      )
+                  return self.state.claim_one(self.namespace, pred, upd)
+          ''').rstrip()
+          outbound_claim = '\n'.join('    ' + line if line else '' for line in outbound_claim.splitlines())
+          text = text[:outbound_start] + outbound_claim + text[outbound_end:]
+          path.write_text(text, encoding='utf-8')
+          PY
           rm -f .github/workflows/trigger-industrial-runtime-optimization.yml industrial-optimization-error.txt
           python -m py_compile \
             omnidesk_agent/repositories/postgres_pool.py \
