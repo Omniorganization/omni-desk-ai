@@ -130,7 +130,7 @@ jobs:
           text = text[:outbound_get_start] + outbound_lookup + text[outbound_get_end:]
           path.write_text(text, encoding='utf-8')
           PY
-            rm -f .github/workflows/trigger-industrial-runtime-optimization.yml industrial-optimization-error.txt
+            rm -f industrial-optimization-error.txt
             python -m py_compile \
               omnidesk_agent/repositories/postgres_pool.py \
               omnidesk_agent/repositories/postgres.py \
@@ -155,6 +155,9 @@ jobs:
             cat /tmp/industrial-patch.log
             exit "$patch_status"
           fi
+          git checkout HEAD -- \
+            .github/workflows/apply-industrial-runtime-optimization.yml \
+            .github/workflows/trigger-industrial-runtime-optimization.yml
           git add -A
           git commit -m 'perf(runtime): industrialize postgres and readiness paths'
           git push origin HEAD:agent/industrial-runtime-optimization-20260717
