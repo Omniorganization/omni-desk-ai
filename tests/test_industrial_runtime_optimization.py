@@ -116,3 +116,12 @@ def test_job_claim_and_run_lookup_use_sql_optimized_state_paths() -> None:
 def test_pool_rejects_empty_dsn() -> None:
     with pytest.raises(PostgresUnavailable):
         SharedPostgresConnectionPool('')
+
+
+def test_postgres_state_optimized_methods_are_class_owned() -> None:
+    from omnidesk_agent.repositories.postgres_state import _PostgresJsonState, PostgresRuntimeStateStores
+
+    assert callable(getattr(_PostgresJsonState, "claim_ready_by_status", None))
+    assert callable(getattr(_PostgresJsonState, "claim_one", None))
+    assert callable(getattr(PostgresRuntimeStateStores, "readiness_check", None))
+    assert callable(getattr(PostgresRuntimeStateStores, "close", None))

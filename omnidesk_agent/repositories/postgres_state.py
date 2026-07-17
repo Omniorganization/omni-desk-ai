@@ -242,55 +242,55 @@ class _PostgresJsonState:
                 return updated
 
 
-def claim_ready_by_status(
-    self,
-    namespace: str,
-    *,
-    statuses: tuple[str, ...],
-    ready_before: float,
-    updater,
-    deadline_field: str | None = None,
-) -> Optional[dict[str, Any]]:  # type: ignore[no-untyped-def]
-    if not statuses:
-        return None
-    if deadline_field not in {None, "delivery_deadline_at"}:
-        raise ValueError(f"unsupported deadline field: {deadline_field}")
-    placeholders = ", ".join(["%s"] * len(statuses))
-    deadline_clause = ""
-    params: list[Any] = [namespace, *statuses, float(ready_before)]
-    if deadline_field:
-        deadline_clause = (
-            f" AND (value_json->>'{deadline_field}' IS NULL "
-            f"OR NULLIF(value_json->>'{deadline_field}', '')::double precision >= %s)"
-        )
-        params.append(float(ready_before))
-    query = f"""
-        SELECT key, value_json FROM omnidesk_core_state
-        WHERE namespace=%s
-          AND value_json->>'status' IN ({placeholders})
-          AND COALESCE(NULLIF(value_json->>'next_retry_at', '')::double precision, 0) <= %s
-          {deadline_clause}
-        ORDER BY created_at ASC
-        FOR UPDATE SKIP LOCKED
-        LIMIT 1
-    """  # nosec B608 - field names and placeholders are constrained above
-    with self._connect() as con:
-        with con.cursor() as cur:
-            cur.execute(query, tuple(params))
-            row = cur.fetchone()
-            if not row:
-                return None
-            key, raw = row
-            current = _loads(raw)
-            updated = updater(dict(current))
-            cur.execute(
-                """
-                UPDATE omnidesk_core_state SET value_json=%s::jsonb, updated_at=%s
-                WHERE namespace=%s AND key=%s
-                """,
-                (json.dumps(updated, ensure_ascii=False, default=str), time.time(), namespace, key),
+    def claim_ready_by_status(
+        self,
+        namespace: str,
+        *,
+        statuses: tuple[str, ...],
+        ready_before: float,
+        updater,
+        deadline_field: str | None = None,
+    ) -> Optional[dict[str, Any]]:  # type: ignore[no-untyped-def]
+        if not statuses:
+            return None
+        if deadline_field not in {None, "delivery_deadline_at"}:
+            raise ValueError(f"unsupported deadline field: {deadline_field}")
+        placeholders = ", ".join(["%s"] * len(statuses))
+        deadline_clause = ""
+        params: list[Any] = [namespace, *statuses, float(ready_before)]
+        if deadline_field:
+            deadline_clause = (
+                f" AND (value_json->>'{deadline_field}' IS NULL "
+                f"OR NULLIF(value_json->>'{deadline_field}', '')::double precision >= %s)"
             )
-            return current
+            params.append(float(ready_before))
+        query = f"""
+            SELECT key, value_json FROM omnidesk_core_state
+            WHERE namespace=%s
+              AND value_json->>'status' IN ({placeholders})
+              AND COALESCE(NULLIF(value_json->>'next_retry_at', '')::double precision, 0) <= %s
+              {deadline_clause}
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        """  # nosec B608 - field names and placeholders are constrained above
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(query, tuple(params))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                key, raw = row
+                current = _loads(raw)
+                updated = updater(dict(current))
+                cur.execute(
+                    """
+                    UPDATE omnidesk_core_state SET value_json=%s::jsonb, updated_at=%s
+                    WHERE namespace=%s AND key=%s
+                    """,
+                    (json.dumps(updated, ensure_ascii=False, default=str), time.time(), namespace, key),
+                )
+                return current
 
     def claim_one(self, namespace: str, predicate, updater) -> Optional[dict[str, Any]]:  # type: ignore[no-untyped-def]
         with self._connect() as con:
@@ -318,7 +318,6 @@ def claim_ready_by_status(
                     )
                     return current
         return None
-
 
 class PostgresDualApprovalStore:
     namespace = "dual_approvals"
@@ -1828,8 +1827,8 @@ class PostgresRuntimeStateStores:
             ],
         }
 
-def readiness_check(self) -> dict[str, Any]:
-    return self.state.ping()
+    def readiness_check(self) -> dict[str, Any]:
+        return self.state.ping()
 
-def close(self) -> None:
-    self.state.close()
+    def close(self) -> None:
+        self.state.close()

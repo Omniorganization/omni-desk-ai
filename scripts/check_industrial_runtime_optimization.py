@@ -31,8 +31,9 @@ def main() -> int:
         root / 'omnidesk_agent/repositories/postgres_state.py',
         'idx_omnidesk_runs_waiting_approval',
         'idx_omnidesk_jobs_ready',
-        'def claim_ready_by_status(',
+        '    def claim_ready_by_status(',
         'return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)',
+        '    def readiness_check(self) -> dict[str, Any]:',
     )
     issues += require(
         root / 'omnidesk_agent/server.py',
