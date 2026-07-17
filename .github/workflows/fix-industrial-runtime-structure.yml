@@ -16,6 +16,11 @@ jobs:
         with:
           ref: agent/industrial-runtime-optimization-20260717
           fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
       - name: Repair method ownership and validate
         run: |
           set -euo pipefail
@@ -132,16 +137,17 @@ jobs:
 
           test_path = Path('tests/test_industrial_runtime_optimization.py')
           tests = test_path.read_text(encoding='utf-8')
-          tests += dedent('''
+          if 'test_postgres_state_optimized_methods_are_class_owned' not in tests:
+              tests += dedent('''
 
-          def test_postgres_state_optimized_methods_are_class_owned() -> None:
-              from omnidesk_agent.repositories.postgres_state import _PostgresJsonState, PostgresRuntimeStateStores
+              def test_postgres_state_optimized_methods_are_class_owned() -> None:
+                  from omnidesk_agent.repositories.postgres_state import _PostgresJsonState, PostgresRuntimeStateStores
 
-              assert callable(getattr(_PostgresJsonState, "claim_ready_by_status", None))
-              assert callable(getattr(_PostgresJsonState, "claim_one", None))
-              assert callable(getattr(PostgresRuntimeStateStores, "readiness_check", None))
-              assert callable(getattr(PostgresRuntimeStateStores, "close", None))
-          ''')
+                  assert callable(getattr(_PostgresJsonState, "claim_ready_by_status", None))
+                  assert callable(getattr(_PostgresJsonState, "claim_one", None))
+                  assert callable(getattr(PostgresRuntimeStateStores, "readiness_check", None))
+                  assert callable(getattr(PostgresRuntimeStateStores, "close", None))
+              ''')
           test_path.write_text(tests, encoding='utf-8')
           PY
           python -m py_compile omnidesk_agent/repositories/postgres_state.py
