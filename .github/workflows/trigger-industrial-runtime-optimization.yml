@@ -31,8 +31,21 @@ jobs:
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
           Path('/tmp/apply_industrial_runtime_optimization.py').write_text(script, encoding='utf-8')
           PY
-          python /tmp/apply_industrial_runtime_optimization.py
-          rm -f .github/workflows/trigger-industrial-runtime-optimization.yml
+          set +e
+          python /tmp/apply_industrial_runtime_optimization.py > /tmp/industrial-patch.log 2>&1
+          patch_status=$?
+          set -e
+          if [[ "$patch_status" -ne 0 ]]; then
+            cp /tmp/industrial-patch.log industrial-optimization-error.txt
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add industrial-optimization-error.txt
+            git commit -m 'chore: capture industrial optimization patch failure'
+            git push origin HEAD:agent/industrial-runtime-optimization-20260717
+            cat /tmp/industrial-patch.log
+            exit "$patch_status"
+          fi
+          rm -f .github/workflows/trigger-industrial-runtime-optimization.yml industrial-optimization-error.txt
           python -m py_compile \
             omnidesk_agent/repositories/postgres_pool.py \
             omnidesk_agent/repositories/postgres.py \
