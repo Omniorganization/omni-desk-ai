@@ -23,7 +23,6 @@ FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z0-9 _-]*):\s*(.*?)\s*$")
 
 
 def _root_from_exception_dir(exception_dir: Path) -> Path:
-    # release/security-exceptions -> repository root
     if exception_dir.name == "security-exceptions" and exception_dir.parent.name == "release":
         return exception_dir.parent.parent
     return Path.cwd()
@@ -34,14 +33,11 @@ def _allowed_ghsas_from_workflows(root: Path) -> set[str]:
     if not workflows.exists():
         return set()
     allowed: set[str] = set()
-    for path in workflows.glob("*.yml"):
-        text = path.read_text(encoding="utf-8")
-        for match in ALLOW_GHSA_RE.finditer(text):
-            allowed.update(GHSA_RE.findall(match.group(1)))
-    for path in workflows.glob("*.yaml"):
-        text = path.read_text(encoding="utf-8")
-        for match in ALLOW_GHSA_RE.finditer(text):
-            allowed.update(GHSA_RE.findall(match.group(1)))
+    for pattern in ("*.yml", "*.yaml"):
+        for path in workflows.glob(pattern):
+            text = path.read_text(encoding="utf-8")
+            for match in ALLOW_GHSA_RE.finditer(text):
+                allowed.update(GHSA_RE.findall(match.group(1)))
     return allowed
 
 
@@ -68,7 +64,13 @@ def _parse_date(value: str) -> date | None:
     return None
 
 
-def _validate_exception(path: Path, expected_id: str | None, today: date) -> list[str]:
+def _validate_exception(
+    path: Path,
+    expected_id: str | None,
+    today: date,
+    *,
+    fail_within_days: int = 0,
+) -> list[str]:
     issues: list[str] = []
     fields = _parse_fields(path)
     missing = sorted(REQUIRED_FIELDS - set(fields))
@@ -98,6 +100,13 @@ def _validate_exception(path: Path, expected_id: str | None, today: date) -> lis
         issues.append(f"{path}: expires_at must be YYYY-MM-DD")
     elif expires_at < today:
         issues.append(f"{path}: exception expired on {expires_at.isoformat()}")
+    else:
+        days_remaining = (expires_at - today).days
+        if fail_within_days > 0 and days_remaining <= fail_within_days:
+            issues.append(
+                f"{path}: exception expires in {days_remaining} day(s) on "
+                f"{expires_at.isoformat()}; remove or renew it before the {fail_within_days}-day gate"
+            )
 
     text = path.read_text(encoding="utf-8").lower()
     for required_phrase in ("impact", "runtime reachability", "compensating control", "removal criteria"):
@@ -109,7 +118,15 @@ def _validate_exception(path: Path, expected_id: str | None, today: date) -> lis
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate governed security exception records.")
     parser.add_argument("exception_dir", nargs="?", default="release/security-exceptions")
+    parser.add_argument(
+        "--fail-within-days",
+        type=int,
+        default=0,
+        help="Fail when an active exception expires within this many days; zero checks only expiry.",
+    )
     args = parser.parse_args(argv)
+    if args.fail_within_days < 0:
+        parser.error("--fail-within-days must be zero or greater")
 
     exception_dir = Path(args.exception_dir).resolve()
     root = _root_from_exception_dir(exception_dir)
@@ -122,7 +139,14 @@ def main(argv: list[str] | None = None) -> int:
     if exception_dir.exists():
         for path in sorted(exception_dir.glob("GHSA-*.md")):
             expected = path.stem
-            issues.extend(_validate_exception(path, expected, today))
+            issues.extend(
+                _validate_exception(
+                    path,
+                    expected,
+                    today,
+                    fail_within_days=args.fail_within_days,
+                )
+            )
 
     for ghsa in sorted(allowed_ghsas):
         path = exception_dir / f"{ghsa}.md"
@@ -133,7 +157,11 @@ def main(argv: list[str] | None = None) -> int:
         for issue in issues:
             print(f"BLOCKER {issue}", file=sys.stderr)
         return 1
-    print(f"security exception policy passed: allowed_ghsa_count={len(allowed_ghsas)}")
+    print(
+        "security exception policy passed: "
+        f"allowed_ghsa_count={len(allowed_ghsas)} "
+        f"renewal_horizon_days={args.fail_within_days}"
+    )
     return 0
 
 
