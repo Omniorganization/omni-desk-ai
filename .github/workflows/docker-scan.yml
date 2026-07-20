@@ -15,7 +15,7 @@ jobs:
     env:
       PYTHON_BASE_IMAGE_DIGEST: python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
       - run: docker build --build-arg PYTHON_BASE_IMAGE=${{ vars.PYTHON_BASE_IMAGE_DIGEST || env.PYTHON_BASE_IMAGE_DIGEST }} -t omnidesk-agent:ci .
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
