@@ -21,7 +21,7 @@ const evidence = JSON.parse(
 };
 
 test("web admin dependency upgrade remains runtime-aligned and evidenced", () => {
-  assert.match(packageJson.devDependencies["@types/node"], /^(\^|~)?22\./);
+  assert.match(packageJson.devDependencies["@types/node"], /^(\^|~)?26\./);
   assert.equal(packageJson.scripts.typecheck, "next typegen && tsc --noEmit");
   assert.equal(evidence.schema, "omnidesk-dependency-upgrade-evidence/v1");
   assert.ok(evidence.tests.includes("npm run build"));

@@ -32,7 +32,7 @@ test("desktop upgrade separates browser and Node type environments", () => {
   assert.deepEqual(productionConfig.include, ["src"]);
   assert.deepEqual(testConfig.compilerOptions.types, ["node"]);
   assert.deepEqual(testConfig.include, ["tests/**/*.ts"]);
-  assert.match(packageJson.devDependencies["@types/node"], /^(\^|~)?22\./);
+  assert.match(packageJson.devDependencies["@types/node"], /^(\^|~)?26\./);
   assert.match(packageJson.scripts.typecheck, /tsconfig\.test\.json/);
   assert.equal(evidence.schema, "omnidesk-dependency-upgrade-evidence/v1");
   assert.ok(evidence.tests.includes("npm run build"));
