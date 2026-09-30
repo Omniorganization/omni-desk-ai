@@ -20,10 +20,9 @@ SECURITY_SNIPPETS = [
     "scripts/check_security_attack_surface.py .",
     "security-events: write",
     "pull-requests: read",
-    "allow-ghsas: GHSA-wrw7-89jp-8q8g",
+    "scripts/check_glib_backport.py .",
     "pip-audit --disable-pip",
     "cargo audit",
-    "--ignore GHSA-wrw7-89jp-8q8g",
     "github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.4.0",
     "Enforce Python dependency audit",
     "Enforce ecosystem dependency audits",
@@ -64,7 +63,7 @@ REQUIRED_FILES = [
     ".github/workflows/docker-scan.yml",
     ".gitleaks.toml",
     "release/license-policy.json",
-    "release/security-exceptions/GHSA-wrw7-89jp-8q8g.md",
+    "scripts/check_glib_backport.py",
     "scripts/check_license_policy.py",
     "scripts/check_security_attack_surface.py",
     "scripts/check_security_exceptions.py",
@@ -128,9 +127,9 @@ def check(root: Path) -> list[str]:
         for line in security_text.splitlines()
         if line.strip().startswith("allow-ghsas:")
     ]
-    if allow_ghsa_lines != ["allow-ghsas: GHSA-wrw7-89jp-8q8g"]:
+    if allow_ghsa_lines or "--ignore" in security_text:
         issues.append(
-            "dependency-review allow-ghsas must stay limited to GHSA-wrw7-89jp-8q8g"
+            "dependency-review and ecosystem audits must not suppress advisories"
         )
     if "check_security_exceptions.py" not in security_text:
         issues.append("security.yml must validate governed security exceptions")

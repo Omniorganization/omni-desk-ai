@@ -139,11 +139,11 @@ jobs:
       - name: Audit Rust dependency graph
         id: rust_audit
         run: |
+          python scripts/check_glib_backport.py . --report reports/ecosystem-security/glib-backport.json
           cargo install cargo-audit --locked --version 0.22.2
           set +e
           cargo audit \
             --file apps/desktop-tauri/src-tauri/Cargo.lock \
-            --ignore GHSA-wrw7-89jp-8q8g \
             --json \
             > reports/ecosystem-security/cargo-audit.json \
             2> reports/ecosystem-security/cargo-audit.txt
@@ -201,8 +201,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
-        with:
-          allow-ghsas: GHSA-wrw7-89jp-8q8g
 
   security:
     name: Security

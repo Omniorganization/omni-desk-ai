@@ -11,3 +11,9 @@ keyring = { version = "4", default-features = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+glib = "0.18.5"
+
+[patch.crates-io]
+glib = { path = "vendor/glib" }
