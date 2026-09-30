@@ -5,6 +5,8 @@
 click>=8.5.0
 cryptography>=50
 filelock>=3.32.4
+httpx2>=2.12.0
+jsonschema>=4.26.0
 msgpack>=1.2.2
 pillow>=12.3.0
 pip>=26.2.1

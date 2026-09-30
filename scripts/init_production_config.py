@@ -18,7 +18,7 @@ def main() -> int:
     args = parser.parse_args()
     template = Path("deploy/docker/config.production.example.yaml").read_text(encoding="utf-8")
     text = template.replace("https://omnidesk.company.example.invalid", args.public_base_url)
-    text = text.replace("python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457", args.sandbox_image)
+    text = text.replace("python:3.11-slim@sha256:174bec68e0451bffabbb08c7d5d21c6b253f772d81d52b9558af97bb3159b761", args.sandbox_image)
     text = text.replace("http://sandbox-runner:18890", args.runner_url)
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
