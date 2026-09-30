@@ -12,6 +12,7 @@ anyio==4.14.2 \
     --hash=sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494 \
     --hash=sha256:cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f
     # via
+    #   -c requirements.security-constraints.in
     #   httpx
     #   httpx2
     #   starlette
@@ -588,6 +589,7 @@ msgpack==1.2.2 \
     --hash=sha256:ffdd2f4950daf7815490f23087963e3420175b9609520b7ff5df64d351159c22
     # via
     #   -c requirements.security-constraints.in
+    #   omnidesk-agent (pyproject.toml)
     #   cachecontrol
 nodeenv==1.10.0 \
     --hash=sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827 \

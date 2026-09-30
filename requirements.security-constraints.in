@@ -3,6 +3,7 @@
 # Keep this file small and explicit: it is used by uv lock generation to
 # prevent dependency resolution from drifting back onto vulnerable releases.
 click>=8.5.0
+anyio>=4.14.2
 cryptography>=50
 filelock>=3.32.4
 httpx2>=2.12.0

@@ -73,7 +73,7 @@ jobs:
           license_status=$?
           set -o pipefail
           test "$license_status" -eq 0
-          "$sdkmanager" "platforms;android-37" "build-tools;37.0.0" "ndk;28.2.13676358"
+          "$sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" "ndk;28.2.13676358"
 
       - name: Generate non-production Android signing key
         working-directory: apps/mobile-flutter
