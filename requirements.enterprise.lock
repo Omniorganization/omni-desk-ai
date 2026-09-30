@@ -1012,9 +1012,9 @@ rubicon-objc==0.5.4 ; sys_platform == 'darwin' \
     --hash=sha256:9ba5eb203df2b2e6c7f2d93f671b583ef5ea0f61b17a3ff44cd9c68673ad7916 \
     --hash=sha256:f7c755388d5709d7079152892137b13bcc6b4bdd796c9f0d9b3a1eb5bea715c4
     # via mouseinfo
-starlette==1.3.1 \
-    --hash=sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0 \
-    --hash=sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6
+starlette==1.7.0 \
+    --hash=sha256:67f8e99895493dd2911a03f11314af6ceebeae4e704bb9f43dfc6a9db151c93e \
+    --hash=sha256:c79f74ea63cff761804fbbfb182f1e0b440c2d07b164d24700c5a1bab5d6ff5d
     # via
     #   -c requirements.security-constraints.in
     #   omnidesk-agent (pyproject.toml)
