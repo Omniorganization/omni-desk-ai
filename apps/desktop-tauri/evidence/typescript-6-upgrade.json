@@ -2,7 +2,7 @@
   "schema": "omnidesk-dependency-upgrade-evidence/v1",
   "scope": [
     "Tauri API 2.11.1",
-    "Tauri Rust 2.11.6 and keyring 4.2.0",
+    "Tauri Rust 2.12.0, tauri-build 2.7.0 and keyring 4.2.0 with pinned Rust 1.90.0",
     "Vite 8.2.1",
     "TypeScript 7.0.2",
     "tsx 4.23.11",
@@ -24,12 +24,13 @@
     "Desktop frontend and Node test environments must remain independently type-checked.",
     "Credential-store upgrades must preserve ai.omnidesk.desktop service identifiers, existing device identities, native backends, and fail-closed error propagation.",
     "Incomplete native identity records now require explicit secure-store recovery instead of silently rotating surviving credentials.",
-    "Native identity writes use an OS file lock in application-local data and reject replacement; operator-token updates retain their prior behavior."
+    "Native identity writes use an OS file lock in application-local data and reject replacement; operator-token updates retain their prior behavior.",
+    "Tauri 2.12 requires Rust 1.90: all build, security and release workflow pins must advance together. Rust 1.90 changes the Linux default linker to LLD; locked native tests on Linux, macOS and Windows and isolated optimized glib regressions remain required."
   ],
   "rollback_steps": [
     "Revert the pull request commit.",
     "Restore package.json, package-lock.json, and TypeScript configs from the parent main commit.",
-    "Restore Cargo.lock from the approved parent if native credential-store regression is observed; do not export or migrate secrets to plaintext.",
+    "Restore Cargo.lock and all synchronized Rust toolchain pins from the approved parent if native regression is observed; do not export or migrate secrets to plaintext.",
     "Run npm ci, npm run typecheck, npm test, npm run build, and Tauri multi-platform checks before redeployment."
   ],
   "validation_boundary": "GitHub required checks on the pull-request head are authoritative and fail closed."

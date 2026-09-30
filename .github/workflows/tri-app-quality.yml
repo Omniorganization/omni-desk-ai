@@ -91,7 +91,7 @@ jobs:
           cache-dependency-path: apps/desktop-tauri/package-lock.json
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: "1.88.0"
+          toolchain: "1.90.0"
           components: rustfmt, clippy
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: npm ci
@@ -118,7 +118,7 @@ jobs:
           npm run build
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: "1.88.0"
+          toolchain: "1.90.0"
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Verify exact backport source and resolved Cargo graph
         run: |
@@ -166,7 +166,7 @@ jobs:
           cache-dependency-path: apps/desktop-tauri/package-lock.json
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: "1.88.0"
+          toolchain: "1.90.0"
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -187,7 +187,7 @@ jobs:
           cache-dependency-path: apps/desktop-tauri/package-lock.json
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: "1.88.0"
+          toolchain: "1.90.0"
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
