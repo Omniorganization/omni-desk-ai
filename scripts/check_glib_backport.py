@@ -37,6 +37,8 @@ def check(root: Path, metadata: dict | None = None) -> dict:
             if handle is None:
                 raise ValueError(f"missing archive content: {relative}")
             expected = handle.read()
+            if relative == ".cargo_vcs_info.json":
+                expected = expected.rstrip(b"\n") + b"\n"
             if relative == SOURCE:
                 for before, after in PATCH:
                     if expected.count(before) != 1:

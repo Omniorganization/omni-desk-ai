@@ -132,16 +132,17 @@ jobs:
           cp -a apps/desktop-tauri/src-tauri/. "$baseline/"
           cp -a apps/desktop-tauri/dist "$RUNNER_TEMP/dist"
           tar -xzf "$baseline/vendor/glib-0.18.5.crate" --strip-components=1 -C "$baseline/vendor/glib"
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/glib-regression-target"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/glib-baseline-target"
           set +e
           cargo test --release --locked --manifest-path "$baseline/Cargo.toml" --test glib_variant_regression > reports/glib-backport/baseline.log 2>&1
           status=$?
           set -e
           echo "$status" > reports/glib-backport/baseline.status
           cat reports/glib-backport/baseline.log
+          rm -rf "$RUNNER_TEMP/glib-baseline-target"
       - name: Enforce optimized patched iterator regression
         run: |
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/glib-regression-target"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/glib-patched-target"
           set -o pipefail
           cargo test --release --locked --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml --test glib_variant_regression 2>&1 | tee reports/glib-backport/patched.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

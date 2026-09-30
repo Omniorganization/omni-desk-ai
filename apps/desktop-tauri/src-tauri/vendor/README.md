@@ -5,7 +5,9 @@ Owner: security-release-owner. Scope: Linux Tauri/GTK glib 0.18 ABI only.
 The published glib 0.18.5 crate is retained verbatim as `glib-0.18.5.crate`,
 SHA-256 `233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5`.
 Its 121 extracted files retain the normalized manifest, MIT LICENSE and COPYRIGHT.
-The ONLY vendor source delta is the two-line upstream fix for
+Cargo's VCS metadata JSON receives a final newline for repository formatting;
+the integrity gate verifies that exact metadata-only normalization too.
+The ONLY Rust source delta is the two-line upstream fix for
 GHSA-wrw7-89jp-8q8g/RUSTSEC-2024-0429: mutable `p` and `&mut p` in
 `VariantStrIter::impl_get`. The variadic GLib function writes to this output
 pointer; passing an immutable Rust reference was undefined behavior.

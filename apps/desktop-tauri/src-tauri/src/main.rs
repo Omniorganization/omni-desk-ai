@@ -2,15 +2,66 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use tauri::Manager;
 
 const SERVICE: &str = "ai.omnidesk.desktop";
 
 #[tauri::command]
-fn secure_set(key: String, value: String) -> Result<(), String> {
+fn secure_set(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
     let entry = keyring::Entry::new(SERVICE, &key).map_err(|error| error.to_string())?;
+    if matches!(
+        key.as_str(),
+        "omni.deviceId.v2" | "omni.devicePublicKeyPem.v2" | "omni.devicePrivateKeyJwk.v2"
+    ) {
+        let directory = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| error.to_string())?;
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        return write_identity_once(
+            &directory.join("device-identity.lock"),
+            &value,
+            || match entry.get_password() {
+                Ok(value) => Ok(value),
+                Err(keyring::Error::NoEntry) => Ok(String::new()),
+                Err(error) => Err(error.to_string()),
+            },
+            || {
+                entry
+                    .set_password(&value)
+                    .map_err(|error| error.to_string())
+            },
+        );
+    }
     entry
         .set_password(&value)
         .map_err(|error| error.to_string())
+}
+
+fn write_identity_once(
+    lock_path: &Path,
+    value: &str,
+    read: impl FnOnce() -> Result<String, String>,
+    write: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| error.to_string())?;
+    fs2::FileExt::try_lock_exclusive(&file)
+        .map_err(|_| "desktop identity store is busy; retry initialization".to_string())?;
+    let existing = read()?;
+    if !existing.is_empty() {
+        return if existing == value {
+            Ok(())
+        } else {
+            Err("desktop identity already exists; refusing credential replacement".to_string())
+        };
+    }
+    write()
 }
 
 #[tauri::command]
@@ -194,7 +245,82 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_relative_path;
+    use super::{validate_relative_path, write_identity_once};
+    use std::cell::Cell;
+    use std::path::PathBuf;
+
+    fn test_lock_path() -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "omnidesk-identity-test-{}-{nonce}.lock",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn rejects_identity_replacement_and_read_errors_without_writes() {
+        let path = test_lock_path();
+        let writes = Cell::new(0);
+        let write = || {
+            writes.set(writes.get() + 1);
+            Ok(())
+        };
+        assert!(write_identity_once(&path, "new", || Ok("existing".into()), write).is_err());
+        assert!(write_identity_once(&path, "new", || Err("store denied".into()), write).is_err());
+        assert!(write_identity_once(&path, "existing", || Ok("existing".into()), write).is_ok());
+        assert_eq!(writes.get(), 0);
+        assert!(write_identity_once(&path, "new", || Ok(String::new()), write).is_ok());
+        assert_eq!(writes.get(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn identity_lock_child() {
+        let Some(path) = std::env::var_os("OMNIDESK_TEST_IDENTITY_LOCK") else {
+            return;
+        };
+        let result = write_identity_once(
+            PathBuf::from(path).as_path(),
+            "new",
+            || Ok(String::new()),
+            || Ok(()),
+        );
+        assert_eq!(
+            result.is_err(),
+            std::env::var_os("OMNIDESK_TEST_EXPECT_BUSY").is_some()
+        );
+    }
+
+    #[test]
+    fn identity_lock_excludes_another_process_and_releases_on_drop() {
+        let path = test_lock_path();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&file).unwrap();
+        let child = |busy: bool| {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "tests::identity_lock_child", "--nocapture"])
+                .env("OMNIDESK_TEST_IDENTITY_LOCK", &path)
+                .env_remove("OMNIDESK_TEST_EXPECT_BUSY");
+            if busy {
+                command.env("OMNIDESK_TEST_EXPECT_BUSY", "1");
+            }
+            assert!(command.status().unwrap().success());
+        };
+        child(true);
+        drop(file);
+        child(false);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn accepts_bounded_relative_paths() {
