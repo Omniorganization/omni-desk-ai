@@ -2,6 +2,7 @@
   "schema": "omnidesk-dependency-upgrade-evidence/v1",
   "scope": [
     "Tauri API 2.11.1",
+    "Tauri Rust 2.11.6 and keyring 4.2.0",
     "Vite 8.2.1",
     "TypeScript 7.0.2",
     "tsx 4.23.11",
@@ -18,11 +19,13 @@
   "risk_notes": [
     "Global Node ambient types can hide browser/WebView runtime errors.",
     "TypeScript 6 changes compiler behavior and may expose stricter library declarations.",
-    "Desktop frontend and Node test environments must remain independently type-checked."
+    "Desktop frontend and Node test environments must remain independently type-checked.",
+    "Credential-store upgrades must preserve ai.omnidesk.desktop service identifiers, existing device identities, native backends, and fail-closed error propagation."
   ],
   "rollback_steps": [
     "Revert the pull request commit.",
     "Restore package.json, package-lock.json, and TypeScript configs from the parent main commit.",
+    "Restore Cargo.lock from the approved parent if native credential-store regression is observed; do not export or migrate secrets to plaintext.",
     "Run npm ci, npm run typecheck, npm test, npm run build, and Tauri multi-platform checks before redeployment."
   ],
   "validation_boundary": "GitHub required checks on the pull-request head are authoritative and fail closed."

@@ -5,7 +5,7 @@
 click>=8.5.0
 anyio>=4.14.2
 cryptography>=50
-filelock>=3.32.4
+filelock>=4.0.0
 httpx2>=2.12.0
 jsonschema>=4.26.0
 msgpack>=1.2.2
@@ -15,5 +15,5 @@ pytest>=9.0.3
 requests>=2.34.2
 setuptools>=83.0.0
 starlette>=1.0.1
-urllib3>=2.7.0
+urllib3>=2.8.0
 wheel>=0.47.0
