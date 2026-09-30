@@ -119,8 +119,7 @@ def test_remote_docker_plugin_is_selected_when_runtime_sandbox_is_remote(tmp_pat
 
 def test_production_example_config_passes_with_required_env(monkeypatch) -> None:
     import omnidesk_agent.config as config_mod
-    if config_mod.yaml is None:
-        pytest.skip("PyYAML is not available in this test environment")
+    assert config_mod.yaml is not None, "required PyYAML dependency or test isolation is broken"
     from omnidesk_agent.config import load_config
 
     env = {
