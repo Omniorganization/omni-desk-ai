@@ -9,7 +9,7 @@ description = "Local-first multi-channel AI desktop assistant runtime"
 requires-python = ">=3.10,<3.14"
 dependencies = [
   "fastapi>=0.129,<1",
-  "starlette>=1.0.1,<2",
+  "starlette>=1.7.0,<2",
   "uvicorn>=0.27,<1",
   "pydantic>=2.7,<3",
   "pyyaml>=6.0.3,<7",
