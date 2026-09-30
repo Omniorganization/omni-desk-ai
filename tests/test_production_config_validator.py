@@ -16,6 +16,53 @@ def _enable_postgres_production_state(cfg: AppConfig) -> None:
     cfg.api_resource_guard.backend = "postgres"
 
 
+@pytest.mark.parametrize("section,field,value,issue", [
+    ("channels.chrome", "allowed_origins", [], "channels.chrome.allowed_origins must be configured"),
+    ("channels.chrome", "devtools_host", "0.0.0.0", "channels.chrome.devtools_host must be loopback"),
+    ("channels.chrome", "dedicated_profile_dir", None, "channels.chrome.dedicated_profile_dir must be configured"),
+    ("channels.gmail", "encrypt_token_at_rest", False, "channels.gmail.encrypt_token_at_rest must be true"),
+    ("channels.gmail", "allow_send", True, "gmail.allow_send requires human approval"),
+    ("channels.gmail", "allow_compose", True, "gmail.allow_compose requires human approval"),
+    ("gateway", "public_base_url", "https://localhost", "gateway.public_base_url uses placeholder value"),
+    ("observability", "expose_public_metrics", True, "observability.expose_public_metrics must be false"),
+    ("permissions", "shell_backend", "unsafe-shell", "permissions.shell_backend uses an unsupported backend"),
+    ("permissions", "shell_backend", "remote_docker", "permissions.shell_backend must match sandbox.backend"),
+    ("app_sync", "require_device_public_key_in_production", False, "app_sync.require_device_public_key_in_production must be true"),
+    ("app_sync", "require_device_signed_requests_in_production", False, "app_sync.require_device_signed_requests_in_production must be true"),
+    ("app_sync", "device_signature_max_skew_seconds", 301, "app_sync.device_signature_max_skew_seconds must be <= 300"),
+    ("app_sync", "reject_predictable_device_ids_in_production", False, "app_sync.reject_predictable_device_ids_in_production must be true"),
+])
+def test_production_security_boundaries_reject_individual_downgrades(section, field, value, issue):
+    cfg = AppConfig()
+    cfg.plugins.enabled = False
+    cfg.channels.chrome.enabled = False
+    cfg.memory_privacy.encrypt_at_rest = True
+    _enable_postgres_production_state(cfg)
+    env = {
+        "OMNIDESK_ENV": "production",
+        "OMNIDESK_ADMIN_TOKEN": "x" * 40,
+        "OMNIDESK_GATEWAY_SECRET": "x" * 40,
+        "OMNIDESK_MEMORY_ENCRYPTION_KEY": "x" * 40,
+        "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
+        "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
+    }
+    assert validate_production_config(cfg, env)["ok"]
+    if section == "channels.chrome":
+        cfg.channels.chrome.enabled = True
+        cfg.channels.chrome.forbid_default_profile = True
+    if section == "channels.gmail":
+        cfg.channels.gmail.enabled = True
+        cfg.permissions.approval_mode = "auto_policy"
+    target = cfg
+    for component in section.split("."):
+        target = getattr(target, component)
+    setattr(target, field, value)
+    denied = validate_production_config(cfg, env)
+    assert not denied["ok"]
+    assert any(message.startswith(issue) for message in denied["issues"])
+
+
 def test_local_config_is_not_strict_without_production_signal():
     cfg = AppConfig()
 
