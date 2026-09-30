@@ -4,7 +4,7 @@
     "Flutter 3.38.8 and Dart 3.10.7 toolchain",
     "Firebase Core 4.12.1",
     "Firebase Messaging 16.4.3",
-    "flutter_secure_storage 10.3.1",
+    "flutter_secure_storage 11.0.0",
     "local_auth 3.0.2",
     "flutter_lints 6.0.0",
     "iOS 15 deployment target"

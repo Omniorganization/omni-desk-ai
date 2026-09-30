@@ -2,9 +2,9 @@
   "schema": "omnidesk-dependency-upgrade-evidence/v1",
   "scope": [
     "Tauri API 2.11.1",
-    "Vite 8.1.5",
-    "TypeScript 6.0.3",
-    "tsx 4.23.1",
+    "Vite 8.2.1",
+    "TypeScript 7.0.2",
+    "tsx 4.23.11",
     "Node 22 test type environment"
   ],
   "tests": [
