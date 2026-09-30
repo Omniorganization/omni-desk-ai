@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from omnidesk_agent.security.admin_auth import AdminAuth
 
 
@@ -50,3 +51,27 @@ def test_admin_auth_binds_actor_to_verified_token_not_header(monkeypatch):
     mapped = auth.verify_headers(Headers({"authorization": "Bearer op", "x-omnidesk-actor": "system"}), "8.8.8.8", required_role="operator")
     assert mapped.ok
     assert mapped.actor == "alice"
+
+
+def test_explicit_legacy_compatibility_accepts_only_its_secret_and_audits_actor(monkeypatch, tmp_path):
+    _clear_admin_env(monkeypatch)
+    monkeypatch.setenv("OMNIDESK_TEST_LEGACY_SECRET", "legacy-only-secret")
+    monkeypatch.setenv("OMNIDESK_LEGACY_ADMIN_ACTOR", "legacy-owner")
+    audit = tmp_path / "auth-audit.jsonl"
+    auth = AdminAuth(legacy_secret_env="OMNIDESK_TEST_LEGACY_SECRET", audit_log=audit)
+    for headers in (Headers(), Headers({"authorization": "Bearer legacy-only-secret"}),
+                    Headers({"x-omnidesk-gateway-secret": "wrong"})):
+        decision = auth.verify_headers(headers, "8.8.8.8", required_role="owner")
+        assert not decision.ok
+        assert decision.reason == "missing or invalid legacy gateway secret"
+    accepted = auth.verify_headers(Headers({"x-omnidesk-gateway-secret": "legacy-only-secret"}), "8.8.8.8", required_role="owner")
+    assert accepted.ok and accepted.actor == "legacy-owner" and accepted.role == "owner"
+    assert "legacy-only-secret" not in audit.read_text()
+
+
+def test_unconfigured_remote_admin_never_accepts_client_declared_identity(monkeypatch):
+    _clear_admin_env(monkeypatch)
+    denied = AdminAuth().verify_headers(Headers({"x-omnidesk-actor": "owner", "x-omnidesk-admin-role": "owner"}), "8.8.8.8")
+    assert not denied.ok
+    assert denied.reason == "admin token is not configured"
+    assert denied.actor == "unknown"

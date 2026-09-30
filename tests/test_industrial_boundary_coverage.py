@@ -35,7 +35,7 @@ def _workspace_archive(files: dict[str, bytes] | None = None) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def test_schema_retry_error_and_fallback_paths(monkeypatch):
+def test_schema_retry_error_and_dependency_failure_paths(monkeypatch):
     with pytest.raises(StructuredOutputError, match="invalid JSON"):
         validate_json_text("{not-json")
     with pytest.raises(StructuredOutputError, match="items.0"):
@@ -43,12 +43,12 @@ def test_schema_retry_error_and_fallback_paths(monkeypatch):
     with pytest.raises(StructuredOutputError, match="invalid JSON schema"):
         validate_json_text("{}", {"type": 123})
 
-    monkeypatch.setattr(schema_retry, "_load_jsonschema_validator", lambda: (None, ValueError))
-    assert validate_json_text('{"kind":"ok"}', {"type": "object", "required": ["kind"]}) == {"kind": "ok"}
-    with pytest.raises(StructuredOutputError, match="missing required"):
-        validate_json_text("{}", {"type": "object", "required": ["kind"]})
-    with pytest.raises(StructuredOutputError, match="expected array"):
-        validate_json_text("{}", {"type": "array"})
+    def unavailable_validator():
+        raise StructuredOutputError("JSON schema validation dependency is unavailable")
+
+    monkeypatch.setattr(schema_retry, "_load_jsonschema_validator", unavailable_validator)
+    with pytest.raises(StructuredOutputError, match="dependency is unavailable"):
+        validate_json_text('{"kind":"ok"}', {"type": "object", "required": ["kind"]})
     system, user = build_repair_prompt(original_text="bad", error="nope", schema={"type": "object"})
     assert "Return only valid JSON" in system
     assert "nope" in user and "bad" in user

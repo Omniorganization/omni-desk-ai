@@ -3,7 +3,7 @@
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
 PUBLIC_BASE_URL ?= https://omnidesk.company.example.invalid
-SANDBOX_IMAGE ?= python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+SANDBOX_IMAGE ?= python:3.11-slim@sha256:174bec68e0451bffabbb08c7d5d21c6b253f772d81d52b9558af97bb3159b761
 RUNNER_URL ?= http://sandbox-runner:18890
 IOS_EVIDENCE_RAW_DIR ?= /tmp/omnidesk-ios-real-device-evidence
 IOS_EVIDENCE_EXPECTED_VERSION ?= 1.12.7+root-monorepo-production-ga-candidate

@@ -7,12 +7,12 @@ from typing import Any, Optional
 
 
 def _load_jsonschema_validator():
-    """Lazily import jsonschema to keep CLI/server cold-start lightweight."""
+    """Lazily import the required validator without adding import-time startup cost."""
     try:
         from jsonschema import Draft202012Validator, ValidationError as JsonSchemaValidationError
         return Draft202012Validator, JsonSchemaValidationError
-    except Exception:  # pragma: no cover - dependency fallback for minimal installs
-        return None, ValueError
+    except Exception as exc:  # pragma: no cover - exercised by a dependency-failure test
+        raise StructuredOutputError("JSON schema validation dependency is unavailable") from exc
 
 
 class StructuredOutputError(ValueError):
@@ -37,27 +37,16 @@ def validate_json_text(text: str, schema: Optional[dict[str, Any]] = None) -> An
 
 def _validate_payload(payload: Any, schema: dict[str, Any]) -> None:
     Draft202012Validator, JsonSchemaValidationError = _load_jsonschema_validator()
-    if Draft202012Validator is not None:
-        try:
-            Draft202012Validator.check_schema(schema)
-            Draft202012Validator(schema).validate(payload)
-            return
-        except JsonSchemaValidationError as exc:  # type: ignore[misc]
-            path = ".".join(str(p) for p in getattr(exc, "path", [])) or "$"
-            raise StructuredOutputError(f"JSON schema validation failed at {path}: {exc.message}") from exc
-        except Exception as exc:
-            raise StructuredOutputError(f"invalid JSON schema: {exc}") from exc
-    # Minimal fallback only used if dependency import failed.
-    required = schema.get("required") if isinstance(schema, dict) else None
-    if isinstance(required, list) and isinstance(payload, dict):
-        missing = [str(k) for k in required if k not in payload]
-        if missing:
-            raise StructuredOutputError("JSON missing required fields: " + ", ".join(missing))
-    expected_type = schema.get("type") if isinstance(schema, dict) else None
-    if expected_type == "object" and not isinstance(payload, dict):
-        raise StructuredOutputError("JSON schema expected object")
-    if expected_type == "array" and not isinstance(payload, list):
-        raise StructuredOutputError("JSON schema expected array")
+    try:
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(payload)
+    except JsonSchemaValidationError as exc:  # type: ignore[misc]
+        path = ".".join(str(p) for p in getattr(exc, "path", [])) or "$"
+        raise StructuredOutputError(f"JSON schema validation failed at {path}: {exc.message}") from exc
+    except StructuredOutputError:
+        raise
+    except Exception as exc:
+        raise StructuredOutputError(f"invalid JSON schema: {exc}") from exc
 
 
 def build_repair_prompt(*, original_text: str, error: str, schema: Optional[dict[str, Any]] = None) -> tuple[str, str]:

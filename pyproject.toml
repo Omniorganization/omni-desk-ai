@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=83.0.0,<84", "wheel>=0.47.0,<1"]
+requires = ["setuptools>=83.0.0,<85", "wheel>=0.47.0,<1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -20,17 +20,19 @@ dependencies = [
   "websockets>=12.0,<17",
   "python-multipart>=0.0.22,<1",
   "psutil>=5.9,<8",
-  "cryptography>=48.0.1,<50",
+  "cryptography>=50,<51",
+  "jsonschema>=4.26,<5",
+  "msgpack>=1.2.2,<2",
 ]
 
 [project.optional-dependencies]
 enterprise = ["psycopg[binary]>=3.2,<4"]
 langchain = ["langchain>=0.2,<2", "langchain-community>=0.2,<2"]
 redis = ["redis>=5,<9"]
-vector = ["sentence-transformers>=3,<6", "faiss-cpu>=1.8,<2"]
+vector = ["sentence-transformers>=3,<7", "faiss-cpu>=1.8,<2"]
 local-models = ["llama-cpp-python>=0.2.90,<1"]
-dev = ["build>=1.2,<2", "ruff>=0.8,<1", "pyright>=1.1.390,<2"]
-test = ["pytest>=9.0.3,<10", "pytest-cov>=5,<8", "pytest-timeout>=2.4,<3", "pytest-asyncio>=0.23,<2", "httpx2>=2.4,<3"]
+dev = ["build>=1.2,<2", "ruff>=0.8,<1", "pyright>=1.1.390,<2", "setuptools>=83,<85", "wheel>=0.47,<1"]
+test = ["pytest>=9.0.3,<10", "pytest-cov>=5,<8", "pytest-timeout>=2.4,<3", "pytest-asyncio>=0.23,<2", "httpx2>=2.12,<3"]
 security = ["bandit>=1.8,<2", "pip-audit>=2.10,<3"]
 
 [project.scripts]

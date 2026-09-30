@@ -6,7 +6,7 @@ export interface DesktopDeviceIdentity {
 }
 
 async function secureGet(key: string): Promise<string> {
-  try { return await invoke<string>('secure_get', { key }); } catch { return ''; }
+  return invoke<string>('secure_get', { key });
 }
 
 async function secureSet(key: string, value: string): Promise<void> {
@@ -71,12 +71,24 @@ export function createDesktopDeviceRequestSigner(deviceId: string) {
   return (method: string, path: string, body = '') => signDesktopDeviceRequest(deviceId, method, path, body);
 }
 
-export async function loadOrCreateDesktopIdentity(): Promise<DesktopDeviceIdentity> {
+let pendingIdentity: Promise<DesktopDeviceIdentity> | undefined;
+
+export function loadOrCreateDesktopIdentity(): Promise<DesktopDeviceIdentity> {
+  if (!pendingIdentity) {
+    pendingIdentity = loadOrCreateIdentity().finally(() => { pendingIdentity = undefined; });
+  }
+  return pendingIdentity;
+}
+
+async function loadOrCreateIdentity(): Promise<DesktopDeviceIdentity> {
   const existingDeviceId = await secureGet('omni.deviceId.v2');
   const existingPublicKey = await secureGet('omni.devicePublicKeyPem.v2');
   const existingPrivateKey = await secureGet('omni.devicePrivateKeyJwk.v2');
   if (existingDeviceId && existingPublicKey && existingPrivateKey) {
     return { deviceId: existingDeviceId, publicKeyPem: existingPublicKey };
+  }
+  if (existingDeviceId || existingPublicKey || existingPrivateKey) {
+    throw new Error('desktop device identity is incomplete; secure-store recovery is required');
   }
 
   const keyPair = await crypto.subtle.generateKey(

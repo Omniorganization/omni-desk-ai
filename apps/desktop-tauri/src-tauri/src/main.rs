@@ -2,15 +2,66 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use tauri::Manager;
 
 const SERVICE: &str = "ai.omnidesk.desktop";
 
 #[tauri::command]
-fn secure_set(key: String, value: String) -> Result<(), String> {
+fn secure_set(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
     let entry = keyring::Entry::new(SERVICE, &key).map_err(|error| error.to_string())?;
+    if matches!(
+        key.as_str(),
+        "omni.deviceId.v2" | "omni.devicePublicKeyPem.v2" | "omni.devicePrivateKeyJwk.v2"
+    ) {
+        let directory = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| error.to_string())?;
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        return write_identity_once(
+            &directory.join("device-identity.lock"),
+            &value,
+            || match entry.get_password() {
+                Ok(value) => Ok(value),
+                Err(keyring::Error::NoEntry) => Ok(String::new()),
+                Err(error) => Err(error.to_string()),
+            },
+            || {
+                entry
+                    .set_password(&value)
+                    .map_err(|error| error.to_string())
+            },
+        );
+    }
     entry
         .set_password(&value)
         .map_err(|error| error.to_string())
+}
+
+fn write_identity_once(
+    lock_path: &Path,
+    value: &str,
+    read: impl FnOnce() -> Result<String, String>,
+    write: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| error.to_string())?;
+    fs2::FileExt::try_lock_exclusive(&file)
+        .map_err(|_| "desktop identity store is busy; retry initialization".to_string())?;
+    let existing = read()?;
+    if !existing.is_empty() {
+        return if existing == value {
+            Ok(())
+        } else {
+            Err("desktop identity already exists; refusing credential replacement".to_string())
+        };
+    }
+    write()
 }
 
 #[tauri::command]
@@ -191,6 +242,9 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running Omni Desktop App");
 }
+
+#[cfg(test)]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {

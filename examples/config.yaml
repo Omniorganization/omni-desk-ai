@@ -22,7 +22,7 @@ runtime:
   required_rerank_models: []
   required_vision_models: []
   required_docker_images:
-    - python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+    - python:3.11-slim@sha256:174bec68e0451bffabbb08c7d5d21c6b253f772d81d52b9558af97bb3159b761
   required_release_artifacts: []
   deny_external_services_in_offline_mode: true
 

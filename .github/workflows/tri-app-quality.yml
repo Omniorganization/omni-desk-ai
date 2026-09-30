@@ -17,8 +17,8 @@ jobs:
   backend-and-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
@@ -66,7 +66,7 @@ jobs:
       run:
         working-directory: apps/web-admin-next
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22.17.0"
@@ -83,13 +83,13 @@ jobs:
       run:
         working-directory: apps/desktop-tauri
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: "1.88.0"
           components: rustfmt, clippy
@@ -104,19 +104,67 @@ jobs:
       - run: cargo build --locked --manifest-path src-tauri/Cargo.toml
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode desktop-release
 
+  glib-backport-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22.17.0"
+      - name: Build real desktop assets for optimized native harness
+        working-directory: apps/desktop-tauri
+        run: |
+          npm ci
+          npm run build
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: "1.88.0"
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Verify exact backport source and resolved Cargo graph
+        run: |
+          mkdir -p reports/glib-backport
+          cargo metadata --locked --format-version 1 --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml > reports/glib-backport/metadata.json
+          python scripts/check_glib_backport.py . --metadata reports/glib-backport/metadata.json --report reports/glib-backport/integrity.json
+      - name: Observe authentic unpatched baseline in isolated cloud copy
+        run: |
+          baseline="$RUNNER_TEMP/glib-baseline"
+          mkdir -p "$baseline"
+          cp -a apps/desktop-tauri/src-tauri/. "$baseline/"
+          cp -a apps/desktop-tauri/dist "$RUNNER_TEMP/dist"
+          tar -xzf "$baseline/vendor/glib-0.18.5.crate" --strip-components=1 -C "$baseline/vendor/glib"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/glib-baseline-target"
+          set +e
+          cargo test --release --locked --manifest-path "$baseline/Cargo.toml" --test glib_variant_regression > reports/glib-backport/baseline.log 2>&1
+          status=$?
+          set -e
+          echo "$status" > reports/glib-backport/baseline.status
+          cat reports/glib-backport/baseline.log
+          rm -rf "$RUNNER_TEMP/glib-baseline-target"
+      - name: Enforce optimized patched iterator regression
+        run: |
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/glib-patched-target"
+          set -o pipefail
+          cargo test --release --locked --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml --test glib_variant_regression 2>&1 | tee reports/glib-backport/patched.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: glib-backport-${{ github.sha }}
+          path: reports/glib-backport/
+          if-no-files-found: error
+
   desktop-tauri-macos:
     runs-on: macos-latest
     defaults:
       run:
         working-directory: apps/desktop-tauri
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: "1.88.0"
       - run: npm ci
@@ -131,13 +179,13 @@ jobs:
       run:
         working-directory: apps/desktop-tauri
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: "1.88.0"
       - run: npm ci
@@ -148,11 +196,11 @@ jobs:
 
   desktop-tauri:
     runs-on: ubuntu-latest
-    needs: [desktop-tauri-linux, desktop-tauri-macos, desktop-tauri-windows]
+    needs: [desktop-tauri-linux, desktop-tauri-macos, desktop-tauri-windows, glib-backport-regression]
     if: always()
     steps:
       - run: |
-          for result in "${{ needs.desktop-tauri-linux.result }}" "${{ needs.desktop-tauri-macos.result }}" "${{ needs.desktop-tauri-windows.result }}"; do
+          for result in "${{ needs.desktop-tauri-linux.result }}" "${{ needs.desktop-tauri-macos.result }}" "${{ needs.desktop-tauri-windows.result }}" "${{ needs.glib-backport-regression.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Desktop platform build failed: $result"
               exit 1
@@ -167,7 +215,7 @@ jobs:
       run:
         working-directory: apps/mobile-flutter
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: "3.38.8"
@@ -184,7 +232,7 @@ jobs:
           license_status=$?
           set -o pipefail
           test "$license_status" -eq 0
-          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+          "$sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" "ndk;28.2.13676358"
       - name: Generate non-production Android signing key
         env:
           OMNI_ANDROID_KEYSTORE_PASSWORD: omnidesk-ci-store-password
@@ -221,7 +269,7 @@ jobs:
       run:
         working-directory: apps/mobile-flutter
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: "3.38.8"
@@ -239,7 +287,7 @@ jobs:
       run:
         working-directory: apps/mobile-flutter
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: "3.38.8"

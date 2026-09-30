@@ -2,15 +2,18 @@
   "schema": "omnidesk-dependency-upgrade-evidence/v1",
   "scope": [
     "Tauri API 2.11.1",
-    "Vite 8.1.5",
-    "TypeScript 6.0.3",
-    "tsx 4.23.1",
+    "Tauri Rust 2.11.6 and keyring 4.2.0",
+    "Vite 8.2.1",
+    "TypeScript 7.0.2",
+    "tsx 4.23.11",
     "Node 22 test type environment"
   ],
   "tests": [
     "npm ci",
     "npm run typecheck",
     "npm test",
+    "device-identity.test.ts: backend errors, partial identity, interrupted writes, concurrent initialization and legitimate signing",
+    "native cross-process identity lock and immutable identity-write tests on Linux, Windows and macOS",
     "npm run build",
     "multi-platform Tauri cargo test and build jobs",
     "repository required CI, Security, Tri-App, Main Verification, and Release Policy checks"
@@ -18,11 +21,15 @@
   "risk_notes": [
     "Global Node ambient types can hide browser/WebView runtime errors.",
     "TypeScript 6 changes compiler behavior and may expose stricter library declarations.",
-    "Desktop frontend and Node test environments must remain independently type-checked."
+    "Desktop frontend and Node test environments must remain independently type-checked.",
+    "Credential-store upgrades must preserve ai.omnidesk.desktop service identifiers, existing device identities, native backends, and fail-closed error propagation.",
+    "Incomplete native identity records now require explicit secure-store recovery instead of silently rotating surviving credentials.",
+    "Native identity writes use an OS file lock in application-local data and reject replacement; operator-token updates retain their prior behavior."
   ],
   "rollback_steps": [
     "Revert the pull request commit.",
     "Restore package.json, package-lock.json, and TypeScript configs from the parent main commit.",
+    "Restore Cargo.lock from the approved parent if native credential-store regression is observed; do not export or migrate secrets to plaintext.",
     "Run npm ci, npm run typecheck, npm test, npm run build, and Tauri multi-platform checks before redeployment."
   ],
   "validation_boundary": "GitHub required checks on the pull-request head are authoritative and fail closed."

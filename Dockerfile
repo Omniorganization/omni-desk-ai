@@ -1,4 +1,4 @@
-ARG PYTHON_BASE_IMAGE=python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
+ARG PYTHON_BASE_IMAGE=python:3.11-slim@sha256:174bec68e0451bffabbb08c7d5d21c6b253f772d81d52b9558af97bb3159b761
 ARG OMNIDESK_VERSION=1.12.7+root-monorepo-production-ga-candidate
 ARG OMNIDESK_BUILD_SHA=unknown
 ARG OMNIDESK_ARTIFACT_SHA256=unknown
@@ -35,10 +35,24 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY requirements.bootstrap.lock requirements.runtime.lock requirements.enterprise.lock /tmp/
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.bootstrap.lock \
+# The runtime does not install packages. Remove bootstrap/install tooling after
+# installation so stale vendored metadata from the base image is not shipped.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.bootstrap.lock \
     && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.runtime.lock \
     && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.enterprise.lock \
     && python -m pip install --no-cache-dir --no-deps /tmp/*.whl \
+    && python -m pip uninstall -y setuptools wheel \
+    && rm -rf /usr/local/lib/python3.11/ensurepip \
+        /usr/local/lib/python3.11/site-packages/pip \
+        /usr/local/lib/python3.11/site-packages/pip-*.dist-info \
+        /usr/local/lib/python3.11/site-packages/pkg_resources \
+        /usr/local/lib/python3.11/site-packages/setuptools \
+        /usr/local/lib/python3.11/site-packages/setuptools-*.dist-info \
+        /usr/local/lib/python3.11/site-packages/wheel \
+        /usr/local/lib/python3.11/site-packages/wheel-*.dist-info \
     && rm -rf /tmp/*.whl /tmp/requirements.bootstrap.lock /tmp/requirements.runtime.lock /tmp/requirements.enterprise.lock \
     && useradd -r -u 10001 omnidesk \
     && mkdir -p /data \

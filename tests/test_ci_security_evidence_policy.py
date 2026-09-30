@@ -91,7 +91,9 @@ def test_security_workflow_dependency_review_and_all_python_locks_are_blocking()
     ]
     assert "continue-on-error: true" not in dependency_review
     allow_ghsa_lines = [line.strip() for line in workflow.splitlines() if line.strip().startswith("allow-ghsas:")]
-    assert allow_ghsa_lines == ["allow-ghsas: GHSA-wrw7-89jp-8q8g"]
+    assert allow_ghsa_lines == []
+    assert "--ignore" not in workflow
+    assert "python scripts/check_glib_backport.py ." in workflow
 
     audit_start = workflow.index("for lockfile in")
     audit_end = workflow.index("set -e", audit_start)
