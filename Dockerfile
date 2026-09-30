@@ -35,6 +35,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY requirements.bootstrap.lock requirements.runtime.lock requirements.enterprise.lock /tmp/
 COPY --from=builder /build/dist/*.whl /tmp/
+# The base image retains stale ensurepip/vendor metadata after runtime dependencies
+# replace it. The RUN command removes only the superseded vulnerable artifacts.
 RUN apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
@@ -43,6 +45,8 @@ RUN apt-get update \
     && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.enterprise.lock \
     && python -m pip install --no-cache-dir --no-deps /tmp/*.whl \
     && python -m pip uninstall -y setuptools wheel \
+    && find /usr/local/lib/python3.11 -type f \( -iname '*setuptools*70.3.0*' -o -iname '*msgpack*1.1.2*' \) -delete \
+    && find /usr/local/lib/python3.11 -type d -empty -delete \
     && rm -rf /tmp/*.whl /tmp/requirements.bootstrap.lock /tmp/requirements.runtime.lock /tmp/requirements.enterprise.lock \
     && useradd -r -u 10001 omnidesk \
     && mkdir -p /data \
