@@ -41,6 +41,7 @@ jobs:
           PYTHONPATH=. python -m pytest -q -W error \
             --timeout=60 --timeout-method=thread \
             tests/test_industrial_runtime_optimization.py \
+            tests/test_industrial_security_boundaries.py \
             tests/test_postgres_state_runtime_contracts.py \
             tests/test_health_admin_status.py \
             tests/test_public_ready_redaction.py
@@ -75,3 +76,53 @@ jobs:
       - name: Enforce focused static analysis
         if: always()
         run: test "${{ steps.static_analysis.outputs.status }}" = "0"
+
+  boundary-baseline-controls:
+    name: Boundary Baseline Controls
+    needs: runtime-fast-lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: c4473962690b61332530ceb6607bc1dd98dbfc19
+          path: boundary-baseline
+      - name: Verify immutable baseline and negative controls
+        run: |
+          mkdir -p reports/boundary-baseline
+          cp tests/test_industrial_security_boundaries.py "$RUNNER_TEMP/boundary-controls.py"
+          test "$(git -C boundary-baseline rev-parse HEAD)" = c4473962690b61332530ceb6607bc1dd98dbfc19
+          set +e
+          cd boundary-baseline
+          PYTHONPATH=. python -m pytest -q -W error \
+            --timeout=60 --timeout-method=thread \
+            "$RUNNER_TEMP/boundary-controls.py" -k original_ \
+            --junitxml="../reports/boundary-baseline/junit.xml" \
+            > ../reports/boundary-baseline/pytest.txt 2>&1
+          status=$?
+          cd ..
+          set -e
+          cat reports/boundary-baseline/pytest.txt
+          test "$status" = 1
+          python - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          root = ET.parse(Path("reports/boundary-baseline/junit.xml")).getroot()
+          cases = root.findall(".//testcase")
+          assert len(cases) == 6, "all six baseline controls must execute"
+          assert all(case.find("failure") is not None for case in cases)
+          assert not root.findall(".//error")
+          assert not root.findall(".//skipped")
+          print("Baseline: six controls fail; patched controls passed in prerequisite job")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: boundary-baseline-controls-${{ github.sha }}
+          path: reports/boundary-baseline/
+          if-no-files-found: error

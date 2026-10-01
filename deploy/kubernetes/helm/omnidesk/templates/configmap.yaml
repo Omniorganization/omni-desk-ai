@@ -5,6 +5,11 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   config.production.yaml: |
+    workspace:
+      root: /data/workspace
+      memory_db: /data/workspace/memory.sqlite3
+      skills_dirs: [/data/skills]
+      plugins_dirs: [/data/plugins]
     gateway:
       host: 0.0.0.0
       port: {{ .Values.service.port }}

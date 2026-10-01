@@ -123,6 +123,7 @@ jobs:
           set -o pipefail
           PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread \
             tests/test_store_schema_migration_baselines.py \
+            tests/test_industrial_security_boundaries.py \
             tests/test_postgres_state_runtime_contracts.py \
             tests/test_chat_stream_durable_resume.py \
             tests/test_appsync_industrial_contract.py \

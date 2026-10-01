@@ -185,7 +185,10 @@ def test_api_resource_guard_handles_disabled_and_body_size_branches():
 
     cfg = ApiResourceGuardConfig(max_body_bytes=3)
     guard = ApiResourceGuard(cfg)
-    asyncio.run(guard.before_request(_request("/api/chat", method="GET", body=b"ignored")))
+    with pytest.raises(HTTPException) as get_body:
+        asyncio.run(guard.before_request(_request("/api/chat", method="GET", body=b"ignored")))
+    assert get_body.value.status_code == 413
+    assert guard.snapshot().inflight_total == 0
 
     with pytest.raises(HTTPException) as bad_length:
         asyncio.run(guard.before_request(_request("/api/chat", headers={"content-length": "not-a-number"})))

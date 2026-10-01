@@ -7,7 +7,7 @@ from typing import Any
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.models.router import ModelRouter
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 
 
 class VisionGroundingTool:
@@ -36,6 +36,7 @@ class VisionGroundingTool:
         )
 
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "ground":
             raise ValueError(f"Unsupported vision action: {action}")

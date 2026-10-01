@@ -59,7 +59,8 @@ spec:
         - name: omnidesk-agent
           image: "{{ .Values.image.repository }}@{{ required "image.digest is required and must be the release app OCI digest" .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["--config", "/etc/omnidesk/config.production.yaml"]
+          command: ["omnidesk"]
+          args: ["--config", "/etc/omnidesk/config.production.yaml", "serve", "--host", "0.0.0.0"]
           ports:
             - name: http
               containerPort: 18789
@@ -73,6 +74,8 @@ spec:
               value: "true"
             - name: OMNIDESK_RUNNING_IN_CONTAINER
               value: "true"
+            - name: HOME
+              value: /data
             - name: OMNIDESK_OTLP_ENDPOINT
               value: {{ .Values.otel.endpoint | quote }}
             - name: OMNIDESK_APPSYNC_CHAT_LEASE_SECONDS

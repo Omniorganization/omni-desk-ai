@@ -73,9 +73,8 @@ class WebhookGuard:
 
     def verify_required_signature(self, channel: str, adapter, request: Request, body: bytes, payload) -> None:
         channel_cfg = self.channel_cfg(channel)
+        self.require_enabled_channel(channel)
         if not getattr(self.cfg.gateway, "require_webhook_signatures", True):
-            return
-        if channel_cfg is None or not bool(getattr(channel_cfg, "enabled", False)):
             return
 
         adapter_verify = getattr(adapter, "verify_request", None)
@@ -130,9 +129,15 @@ class WebhookGuard:
         from omnidesk_agent.channels.base import WebhookEnvelope
         return WebhookEnvelope(raw=payload if isinstance(payload, dict) else {})
 
+    def require_enabled_channel(self, channel: str) -> None:
+        channel_cfg = self.channel_cfg(channel)
+        if channel_cfg is None or not bool(getattr(channel_cfg, "enabled", False)):
+            raise PermissionError("Webhook channel is disabled or unknown")
+
     async def guard(self, channel: str, adapter, request: Request, payload=None) -> tuple[bytes, object]:
-        body = await request.body()
         try:
+            self.require_enabled_channel(channel)
+            body = await request.body()
             actual_payload = payload if payload is not None else self.json_body(body)
             self.verify_required_signature(channel, adapter, request, body, actual_payload)
             envelope = self.envelope(adapter, actual_payload)

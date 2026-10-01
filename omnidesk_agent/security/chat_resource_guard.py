@@ -28,7 +28,6 @@ class ChatAwareApiResourceGuard(ApiResourceGuard):
     async def before_request(self, request: Request) -> Callable[[], None]:
         if not self._enabled():
             return lambda: None
-        await self._check_body_size(request)
         client = _client_key(request, self.cfg)
         path = _path_key(request.url.path)
         window = int(getattr(self.cfg, "window_seconds", 60))
@@ -44,7 +43,8 @@ class ChatAwareApiResourceGuard(ApiResourceGuard):
             window,
             "endpoint",
         )
-        return self._acquire(route_class(request.url.path))
+        release = self._acquire(route_class(request.url.path))
+        return await self._ingest_admitted(request, release)
 
     def check_authenticated(self, request: Request, *, actor: str, role: str) -> None:
         if not self._enabled():

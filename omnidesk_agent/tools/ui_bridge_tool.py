@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 from omnidesk_agent.config import UIBridgeConfig
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 from omnidesk_agent.tools.registry import ToolRegistry
 
 class UIBridgeTool:
@@ -34,6 +34,7 @@ class UIBridgeTool:
         )
 
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self._require_enabled()
         app = str(args.get("app", ""))

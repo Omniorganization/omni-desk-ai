@@ -1,6 +1,10 @@
 {
   "version": "1.12.7+root-monorepo-production-ga-candidate",
   "status": "production_ga_candidate",
+  "scores_validated": false,
+  "score_method": "legacy_manual_self_assessment_not_current_audit_rating",
+  "assessment_date": "2026-10-01",
+  "assessment": "Engineering GA candidate only. Current static audit is partial; remediation runtime checks and external GA evidence are required. Historical scores below must not be read as a verified industrial rating.",
   "as_of": "2026-06-22",
   "scores": {
     "architecture": 95,

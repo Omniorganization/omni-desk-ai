@@ -117,10 +117,11 @@ def test_shell_remote_docker_backend_uses_runner(monkeypatch, tmp_path):
     from omnidesk_agent.core.models import ToolResult
     from omnidesk_agent.tools.base import ToolContext
     from omnidesk_agent.sandbox.remote_runner import RemoteSandboxResult
+    from omnidesk_agent.security.permissions import PermissionDecision
 
     class Permissive:
         def verify(self, proposal):
-            return None
+            return PermissionDecision(True, "allow", "explicit test approval")
 
     async def fake_run(self, *, argv, workspace, timeout_seconds, readonly=True):
         assert argv == ["git", "status"]

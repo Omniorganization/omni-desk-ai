@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 
 class ChannelSendTool:
     name = "channels"
@@ -15,6 +15,7 @@ class ChannelSendTool:
         if cfg is not None and not bool(getattr(cfg, "enabled", False)):
             raise PermissionError(f"Channel {channel} is disabled by configuration")
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "send_text":
             channel = str(args["channel"])

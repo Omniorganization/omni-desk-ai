@@ -6,7 +6,8 @@ import asyncio
 import shlex
 from pathlib import Path
 
-from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE, SandboxConfig
+from omnidesk_agent.config import AppConfig, DEFAULT_SANDBOX_IMAGE, SandboxConfig
+from omnidesk_agent.validation.production import is_production_mode
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.self_upgrade.models import TestResult
 
@@ -35,6 +36,7 @@ class SandboxRunner:
         backend: Literal["argv", "docker", "remote_docker"] | None = None,
         docker_image: str | None = None,
         sandbox_cfg: SandboxConfig | None = None,
+        require_isolation: bool = False,
     ):
         self.repo_root = repo_root.resolve()
         self.allowed_prefixes = allowed_prefixes or self.DEFAULT_ALLOWED
@@ -43,11 +45,16 @@ class SandboxRunner:
         if self.backend not in {"argv", "docker", "remote_docker"}:
             raise ValueError(f"unsupported sandbox backend: {self.backend}")
         self.docker_image = docker_image or self.sandbox_cfg.docker_image
+        self.require_isolation = require_isolation
 
     def allowed(self, argv: list[str]) -> bool:
         return any(len(argv) >= len(prefix) and argv[:len(prefix)] == prefix for prefix in self.allowed_prefixes)
 
     async def run(self, command: Union[str, list], timeout: int = 120) -> TestResult:
+        # Explicit runtime context covers public-host/URL configuration; the
+        # shared environment check also protects direct/default constructors.
+        if self.backend == "argv" and (self.require_isolation or is_production_mode(AppConfig())):
+            return TestResult(False, str(command), "argv test execution is forbidden in production; use docker or remote_docker", 126)
         argv = [str(x) for x in command] if isinstance(command, list) else shlex.split(command)
         if not argv:
             return TestResult(False, str(command), "empty command", 2)

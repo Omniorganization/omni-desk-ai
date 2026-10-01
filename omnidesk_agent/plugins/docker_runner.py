@@ -9,7 +9,7 @@ from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool, validate_plugin_permissions
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
-from omnidesk_agent.tools.base import proposal
+from omnidesk_agent.tools.base import proposal, permission_guarded
 
 
 class DockerPluginTool(SubprocessPluginTool):
@@ -54,6 +54,7 @@ class DockerPluginTool(SubprocessPluginTool):
             "python3", "-I", self.entrypoint.name,
         ]
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx) -> ToolResult:
         if action != "call":
             raise ValueError("docker plugin tool only supports action=call")
@@ -134,6 +135,7 @@ class RemoteDockerPluginTool(DockerPluginTool):
         self.runner_token_env = runner_token_env
         self.runner_hmac_secret_env = runner_hmac_secret_env
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx) -> ToolResult:
         if action != "call":
             raise ValueError("remote docker plugin tool only supports action=call")

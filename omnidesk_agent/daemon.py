@@ -27,6 +27,7 @@ from omnidesk_agent.channels.wechat_official import WeChatOfficialChannel
 from omnidesk_agent.channels.x_channel import XChannel
 from omnidesk_agent.channels.http_client import set_channel_offline_mode
 from omnidesk_agent.config import AppConfig
+from omnidesk_agent.validation.production import is_production_mode
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
 from omnidesk_agent.core.llm import RouterLLMAdapter, RuleBasedLLM
 from omnidesk_agent.core.orchestrator import Orchestrator
@@ -185,11 +186,11 @@ class OmniDeskRuntime:
         # from being visible to planners in the first place.
         caps = self.cfg.capabilities
         if caps.files.enabled:
-            self.tools.register(FilesTool(self.cfg.workspace.root))
+            self.tools.register(FilesTool(self.cfg.workspace.root, allow_write=caps.files.allow_write))
         if caps.git.enabled:
             self.tools.register(GitTool(Path.cwd()))
         if caps.test.enabled:
-            self.tools.register(TestTool(Path.cwd()))
+            self.tools.register(TestTool(Path.cwd(), self.cfg.sandbox, require_isolation=is_production_mode(self.cfg)))
         if caps.shell.enabled:
             self.tools.register(ShellTool(self.cfg.workspace.root, self.cfg.permissions, self.cfg.sandbox))
         if caps.computer.enabled:

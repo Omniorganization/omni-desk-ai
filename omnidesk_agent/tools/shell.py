@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE, PermissionConfig, SandboxConfig
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.security.command_policy import (
@@ -109,6 +109,7 @@ class ShellTool:
         ])
         return docker_args
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "run":
             raise ValueError(f"Unsupported shell action: {action}")

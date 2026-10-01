@@ -473,6 +473,7 @@ class ApiResourceGuardConfig(BaseModel):
     trusted_proxy_ips: list[str] = Field(default_factory=list)
     window_seconds: int = 60
     max_body_bytes: int = 1_048_576
+    body_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     max_requests_per_ip: int = 300
     max_requests_per_endpoint: int = 120
     max_requests_per_actor: int = 120
