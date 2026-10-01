@@ -71,7 +71,8 @@ class GmailTool:
             self._require_enabled()
             code = str(args["code"])
             redirect_uri = str(args["redirect_uri"])
-            ctx.permissions.verify(proposal("gmail", "auth_callback", {"redirect_uri": redirect_uri, "state": args.get("state"), "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest()}, "high", "交换 Gmail OAuth 授权码", ctx))
+            state = args.get("state")
+            ctx.permissions.verify(proposal("gmail", "auth_callback", {"redirect_uri": redirect_uri, "state_sha256": hashlib.sha256(str(state).encode("utf-8")).hexdigest() if state is not None else None, "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest()}, "high", "交换 Gmail OAuth 授权码", ctx))
             token = self.adapter.oauth.exchange_code(code, redirect_uri, args.get("state"), actor=ctx.actor)
             return ToolResult(True, data={"token_saved": True, "keys": sorted(token.keys())}, summary="exchanged gmail oauth code")
 

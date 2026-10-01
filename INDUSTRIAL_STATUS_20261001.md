@@ -11,6 +11,9 @@ disabled-channel rejection, non-executing permission decisions, and configured
 read-only file capabilities. Helm startup and writable state paths are explicit.
 The test tool also preserves configured sandbox isolation, and shared upgrade
 test runners reject production argv execution instead of falling back to host.
+OAuth approval/audit proposals retain code/state digests rather than raw
+one-time credentials. Next.js is locked above the newly published advisory's
+patched 16.3.6 floor; application exploit reachability was not established.
 Security findings and source evidence are retained privately in Codex Security.
 
 Compatibility changes: oversized bodies are rejected on all HTTP methods;

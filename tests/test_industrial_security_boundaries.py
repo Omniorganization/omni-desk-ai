@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -14,6 +16,8 @@ from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.observability.metrics import MetricsRegistry
 from omnidesk_agent.security.chat_resource_guard import ChatAwareApiResourceGuard
 from omnidesk_agent.security.permissions import PermissionDecision, PermissionManager
+from omnidesk_agent.security.approval_required import ApprovalRequired
+from omnidesk_agent.security.approval_store import ApprovalStore
 from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.tools.base import ToolContext
@@ -28,6 +32,45 @@ from omnidesk_agent.tools.vision import VisionGroundingTool
 from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.tools.test_tool import TestTool
 from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
+
+
+def test_next_dependency_cannot_restore_known_vulnerable_versions():
+    root = Path(__file__).resolve().parents[1] / "apps/web-admin-next"
+    manifest = json.loads((root / "package.json").read_text())
+    lock = json.loads((root / "package-lock.json").read_text())
+    assert manifest["dependencies"]["next"] == "^16.3.6"
+    assert lock["packages"][""]["dependencies"]["next"] == "^16.3.6"
+    for name, metadata in lock["packages"].items():
+        if name == "node_modules/next" or name.startswith("node_modules/@next/"):
+            assert tuple(int(part) for part in metadata["version"].split(".")) >= (16, 3, 6)
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_proposal_contains_only_secret_digests(tmp_path):
+    store = ApprovalStore(tmp_path / "approvals.sqlite3")
+    permissions = PermissionManager(PermissionConfig(approval_mode="remote_approval", audit_log=tmp_path / "audit.jsonl"), store)
+    exchange = Mock(return_value={"access_token": "test-token"})
+    tool = GmailTool(SimpleNamespace(cfg=SimpleNamespace(enabled=True), oauth=SimpleNamespace(exchange_code=exchange)))
+    ctx = ToolContext(permissions=permissions, actor="actor-a")
+    args = {"code": "one-time-private-code", "state": "one-time-private-state", "redirect_uri": "http://localhost/callback"}
+    with pytest.raises(ApprovalRequired) as exc:
+        await tool.call("auth_callback", args, ctx)
+    exchange.assert_not_called()
+    pending = store.get(exc.value.approval_id)
+    assert pending is not None
+    persisted = json.dumps(pending) + json.dumps(exc.value.proposal) + permissions.audit_log.read_text()
+    assert args["code"] not in persisted
+    assert args["state"] not in persisted
+    assert exc.value.proposal["args"]["state_sha256"] == hashlib.sha256(args["state"].encode()).hexdigest()
+    assert exc.value.proposal["args"]["code_sha256"] == hashlib.sha256(args["code"].encode()).hexdigest()
+    permissions.allow_approved_proposal(exc.value.proposal)
+    for key in ("state", "code"):
+        with pytest.raises(ApprovalRequired) as changed:
+            await tool.call("auth_callback", {**args, key: args[key] + "-changed"}, ctx)
+        assert changed.value.proposal["scope_hash"] != exc.value.proposal["scope_hash"]
+    exchange.assert_not_called()
+    assert (await tool.call("auth_callback", args, ctx)).ok
+    exchange.assert_called_once_with(args["code"], args["redirect_uri"], args["state"], actor="actor-a")
 
 
 def request(chunks: list[bytes], *, method="POST", headers=None, receive=None) -> Request:

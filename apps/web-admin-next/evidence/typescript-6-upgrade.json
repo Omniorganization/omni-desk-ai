@@ -1,7 +1,7 @@
 {
   "schema": "omnidesk-dependency-upgrade-evidence/v1",
   "scope": [
-    "Next.js 16.3.4",
+    "Next.js 16.3.6 security floor (GHSA-vcvr-r3jv-pc5j)",
     "TypeScript 6.0.3",
     "tsx 4.23.11",
     "Node 22 ambient type alignment"
@@ -20,7 +20,7 @@
   ],
   "rollback_steps": [
     "Revert the pull request commit.",
-    "Restore package.json, package-lock.json, and tsconfig.json from the parent main commit.",
+    "Restore compatible package.json, package-lock.json, and tsconfig.json without downgrading Next below the patched 16.3.6 floor; withhold deployment if no patched build is available.",
     "Run npm ci, npm run typecheck, npm test, and npm run build before redeployment."
   ],
   "validation_boundary": "GitHub required checks on the pull-request head are authoritative and fail closed."
