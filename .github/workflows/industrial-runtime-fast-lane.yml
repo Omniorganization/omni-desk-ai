@@ -114,11 +114,11 @@ jobs:
           from xml.etree import ElementTree as ET
           root = ET.parse(Path("reports/boundary-baseline/junit.xml")).getroot()
           cases = root.findall(".//testcase")
-          assert len(cases) == 5, "all five baseline controls must execute"
+          assert len(cases) == 6, "all six baseline controls must execute"
           assert all(case.find("failure") is not None for case in cases)
           assert not root.findall(".//error")
           assert not root.findall(".//skipped")
-          print("Baseline: five controls fail; patched controls passed in prerequisite job")
+          print("Baseline: six controls fail; patched controls passed in prerequisite job")
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

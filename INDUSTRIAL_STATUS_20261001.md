@@ -9,6 +9,8 @@ rating. `industrial_score.json` now labels that limitation explicitly.
 This change enforces admission-before-body-read, bounded ingestion/telemetry,
 disabled-channel rejection, non-executing permission decisions, and configured
 read-only file capabilities. Helm startup and writable state paths are explicit.
+The test tool also preserves configured sandbox isolation, and shared upgrade
+test runners reject production argv execution instead of falling back to host.
 Security findings and source evidence are retained privately in Codex Security.
 
 Compatibility changes: oversized bodies are rejected on all HTTP methods;

@@ -9,7 +9,8 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from omnidesk_agent.config import AppConfig, ApiResourceGuardConfig, ChromeConfig, PermissionConfig, UIBridgeConfig
+from omnidesk_agent.config import AppConfig, ApiResourceGuardConfig, ChromeConfig, PermissionConfig, SandboxConfig, UIBridgeConfig
+from omnidesk_agent.daemon import OmniDeskRuntime
 from omnidesk_agent.observability.metrics import MetricsRegistry
 from omnidesk_agent.security.chat_resource_guard import ChatAwareApiResourceGuard
 from omnidesk_agent.security.permissions import PermissionDecision, PermissionManager
@@ -24,6 +25,9 @@ from omnidesk_agent.tools.pr_tool import PullRequestTool
 from omnidesk_agent.tools.shell import ShellTool
 from omnidesk_agent.tools.ui_bridge_tool import UIBridgeTool
 from omnidesk_agent.tools.vision import VisionGroundingTool
+from omnidesk_agent.tools.registry import ToolRegistry
+from omnidesk_agent.tools.test_tool import TestTool
+from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
 
 
 def request(chunks: list[bytes], *, method="POST", headers=None, receive=None) -> Request:
@@ -300,3 +304,55 @@ async def test_original_disabled_webhook_control():
         await WebhookGuard(cfg, runtime).guard("telegram", adapter, req)
     assert exc.value.status_code == 403
     runtime.webhook_security.guard.assert_not_called()
+
+
+def test_original_runtime_test_sandbox_control(tmp_path):
+    cfg = AppConfig()
+    for name in type(cfg.capabilities).model_fields:
+        getattr(cfg.capabilities, name).enabled = False
+    cfg.capabilities.test.enabled = True
+    cfg.gateway.host = "0.0.0.0"
+    cfg.workspace.root = tmp_path
+    cfg.sandbox = SandboxConfig(backend="remote_docker", runner_url="http://runner")
+    runtime = SimpleNamespace(cfg=cfg, tools=ToolRegistry())
+    OmniDeskRuntime._register_builtin_tools(runtime)
+    runner = runtime.tools.get("test").tester.runner
+    assert runner.backend == "remote_docker"
+    assert runner.sandbox_cfg is cfg.sandbox
+    assert runner.require_isolation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("signal,value", [("OMNIDESK_ENV", "production"), ("APP_ENV", "prod"), ("ENV", "production"), ("OMNIDESK_REQUIRE_PRODUCTION_GUARDS", "true"), ("KUBERNETES_SERVICE_HOST", "cluster")])
+async def test_shared_test_runner_never_spawns_production_argv(signal, value, monkeypatch, tmp_path):
+    for name in ["OMNIDESK_ENV", "APP_ENV", "ENV", "OMNIDESK_REQUIRE_PRODUCTION_GUARDS", "KUBERNETES_SERVICE_HOST"]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(signal, value)
+    spawn = AsyncMock(side_effect=AssertionError("production host spawn"))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    runner = SandboxRunner(tmp_path)
+    result = await runner.run("pytest")
+    assert not result.ok and result.exit_code == 126
+    spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shared_test_runner_retains_development_and_configured_remote(monkeypatch, tmp_path):
+    for name in ["OMNIDESK_ENV", "APP_ENV", "ENV", "OMNIDESK_REQUIRE_PRODUCTION_GUARDS", "KUBERNETES_SERVICE_HOST"]:
+        monkeypatch.delenv(name, raising=False)
+    proc = SimpleNamespace(communicate=AsyncMock(return_value=(b"passed", None)), returncode=0)
+    spawn = AsyncMock(return_value=proc)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    assert (await SandboxRunner(tmp_path).run("pytest")).ok
+    spawn.assert_awaited_once()
+    spawn.reset_mock()
+    assert not (await SandboxRunner(tmp_path, require_isolation=True).run("pytest")).ok
+    spawn.assert_not_called()
+    cfg = SandboxConfig(backend="remote_docker", runner_url="http://runner")
+    remote = AsyncMock(return_value=SimpleNamespace(ok=True, exit_code=0, stdout="passed", stderr=""))
+    monkeypatch.setattr("omnidesk_agent.sandbox.remote_runner.RemoteSandboxClient.run_command", remote)
+    assert (await TestTool(tmp_path, cfg, require_isolation=True).tester.run("pytest")).ok
+    remote.assert_awaited_once()
+    spawn.assert_not_called()
+    assert not (await TestTool(tmp_path, SandboxConfig(backend="remote_docker")).tester.run("pytest")).ok
+    spawn.assert_not_called()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from omnidesk_agent.config import SandboxConfig
 
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.self_upgrade.tester import UpgradeTester
@@ -12,9 +13,9 @@ class TestTool:
     __test__ = False
     name = "test"
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, sandbox_cfg: SandboxConfig | None = None, *, require_isolation: bool = False):
         self.repo_root = repo_root.resolve()
-        self.tester = UpgradeTester(self.repo_root)
+        self.tester = UpgradeTester(self.repo_root, sandbox_cfg=sandbox_cfg, require_isolation=require_isolation)
 
     @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
