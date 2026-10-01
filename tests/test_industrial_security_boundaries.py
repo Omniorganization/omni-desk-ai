@@ -17,6 +17,7 @@ from omnidesk_agent.security.resource_guard import ApiResourceGuard
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.browser import BrowserTool
+from omnidesk_agent.tools.computer import ComputerTool
 from omnidesk_agent.tools.files import FilesTool
 from omnidesk_agent.tools.gmail_tool import GmailTool
 from omnidesk_agent.tools.pr_tool import PullRequestTool
@@ -239,3 +240,63 @@ def test_helm_startup_and_writable_paths_are_explicit():
     assert "skills_dirs: [/data/skills]" in config
     assert "plugins_dirs: [/data/plugins]" in config
     assert "readOnlyRootFilesystem: true" in deployment
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,args", [("screenshot", {}), ("click", {"x": 1, "y": 2}), ("move", {"x": 1, "y": 2}), ("type_text", {"text": "bad"}), ("hotkey", {"keys": ["enter"]})])
+@pytest.mark.parametrize("mode", ["dry_run", "deny"])
+async def test_public_computer_helpers_enforce_returned_denials(action, args, mode, tmp_path):
+    permissions = Mock()
+    permissions.verify.return_value = PermissionDecision(False, mode)
+    tool = ComputerTool(tmp_path)
+    args = {**args, "expected_result": "test effect"}
+    if mode == "dry_run":
+        assert not (await getattr(tool, action)(args, ToolContext(permissions=permissions))).ok
+    else:
+        with pytest.raises(PermissionError):
+            await getattr(tool, action)(args, ToolContext(permissions=permissions))
+
+
+def test_original_metric_retention_control():
+    metrics = MetricsRegistry()
+    for _ in range(1000):
+        metrics.observe("probe", 1)
+    assert len(metrics.histograms["probe"]) <= 64
+
+
+@pytest.mark.asyncio
+async def test_original_dry_run_control(tmp_path):
+    permissions = Mock()
+    permissions.verify.return_value = PermissionDecision(False, "dry_run")
+    tool = PullRequestTool(tmp_path)
+    tool._run = Mock(side_effect=AssertionError("dry-run launched a process"))
+    result = await tool.call("create", {"head": "ai/probe", "title": "probe"}, ToolContext(permissions=permissions))
+    assert not result.ok
+    tool._run.assert_not_called()
+
+
+def test_original_readonly_capability_control(tmp_path):
+    assert "write_text" not in FilesTool(tmp_path).spec().actions
+
+
+@pytest.mark.asyncio
+async def test_original_chunked_body_control():
+    guard = ChatAwareApiResourceGuard(ApiResourceGuardConfig(max_body_bytes=3))
+    req = request([b"ab", b"cd", b"unread"])
+    with pytest.raises(HTTPException) as exc:
+        await guard.before_request(req)
+    assert exc.value.status_code == 413
+    assert req.state.received_count() == 2
+
+
+@pytest.mark.asyncio
+async def test_original_disabled_webhook_control():
+    cfg = AppConfig()
+    adapter = Mock()
+    adapter.extract_envelope.return_value = SimpleNamespace(source_key="u", message_id="m", timestamp=None)
+    req = SimpleNamespace(body=AsyncMock(return_value=b'{}'), headers={}, query_params={})
+    runtime = SimpleNamespace(webhook_security=Mock())
+    with pytest.raises(HTTPException) as exc:
+        await WebhookGuard(cfg, runtime).guard("telegram", adapter, req)
+    assert exc.value.status_code == 403
+    runtime.webhook_security.guard.assert_not_called()
