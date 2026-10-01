@@ -5,7 +5,7 @@ from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.self_upgrade.tester import UpgradeTester
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 
 
 class TestTool:
@@ -16,6 +16,7 @@ class TestTool:
         self.repo_root = repo_root.resolve()
         self.tester = UpgradeTester(self.repo_root)
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "run":
             return ToolResult(False, error=f"Unsupported test action: {action}")

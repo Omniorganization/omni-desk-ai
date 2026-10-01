@@ -4,6 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any
+from omnidesk_agent.tools.base import permission_guarded
 
 
 
@@ -62,6 +63,7 @@ class SubprocessPluginTool:
             },
         )
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx) -> Any:
         from omnidesk_agent.core.models import ToolResult
         from omnidesk_agent.tools.base import proposal

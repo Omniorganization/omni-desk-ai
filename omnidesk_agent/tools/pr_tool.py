@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 
 
 class PullRequestTool:
@@ -19,6 +19,7 @@ class PullRequestTool:
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["gh", *args], cwd=self.repo_root, text=True, capture_output=True, timeout=60, check=False)
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "create":
             raise ValueError(f"Unsupported pull_request action: {action}")

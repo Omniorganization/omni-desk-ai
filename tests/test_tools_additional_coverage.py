@@ -32,7 +32,7 @@ def ctx(perms=None):
 
 @pytest.mark.asyncio
 async def test_files_tool_read_write_list_escape_and_unknown(tmp_path):
-    tool = FilesTool(tmp_path)
+    tool = FilesTool(tmp_path, allow_write=True)
     write = await tool.call("write_text", {"path": "a/b.txt", "text": "hello"}, ctx())
     assert write.ok
     read = await tool.call("read_text", {"path": "a/b.txt"}, ctx())

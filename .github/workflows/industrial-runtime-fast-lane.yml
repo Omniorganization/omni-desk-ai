@@ -41,6 +41,7 @@ jobs:
           PYTHONPATH=. python -m pytest -q -W error \
             --timeout=60 --timeout-method=thread \
             tests/test_industrial_runtime_optimization.py \
+            tests/test_industrial_security_boundaries.py \
             tests/test_postgres_state_runtime_contracts.py \
             tests/test_health_admin_status.py \
             tests/test_public_ready_redaction.py

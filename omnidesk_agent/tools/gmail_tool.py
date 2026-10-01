@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
 
 from omnidesk_agent.channels.gmail import GmailChannel
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 
 
 class GmailTool:
@@ -48,6 +49,7 @@ class GmailTool:
         )
 
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "configured":
             return ToolResult(True, data={"configured": self.adapter.configured(), "authenticated": self.adapter.authenticated()}, summary="checked gmail configuration")
@@ -69,6 +71,7 @@ class GmailTool:
             self._require_enabled()
             code = str(args["code"])
             redirect_uri = str(args["redirect_uri"])
+            ctx.permissions.verify(proposal("gmail", "auth_callback", {"redirect_uri": redirect_uri, "state": args.get("state"), "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest()}, "high", "交换 Gmail OAuth 授权码", ctx))
             token = self.adapter.oauth.exchange_code(code, redirect_uri, args.get("state"), actor=ctx.actor)
             return ToolResult(True, data={"token_saved": True, "keys": sorted(token.keys())}, summary="exchanged gmail oauth code")
 

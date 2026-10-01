@@ -185,7 +185,7 @@ class OmniDeskRuntime:
         # from being visible to planners in the first place.
         caps = self.cfg.capabilities
         if caps.files.enabled:
-            self.tools.register(FilesTool(self.cfg.workspace.root))
+            self.tools.register(FilesTool(self.cfg.workspace.root, allow_write=caps.files.allow_write))
         if caps.git.enabled:
             self.tools.register(GitTool(Path.cwd()))
         if caps.test.enabled:

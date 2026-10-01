@@ -4,19 +4,20 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
 
 
 class FilesTool:
     name = "files"
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, allow_write: bool = False):
         self.root = root.expanduser().resolve()
+        self.allow_write = allow_write
         self.root.mkdir(parents=True, exist_ok=True)
 
     def spec(self) -> ToolSpec:
-        return ToolSpec(
+        spec = ToolSpec(
             name=self.name,
             description="Read and write files inside the Omni-desk workspace.",
             permissions=["files.read", "files.write"],
@@ -26,6 +27,10 @@ class FilesTool:
                 "list": ActionSpec("list", "List files under a workspace directory", {"path": "string"}, risk="low", side_effect=False, requires_approval=False),
             },
         )
+        if not self.allow_write:
+            spec.permissions.remove("files.write")
+            spec.actions.pop("write_text")
+        return spec
 
     def _safe_path(self, rel: str) -> Path:
         raw = Path(rel).expanduser()
@@ -39,6 +44,7 @@ class FilesTool:
             raise PermissionError(f"path escapes workspace: {rel}") from exc
         return candidate
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "read_text":
             path = self._safe_path(str(args["path"]))
@@ -49,6 +55,8 @@ class FilesTool:
             return ToolResult(True, data={"text": text, "path": str(path)}, summary=f"read {path.name}")
 
         if action == "write_text":
+            if not self.allow_write:
+                raise PermissionError("File writes are disabled by capability policy")
             path = self._safe_path(str(args["path"]))
             text = str(args.get("text", ""))
             expected = str(args.get("expected_result") or f"Write {path.name}")

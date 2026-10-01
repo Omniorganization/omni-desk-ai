@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import threading
@@ -200,13 +201,21 @@ class ApiResourceGuard:
     async def before_request(self, request: Request) -> Callable[[], None]:
         if not self._enabled():
             return lambda: None
-        await self._check_body_size(request)
         client = _client_key(request, self.cfg)
         path = _path_key(request.url.path)
         window = int(getattr(self.cfg, "window_seconds", 60))
         self._check_rate(f"ip:{client}", int(getattr(self.cfg, "max_requests_per_ip", 300)), window, "ip")
         self._check_rate(f"ip-path:{client}:{path}", int(getattr(self.cfg, "max_requests_per_endpoint", 120)), window, "endpoint")
-        return self._acquire(_route_class(request.url.path))
+        release = self._acquire(_route_class(request.url.path))
+        return await self._ingest_admitted(request, release)
+
+    async def _ingest_admitted(self, request: Request, release: Callable[[], None]) -> Callable[[], None]:
+        try:
+            await self._check_body_size(request)
+        except BaseException:
+            release()
+            raise
+        return release
 
     def check_authenticated(self, request: Request, *, actor: str, role: str) -> None:
         if not self._enabled():
@@ -227,18 +236,33 @@ class ApiResourceGuard:
 
     async def _check_body_size(self, request: Request) -> None:
         max_bytes = int(getattr(self.cfg, "max_body_bytes", 1_048_576))
-        if max_bytes <= 0 or request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        if max_bytes <= 0:
             return
         content_length = request.headers.get("content-length")
         if content_length:
             try:
-                if int(content_length) > max_bytes:
+                declared = int(content_length)
+                if declared < 0:
+                    raise ValueError("negative content-length")
+                if declared > max_bytes:
                     raise HTTPException(status_code=413, detail="request body too large")
             except ValueError:
                 raise HTTPException(status_code=400, detail="invalid content-length")
-        body = await request.body()
-        if len(body) > max_bytes:
-            raise HTTPException(status_code=413, detail="request body too large")
+        async def read_bounded() -> bytes:
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(chunk) > max_bytes - len(body):
+                    raise HTTPException(status_code=413, detail="request body too large")
+                body.extend(chunk)
+            return bytes(body)
+
+        try:
+            body = await asyncio.wait_for(read_bounded(), timeout=float(getattr(self.cfg, "body_read_timeout_seconds", 30)))
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=408, detail="request body read timed out") from exc
+        # Starlette Request.body/json and BaseHTTPMiddleware replay use this
+        # bounded cache; downstream consumers must receive exactly the same bytes.
+        request._body = body
 
     def _check_rate(self, key: str, limit: int, window_seconds: int, label: str) -> None:
         if not self.rate.allow(key, limit=limit, window_seconds=window_seconds):

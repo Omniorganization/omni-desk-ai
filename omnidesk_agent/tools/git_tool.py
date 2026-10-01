@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 
 
 class GitTool:
@@ -30,6 +30,7 @@ class GitTool:
             check=False,
         )
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         allowed = {"status", "diff", "checkout_new_branch", "add", "commit", "push"}
         if action not in allowed:

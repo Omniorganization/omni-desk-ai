@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from threading import Lock
 from typing import Any, Mapping
 
@@ -35,15 +36,31 @@ class MetricsRegistry:
         60.0,
     )
     _lock: Lock = field(default_factory=Lock)
+    max_series: int = 2048
+    max_samples_per_series: int = 64
+    _histogram_totals: dict[str, tuple[int, float, list[int]]] = field(default_factory=dict)
+    dropped_series_updates: int = 0
+
+    def _admit_key(self, values: Mapping[str, Any], key: str) -> bool:
+        # Reject rather than reinterpret oversized/overflow labels. Admission is
+        # under _lock and global across all metric types, including trace labels.
+        if len(key) > 2048 or (key not in values and len(self.counters) + len(self.gauges) + len(self.histograms) >= self.max_series):
+            self.dropped_series_updates += 1
+            return False
+        return True
 
     def inc(self, name: str, value: float = 1, **labels: Any) -> None:
         key = self._key(name, labels)
         with self._lock:
+            if not self._admit_key(self.counters, key):
+                return
             self.counters[key] = self.counters.get(key, 0.0) + value
 
     def set(self, name: str, value: float, **labels: Any) -> None:
         key = self._key(name, labels)
         with self._lock:
+            if not self._admit_key(self.gauges, key):
+                return
             self.gauges[key] = float(value)
 
     def set_gauge(self, name: str, value: float, **labels: Any) -> None:
@@ -51,8 +68,23 @@ class MetricsRegistry:
 
     def observe(self, name: str, value: float, **labels: Any) -> None:
         key = self._key(name, labels)
+        value = float(value)
+        if not math.isfinite(value):
+            return
         with self._lock:
-            self.histograms.setdefault(key, []).append(float(value))
+            if not self._admit_key(self.histograms, key):
+                return
+            samples = self.histograms.setdefault(key, [])
+            count, total, buckets = self._histogram_totals.get(key, (0, 0.0, [0] * len(self.histogram_buckets)))
+            for index, bound in enumerate(self.histogram_buckets):
+                if value <= bound:
+                    buckets[index] += 1
+            self._histogram_totals[key] = (count + 1, total + value, buckets)
+            # Snapshot diagnostic samples remain compatible but bounded;
+            # Prometheus aggregates below retain ALL observations exactly.
+            if self.max_samples_per_series > 0:
+                samples.append(value)
+                del samples[:-self.max_samples_per_series]
 
     def merge(self, values: Mapping[str, float]) -> None:
         for name, value in values.items():
@@ -64,6 +96,8 @@ class MetricsRegistry:
                 "counters": dict(self.counters),
                 "gauges": dict(self.gauges),
                 "histograms": {key: list(values) for key, values in self.histograms.items()},
+                "histogram_totals": {key: {"count": count, "sum": total, "buckets": list(buckets)} for key, (count, total, buckets) in self._histogram_totals.items()},
+                "dropped_series_updates": self.dropped_series_updates,
             }
 
     def counter_value(self, name: str, **labels: Any) -> float:
@@ -95,17 +129,16 @@ class MetricsRegistry:
                 lines.append(f"{key} {value}")
             for key, value in sorted(self.gauges.items()):
                 lines.append(f"{key} {value}")
-            for key, values in sorted(self.histograms.items()):
+            for key, (count, total, buckets) in sorted(self._histogram_totals.items()):
                 name, labels = self._split_key(key)
                 base_labels = dict(labels)
-                for bucket in self.histogram_buckets:
-                    count = sum(1 for observed in values if observed <= bucket)
+                for bucket, bucket_count in zip(self.histogram_buckets, buckets):
                     label_text = self._labels({**base_labels, "le": bucket})
-                    lines.append(f"{name}_bucket{label_text} {count}")
+                    lines.append(f"{name}_bucket{label_text} {bucket_count}")
                 label_text = self._labels({**base_labels, "le": "+Inf"})
-                lines.append(f"{name}_bucket{label_text} {len(values)}")
-                lines.append(f"{name}_count{self._labels(base_labels)} {len(values)}")
-                lines.append(f"{name}_sum{self._labels(base_labels)} {sum(values)}")
+                lines.append(f"{name}_bucket{label_text} {count}")
+                lines.append(f"{name}_count{self._labels(base_labels)} {count}")
+                lines.append(f"{name}_sum{self._labels(base_labels)} {total}")
         return "\n".join(lines) + "\n"
 
     @staticmethod

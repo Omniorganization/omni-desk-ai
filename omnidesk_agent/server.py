@@ -10,6 +10,7 @@ from typing import Any, TypedDict
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.routing import Match
 
 from omnidesk_agent import __version__
 from omnidesk_agent.appsync import register_appsync_routes
@@ -138,6 +139,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
             else request_id.replace("-", "")[:32].ljust(32, "0")
         )
         request.state.request_id = request_id
+        metric_path = "unmatched"
+        for route in app.routes:
+            match, _ = route.matches(request.scope)
+            if match == Match.FULL:
+                metric_path = getattr(route, "path", "matched")
+                break
+        metric_method = request.method if request.method in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} else "OTHER"
         started = time.time()
         release_resource_guard = None
         try:
@@ -146,8 +154,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
             except HTTPException as exc:
                 metrics.inc(
                     "omnidesk_http_resource_guard_denials_total",
-                    method=request.method,
-                    path=request.url.path,
+                    method=metric_method,
+                    path=metric_path,
                     status=exc.status_code,
                 )
                 event_logger.event(
@@ -171,15 +179,15 @@ def create_app(cfg: AppConfig) -> FastAPI:
                     event_logger if cfg.observability.structured_json_logs else None
                 ),
                 otel_exporter=otel_exporter,
-                method=request.method,
-                path=request.url.path,
+                method=metric_method,
+                path=metric_path,
                 request_id=request_id,
             ) as span:
                 response = await call_next(request)
                 metrics.inc(
                     "omnidesk_http_requests_total",
-                    method=request.method,
-                    path=request.url.path,
+                    method=metric_method,
+                    path=metric_path,
                     status=getattr(response, "status_code", 0),
                 )
                 response.headers[cfg.observability.request_id_header] = request_id
@@ -191,8 +199,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
         except Exception:
             metrics.inc(
                 "omnidesk_http_errors_total",
-                method=request.method,
-                path=request.url.path,
+                method=metric_method,
+                path=metric_path,
             )
             raise
         finally:
@@ -200,13 +208,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
             metrics.set(
                 "omnidesk_http_last_latency_seconds",
                 elapsed,
-                path=request.url.path,
+                path=metric_path,
             )
             metrics.observe(
                 "omnidesk_http_request_duration_seconds",
                 elapsed,
-                path=request.url.path,
-                method=request.method,
+                path=metric_path,
+                method=metric_method,
             )
             event_logger.event(
                 "http_request",

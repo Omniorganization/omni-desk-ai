@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal
+from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 
 
 class ComputerTool:
@@ -58,6 +58,7 @@ class ComputerTool:
             },
         )
 
+    @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "screenshot":
             return await self.screenshot(args, ctx)
@@ -89,6 +90,8 @@ class ComputerTool:
         ))
         if decision.mode == "dry_run":
             return ToolResult(False, summary="dry-run: screenshot skipped")
+        if not decision.allowed:
+            raise PermissionError("Permission policy did not authorize execution")
 
         import pyautogui
 
@@ -145,6 +148,8 @@ class ComputerTool:
         decision = ctx.permissions.verify(proposal("computer", "click", {"x": x, "y": y, "button": button, "clicks": clicks, "expected_result": expected}, "high", "即将点击屏幕坐标", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: click({x},{y})")
+        if not decision.allowed:
+            raise PermissionError("Permission policy did not authorize execution")
         import pyautogui
         pyautogui.click(x=x, y=y, clicks=clicks, button=button)
         return ToolResult(True, summary=f"clicked {x},{y}; expected: {expected}")
@@ -155,6 +160,8 @@ class ComputerTool:
         decision = ctx.permissions.verify(proposal("computer", "move", {"x": x, "y": y, "expected_result": expected}, "medium", "即将移动鼠标", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: move({x},{y})")
+        if not decision.allowed:
+            raise PermissionError("Permission policy did not authorize execution")
         import pyautogui
         pyautogui.moveTo(x, y, duration=float(args.get("duration", 0.1)))
         return ToolResult(True, summary=f"moved {x},{y}; expected: {expected}")
@@ -165,6 +172,8 @@ class ComputerTool:
         decision = ctx.permissions.verify(proposal("computer", "type_text", {"text_preview": text[:200], "length": len(text), "expected_result": expected}, "high", "即将向当前焦点窗口输入文本", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: type {len(text)} chars")
+        if not decision.allowed:
+            raise PermissionError("Permission policy did not authorize execution")
         import pyautogui
         pyautogui.write(text, interval=float(args.get("interval", 0.01)))
         return ToolResult(True, summary=f"typed {len(text)} chars; expected: {expected}")
@@ -177,6 +186,8 @@ class ComputerTool:
         decision = ctx.permissions.verify(proposal("computer", "hotkey", {"keys": keys, "expected_result": expected}, "high", "即将触发系统/应用快捷键", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: hotkey {keys}")
+        if not decision.allowed:
+            raise PermissionError("Permission policy did not authorize execution")
         import pyautogui
         pyautogui.hotkey(*keys)
         return ToolResult(True, summary=f"hotkey {keys}; expected: {expected}")
