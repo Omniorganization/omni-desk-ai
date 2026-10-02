@@ -111,10 +111,15 @@ def test_real_disconnected_backend_is_discarded_and_next_transaction_recovers(is
 
 def test_real_factory_shutdown_is_terminal_and_releases_all_sessions(isolated_postgres):
     factory = PostgresRepositoryFactory(isolated_postgres)
-    assert factory.health_check()["ok"]
-    pool = factory._pool
-    assert pool.stats()["created"] > 0
-    factory.close()
+    try:
+        # Match the runtime bootstrap. Health probes must not create tables or
+        # silently repair schema drift after startup.
+        factory.transactional_outbox().init_schema()
+        assert factory.health_check()["ok"]
+        pool = factory._pool
+        assert pool.stats()["created"] > 0
+    finally:
+        factory.close()
     factory.close()
     assert pool.stats()["created"] == pool.stats()["in_use"] == 0
     assert pool.stats()["closed"]
