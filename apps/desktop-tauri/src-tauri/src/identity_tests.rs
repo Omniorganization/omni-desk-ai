@@ -43,7 +43,7 @@ fn rejects_identity_replacement_and_read_errors_without_writes() {
             &path,
             "new",
             || Ok(String::new()),
-            || Err("write denied".into())
+            || Err("write denied".into()),
         ),
         Err("write denied".into())
     );
