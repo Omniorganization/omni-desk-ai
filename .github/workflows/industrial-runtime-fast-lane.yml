@@ -7,11 +7,17 @@ on:
       - "omnidesk_agent/daemon.py"
       - "omnidesk_agent/server.py"
       - "omnidesk_agent/repositories/**"
+      - "omnidesk_agent/memory/**"
+      - "omnidesk_agent/core/planner.py"
+      - "omnidesk_agent/core/structured_planner.py"
+      - "omnidesk_agent/core/orchestrator.py"
+      - "omnidesk_agent/core/outbound_messages.py"
       - "scripts/check_industrial_runtime_optimization.py"
       - "tests/test_industrial_runtime_optimization.py"
       - "tests/test_postgres_state_runtime_contracts.py"
       - "tests/test_postgres_pool_lifecycle.py"
       - "tests/test_postgres_runtime_acceptance.py"
+      - "tests/test_planner_memory_boundaries.py"
       - ".github/workflows/industrial-runtime-fast-lane.yml"
   workflow_dispatch:
 
@@ -44,6 +50,11 @@ jobs:
             --timeout=60 --timeout-method=thread \
             tests/test_industrial_runtime_optimization.py \
             tests/test_postgres_pool_lifecycle.py \
+            tests/test_planner_memory_boundaries.py \
+            tests/test_experience_memory.py \
+            tests/test_memory_encryption_at_rest.py \
+            tests/test_async_storage_boundaries.py \
+            tests/test_outbound_messages.py \
             tests/test_industrial_security_boundaries.py \
             tests/test_postgres_state_runtime_contracts.py \
             tests/test_health_admin_status.py \
@@ -60,12 +71,19 @@ jobs:
             omnidesk_agent/repositories/postgres_pool.py \
             omnidesk_agent/repositories/postgres_state.py \
             omnidesk_agent/repositories/sqlite.py \
+            omnidesk_agent/memory/retrieval.py \
+            omnidesk_agent/memory/experience.py \
+            omnidesk_agent/core/planner.py \
+            omnidesk_agent/core/structured_planner.py \
+            omnidesk_agent/core/orchestrator.py \
+            omnidesk_agent/core/outbound_messages.py \
             omnidesk_agent/security/admin_auth.py \
             scripts/check_industrial_runtime_optimization.py \
             scripts/check_security_exceptions.py \
             tests/test_industrial_runtime_optimization.py \
             tests/test_postgres_pool_lifecycle.py \
             tests/test_postgres_runtime_acceptance.py \
+            tests/test_planner_memory_boundaries.py \
             tests/test_security_exception_horizon.py \
             > reports/industrial-runtime-fast-lane/ruff.txt 2>&1
           status=$?
@@ -227,6 +245,29 @@ jobs:
           assert len(cases) == 2 and all(case.find("failure") is not None for case in cases)
           assert not root.findall(".//error") and not root.findall(".//skipped")
           print("Baseline: both shutdown controls fail; patched controls passed in prerequisite job")
+          PY
+      - name: Verify memory, budget and retry controls fail on the immutable baseline
+        run: |
+          cp tests/test_planner_memory_boundaries.py "$RUNNER_TEMP/planner-memory-controls.py"
+          set +e
+          cd lifecycle-baseline
+          PYTHONPATH=.:tests python -m pytest -q -W error \
+            --timeout=60 --timeout-method=thread \
+            "$RUNNER_TEMP/planner-memory-controls.py" -k original_ \
+            --junitxml="../reports/boundary-baseline/planner-memory-junit.xml" \
+            > ../reports/boundary-baseline/planner-memory-pytest.txt 2>&1
+          status=$?
+          cd ..
+          set -e
+          cat reports/boundary-baseline/planner-memory-pytest.txt
+          test "$status" = 1
+          python - <<'PY'
+          from xml.etree import ElementTree as ET
+          root = ET.parse("reports/boundary-baseline/planner-memory-junit.xml").getroot()
+          cases = root.findall(".//testcase")
+          assert len(cases) == 3 and all(case.find("failure") is not None for case in cases)
+          assert not root.findall(".//error") and not root.findall(".//skipped")
+          print("Baseline: memory, call cap and sent-state controls fail; patched controls passed")
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
