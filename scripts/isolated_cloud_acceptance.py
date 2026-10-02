@@ -166,8 +166,12 @@ def main() -> None:
             check("explicit schema migration is current", report["migration"]["ready"])
             launch([sys.executable, "-m", "omnidesk_agent.sandbox.runner_server"], "runner")
             proc = start_app("initial")
-            check("unauthenticated admin rejected", request("/admin/status")[0] == 401)
-            check("invalid token rejected", request("/admin/status", headers={"Authorization": "Bearer invalid"})[0] == 401)
+            status, denied = request("/admin/status")
+            report["unauthenticated_admin"] = {"status": status, "detail": denied.get("detail")}
+            check("unauthenticated admin rejected", status == 403 and denied.get("detail") == "missing or invalid admin token")
+            status, denied = request("/admin/status", headers={"Authorization": "Bearer invalid"})
+            report["invalid_admin_token"] = {"status": status, "detail": denied.get("detail")}
+            check("invalid token rejected", status == 403 and denied.get("detail") == "missing or invalid admin token")
             check("authenticated viewer accepted", request("/admin/status", role="viewer")[0] == 200)
             check("viewer cannot create conversation", request("/app/conversations", role="viewer", payload={"title": "denied"})[0] == 403)
             status, data = request("/app/conversations", role="operator", payload={"title": "Isolated actual HTTPS acceptance"})
