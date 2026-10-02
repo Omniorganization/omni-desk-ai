@@ -1,4 +1,4 @@
-use super::write_identity_once;
+use super::{write_identity_once, IdentityStoreLock};
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,10 +39,41 @@ fn rejects_identity_replacement_and_read_errors_without_writes() {
     );
     assert_eq!(writes.get(), 0);
     assert_eq!(
+        write_identity_once(&path, "new", || Ok(String::new()), || Err("write denied".into())),
+        Err("write denied".into())
+    );
+    assert_eq!(
         write_identity_once(&path, "new", || Ok(String::new()), write),
         Ok(())
     );
     assert_eq!(writes.get(), 1);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn guard_unlocks_after_scope_even_with_a_duplicate_descriptor() {
+    let path = test_lock_path();
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap()
+    };
+    let file = open();
+    fs2::FileExt::try_lock_exclusive(&file).unwrap();
+    let duplicate = file.try_clone().unwrap();
+    let guard = IdentityStoreLock(file);
+    let contender = open();
+    assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
+    drop(guard);
+    // Closing one descriptor alone would keep the same lock held by duplicate.
+    fs2::FileExt::try_lock_exclusive(&contender).unwrap();
+    fs2::FileExt::unlock(&contender).unwrap();
+    drop(contender);
+    drop(duplicate);
     std::fs::remove_file(path).unwrap();
 }
 
