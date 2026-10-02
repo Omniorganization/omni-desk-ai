@@ -95,6 +95,7 @@ http {{
             page.on("console", lambda message: report["browser_console"].append(message.text) if message.type == "error" else None)
             response = page.goto(origin)
             csp = response.headers.get("content-security-policy", "")
+            report["csp"] = csp
             check("HTTPS browser trusts test CA without TLS bypass", response.status == 200)
             check("strict CSP and Trusted Types remain enabled", "require-trusted-types-for 'script'" in csp
                   and "'unsafe-inline'" not in csp and "'unsafe-eval'" not in csp)
