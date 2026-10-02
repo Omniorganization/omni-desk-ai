@@ -1,4 +1,7 @@
-mock_provider "oci" {}
+mock_provider "oci" {
+  # Resolve computed set members without overriding any configured policy value.
+  override_during = plan
+}
 
 variables {
   home_region                = "ap-singapore-1"
@@ -13,8 +16,7 @@ variables {
   ssh_cidrs                  = ["192.0.2.17/32"]
 }
 run "fixed_free_single_host" {
-  # Mock apply resolves provider-computed set members; it never contacts OCI.
-  command = apply
+  command = plan
   assert {
     condition     = oci_core_instance.acceptance.shape == "VM.Standard.A1.Flex" && oci_core_instance.acceptance.shape_config[0].ocpus == 2 && oci_core_instance.acceptance.shape_config[0].memory_in_gbs == 12
     error_message = "No paid shape or extra CPU/RAM is permitted."
