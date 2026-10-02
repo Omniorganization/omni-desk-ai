@@ -23,6 +23,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--serve", type=Path)
+    parser.add_argument("--web-first", action="store_true", help="Also exercise the production Web image in a real browser")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Cloud-only acceptance: requires GitHub Actions")
@@ -95,6 +96,12 @@ def main() -> None:
         config["sandbox"]["runner_url"] = "http://127.0.0.1:18890"
         config["app_sync"]["namespace"] = "isolated-ci"
         config["models"]["budget"].update(daily_usd_limit=0.01, monthly_usd_limit=0.01, per_actor_daily_usd_limit=0.01)
+        if args.web_first:
+            # The acceptance model is real, local to the ephemeral cloud runner, and free.
+            # It does not establish a persistent production model provider.
+            profile = {"provider": "ollama", "model": "smollm2:135m", "api_key_env": None,
+                       "base_url": "http://127.0.0.1:11434", "max_output_tokens": 64}
+            config["models"]["profiles"] = {name: dict(profile) for name in ("fast", "planner", "local")}
         config_path = root / "config.yaml"
         config_path.write_text(yaml.safe_dump(config))
         os.environ.update(env)
@@ -308,6 +315,13 @@ print(json.dumps(observed, sort_keys=True))
                   and observation["pids_limit"] == 128 and observation["cpu_cores"] == 1.0)
             report["sandbox"] = check_sandbox(strict=True)
             check("actual strict sandbox execution", report["sandbox"]["run"]["ok"])
+            if args.web_first:
+                from web_first_browser_acceptance import run_browser_acceptance
+
+                report["web"] = run_browser_acceptance(
+                    output=args.output, root=root, env=env, launch=launch, request=request,
+                )
+                check("production web image browser acceptance", report["web"]["ok"])
             report["ok"] = True
         except Exception as error:
             report["error"] = str(error)

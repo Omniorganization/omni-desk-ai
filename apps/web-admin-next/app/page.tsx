@@ -6,6 +6,7 @@ import { OmniAdminApi } from '../lib/api';
 import type { AdminRole, WebAdminDeviceRegistration } from '../lib/api';
 import {
   loadOrCreateWebAdminIdentity,
+  resetWebAdminIdentity,
   signWebAdminChallenge,
   signWebAdminDeviceRequest,
 } from '../lib/device-identity';
@@ -138,6 +139,19 @@ export default function Page() {
   const canAsk = role === 'operator' || role === 'owner';
 
   useEffect(() => {
+    const controller = new AbortController();
+    void fetch('/api/session/current', { cache: 'no-store', signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const session = await response.json();
+        setCsrfToken(String(session.csrfToken || ''));
+        setActor(String(session.actor));
+        setRole(session.role);
+      }).catch(() => {});
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -161,6 +175,7 @@ export default function Page() {
     setCsrfToken(String(body.csrfToken || ''));
     setActor(verifiedActor);
     setRole(verifiedRole);
+    setToken('');
     return {
       csrfToken: String(body.csrfToken || ''),
       actor: verifiedActor,
@@ -169,7 +184,7 @@ export default function Page() {
   }
 
   function webAdminApiFor(
-    identity: WebAdminDeviceRegistration,
+    identity: WebAdminDeviceRegistration | null,
     activeCsrf = csrfToken,
     activeActor = actor,
     activeRole = role,
@@ -178,8 +193,8 @@ export default function Page() {
       csrfToken: activeCsrf,
       actor: activeActor,
       role: activeRole,
-      deviceId: identity.deviceId,
-      publicKeyPem: identity.publicKeyPem,
+      deviceId: identity?.deviceId,
+      publicKeyPem: identity?.publicKeyPem,
       deviceSigner: signWebAdminDeviceRequest,
     });
   }
@@ -199,10 +214,12 @@ export default function Page() {
     activeActor = actor,
     activeRole = role,
   ) {
+    if (activeRole === 'viewer') return null;
     const identity = await loadOrCreateWebAdminIdentity();
     setDeviceIdentity(identity);
     const activeApi = webAdminApiFor(identity, activeCsrf, activeActor, activeRole);
     await activeApi.registerAdminDevice(identity);
+    if (activeRole !== 'owner') return identity;
 
     const pairingCode = randomPairingCode();
     const started = await activeApi.startDeviceEnrollment('web_admin', pairingCode);
@@ -239,6 +256,25 @@ export default function Page() {
       setRuntimeStatus(await activeApi.runtime());
       setEcosystem(await activeApi.ecosystem());
       await refreshProjects(activeApi);
+    } catch (e: any) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function logout() {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch('/api/session/logout', {
+        method: 'POST', headers: { 'x-csrf-token': csrfToken },
+      });
+      if (!response.ok) throw new Error('退出失败，请重试。');
+      resetWebAdminIdentity();
+      setToken(''); setCsrfToken(''); setRole('viewer'); setActor('web-admin');
+      setDeviceIdentity(null); setSnapshot(null); setRuntimeStatus(null); setEcosystem(null);
+      setProjects([]); setActiveProjectId(''); setChatConversationId(''); setChatMessages([]);
     } catch (e: any) {
       setError(e.message || String(e));
     } finally {
@@ -436,7 +472,8 @@ export default function Page() {
           <label>Actor<input value={actor} onChange={(event) => setActor(event.target.value)} /></label>
           <label>Role<select value={role} onChange={(event) => setRole(event.target.value as AdminRole)}><option value="viewer">viewer</option><option value="operator">operator</option><option value="owner">owner</option></select></label>
           <p className="hint-text">{ROLE_HELP[role]}</p>
-          <button className="secondary-action" type="button" onClick={() => { void establishSession(); }}>建立 Web Session / CSRF</button>
+          <button className="secondary-action" type="button" onClick={load} disabled={loading}>登录并连接</button>
+          <button className="secondary-action" type="button" onClick={logout} disabled={loading || !csrfToken}>退出登录</button>
         </details>
       </section>
 
