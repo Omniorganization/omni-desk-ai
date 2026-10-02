@@ -1,6 +1,9 @@
 use super::write_identity_once;
 use std::cell::Cell;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn test_lock_path() -> PathBuf {
     let nonce = std::time::SystemTime::now()
@@ -8,8 +11,9 @@ fn test_lock_path() -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "omnidesk-identity-test-{}-{nonce}.lock",
-        std::process::id()
+        "omnidesk-identity-test-{}-{nonce}-{}.lock",
+        std::process::id(),
+        TEST_LOCK_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
@@ -21,11 +25,20 @@ fn rejects_identity_replacement_and_read_errors_without_writes() {
         writes.set(writes.get() + 1);
         Ok(())
     };
-    assert!(write_identity_once(&path, "new", || Ok("existing".into()), write).is_err());
-    assert!(write_identity_once(&path, "new", || Err("store denied".into()), write).is_err());
-    assert!(write_identity_once(&path, "existing", || Ok("existing".into()), write).is_ok());
+    assert_eq!(
+        write_identity_once(&path, "new", || Ok("existing".into()), write),
+        Err("desktop identity already exists; refusing credential replacement".into())
+    );
+    assert_eq!(
+        write_identity_once(&path, "new", || Err("store denied".into()), write),
+        Err("store denied".into())
+    );
+    assert_eq!(
+        write_identity_once(&path, "existing", || Ok("existing".into()), write),
+        Ok(())
+    );
     assert_eq!(writes.get(), 0);
-    assert!(write_identity_once(&path, "new", || Ok(String::new()), write).is_ok());
+    assert_eq!(write_identity_once(&path, "new", || Ok(String::new()), write), Ok(()));
     assert_eq!(writes.get(), 1);
     std::fs::remove_file(path).unwrap();
 }
