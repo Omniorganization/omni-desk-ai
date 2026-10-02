@@ -32,6 +32,13 @@ keyword. Making the callable parameter positional-only preserves keyword forward
 and existing advisory locking. A real PostgreSQL regression and HTTPS signature
 probes cover the failure and recovery. It does not change deployment credentials
 or production configuration.
+Actual restart verification also found device-request nonces missing from the
+PostgreSQL source of truth. AppSync migration 4 adds a namespace-scoped nonce table
+and expiry index without changing migrations 1-3 or their checksums. State refresh
+and persistence now include live nonces while holding the existing database
+advisory lock. Real cross-instance/concurrent verification, process restart and
+independent database restoration check replay rejection. Apply migration 4 using
+the existing migration CLI before starting this app version; version 3 fails closed.
 Rootless Podman maps the host's unprivileged workspace owner to container UID/GID
 65534 after verifying `podman info` reports rootless. Rootful/unverified Podman is
 rejected. Archive directories remain private and mounts read-only; compileall's
@@ -47,6 +54,9 @@ their failures must remain visible. Stop or revert this workflow and script to
 roll back; revert the wrapper/rootless command changes if rolling back the runtime
 fix (this restores the known device request failure). Each job VM, subprocess and
 private temporary fixture is disposable.
+Keep migration 4 and its nonce rows when reverting application code; do not drop
+nonce data during a rollout or downgrade. A downgrade restores the known weaker
+replay behavior, so it requires an explicit release risk decision.
 
 ## Evidence boundary
 

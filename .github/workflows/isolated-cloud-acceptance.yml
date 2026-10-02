@@ -6,6 +6,7 @@ on:
       - 'scripts/isolated_cloud_acceptance.py'
       - 'omnidesk_agent/sandbox/**'
       - 'omnidesk_agent/appsync/migrated_postgres_store.py'
+      - 'omnidesk_agent/appsync/postgres_migrations.py'
       - 'tests/test_postgres_appsync_atomic_chat.py'
       - 'tests/test_sandbox_runner.py'
       - 'tests/test_rootless_runner_command.py'
@@ -87,6 +88,21 @@ jobs:
               'exit_code': result.returncode, 'customer_ga': False}, indent=2) + '\n')
           if not matched:
               raise SystemExit('Pinned baseline did not reproduce the exact keyword collision')
+          nonce_baseline = '00e969e06efcadc8cdf03f8a5db51f4ddf7dfdcc'
+          nonce_destination = Path(os.environ['RUNNER_TEMP']) / 'nonce-baseline'
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', nonce_baseline], check=True)
+          subprocess.run(['git', 'worktree', 'add', '--detach', str(nonce_destination), nonce_baseline], check=True)
+          environment = dict(os.environ, PYTHONPATH=str(nonce_destination))
+          result = subprocess.run(
+              [sys.executable, '-m', 'pytest', '-q', str(test) + '::test_device_nonce_is_durable_across_instances_and_recreation'],
+              cwd=nonce_destination, env=environment, capture_output=True, text=True)
+          (output / 'nonce-baseline.log').write_text(result.stdout + result.stderr)
+          matched = result.returncode == 1 and "(True, 'ok')" in result.stdout and 'nonce_replay' in result.stdout
+          (output / 'nonce-baseline.json').write_text(json.dumps({
+              'kind': 'negative-control', 'baseline_sha': nonce_baseline, 'matched_original_failure': matched,
+              'exit_code': result.returncode, 'customer_ga': False}, indent=2) + '\n')
+          if not matched:
+              raise SystemExit('Pinned baseline did not reproduce the exact cross-instance replay failure')
           PY
       - name: Actual private HTTPS, persistence, restore and sandbox verification
         env:
