@@ -29,6 +29,10 @@ run "fixed_free_single_host" {
     condition     = length(oci_core_security_list.acceptance.ingress_security_rules) == 3 && alltrue([for rule in oci_core_security_list.acceptance.ingress_security_rules : contains([22, 80, 443], rule.tcp_options[0].min) && rule.tcp_options[0].min == rule.tcp_options[0].max])
     error_message = "Database, gateway and sandbox ports must stay private."
   }
+  assert {
+    condition     = alltrue([for rule in oci_core_security_list.acceptance.ingress_security_rules : rule.protocol == "6" && rule.source_type == "CIDR_BLOCK" && !rule.stateless && (rule.tcp_options[0].min == 22 ? contains(var.ssh_cidrs, rule.source) : rule.source == "0.0.0.0/0")])
+    error_message = "Only stateful web and IP-restricted operator SSH may be exposed."
+  }
 }
 run "reject_paid_quote" {
   command = plan

@@ -98,8 +98,11 @@ resource "oci_core_security_list" "acceptance" {
   dynamic "ingress_security_rules" {
     for_each = var.ssh_cidrs
     content {
-      protocol = "6"
-      source   = ingress_security_rules.value
+      protocol    = "6"
+      source      = ingress_security_rules.value
+      source_type = "CIDR_BLOCK"
+      description = "Operator SSH only"
+      stateless   = false
       tcp_options {
         min = 22
         max = 22
@@ -109,8 +112,11 @@ resource "oci_core_security_list" "acceptance" {
   dynamic "ingress_security_rules" {
     for_each = [80, 443]
     content {
-      protocol = "6"
-      source   = "0.0.0.0/0"
+      protocol    = "6"
+      source      = "0.0.0.0/0"
+      source_type = "CIDR_BLOCK"
+      description = "Public web only"
+      stateless   = false
       tcp_options {
         min = ingress_security_rules.value
         max = ingress_security_rules.value
@@ -120,8 +126,11 @@ resource "oci_core_security_list" "acceptance" {
   dynamic "egress_security_rules" {
     for_each = [53, 80, 443]
     content {
-      protocol    = "6"
-      destination = "0.0.0.0/0"
+      protocol         = "6"
+      destination      = "0.0.0.0/0"
+      destination_type = "CIDR_BLOCK"
+      description      = "DNS and OS HTTPS access"
+      stateless        = false
       tcp_options {
         min = egress_security_rules.value
         max = egress_security_rules.value
@@ -129,8 +138,11 @@ resource "oci_core_security_list" "acceptance" {
     }
   }
   egress_security_rules {
-    protocol    = "17"
-    destination = "0.0.0.0/0"
+    protocol         = "17"
+    destination      = "0.0.0.0/0"
+    destination_type = "CIDR_BLOCK"
+    description      = "DNS only"
+    stateless        = false
     udp_options {
       min = 53
       max = 53
