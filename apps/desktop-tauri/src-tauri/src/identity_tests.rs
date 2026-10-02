@@ -38,7 +38,10 @@ fn rejects_identity_replacement_and_read_errors_without_writes() {
         Ok(())
     );
     assert_eq!(writes.get(), 0);
-    assert_eq!(write_identity_once(&path, "new", || Ok(String::new()), write), Ok(()));
+    assert_eq!(
+        write_identity_once(&path, "new", || Ok(String::new()), write),
+        Ok(())
+    );
     assert_eq!(writes.get(), 1);
     std::fs::remove_file(path).unwrap();
 }
