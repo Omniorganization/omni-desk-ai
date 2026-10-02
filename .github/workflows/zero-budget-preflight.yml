@@ -1,0 +1,44 @@
+name: Zero Budget Preflight
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - deploy/oracle-free/**
+      - scripts/package_windows_store_msix.ps1
+      - scripts/test_windows_store_package.ps1
+      - .github/workflows/zero-budget-preflight.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/oracle-free/**
+      - scripts/package_windows_store_msix.ps1
+      - scripts/test_windows_store_package.ps1
+      - .github/workflows/zero-budget-preflight.yml
+permissions:
+  contents: read
+jobs:
+  oracle-free-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: deploy/oracle-free
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+      - run: terraform fmt -check
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate -no-color
+      - run: terraform test -no-color
+  windows-store-input:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Validate MSIX packaging with synthetic cloud-only PE and Store identity
+        shell: pwsh
+        run: ./scripts/test_windows_store_package.ps1
+# No secrets, cloud account, apply or billable resource operation.
