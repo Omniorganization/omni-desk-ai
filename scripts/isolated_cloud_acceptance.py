@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import ssl
 import subprocess
 import sys
@@ -36,6 +37,12 @@ def main() -> None:
                     ssl_certfile=os.environ["ACCEPTANCE_TLS_CERT"], ssl_keyfile=os.environ["ACCEPTANCE_TLS_KEY"])
         return
 
+    def deadline(_signum, _frame):
+        raise TimeoutError("Cloud acceptance exceeded its ten-minute execution deadline")
+
+    signal.signal(signal.SIGALRM, deadline)
+    signal.alarm(600)
+
     args.output.mkdir(parents=True, exist_ok=True)
     report = {
         "kind": "ephemeral-cloud-acceptance", "customer_ga": False,
@@ -51,6 +58,7 @@ def main() -> None:
 
     def check(label, condition):
         report["checks"].append({"name": label, "ok": bool(condition)})
+        print(f"Acceptance: {label}: {bool(condition)}", flush=True)
         if not condition:
             raise RuntimeError(f"Acceptance check failed: {label}")
 

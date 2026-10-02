@@ -19,6 +19,7 @@ def run_browser_acceptance(*, output: Path, root: Path, env: dict, launch, reque
 
     def check(name, condition):
         report["checks"].append({"name": name, "ok": bool(condition)})
+        print(f"Browser: {name}: {bool(condition)}", flush=True)
         if not condition:
             raise RuntimeError("Browser acceptance failed: " + name)
 
@@ -69,9 +70,10 @@ http {{
 }}
 ''')
     launch(["nginx", "-c", str(nginx), "-g", "daemon off;"], "web-ingress")
-    for _ in range(90):
-        ready = subprocess.run(["curl", "--silent", "--fail", "--cacert", str(cert), origin],
-                               capture_output=True)
+    for _ in range(12):
+        ready = subprocess.run(["curl", "--silent", "--fail", "--head", "--connect-timeout", "3",
+                                "--max-time", "5", "--cacert", str(cert), origin],
+                               capture_output=True, timeout=10)
         if ready.returncode == 0:
             break
         time.sleep(1)
