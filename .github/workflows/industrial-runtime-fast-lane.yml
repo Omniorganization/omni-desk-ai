@@ -7,9 +7,17 @@ on:
       - "omnidesk_agent/daemon.py"
       - "omnidesk_agent/server.py"
       - "omnidesk_agent/repositories/**"
+      - "omnidesk_agent/memory/**"
+      - "omnidesk_agent/core/planner.py"
+      - "omnidesk_agent/core/structured_planner.py"
+      - "omnidesk_agent/core/orchestrator.py"
+      - "omnidesk_agent/core/outbound_messages.py"
       - "scripts/check_industrial_runtime_optimization.py"
       - "tests/test_industrial_runtime_optimization.py"
       - "tests/test_postgres_state_runtime_contracts.py"
+      - "tests/test_postgres_pool_lifecycle.py"
+      - "tests/test_postgres_runtime_acceptance.py"
+      - "tests/test_planner_memory_boundaries.py"
       - ".github/workflows/industrial-runtime-fast-lane.yml"
   workflow_dispatch:
 
@@ -41,6 +49,12 @@ jobs:
           PYTHONPATH=. python -m pytest -q -W error \
             --timeout=60 --timeout-method=thread \
             tests/test_industrial_runtime_optimization.py \
+            tests/test_postgres_pool_lifecycle.py \
+            tests/test_planner_memory_boundaries.py \
+            tests/test_experience_memory.py \
+            tests/test_memory_encryption_at_rest.py \
+            tests/test_async_storage_boundaries.py \
+            tests/test_outbound_messages.py \
             tests/test_industrial_security_boundaries.py \
             tests/test_postgres_state_runtime_contracts.py \
             tests/test_health_admin_status.py \
@@ -57,10 +71,19 @@ jobs:
             omnidesk_agent/repositories/postgres_pool.py \
             omnidesk_agent/repositories/postgres_state.py \
             omnidesk_agent/repositories/sqlite.py \
+            omnidesk_agent/memory/retrieval.py \
+            omnidesk_agent/memory/experience.py \
+            omnidesk_agent/core/planner.py \
+            omnidesk_agent/core/structured_planner.py \
+            omnidesk_agent/core/orchestrator.py \
+            omnidesk_agent/core/outbound_messages.py \
             omnidesk_agent/security/admin_auth.py \
             scripts/check_industrial_runtime_optimization.py \
             scripts/check_security_exceptions.py \
             tests/test_industrial_runtime_optimization.py \
+            tests/test_postgres_pool_lifecycle.py \
+            tests/test_postgres_runtime_acceptance.py \
+            tests/test_planner_memory_boundaries.py \
             tests/test_security_exception_horizon.py \
             > reports/industrial-runtime-fast-lane/ruff.txt 2>&1
           status=$?
@@ -76,6 +99,81 @@ jobs:
       - name: Enforce focused static analysis
         if: always()
         run: test "${{ steps.static_analysis.outputs.status }}" = "0"
+
+  postgres-runtime-acceptance:
+    name: PostgreSQL Runtime Acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: isolated_runtime
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d isolated_runtime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/isolated_runtime
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install --require-hashes -r requirements.enterprise.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Verify isolated multi-instance PostgreSQL runtime
+        run: |
+          mkdir -p reports/postgres-runtime
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q -W error \
+            --timeout=60 --timeout-method=thread \
+            --junitxml=reports/postgres-runtime/junit.xml \
+            tests/test_postgres_pool_lifecycle.py \
+            tests/test_postgres_runtime_acceptance.py \
+            2>&1 | tee reports/postgres-runtime/pytest.txt
+      - name: Bind runtime evidence to the checked source
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          root = ET.parse("reports/postgres-runtime/junit.xml").getroot()
+          cases = root.findall(".//testcase")
+          assert cases and not root.findall(".//failure")
+          assert not root.findall(".//error") and not root.findall(".//skipped")
+          report = {
+              "schema": "omnidesk-isolated-postgres-runtime/v1",
+              "status": "passed",
+              "environment": "github-actions-isolated",
+              "source_head": os.environ["SOURCE_HEAD"],
+              "checkout_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "produced_at": datetime.now(timezone.utc).isoformat(),
+              "tests_passed": len(cases),
+              "scope": "core storage concurrency, rollback, disconnect recovery and shutdown",
+              "customer_distribution_ga_status": "blocked_missing_external_evidence",
+          }
+          Path("reports/postgres-runtime/evidence.json").write_text(json.dumps(report, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: postgres-runtime-acceptance-${{ github.sha }}
+          path: reports/postgres-runtime/
+          if-no-files-found: error
 
   boundary-baseline-controls:
     name: Boundary Baseline Controls
@@ -119,6 +217,57 @@ jobs:
           assert not root.findall(".//error")
           assert not root.findall(".//skipped")
           print("Baseline: six controls fail; patched controls passed in prerequisite job")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 41cca0af821d45a98216dfc20a8e32903e2c4f23
+          path: lifecycle-baseline
+      - name: Verify shutdown controls fail on the immutable lifecycle baseline
+        run: |
+          cp tests/test_postgres_pool_lifecycle.py "$RUNNER_TEMP/lifecycle-controls.py"
+          test "$(git -C lifecycle-baseline rev-parse HEAD)" = 41cca0af821d45a98216dfc20a8e32903e2c4f23
+          set +e
+          cd lifecycle-baseline
+          PYTHONPATH=. python -m pytest -q -W error \
+            --timeout=60 --timeout-method=thread \
+            "$RUNNER_TEMP/lifecycle-controls.py" -k original_pool \
+            --junitxml="../reports/boundary-baseline/lifecycle-junit.xml" \
+            > ../reports/boundary-baseline/lifecycle-pytest.txt 2>&1
+          status=$?
+          cd ..
+          set -e
+          cat reports/boundary-baseline/lifecycle-pytest.txt
+          test "$status" = 1
+          python - <<'PY'
+          from xml.etree import ElementTree as ET
+          root = ET.parse("reports/boundary-baseline/lifecycle-junit.xml").getroot()
+          cases = root.findall(".//testcase")
+          assert len(cases) == 2 and all(case.find("failure") is not None for case in cases)
+          assert not root.findall(".//error") and not root.findall(".//skipped")
+          print("Baseline: both shutdown controls fail; patched controls passed in prerequisite job")
+          PY
+      - name: Verify memory, budget and retry controls fail on the immutable baseline
+        run: |
+          cp tests/test_planner_memory_boundaries.py "$RUNNER_TEMP/planner-memory-controls.py"
+          set +e
+          cd lifecycle-baseline
+          PYTHONPATH=.:tests python -m pytest -q -W error \
+            --timeout=60 --timeout-method=thread \
+            "$RUNNER_TEMP/planner-memory-controls.py" -k original_ \
+            --junitxml="../reports/boundary-baseline/planner-memory-junit.xml" \
+            > ../reports/boundary-baseline/planner-memory-pytest.txt 2>&1
+          status=$?
+          cd ..
+          set -e
+          cat reports/boundary-baseline/planner-memory-pytest.txt
+          test "$status" = 1
+          python - <<'PY'
+          from xml.etree import ElementTree as ET
+          root = ET.parse("reports/boundary-baseline/planner-memory-junit.xml").getroot()
+          cases = root.findall(".//testcase")
+          assert len(cases) == 3 and all(case.find("failure") is not None for case in cases)
+          assert not root.findall(".//error") and not root.findall(".//skipped")
+          print("Baseline: memory, call cap and sent-state controls fail; patched controls passed")
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

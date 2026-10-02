@@ -25,7 +25,7 @@ class FakeMemory:
     def metrics_report(self, days=7):
         return {"days": days, "memories": 3}
 
-    def retrieve_for_task(self, query, limit=5):
+    def search_similar(self, query, limit=5):
         return [{"query": query, "limit": limit}]
 
 
