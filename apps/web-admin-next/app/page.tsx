@@ -419,10 +419,10 @@ export default function Page() {
       </nav>
 
       <section className="project-box">
-        <div className="section-title"><span>项目</span><button type="button" onClick={() => void createProject(newProjectName || '新项目')} disabled={loading}>＋ 新建项目</button></div>
+        <div className="section-title"><span>项目</span><button type="button" onClick={() => void createProject(newProjectName || '新项目')} disabled={loading || !canAsk}>＋ 新建项目</button></div>
         <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void createProject(); }}>
           <input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="输入项目名称后创建" />
-          <button type="submit" disabled={loading}>创建</button>
+          <button type="submit" disabled={loading || !canAsk}>创建</button>
         </form>
         {projectError && <p className="project-error">{projectError}</p>}
         <div className="project-list">

@@ -15,7 +15,7 @@ def run_browser_acceptance(*, output: Path, root: Path, env: dict, launch, reque
         raise RuntimeError("Browser acceptance requires GitHub Actions")
     report = {"ok": False, "scope": "web-only", "persistent_deployment": False,
               "customer_ga": False, "model_scope": "real free ephemeral Ollama smollm2:135m",
-              "checks": [], "browser_errors": [], "browser": "Chromium"}
+              "checks": [], "browser_errors": [], "browser_console": [], "browser": "Chromium"}
 
     def check(name, condition):
         report["checks"].append({"name": name, "ok": bool(condition)})
@@ -92,11 +92,17 @@ http {{
             context = browser.new_context(ignore_https_errors=False, viewport={"width": 1440, "height": 1080})
             page = context.new_page()
             page.on("pageerror", lambda error: report["browser_errors"].append(str(error)))
+            page.on("console", lambda message: report["browser_console"].append(message.text) if message.type == "error" else None)
             response = page.goto(origin)
             csp = response.headers.get("content-security-policy", "")
             check("HTTPS browser trusts test CA without TLS bypass", response.status == 200)
             check("strict CSP and Trusted Types remain enabled", "require-trusted-types-for 'script'" in csp
                   and "'unsafe-inline'" not in csp and "'unsafe-eval'" not in csp)
+            # Capture pre-login rendering diagnostics without session/credential content.
+            report["initial_labels"] = page.locator("label").all_text_contents()
+            report["initial_body_text"] = page.locator("body").inner_text()[:6000]
+            (output / "browser-initial.html").write_text(page.content())
+            page.screenshot(path=str(output / "browser-initial.png"), full_page=True)
             page.get_by_label("Session Token", exact=True).fill("invalid-token")
             page.get_by_role("button", name="登录并连接", exact=True).click()
             expect(page.locator(".error-banner")).to_contain_text("invalid gateway token")

@@ -50,6 +50,16 @@ def init(args) -> None:
     for path in (args.cert, args.key):
         if not path.is_file() or not path.is_absolute() or re.search(r"[\s;{}]", str(path)):
             raise ValueError("Existing TLS certificate/key absolute paths are required")
+    subprocess.run(["openssl", "verify", "-verify_hostname", urlsplit(origin).hostname,
+                    "-untrusted", str(args.cert), str(args.cert)], check=True, capture_output=True)
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    certificate = x509.load_pem_x509_certificate(args.cert.read_bytes())
+    private_key = serialization.load_pem_private_key(args.key.read_bytes(), password=None)
+    public_bytes = lambda key: key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    if public_bytes(certificate.public_key()) != public_bytes(private_key.public_key()):
+        raise ValueError("TLS certificate and private key do not match")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", args.web_image_id):
         raise ValueError("Use the verified immutable Web image ID")
     destination = Path("/etc/omnidesk/web-first")
