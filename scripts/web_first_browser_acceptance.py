@@ -15,7 +15,9 @@ def run_browser_acceptance(*, output: Path, root: Path, env: dict, launch, reque
         raise RuntimeError("Browser acceptance requires GitHub Actions")
     report = {"ok": False, "scope": "web-only", "persistent_deployment": False,
               "customer_ga": False, "model_scope": "real free ephemeral Ollama smollm2:135m",
-              "checks": [], "browser_errors": [], "browser_console": [], "browser": "Chromium"}
+              "checks": [], "browser_errors": [], "browser_console": [], "browser": "Chromium",
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "checkout_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()}
 
     def check(name, condition):
         report["checks"].append({"name": name, "ok": bool(condition)})

@@ -77,7 +77,8 @@ def test_candidate_rejects_symlink_even_with_matching_contents(tmp_path):
         verify(tmp_path, SHA)
 
 
-@pytest.mark.parametrize("change", ["omitted-behavior", "failed-check", "mixed-run", "browser-error"])
+@pytest.mark.parametrize("change", ["omitted-behavior", "failed-check", "mixed-run", "browser-error",
+                                    "browser-other-run", "browser-other-source"])
 def test_candidate_rejects_incomplete_evidence_even_when_rehashed(tmp_path, change):
     manifest = candidate(tmp_path)
     name = "acceptance.json" if change == "mixed-run" else "browser.json"
@@ -88,6 +89,10 @@ def test_candidate_rejects_incomplete_evidence_even_when_rehashed(tmp_path, chan
         report["checks"][0]["ok"] = False
     elif change == "mixed-run":
         report["run_id"] = "456"
+    elif change == "browser-other-run":
+        report["run_id"] = "456"
+    elif change == "browser-other-source":
+        report["checkout_sha"] = "c" * 40
     else:
         report["browser_errors"] = ["Hydration failed"]
     (tmp_path / name).write_text(json.dumps(report))

@@ -67,6 +67,8 @@ def verify(directory: Path, expected_sha: str) -> dict:
     if acceptance.get("checkout_sha") != expected_sha or acceptance.get("ok") is not True:
         raise ValueError("Runtime evidence is not successful on the candidate SHA")
     for report in (acceptance, browser):
+        if report.get("checkout_sha") != expected_sha or report.get("run_id") != manifest.get("run_id"):
+            raise ValueError("Candidate and evidence source/run binding mismatch")
         checks = report.get("checks")
         if report.get("ok") is not True or not isinstance(checks, list) or not checks or any(c.get("ok") is not True for c in checks):
             raise ValueError("Acceptance includes incomplete or failed checks")

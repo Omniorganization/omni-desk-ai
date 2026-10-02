@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -50,7 +51,16 @@ def init(args) -> None:
     for path in (args.cert, args.key):
         if not path.is_file() or not path.is_absolute() or re.search(r"[\s;{}]", str(path)):
             raise ValueError("Existing TLS certificate/key absolute paths are required")
-    subprocess.run(["openssl", "verify", "-verify_hostname", urlsplit(origin).hostname,
+    hostname = urlsplit(origin).hostname
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        identity_option = "-verify_hostname"
+    else:
+        if not address.is_global:
+            raise ValueError("Production IP origin must be publicly routable")
+        identity_option = "-verify_ip"
+    subprocess.run(["openssl", "verify", identity_option, hostname,
                     "-untrusted", str(args.cert), str(args.cert)], check=True, capture_output=True)
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization
