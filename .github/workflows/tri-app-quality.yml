@@ -175,6 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           for iteration in {1..20}; do
+            echo "Identity lock stress iteration $iteration of 20"
             cargo test --locked --manifest-path src-tauri/Cargo.toml identity_tests -- --test-threads=8
           done
       - run: cargo build --locked --manifest-path src-tauri/Cargo.toml
