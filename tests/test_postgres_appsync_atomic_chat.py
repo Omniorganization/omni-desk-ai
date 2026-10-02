@@ -41,7 +41,7 @@ def test_serialized_device_request_preserves_http_method_keyword() -> None:
             body=b"{}", timestamp="", nonce="", signature="",
         )
         assert result == (False, "missing_timestamp")
-        assert store.ensure_user("after-rejection")["actor"] == "after-rejection"
+        assert store.ensure_user("after-rejection")["user_id"] == "after-rejection"
     finally:
         store.close()
 

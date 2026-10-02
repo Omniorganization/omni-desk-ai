@@ -45,6 +45,33 @@ jobs:
           python -m pip install --require-hashes -r requirements.dev.lock
           python -m pip install --require-hashes -r requirements.enterprise.lock
           python -m pip install -e . --no-deps --no-build-isolation
+      - name: Immutable PostgreSQL keyword collision negative control
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          baseline = '37a2ce5a8540cbf4681662596c13da9717dc3f96'
+          destination = Path(os.environ['RUNNER_TEMP']) / 'keyword-baseline'
+          test = Path('tests/test_postgres_appsync_atomic_chat.py').resolve()
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', baseline], check=True)
+          subprocess.run(['git', 'worktree', 'add', '--detach', str(destination), baseline], check=True)
+          environment = dict(os.environ, PYTHONPATH=str(destination))
+          result = subprocess.run(
+              [sys.executable, '-m', 'pytest', '-q', str(test) + '::test_serialized_device_request_preserves_http_method_keyword'],
+              cwd=destination, env=environment, capture_output=True, text=True)
+          output = Path('reports/isolated-cloud')
+          output.mkdir(parents=True, exist_ok=True)
+          (output / 'keyword-baseline.log').write_text(result.stdout + result.stderr)
+          matched = result.returncode == 1 and "got multiple values for argument 'method'" in result.stdout
+          (output / 'keyword-baseline.json').write_text(json.dumps({
+              'kind': 'negative-control', 'baseline_sha': baseline, 'matched_original_failure': matched,
+              'exit_code': result.returncode, 'customer_ga': False}, indent=2) + '\n')
+          if not matched:
+              raise SystemExit('Pinned baseline did not reproduce the exact keyword collision')
+          PY
       - name: Actual private HTTPS, persistence, restore and sandbox verification
         env:
           ACCEPTANCE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
