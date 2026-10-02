@@ -32,10 +32,19 @@ keyword. Making the callable parameter positional-only preserves keyword forward
 and existing advisory locking. A real PostgreSQL regression and HTTPS signature
 probes cover the failure and recovery. It does not change deployment credentials
 or production configuration.
+Rootless Podman maps the host's unprivileged workspace owner to container UID/GID
+65534 after verifying `podman info` reports rootless. Rootful/unverified Podman is
+rejected. Archive directories remain private and mounts read-only; compileall's
+bytecode goes to the existing bounded scratch tmpfs. CI delegates cgroup v2
+controllers to its unprivileged user and runs acceptance in a delegated systemd
+scope. It never removes resource limits or disables seccomp/AppArmor. An actual
+container probe checks identity, capabilities, seccomp, read-only writes and the
+CPU/memory/PID values. Rootless setup follows the [systemd delegation model](https://github.com/systemd/systemd/blob/main/docs/CGROUP_DELEGATION.md)
+and [Podman UID mapping documentation](https://docs.podman.io/en/v3.4.4/markdown/podman-run.1.html).
 Pulling the pinned sandbox image needs public registry availability. Ubuntu's
 rootless cgroup/user namespace support and PostgreSQL startup are real dependencies;
 their failures must remain visible. Stop or revert this workflow and script to
-roll back; revert the positional-only wrapper change if rolling back the runtime
+roll back; revert the wrapper/rootless command changes if rolling back the runtime
 fix (this restores the known device request failure). Each job VM, subprocess and
 private temporary fixture is disposable.
 

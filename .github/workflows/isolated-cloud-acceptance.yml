@@ -8,6 +8,7 @@ on:
       - 'omnidesk_agent/appsync/migrated_postgres_store.py'
       - 'tests/test_postgres_appsync_atomic_chat.py'
       - 'tests/test_sandbox_runner.py'
+      - 'tests/test_rootless_runner_command.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,7 +27,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: acceptance
         ports:
-          - 5432:5432
+          - '127.0.0.1:5432:5432'
         options: >-
           --health-cmd "pg_isready -U postgres -d acceptance"
           --health-interval 5s --health-timeout 5s --health-retries 12
@@ -45,6 +46,16 @@ jobs:
           python -m pip install --require-hashes -r requirements.dev.lock
           python -m pip install --require-hashes -r requirements.enterprise.lock
           python -m pip install -e . --no-deps --no-build-isolation
+      - name: Delegate actual resource controllers to the unprivileged CI user
+        run: |
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '%s\n' '[Service]' 'Delegate=cpu cpuset io memory pids' |
+            sudo tee /etc/systemd/system/user@.service.d/omnidesk-ci.conf
+          sudo loginctl enable-linger "$(whoami)"
+          sudo systemctl daemon-reload
+          sudo systemctl restart "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
       - name: Immutable PostgreSQL keyword collision negative control
         run: |
           python - <<'PY'
@@ -75,9 +86,13 @@ jobs:
       - name: Actual private HTTPS, persistence, restore and sandbox verification
         env:
           ACCEPTANCE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-        run: python scripts/isolated_cloud_acceptance.py --output reports/isolated-cloud
+        run: >-
+          systemd-run --user --scope --property=Delegate=yes --working-directory="$GITHUB_WORKSPACE"
+          python scripts/isolated_cloud_acceptance.py --output reports/isolated-cloud
       - name: Sandbox regression tests
-        run: pytest -q tests/test_sandbox_runner.py tests/test_sandbox_docker_command.py tests/test_postgres_appsync_atomic_chat.py
+        run: >-
+          pytest -q tests/test_sandbox_runner.py tests/test_sandbox_docker_command.py
+          tests/test_rootless_runner_command.py tests/test_postgres_appsync_atomic_chat.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

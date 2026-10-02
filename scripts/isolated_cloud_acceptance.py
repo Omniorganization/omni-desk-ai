@@ -155,6 +155,8 @@ def main() -> None:
             report["production_policy"] = policy
             info = json.loads(command(["podman", "info", "--format", "json"], text=True).stdout)
             check("sandbox runtime is rootless", info["host"]["security"]["rootless"])
+            report["cgroup"] = {"version": info["host"]["cgroupVersion"], "manager": info["host"]["cgroupManager"]}
+            check("rootless resource controls use cgroup v2", report["cgroup"]["version"] == "v2")
             report["podman_version"] = command(["podman", "--version"], text=True).stdout.strip()
             command(["podman", "pull", DEFAULT_SANDBOX_IMAGE], text=True)
             report["sandbox_image"] = DEFAULT_SANDBOX_IMAGE
@@ -166,6 +168,12 @@ def main() -> None:
             check("explicit schema migration is current", report["migration"]["ready"])
             launch([sys.executable, "-m", "omnidesk_agent.sandbox.runner_server"], "runner")
             proc = start_app("initial")
+            try:
+                with urllib.request.urlopen("https://127.0.0.1:18789/health", timeout=5, context=ssl.create_default_context()):
+                    trusted_without_ca = True
+            except urllib.error.URLError as error:
+                trusted_without_ca = not isinstance(error.reason, ssl.SSLCertVerificationError)
+            check("private certificate rejected without explicit test CA trust", not trusted_without_ca)
             status, denied = request("/admin/status")
             report["unauthenticated_admin"] = {"status": status, "detail": denied.get("detail")}
             check("unauthenticated admin rejected", status == 403 and denied.get("detail") == "missing or invalid admin token")
@@ -238,6 +246,7 @@ def main() -> None:
             stop(proc)
             proc = start_app("restart")
             verify_marker("PostgreSQL state survives application restart")
+            check("device nonce replay rejected after restart", request(rotation_path, role="operator", payload={}, headers=signed)[0] == 401)
             stop(proc)
             container = env["ACCEPTANCE_POSTGRES_CONTAINER"]
             dump = command(["docker", "exec", container, "pg_dump", "-U", "postgres", "--format=custom", "--no-owner", "--no-acl", "acceptance"]).stdout
@@ -248,6 +257,7 @@ def main() -> None:
             env["OMNIDESK_POSTGRES_DSN"] = env["OMNIDESK_POSTGRES_DSN"].rsplit("/", 1)[0] + "/acceptance_restore"
             proc = start_app("restored")
             verify_marker("restored independent PostgreSQL database contains message")
+            check("device nonce replay rejected after database restore", request(rotation_path, role="operator", payload={}, headers=signed)[0] == 401)
             latencies = []
             for _ in range(30):
                 before = time.monotonic()
@@ -256,9 +266,45 @@ def main() -> None:
                 time.sleep(1)
             report["short_probe"] = {"requests": len(latencies), "seconds_minimum": 30,
                                      "max_latency_seconds": max(latencies), "long_soak": False}
-            from production_smoke_test import check_sandbox
+            from production_smoke_test import _file_archive_base64, check_sandbox, post_json
 
             os.environ["OMNIDESK_SMOKE_SANDBOX_URL"] = config["sandbox"]["runner_url"]
+            probe = b'''import errno, json, os
+from pathlib import Path
+status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines() if ":" in line)
+def readonly(path):
+    try:
+        Path(path).write_text("must not persist")
+    except OSError as error:
+        return error.errno == errno.EROFS
+    return False
+quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+observed = {
+    "uid": os.geteuid(), "gid": os.getegid(), "capabilities_zero": int(status["CapEff"].strip(), 16) == 0,
+    "no_new_privileges": status["NoNewPrivs"].strip() == "1", "seccomp_filter": status["Seccomp"].strip() == "2",
+    "workspace_readonly": readonly("/workspace/mutation"), "rootfs_readonly": readonly("/mutation"),
+    "memory_bytes": int(Path("/sys/fs/cgroup/memory.max").read_text()),
+    "pids_limit": int(Path("/sys/fs/cgroup/pids.max").read_text()), "cpu_cores": int(quota) / int(period),
+}
+Path("/tmp/scratch").write_text("bounded scratch")
+observed["scratch_writable"] = Path("/tmp/scratch").read_text() == "bounded scratch"
+print(json.dumps(observed, sort_keys=True))
+'''
+            observed = post_json(config["sandbox"]["runner_url"] + "/v1/run", {
+                "argv": ["python3", "-I", "probe.py"], "purpose": "plugin", "readonly": True,
+                "workspace_archive_base64": _file_archive_base64("probe.py", probe), "timeout_seconds": 30,
+            }, env["OMNIDESK_SANDBOX_RUNNER_TOKEN"], env["OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET"])
+            report["sandbox_probe_raw"] = observed
+            check("actual sandbox isolation probe completes", observed.get("ok"))
+            observation = json.loads(observed["stdout"])
+            report["sandbox_isolation"] = observation
+            check("container has fixed unprivileged identity", observation["uid"] == 65534 and observation["gid"] == 65534)
+            check("actual sandbox caps, seccomp and privilege restrictions", all(observation[k] for k in (
+                "capabilities_zero", "no_new_privileges", "seccomp_filter")))
+            check("actual workspace/rootfs read-only and scratch writable", all(observation[k] for k in (
+                "workspace_readonly", "rootfs_readonly", "scratch_writable")))
+            check("actual resource limits enforced", observation["memory_bytes"] == 512 * 1024 * 1024
+                  and observation["pids_limit"] == 128 and observation["cpu_cores"] == 1.0)
             report["sandbox"] = check_sandbox(strict=True)
             check("actual strict sandbox execution", report["sandbox"]["run"]["ok"])
             report["ok"] = True
