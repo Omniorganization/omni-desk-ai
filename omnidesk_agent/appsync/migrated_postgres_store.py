@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import queue
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, TypeVar
@@ -12,9 +13,6 @@ from omnidesk_agent.appsync.postgres_applying_sync import (
 )
 from omnidesk_agent.appsync.postgres_migrations import (
     assert_appsync_schema_current,
-)
-from omnidesk_agent.appsync.postgres_offline_sync import (
-    DurablePostgresAppSyncStore,
 )
 
 T = TypeVar("T")
@@ -206,10 +204,33 @@ class MigratedMultiInstancePostgresAppSyncStore(
         return int.from_bytes(digest[:8], "big", signed=True)
 
     def _refresh_state(self) -> None:
-        DurablePostgresAppSyncStore._load(self)
+        self._load()
+
+    def _load(self) -> None:
+        super()._load()
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT nonce_key, expires_at FROM omnidesk_appsync_device_request_nonces WHERE namespace=%s AND expires_at>%s",
+                (self.namespace, time.time()),
+            )
+            self.device_request_nonces = {str(key): float(expires_at) for key, expires_at in cur.fetchall()}
+
+    def _mirror_normalized(self, cur: Any, Jsonb: Any) -> None:
+        super()._mirror_normalized(cur, Jsonb)
+        now = time.time()
+        cur.execute(
+            "DELETE FROM omnidesk_appsync_device_request_nonces WHERE namespace=%s AND expires_at<=%s",
+            (self.namespace, now),
+        )
+        for nonce_key, expires_at in self.device_request_nonces.items():
+            if expires_at > now:
+                cur.execute(
+                    "INSERT INTO omnidesk_appsync_device_request_nonces(namespace, nonce_key, expires_at) VALUES (%s,%s,%s) ON CONFLICT(namespace, nonce_key) DO NOTHING",
+                    (self.namespace, nonce_key, expires_at),
+                )
 
     def _serialized_call(
-        self, method: Callable[..., T], *args: Any, **kwargs: Any
+        self, method: Callable[..., T], /, *args: Any, **kwargs: Any
     ) -> T:
         if int(getattr(self._operation_state, "depth", 0)) > 0:
             return method(*args, **kwargs)
