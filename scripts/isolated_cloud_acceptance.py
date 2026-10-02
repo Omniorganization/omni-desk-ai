@@ -158,6 +158,12 @@ def main() -> None:
             report["podman_version"] = command(["podman", "--version"], text=True).stdout.strip()
             command(["podman", "pull", DEFAULT_SANDBOX_IMAGE], text=True)
             report["sandbox_image"] = DEFAULT_SANDBOX_IMAGE
+            command([sys.executable, "-m", "omnidesk_agent.appsync.migrate", "--dsn-env", "OMNIDESK_POSTGRES_DSN",
+                     "--namespace", config["app_sync"]["namespace"]], env=env, text=True)
+            migration = command([sys.executable, "-m", "omnidesk_agent.appsync.migrate", "--dsn-env", "OMNIDESK_POSTGRES_DSN",
+                                 "--namespace", config["app_sync"]["namespace"], "--check"], env=env, text=True)
+            report["migration"] = json.loads(migration.stdout)
+            check("explicit schema migration is current", report["migration"]["ready"])
             launch([sys.executable, "-m", "omnidesk_agent.sandbox.runner_server"], "runner")
             proc = start_app("initial")
             check("unauthenticated admin rejected", request("/admin/status")[0] == 401)
@@ -175,6 +181,56 @@ def main() -> None:
                 check(label, status == 200 and "CI persistence marker" in json.dumps(data))
 
             verify_marker("message read after write")
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+            private_key = Ed25519PrivateKey.generate()
+            public_key = private_key.public_key().public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode()
+            device_id = secrets.token_hex(20)
+            status, data = request("/app/devices/register", role="operator", payload={
+                "device_id": device_id, "device_type": "desktop", "platform": "isolated-ci",
+                "public_key": public_key,
+            })
+            check("synthetic asymmetric device registered", status == 200 and data.get("ok"))
+            pairing = secrets.token_urlsafe(24)
+            sensitive.append(pairing)
+            status, data = request("/app/devices/enrollment/start", role="owner", payload={
+                "device_type": "desktop", "pairing_code": pairing,
+            })
+            check("owner initiates device enrollment", status == 200 and data.get("ok"))
+            enrollment = "/app/devices/enrollment/" + data["enrollment"]["enrollment_id"]
+            status, data = request(enrollment + "/complete", role="operator", payload={
+                "pairing_code": pairing, "device_id": device_id, "public_key": public_key,
+            })
+            check("device enrollment completion", status == 200 and data.get("ok"))
+            status, data = request(enrollment + "/challenge", role="operator", payload={"device_id": device_id})
+            check("device challenge issued", status == 200 and data.get("ok"))
+            challenge = data["challenge"]
+            verification = {
+                "device_id": device_id, "challenge_id": challenge["challenge_id"],
+                "signature": private_key.sign(challenge["signing_message"].encode()).hex(),
+            }
+            status, data = request(enrollment + "/verify", role="operator", payload=verification)
+            check("real Ed25519 challenge signature verified", status == 200 and data.get("ok"))
+            sensitive.append(data["credential"]["device_token"])
+            check("used challenge rejected", request(enrollment + "/verify", role="operator", payload=verification)[0] == 409)
+            rotation_path = f"/app/devices/{device_id}/rotate-token"
+            check("unsigned device request rejected", request(rotation_path, role="operator", payload={})[0] == 401)
+            timestamp = str(int(time.time() * 1000))
+            nonce = secrets.token_hex(24)
+            body_hash = hashlib.sha256(b"{}").hexdigest()
+            # Construct the documented protocol independently of the server helper.
+            message = f"omnidesk-device-request:v1:POST:{rotation_path}:{body_hash}:{timestamp}:{nonce}".encode()
+            signed = {
+                "x-omnidesk-device-id": device_id, "x-omnidesk-timestamp": timestamp,
+                "x-omnidesk-nonce": nonce, "x-omnidesk-device-signature": private_key.sign(message).hex(),
+            }
+            status, data = request(rotation_path, role="operator", payload={}, headers=signed)
+            check("signed device request accepted", status == 200 and data.get("ok"))
+            sensitive.append(data["device"]["device_token"])
+            check("device request nonce replay rejected", request(rotation_path, role="operator", payload={}, headers=signed)[0] == 401)
             stop(proc)
             proc = start_app("restart")
             verify_marker("PostgreSQL state survives application restart")

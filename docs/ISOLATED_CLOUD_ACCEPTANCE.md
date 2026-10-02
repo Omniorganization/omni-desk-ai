@@ -18,6 +18,10 @@ message persistence across a real server restart and recovery into a separate
 database. A 30-request probe is explicitly short; it is not a long soak. Existing
 strict sandbox probes exercise real container execution and negative controls.
 The script fails on unavailable runtime support rather than weakening isolation.
+Synthetic Ed25519 keys exercise actual enrollment challenges, signed device token
+rotation and rejection of unsigned/replayed requests. These are protocol tests
+over HTTPS; they are not a native publisher certificate or a physical device
+connected to this private loopback service.
 
 ## Risk and rollback
 
