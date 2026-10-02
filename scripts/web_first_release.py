@@ -19,6 +19,12 @@ REQUIRED_WEB_CHECKS = {
     "owner signed browser approval succeeds",
     "browser replay rejected by durable backend nonce",
     "browser calls real free model and persists audited answer",
+    "authenticated stream workspace receives actual SSE",
+    "stream workspace labels audited delivery truthfully",
+    "HTTPS browser trusts test CA without TLS bypass",
+    "strict CSP and Trusted Types remain enabled",
+    "CSP nonce differs between responses",
+    "no secrets or private keys stored in browser storage",
     "reload restores verified session and PostgreSQL project",
     "viewer write rejected by backend RBAC",
     "missing CSRF rejected before backend mutation",
@@ -107,7 +113,9 @@ def package(directory: Path, image: str) -> dict:
                     "omnidesk_agent", "pyproject.toml", "README.md", "requirements.bootstrap.lock",
                     "requirements.runtime.lock", "requirements.enterprise.lock", "deploy/web-first",
                     "deploy/docker/config.production.example.yaml", "scripts/web_first_release.py",
-                    "scripts/web_first_host.py", "docs/WEB_FIRST_RELEASE.md"], check=True)
+                    "scripts/web_first_host.py", "docs/WEB_FIRST_RELEASE.md",
+                    "docs/runbooks/PLANNER_MEMORY_ISOLATION.md",
+                    "docs/runbooks/POSTGRES_RUNTIME_LIFECYCLE.md"], check=True)
     manifest = {
         "schema": SCHEMA, "scope": "web-only", "release_tier": "controlled-pilot-candidate",
         "checkout_sha": sha, "run_id": os.environ["GITHUB_RUN_ID"],

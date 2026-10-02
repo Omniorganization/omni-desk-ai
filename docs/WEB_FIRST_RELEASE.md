@@ -12,6 +12,7 @@
 - 浏览器生成不可导出的 P-256 内存密钥、owner 入网挑战、签名审批及 durable nonce 重放拒绝。
 - 实际项目创建、刷新后的 PostgreSQL 状态、退出和浏览器 cookie 失效。
 - 实际免费 Ollama `smollm2:135m` 问答并持久化，明确标记临时测试模型，不能代表生产质量或持续供应。
+- 实际 SSE 工作区恢复已验证 session 并交付答案；非原生 provider 流式明确标记为审计后流式交付。
 - 后台进程重启、独立数据库恢复及容器 CPU/内存/PID/只读/权限限制。
 
 设备私钥不再写入 IndexedDB、localStorage 或 sessionStorage。刷新/新会话产生新的设备身份。viewer 无需设备入网即可读取；operator 可注册设备并执行普通项目/聊天；owner 才能发起设备入网和签名审批。审核与设备策略未降低。
@@ -21,6 +22,7 @@
 ## 审核与发布
 
 1. 本变更及依赖 PR 必须经过正常独立 Code Owner 审核，合入 main；不使用自审、管理员绕过或直接 main 写入。
+   依赖包括 #133、#134，以及实际 PostgreSQL 问答必需的 #131（调用计数、连接生命周期和规划器内存隔离）。本分支已合入 #131 的源提交进行综合验证；这不代表该 PR 已在 main 获批。
 2. 在合入的 main 上运行 `Web First Candidate`。PR 合并候选的证据不能替代 main 的实际包。
 3. 在 main 上触发 `Web First Protected Release`，传入该 main 候选运行 ID。既有 release environment 的独立批准仍然生效。
 4. 发布流程仅接受成功、同提交、main 的对应候选，产生 GitHub OIDC artifact provenance，避免复制任何发布私钥到服务器。该产物仍是受保护的网页试用候选，不冒充完整 Customer GA。

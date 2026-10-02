@@ -154,14 +154,28 @@ http {{
             with page.expect_response(lambda r: r.url.endswith("/ask"), timeout=120000) as answer:
                 page.locator(".send-button").click()
             data = answer.value.json()
+            report["model_response"] = {"status": answer.value.status,
+                                        "detail": data.get("detail"),
+                                        "provider": data.get("assistant_message", {}).get("model_provider")}
             check("browser calls real free model and persists audited answer", answer.value.status == 200
                   and data.get("assistant_message", {}).get("content")
-                  and data["assistant_message"].get("model_provider") == "ollama")
+                  and data["assistant_message"].get("model_provider") == "ollama" and data.get("audit_trace_id"))
             report["model"] = {"provider": data["assistant_message"].get("model_provider"),
                                "model": data["assistant_message"].get("model_name"),
                                "trace_present": bool(data.get("audit_trace_id"))}
             expect(page.locator(".send-button")).to_be_enabled(timeout=30000)
             page.screenshot(path=str(output / "browser-owner.png"), full_page=True)
+            page.goto(origin + "/stream")
+            expect(page.get_by_text("已连接 · isolated-ci-actor · owner", exact=True)).to_be_visible()
+            page.get_by_placeholder("输入问题", exact=True).fill("Reply briefly with one greeting.")
+            with page.expect_response(lambda r: r.url.endswith("/api/omni/chat/stream"), timeout=120000) as streamed:
+                page.get_by_role("button", name="开始生成", exact=True).click()
+            check("authenticated stream workspace receives actual SSE", streamed.value.status == 200
+                  and "text/event-stream" in streamed.value.headers.get("content-type", ""))
+            expect(page.get_by_text("已完成 · 审计后流式交付", exact=True)).to_be_visible(timeout=120000)
+            check("stream workspace labels audited delivery truthfully", True)
+            page.screenshot(path=str(output / "browser-stream.png"), full_page=True)
+            page.goto(origin)
             page.reload()
             expect(page.get_by_text("session ready", exact=True)).to_be_visible()
             page.get_by_role("button", name="连接应用", exact=False).click()
