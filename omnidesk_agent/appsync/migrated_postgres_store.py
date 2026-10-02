@@ -209,7 +209,7 @@ class MigratedMultiInstancePostgresAppSyncStore(
         DurablePostgresAppSyncStore._load(self)
 
     def _serialized_call(
-        self, method: Callable[..., T], *args: Any, **kwargs: Any
+        self, method: Callable[..., T], /, *args: Any, **kwargs: Any
     ) -> T:
         if int(getattr(self._operation_state, "depth", 0)) > 0:
             return method(*args, **kwargs)

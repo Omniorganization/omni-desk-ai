@@ -26,11 +26,18 @@ connected to this private loopback service.
 ## Risk and rollback
 
 This adds an opt-in/path-triggered CI acceptance workflow and synthetic verification
-script. It does not change deployment credentials or production configuration.
+script. Actual HTTP execution also found a production PostgreSQL serialization
+wrapper parameter named `method` colliding with a device request's HTTP `method`
+keyword. Making the callable parameter positional-only preserves keyword forwarding
+and existing advisory locking. A real PostgreSQL regression and HTTPS signature
+probes cover the failure and recovery. It does not change deployment credentials
+or production configuration.
 Pulling the pinned sandbox image needs public registry availability. Ubuntu's
 rootless cgroup/user namespace support and PostgreSQL startup are real dependencies;
 their failures must remain visible. Stop or revert this workflow and script to
-roll back. Each job VM, subprocess and private temporary fixture is disposable.
+roll back; revert the positional-only wrapper change if rolling back the runtime
+fix (this restores the known device request failure). Each job VM, subprocess and
+private temporary fixture is disposable.
 
 ## Evidence boundary
 

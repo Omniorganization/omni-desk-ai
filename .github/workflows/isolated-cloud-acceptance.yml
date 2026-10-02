@@ -5,6 +5,8 @@ on:
       - '.github/workflows/isolated-cloud-acceptance.yml'
       - 'scripts/isolated_cloud_acceptance.py'
       - 'omnidesk_agent/sandbox/**'
+      - 'omnidesk_agent/appsync/migrated_postgres_store.py'
+      - 'tests/test_postgres_appsync_atomic_chat.py'
       - 'tests/test_sandbox_runner.py'
   workflow_dispatch:
 permissions:
@@ -30,6 +32,7 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       OMNIDESK_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/acceptance
+      OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/acceptance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -47,7 +50,7 @@ jobs:
           ACCEPTANCE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: python scripts/isolated_cloud_acceptance.py --output reports/isolated-cloud
       - name: Sandbox regression tests
-        run: pytest -q tests/test_sandbox_runner.py tests/test_sandbox_docker_command.py
+        run: pytest -q tests/test_sandbox_runner.py tests/test_sandbox_docker_command.py tests/test_postgres_appsync_atomic_chat.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

@@ -30,6 +30,22 @@ def _dsn() -> str:
     return value
 
 
+def test_serialized_device_request_preserves_http_method_keyword() -> None:
+    dsn = _dsn()
+    namespace = f"method_keyword_{uuid.uuid4().hex}"
+    apply_appsync_migrations(dsn, namespace=namespace)
+    store = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+    try:
+        result = store.verify_device_request_signature(
+            device_id="unregistered", method="POST", path="/app/devices/unregistered/rotate-token",
+            body=b"{}", timestamp="", nonce="", signature="",
+        )
+        assert result == (False, "missing_timestamp")
+        assert store.ensure_user("after-rejection")["actor"] == "after-rejection"
+    finally:
+        store.close()
+
+
 def test_atomic_chat_is_single_writer_replayable_and_multi_instance_safe() -> None:
     dsn = _dsn()
     namespace = f"test_{uuid.uuid4().hex}"
