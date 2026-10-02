@@ -106,6 +106,9 @@ http {{
             report["initial_body_text"] = page.locator("body").inner_text()[:6000]
             (output / "browser-initial.html").write_text(page.content())
             page.screenshot(path=str(output / "browser-initial.png"), full_page=True)
+            for control in page.locator(".setting-row").all():
+                if control.get_attribute("data-implemented") != "true":
+                    expect(control).to_be_disabled()
             page.get_by_label("Session Token", exact=True).fill("invalid-token")
             page.get_by_role("button", name="登录并连接", exact=True).click()
             expect(page.locator(".error-banner")).to_contain_text("invalid gateway token")
