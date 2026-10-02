@@ -50,18 +50,16 @@ jobs:
       - name: Delegate actual resource controllers to the unprivileged CI user
         run: |
           mkdir -p reports/isolated-cloud
-          sudo mkdir -p /etc/systemd/system/user@.service.d
-          printf '%s\n' '[Service]' 'Delegate=cpu cpuset io memory pids' |
-            sudo tee /etc/systemd/system/user@.service.d/omnidesk-ci.conf
           sudo loginctl enable-linger "$(whoami)"
-          sudo systemctl daemon-reload
-          if ! sudo systemctl restart "user@$(id -u).service"; then
+          if ! sudo systemctl set-property --runtime "user@$(id -u).service" 'Delegate=cpu memory pids'; then
             sudo journalctl --no-pager --unit "user@$(id -u).service" -n 80 |
               tee reports/isolated-cloud/delegation-failure.log
             exit 1
           fi
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+          sudo systemctl show "user@$(id -u).service" --property=DelegateControllers |
+            tee reports/isolated-cloud/delegated-controllers.log
       - name: Immutable PostgreSQL keyword collision negative control
         run: |
           python - <<'PY'

@@ -74,6 +74,7 @@ def main() -> None:
             env[f"OMNIDESK_{role}_ACTOR"] = "isolated-ci-actor"
         env.update(OMNIDESK_ENV="production", OMNIDESK_REQUIRE_PRODUCTION_GUARDS="true",
                    OMNIDESK_CONTAINER_RUNTIME="podman", OMNIDESK_SANDBOX_RUNNER_HOST="127.0.0.1",
+                   OMNIDESK_SANDBOX_READY_SMOKE="1",
                    OMNIDESK_SANDBOX_NONCE_DB=str(root / "nonces.sqlite3"),
                    OMNIDESK_BUILD_SHA=report["checkout_sha"],
                    ACCEPTANCE_TLS_CERT=str(root / "tls.crt"), ACCEPTANCE_TLS_KEY=str(root / "tls.key"))
