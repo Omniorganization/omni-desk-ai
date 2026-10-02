@@ -6,7 +6,7 @@ Primary guidance: <https://learn.microsoft.com/en-us/windows/apps/package-and-de
 
 ## Actual owner inputs
 
-Complete the appropriate individual/company registration at <https://developer.microsoft.com/en-us/microsoft-store/register>, using the true legal/business role. Do not assume the personal noncommercial account shown by default fits a commercial organization. The owner must complete new credentials, identity verification and agreements on official pages. No account, Store listing, certificate or final signature has been created by this patch.
+Complete the appropriate individual/company registration using the new free onboarding entry point <https://storedeveloper.microsoft.com/>, using the true legal/business role. Both account types have no registration fee in this flow; a legacy entry point may differ. Do not assume the personal noncommercial account shown by default fits a commercial organization. The owner must complete new credentials, identity verification and agreements on official pages. No account, Store listing, certificate or final signature has been created by this patch.
 
 After reserving the actual application identity, copy the Package Identity Name and Publisher subject exactly from Partner Center; supply DisplayName, PublisherDisplayName and a Store version such as `1.12.7.0`. Test fixtures in CI are explicitly synthetic and must never be submitted as the owner's identity. No private key or token is accepted by the helper. Run all packaging/build/install testing in the authorized cloud, not on this Mac.
 
@@ -14,7 +14,17 @@ Build the native application using the repository's locked Rust/npm dependencies
 
 The output JSON binds the executable/package hashes to the provided source commit, but does not independently prove the executable was built from that commit: retain the actual trusted build-run/provenance evidence. It explicitly records that identity and signature verification were not performed. This record is **not** imported as passing external GA evidence.
 
-## Remaining platform work
+## Real client cloud preflight
+
+The `Windows Store Client` workflow builds the genuine client with locked npm/Rust dependencies, frontend type/tests/build, native tests/clippy, and a release build with `tauri/custom-protocol` so the frontend is embedded rather than loading the development server. It packages this executable with logos resized from the existing application icon, checks the extracted executable digest and manifest identity/version, and requires the actual process to create and sustain its expected Windows window. Packaging negative controls remain required.
+
+Pull requests use `OmniDesk.PreflightOnly` and a clearly synthetic Publisher; **never upload these bytes to Partner Center**. After account verification and name reservation, workflow dispatch can accept all three exact public identity fields (`identity_name`, `publisher`, `publisher_display_name`). These are passed as environment values, not interpolated into command code. That mode still emits an unsigned submission input and does not prove identity ownership, install/update compatibility or Store approval. Source must pass independent review before submission; PR builds are review candidates only.
+
+Retain the run URL, exact checkout commit, `client-preflight.json`, `store-package-input.json`, MSIX, logo assets and `SHA256SUMS`. The successful window check is an **unpackaged cloud launch**, not an installed MSIX launch or physical-machine/user-workflow test. System WebView2 and native runtime dependencies on a clean supported machine remain separate acceptance requirements. No signing private key or test certificate is created/exported and no existing GA gate is modified.
+
+Risk and rollback: the real client may fail startup on a cloud desktop, or the package may miss dependencies required on a clean Windows machine. Keep the previous independently verified distribution route; remove the unused workflow via a reviewed PR if necessary. This workflow does not modify Store listings or user installations.
+
+## Store certification and installed package acceptance
 
 The package declares `runFullTrust` because the existing Tauri executable is a desktop process; no extra shell/native app commands, secrets or weakened request/device signing are introduced. The Store must approve the restricted capability and the actual application behavior. This manifest is a starting desktop packaging route, not proof of Store certification or compatibility.
 
