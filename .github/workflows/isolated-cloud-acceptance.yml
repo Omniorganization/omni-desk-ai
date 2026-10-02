@@ -29,7 +29,6 @@ jobs:
           --health-cmd "pg_isready -U postgres -d acceptance"
           --health-interval 5s --health-timeout 5s --health-retries 12
     env:
-      ACCEPTANCE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
       OMNIDESK_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/acceptance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -44,6 +43,8 @@ jobs:
           python -m pip install --require-hashes -r requirements.enterprise.lock
           python -m pip install -e . --no-deps --no-build-isolation
       - name: Actual private HTTPS, persistence, restore and sandbox verification
+        env:
+          ACCEPTANCE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: python scripts/isolated_cloud_acceptance.py --output reports/isolated-cloud
       - name: Sandbox regression tests
         run: pytest -q tests/test_sandbox_runner.py tests/test_sandbox_docker_command.py

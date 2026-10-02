@@ -216,7 +216,10 @@ def main() -> None:
                     text = text.replace(value, "[REDACTED]")
                 (args.output / path.name).write_text(text)
             report["duration_seconds"] = time.monotonic() - started
-            (args.output / "acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
+            serialized = json.dumps(report, indent=2) + "\n"
+            for value in sensitive:
+                serialized = serialized.replace(value, "[REDACTED]")
+            (args.output / "acceptance.json").write_text(serialized)
             hashes = [f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}" for p in sorted(args.output.iterdir()) if p.is_file() and p.name != "SHA256SUMS"]
             (args.output / "SHA256SUMS").write_text("\n".join(hashes) + "\n")
 
