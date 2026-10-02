@@ -66,7 +66,7 @@ variable "ssh_public_key" {
 variable "ssh_cidrs" {
   type = list(string)
   validation {
-    condition     = length(var.ssh_cidrs) > 0 && alltrue([for cidr in var.ssh_cidrs : can(cidrhost(cidr, 0)) && can(regex("/32$", cidr))])
+    condition     = length(var.ssh_cidrs) > 0 && alltrue([for cidr in var.ssh_cidrs : can(cidrhost(cidr, 0)) && can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$", cidr))])
     error_message = "SSH ingress requires exact operator IPv4 /32 addresses."
   }
 }

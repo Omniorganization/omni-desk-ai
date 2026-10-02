@@ -8,7 +8,7 @@ variables {
   image_id                   = "ocid1.image.oc1.ap-singapore-1.testfixture"
   image_verified_always_free = true
   quoted_monthly_usd         = 0
-  free_capacity             = { ocpu_hours = 1500, ram_gb_hours = 9000, boot_disk_gb = 200 }
+  free_capacity              = { ocpu_hours = 1500, ram_gb_hours = 9000, boot_disk_gb = 200 }
   ssh_public_key             = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7txPvTBVoEV4RJwdMHngFx2JJsXeUgDoqhcaWMjGFN test-only"
   ssh_cidrs                  = ["192.0.2.17/32"]
 }
@@ -41,6 +41,13 @@ run "reject_public_ssh" {
   command = plan
   variables {
     ssh_cidrs = ["0.0.0.0/0"]
+  }
+  expect_failures = [var.ssh_cidrs]
+}
+run "reject_ipv6_network_as_operator_host" {
+  command = plan
+  variables {
+    ssh_cidrs = ["2001:db8::/32"]
   }
   expect_failures = [var.ssh_cidrs]
 }
