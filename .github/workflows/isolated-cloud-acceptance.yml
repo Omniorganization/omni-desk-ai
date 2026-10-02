@@ -51,15 +51,11 @@ jobs:
         run: |
           mkdir -p reports/isolated-cloud
           sudo loginctl enable-linger "$(whoami)"
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-          systemctl --user stop podman.socket podman.service
-          podman system migrate
           sudo mkdir -p /etc/systemd/system/user@.service.d
           printf '%s\n' '[Service]' 'Delegate=cpu memory pids' |
             sudo tee /etc/systemd/system/user@.service.d/omnidesk-ci.conf
           sudo systemctl daemon-reload
-          if ! sudo systemctl restart "user@$(id -u).service"; then
+          if ! sudo systemctl is-active --quiet "user@$(id -u).service"; then
             sudo journalctl --no-pager --unit "user@$(id -u).service" -n 80 |
               tee reports/isolated-cloud/delegation-failure.log
             exit 1
