@@ -16,6 +16,7 @@ from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
 from omnidesk_agent.security.webhook_security import WebhookSecurityConfig
 from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
+from omnidesk_agent.memory.retrieval import known_memory_identity, matches_memory_query, planner_memory_visible
 
 STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS omnidesk_core_state (
@@ -172,6 +173,30 @@ class _PostgresJsonState:
                         """,  # nosec B608 - order is constrained above
                         (namespace, limit),
                     )
+                return [_loads(row[0]) for row in cur.fetchall()]
+
+    def count_by_field(self, namespace: str, field: str, value: str) -> int:
+        if field != "task_id":
+            raise ValueError(f"unsupported JSON count field: {field}")
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM omnidesk_core_state WHERE namespace=%s AND value_json->>%s=%s",
+                    (namespace, field, value),
+                )
+                return int(cur.fetchone()[0])
+
+    def list_planner_memories(self, namespace: str, *, channel: str, actor: str, limit: int) -> list[dict[str, Any]]:
+        # Filter ownership in SQL before loading any protected payload.
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """SELECT value_json FROM omnidesk_core_state
+                    WHERE namespace=%s AND value_json->>'channel'=%s AND value_json->>'actor'=%s
+                      AND value_json->>'memory_status' IN ('candidate', 'validated', 'trusted')
+                    ORDER BY updated_at DESC LIMIT %s""",
+                    (namespace, channel, actor, max(1, min(int(limit), 1000))),
+                )
                 return [_loads(row[0]) for row in cur.fetchall()]
 
     def stats_by_status(self, namespace: str) -> dict[str, int]:
@@ -1034,14 +1059,11 @@ class PostgresOutboundMessageStore:
         return {"id": message_id, "status": "ambiguous", "retry_count": int(row.get("retry_count") or 0), "requires_reconciliation": True}
 
     def requeue(self, message_id: str) -> dict[str, Any]:
-        row = self.get(message_id)
-        if not row:
-            raise KeyError(message_id)
-        if row.get("status") == "sent":
-            raise ValueError(f"sent outbound message cannot be retried: {message_id}")
-        self._update_by_id(
-            message_id,
-            lambda r: {
+        def retry(r: dict[str, Any]) -> dict[str, Any]:
+            # Validate the current row while holding the same lock as the write.
+            if r.get("status") not in {"pending", "retry", "dead_letter", "ambiguous", "cancelled"}:
+                raise ValueError(f"outbound message cannot be retried from status {r.get('status')}: {message_id}")
+            return {
                 **r,
                 "status": "pending",
                 "retry_count": 0,
@@ -1050,27 +1072,23 @@ class PostgresOutboundMessageStore:
                 "last_error": None,
                 "error_category": None,
                 "updated_at": time.time(),
-            },
-        )
+            }
+        self._update_by_id(message_id, retry)
         return {"id": message_id, "status": "pending"}
 
     def cancel(self, message_id: str) -> dict[str, Any]:
-        row = self.get(message_id)
-        if not row:
-            raise KeyError(message_id)
-        if row.get("status") in {"sent", "cancelled"}:
-            raise ValueError(f"outbound message cannot be cancelled from status {row.get('status')}: {message_id}")
-        self._update_by_id(
-            message_id,
-            lambda r: {
+        def cancel_current(r: dict[str, Any]) -> dict[str, Any]:
+            if r.get("status") in {"sent", "cancelled"}:
+                raise ValueError(f"outbound message cannot be cancelled from status {r.get('status')}: {message_id}")
+            return {
                 **r,
                 "status": "cancelled",
                 "locked_at": None,
                 "updated_at": time.time(),
                 "last_error": None,
                 "error_category": None,
-            },
-        )
+            }
+        self._update_by_id(message_id, cancel_current)
         return {"id": message_id, "status": "cancelled"}
 
     def recover_stale_running(self, *, lease_seconds: int = 300) -> int:
@@ -1114,6 +1132,9 @@ class PostgresTokenBudgetManager(TokenBudgetManager):
     ) -> None:
         self.state = state
         self.config = config or TokenBudgetConfig()
+
+    def count_calls(self, task_id: str) -> int:
+        return self.state.count_by_field(self.namespace_usage, "task_id", task_id)
 
     def get_cached(self, cache_key: str) -> Optional[str]:
         if not self.config.enable_cache:
@@ -1459,6 +1480,9 @@ class PostgresExperienceStore:
             "plan": self._encrypt_text(self.privacy.redact_text(plan)),
             "outcome": self._encrypt_text(self.privacy.redact_text(outcome)),
             "tags": self._encrypt_text(json.dumps(tags or [], ensure_ascii=False)),
+            "channel": channel,
+            "actor": actor,
+            "namespace": f"{channel}:{actor}",
         }
         self.state.put(self.namespace_legacy, str(eid), row)
         return eid
@@ -1559,17 +1583,38 @@ class PostgresExperienceStore:
         ]
         return matched[:limit]
 
-    def retrieve_for_task(self, task: str, limit: int = 5) -> list[dict[str, Any]]:
-        rows = self.search_similar(task, limit=limit)
+    def retrieve_for_task(self, task: str, limit: int = 5, *, channel: str | None = None, actor: str | None = None) -> list[dict[str, Any]]:
+        if not known_memory_identity(channel, actor) or not task.strip() or limit <= 0:
+            return []
+        channel, actor = str(channel), str(actor)
+        limit = min(int(limit), 100)
+        rows = self.state.list_planner_memories(self.namespace_structured, channel=channel, actor=actor, limit=max(limit * 20, limit))
         now = time.time()
+        results: list[dict[str, Any]] = []
         for row in rows:
-            key = str(row["id"])
-            current = self.state.get(self.namespace_structured, key)
-            if current:
-                current["last_used_at"] = now
-                current["updated_at"] = now
-                self.state.put(self.namespace_structured, key, current)
-        return rows
+            if not planner_memory_visible(row, channel=channel, actor=actor, now=now):
+                continue
+            decoded = self._decode_structured(row)
+            if not matches_memory_query(decoded, task):
+                continue
+
+            def touch(current: dict[str, Any]) -> dict[str, Any]:
+                # Do not overwrite a concurrent curator review with a stale snapshot.
+                if planner_memory_visible(current, channel=channel, actor=actor, now=time.time()):
+                    current["last_used_at"] = now
+                return current
+
+            try:
+                current = self.state.update_locked(self.namespace_structured, str(row["id"]), touch)
+            except KeyError:
+                continue
+            if planner_memory_visible(current, channel=channel, actor=actor, now=time.time()):
+                current = self._decode_structured(current)
+                if matches_memory_query(current, task):
+                    results.append(current)
+            if len(results) == limit:
+                break
+        return results
 
     def summarize_failures(self, days: int = 7, limit: int = 10) -> list[dict[str, Any]]:
         since = time.time() - days * 86400
