@@ -393,6 +393,7 @@ class ExperienceStore:
         now = time.time()
         # A write transaction keeps curator status and last-used updates consistent.
         with connect_sqlite(self.db_path) as con:
+            con.row_factory = sqlite3.Row
             con.execute("BEGIN IMMEDIATE")
             candidates = con.execute(
                 """SELECT * FROM structured_experiences WHERE channel=? AND actor=?

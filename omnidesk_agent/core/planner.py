@@ -18,7 +18,7 @@ class HierarchicalPlanner:
 
     async def plan(self, msg: ChannelMessage) -> Plan:
         retrieve = getattr(self.memory, "retrieve_for_task", None)
-        experiences = retrieve(msg.text, limit=4, channel=msg.channel, actor=msg.sender_id) if callable(retrieve) else []
+        experiences = self.memory.retrieve_for_task(msg.text, limit=4, channel=msg.channel, actor=msg.sender_id) if callable(retrieve) else []
         skills_context = self.skills.prompt_block(msg.text, max_chars=6000)
         profile: Optional[dict[str, Any]] = None
         get_profile = getattr(self.memory, "get_interaction_profile", None)
