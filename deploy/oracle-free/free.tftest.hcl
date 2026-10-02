@@ -13,9 +13,14 @@ variables {
   ssh_cidrs                  = ["192.0.2.17/32"]
 }
 run "fixed_free_single_host" {
-  command = plan
+  # Mock apply resolves provider-computed set members; it never contacts OCI.
+  command = apply
   assert {
-    condition     = oci_core_instance.acceptance.shape == "VM.Standard.A1.Flex" && oci_core_instance.acceptance.shape_config[0].ocpus == 2 && oci_core_instance.acceptance.shape_config[0].memory_in_gbs == 12 && oci_core_instance.acceptance.source_details[0].boot_volume_size_in_gbs == 50 && oci_core_instance.acceptance.preserve_boot_volume
+    condition     = oci_core_instance.acceptance.shape == "VM.Standard.A1.Flex" && oci_core_instance.acceptance.shape_config[0].ocpus == 2 && oci_core_instance.acceptance.shape_config[0].memory_in_gbs == 12
+    error_message = "No paid shape or extra CPU/RAM is permitted."
+  }
+  assert {
+    condition     = tonumber(oci_core_instance.acceptance.source_details[0].boot_volume_size_in_gbs) == 50 && tonumber(oci_core_instance.acceptance.source_details[0].boot_volume_vpus_per_gb) == 10 && oci_core_instance.acceptance.preserve_boot_volume
     error_message = "No paid shape, extra CPU/RAM/disk or destructive volume cleanup is permitted."
   }
   assert {

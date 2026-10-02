@@ -41,4 +41,4 @@ jobs:
       - name: Validate MSIX packaging with synthetic cloud-only PE and Store identity
         shell: pwsh
         run: ./scripts/test_windows_store_package.ps1
-# No secrets, cloud account, apply or billable resource operation.
+# No secrets, cloud account or real-provider resource operation. Tests use mocks.

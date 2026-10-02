@@ -28,4 +28,4 @@ Free capacity, activation, image compatibility, cloud-init, ARM builds, provider
 
 The host has `prevent_destroy` and `preserve_boot_volume`: protect owner data, roll back only to a verified immutable application/config with a consistent backup. For retirement, independently verify/export backups, obtain owner permission to remove protection and inspect any preserved volumes or addresses afterward. Preserving a boot disk consumes free quota; provider reclamation or state loss is not permission to create replacements without inspecting that quota.
 
-Zero Budget Preflight runs only format/schema and mock policy tests with no cloud secrets or apply. No successful mock test proves an account, price, stock, allocation or deployment.
+Zero Budget Preflight runs only format/schema and mock policy tests with no cloud secrets or real-provider apply. A mocked positive apply resolves provider-computed set fields; six rejection controls use mocked plans. Mock apply never contacts OCI. No successful mock test proves an account, price, stock, allocation or deployment.
