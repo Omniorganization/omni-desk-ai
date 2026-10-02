@@ -39,7 +39,12 @@ fn rejects_identity_replacement_and_read_errors_without_writes() {
     );
     assert_eq!(writes.get(), 0);
     assert_eq!(
-        write_identity_once(&path, "new", || Ok(String::new()), || Err("write denied".into())),
+        write_identity_once(
+            &path,
+            "new",
+            || Ok(String::new()),
+            || Err("write denied".into())
+        ),
         Err("write denied".into())
     );
     assert_eq!(
