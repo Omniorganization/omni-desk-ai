@@ -115,7 +115,7 @@ jobs:
           python scripts/isolated_cloud_acceptance.py --web-first --output reports/web-first
       - name: Focused backend and web release regressions
         run: >-
-          pytest -q tests/test_postgres_appsync_atomic_chat.py tests/test_web_first_release.py
+          PYTHONPATH=. python -m pytest -q tests/test_postgres_appsync_atomic_chat.py tests/test_web_first_release.py
           tests/test_postgres_runtime_acceptance.py tests/test_postgres_pool_lifecycle.py
           tests/test_planner_memory_boundaries.py
       - name: Package the tested Web-only candidate
