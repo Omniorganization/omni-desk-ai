@@ -197,7 +197,7 @@ http {{
             check("logout blocks subsequent backend access", denied == 401)
 
             page.get_by_label("Session Token", exact=True).fill(env["OMNIDESK_VIEWER_TOKEN"])
-            page.get_by_label("Role", exact=True).select_option("owner")
+            page.get_by_role("combobox", name="Role", exact=True).select_option("owner")
             page.get_by_role("button", name="登录并连接", exact=True).click()
             expect(page.locator(".profile-card small")).to_contain_text("viewer")
             expect(page.locator(".error-banner")).to_have_count(0)
