@@ -14,8 +14,8 @@ def test_structured_experience_retrieval_and_metrics(tmp_path):
             "risk_level": "medium",
             "reusable_skill": True,
             "tags": ["xiaohongshu"],
-        })
-        rows = memory.retrieve_for_task("xiaohongshu captcha", limit=3)
+        }, channel="unit", actor="tester")
+        rows = memory.retrieve_for_task("xiaohongshu captcha", limit=3, channel="unit", actor="tester")
         assert rows
         assert rows[0]["failure_reason"] == "captcha_required"
 

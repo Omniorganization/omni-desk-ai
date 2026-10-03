@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import ssl
 import subprocess
 import sys
@@ -23,6 +24,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--serve", type=Path)
+    parser.add_argument("--web-first", action="store_true", help="Also exercise the production Web image in a real browser")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Cloud-only acceptance: requires GitHub Actions")
@@ -34,6 +36,12 @@ def main() -> None:
         uvicorn.run(create_app(load_config(args.serve)), host="127.0.0.1", port=18789,
                     ssl_certfile=os.environ["ACCEPTANCE_TLS_CERT"], ssl_keyfile=os.environ["ACCEPTANCE_TLS_KEY"])
         return
+
+    def deadline(_signum, _frame):
+        raise TimeoutError("Cloud acceptance exceeded its ten-minute execution deadline")
+
+    signal.signal(signal.SIGALRM, deadline)
+    signal.alarm(600)
 
     args.output.mkdir(parents=True, exist_ok=True)
     report = {
@@ -50,6 +58,7 @@ def main() -> None:
 
     def check(label, condition):
         report["checks"].append({"name": label, "ok": bool(condition)})
+        print(f"Acceptance: {label}: {bool(condition)}", flush=True)
         if not condition:
             raise RuntimeError(f"Acceptance check failed: {label}")
 
@@ -95,6 +104,12 @@ def main() -> None:
         config["sandbox"]["runner_url"] = "http://127.0.0.1:18890"
         config["app_sync"]["namespace"] = "isolated-ci"
         config["models"]["budget"].update(daily_usd_limit=0.01, monthly_usd_limit=0.01, per_actor_daily_usd_limit=0.01)
+        if args.web_first:
+            # The acceptance model is real, local to the ephemeral cloud runner, and free.
+            # It does not establish a persistent production model provider.
+            profile = {"provider": "ollama", "model": "smollm2:135m", "api_key_env": None,
+                       "base_url": "http://127.0.0.1:11434", "max_output_tokens": 64}
+            config["models"]["profiles"] = {name: dict(profile) for name in ("fast", "planner", "local")}
         config_path = root / "config.yaml"
         config_path.write_text(yaml.safe_dump(config))
         os.environ.update(env)
@@ -308,6 +323,13 @@ print(json.dumps(observed, sort_keys=True))
                   and observation["pids_limit"] == 128 and observation["cpu_cores"] == 1.0)
             report["sandbox"] = check_sandbox(strict=True)
             check("actual strict sandbox execution", report["sandbox"]["run"]["ok"])
+            if args.web_first:
+                from web_first_browser_acceptance import run_browser_acceptance
+
+                report["web"] = run_browser_acceptance(
+                    output=args.output, root=root, env=env, launch=launch, request=request,
+                )
+                check("production web image browser acceptance", report["web"]["ok"])
             report["ok"] = True
         except Exception as error:
             report["error"] = str(error)

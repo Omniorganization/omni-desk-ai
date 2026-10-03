@@ -1,0 +1,129 @@
+name: Web First Candidate
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web-admin-next/**'
+      - 'deploy/web-first/**'
+      - 'scripts/web_first*.py'
+      - 'scripts/isolated_cloud_acceptance.py'
+      - '.github/workflows/web-first-candidate.yml'
+  pull_request:
+    paths:
+      - 'apps/web-admin-next/**'
+      - 'deploy/web-first/**'
+      - 'scripts/web_first*.py'
+      - 'scripts/isolated_cloud_acceptance.py'
+      - 'tests/test_web_first*.py'
+      - '.github/workflows/web-first-candidate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: web-first-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser-and-package:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: acceptance
+        ports:
+          - '127.0.0.1:5432:5432'
+        options: >-
+          --health-cmd "pg_isready -U postgres -d acceptance"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      OMNIDESK_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/acceptance
+      OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/acceptance
+      WEB_FIRST_IMAGE: omnidesk-web-first:ci
+      OLLAMA_HOST: 127.0.0.1:11434
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.17.0'
+          cache: npm
+          cache-dependency-path: apps/web-admin-next/package-lock.json
+      - name: Install locked dependencies and browser runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns nginx libnss3-tools zstd
+          python -m pip install --require-hashes -r requirements.dev.lock
+          python -m pip install --require-hashes -r requirements.enterprise.lock
+          python -m pip install --require-hashes -r deploy/web-first/browser.lock
+          python -m pip install -e . --no-deps --no-build-isolation
+          python -m playwright install --with-deps chromium
+      - name: Web source checks
+        working-directory: apps/web-admin-next
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+      - name: Build immutable-base production web image
+        run: |
+          mkdir -p reports/web-first
+          docker pull node:22-bookworm-slim
+          NODE_BASE_IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' node:22-bookworm-slim)"
+          test -n "$NODE_BASE_IMAGE"
+          printf '%s\n' "$NODE_BASE_IMAGE" > reports/web-first/node-base-image.txt
+          docker build --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            -f apps/web-admin-next/Dockerfile -t "$WEB_FIRST_IMAGE" apps/web-admin-next
+          docker image inspect --format '{{.Id}}' "$WEB_FIRST_IMAGE" > reports/web-first/web-image-id.txt
+      - name: Start a verified free local model in the cloud
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/ollama/ollama/releases/download/v0.35.1/ollama-linux-amd64.tar.zst \
+            --output "$RUNNER_TEMP/ollama.tar.zst"
+          printf '%s  %s\n' 9fcd79ac4575b2bd31b992eee18b1000c8ad126b451627c8f8cd091714cfbb10 \
+            "$RUNNER_TEMP/ollama.tar.zst" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/ollama"
+          tar --zstd -xf "$RUNNER_TEMP/ollama.tar.zst" -C "$RUNNER_TEMP/ollama"
+          echo "$RUNNER_TEMP/ollama/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:11434/api/version; then break; fi
+            echo "Waiting for free local cloud model: $attempt"
+            sleep 1
+          done
+          "$RUNNER_TEMP/ollama/bin/ollama" pull smollm2:135m
+          curl --fail --silent http://127.0.0.1:11434/api/tags > reports/web-first/local-model-tags.json
+      - name: Delegate actual resource controllers
+        run: |
+          sudo loginctl enable-linger "$(whoami)"
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '%s\n' '[Service]' 'Delegate=cpu memory pids' |
+            sudo tee /etc/systemd/system/user@.service.d/omnidesk-ci.conf
+          sudo systemctl daemon-reload
+          sudo systemctl is-active --quiet "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - name: Actual HTTPS browser, persistence, restore and rootless sandbox
+        env:
+          ACCEPTANCE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: >-
+          systemd-run --user --scope --property=Delegate=yes --working-directory="$GITHUB_WORKSPACE"
+          python scripts/isolated_cloud_acceptance.py --web-first --output reports/web-first
+      - name: Focused backend and web release regressions
+        run: >-
+          PYTHONPATH=. python -m pytest -q tests/test_postgres_appsync_atomic_chat.py tests/test_web_first_release.py
+          tests/test_postgres_runtime_acceptance.py tests/test_postgres_pool_lifecycle.py
+          tests/test_planner_memory_boundaries.py
+      - name: Package the tested Web-only candidate
+        run: python scripts/web_first_release.py package --output reports/web-first --image "$WEB_FIRST_IMAGE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: web-first-candidate
+          path: reports/web-first/
+          if-no-files-found: error
+          retention-days: 1

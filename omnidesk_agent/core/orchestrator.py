@@ -222,7 +222,7 @@ class Orchestrator:
 
         outcome = "\n".join([r.get("summary") or r.get("error") or "" for r in all_results])
         compact_steps = [{"description": s.description, "tool": s.tool, "action": s.action, "risk": s.risk, "args_keys": sorted(s.args.keys())} for s in plan.steps]
-        self.memory.add(task=msg.text[:1000], plan=json.dumps(compact_steps, ensure_ascii=False), outcome=outcome[:2000], tags=[msg.channel])
+        self.memory.add(task=msg.text[:1000], plan=json.dumps(compact_steps, ensure_ascii=False), outcome=outcome[:2000], tags=[msg.channel], channel=msg.channel, actor=msg.sender_id)
         try:
             structured = self.experience_extractor.extract(
                 task=msg.text,
@@ -238,7 +238,7 @@ class Orchestrator:
                 },
                 tags=[msg.channel],
             )
-            self.memory.add_experience(structured)
+            self.memory.add_experience(structured, channel=msg.channel, actor=msg.sender_id)
             self.memory.record_metric(
                 success=status == "completed",
                 manual_intervention=any("approval" in str(r).lower() for r in all_results),

@@ -19,7 +19,9 @@ export default function ProductTruthControls() {
           element.setAttribute('aria-disabled', 'true');
           element.title = element.title || '该功能尚未接入 Gateway';
           const action = element.querySelector('em');
-          if (action) action.textContent = '未启用';
+          // Writing textContent produces a childList mutation, even for equal text.
+          // Keep observer updates idempotent so hydration and input remain responsive.
+          if (action && action.textContent !== '未启用') action.textContent = '未启用';
         }
       }
     };
