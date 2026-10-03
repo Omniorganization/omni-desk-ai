@@ -26,6 +26,7 @@ REQUIRED_WEB_CHECKS = {
     "CSP nonce differs between responses",
     "no secrets or private keys stored in browser storage",
     "reload restores verified session and PostgreSQL project",
+    "project creation is committed beyond optimistic UI",
     "viewer write rejected by backend RBAC",
     "missing CSRF rejected before backend mutation",
     "logout blocks subsequent backend access",

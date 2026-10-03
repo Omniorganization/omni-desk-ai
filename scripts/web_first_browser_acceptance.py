@@ -132,6 +132,8 @@ http {{
             page.get_by_placeholder("输入项目名称后创建").fill(name)
             page.get_by_role("button", name="创建", exact=True).click()
             expect(page.locator(".project-row").filter(has_text=name)).to_be_visible()
+            stored = page.request.get(origin + "/api/omni/projects").json()
+            check("project creation is committed beyond optimistic UI", any(p.get("name") == name for p in stored.get("projects", [])))
             check("interactive project create persists through real Gateway", True)
 
             with page.expect_response(lambda r: "/approvals/" + approval_id + "/decide" in r.url) as decision:

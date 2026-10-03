@@ -90,6 +90,7 @@ class PsycopgConnectionPool:
         broken = False
         try:
             yield connection
+            connection.commit()
         except BaseException:
             broken = True
             try:
