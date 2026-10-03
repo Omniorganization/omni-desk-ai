@@ -111,7 +111,7 @@ def package(directory: Path, image: str) -> dict:
         shutil.copyfileobj(source, target)
     raw.unlink()
     subprocess.run(["git", "archive", "--format=tar.gz", "--output=" + str(directory / "runtime-source.tar.gz"), sha,
-                    "omnidesk_agent", "pyproject.toml", "README.md", "requirements.bootstrap.lock",
+                    "omnidesk_agent", "pyproject.toml", "README.md", "LICENSE", "requirements.bootstrap.lock",
                     "requirements.runtime.lock", "requirements.enterprise.lock", "deploy/web-first",
                     "deploy/docker/config.production.example.yaml", "scripts/web_first_release.py",
                     "scripts/web_first_host.py", "docs/WEB_FIRST_RELEASE.md",
