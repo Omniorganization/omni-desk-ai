@@ -126,3 +126,4 @@ jobs:
           name: web-first-candidate
           path: reports/web-first/
           if-no-files-found: error
+          retention-days: 1

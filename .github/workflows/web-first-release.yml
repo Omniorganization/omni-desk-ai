@@ -61,3 +61,4 @@ jobs:
           name: web-first-protected-release
           path: reports/web-first/
           if-no-files-found: error
+          retention-days: 1

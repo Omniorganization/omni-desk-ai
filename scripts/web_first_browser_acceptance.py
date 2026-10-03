@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 
@@ -132,7 +133,7 @@ http {{
             page.get_by_placeholder("输入项目名称后创建").fill(name)
             page.get_by_role("button", name="创建", exact=True).click()
             expect(page.locator(".project-row").filter(has_text=name)).to_be_visible()
-            stored = page.request.get(origin + "/api/omni/projects").json()
+            stored = page.evaluate("async () => (await fetch('/api/omni/projects')).json()")
             check("project creation is committed beyond optimistic UI", any(p.get("name") == name for p in stored.get("projects", [])))
             check("interactive project create persists through real Gateway", True)
 
@@ -183,7 +184,7 @@ http {{
             page.get_by_role("button", name="连接应用", exact=False).click()
             expect(page.locator(".project-row").filter(has_text=name)).to_be_visible()
             check("reload restores verified session and PostgreSQL project", True)
-            refreshed_csp = page.request.get(origin).headers.get("content-security-policy", "")
+            refreshed_csp = page.evaluate("async () => (await fetch('/')).headers.get('content-security-policy')")
             check("CSP nonce differs between responses", csp != refreshed_csp and "nonce-" in refreshed_csp)
             storage = page.evaluate("async () => ({local:localStorage.length,session:sessionStorage.length,dbs:await indexedDB.databases()})")
             check("no secrets or private keys stored in browser storage", storage["local"] == 0
@@ -219,15 +220,17 @@ http {{
             context.add_cookies(expired)
             page.reload()
             expect(page.get_by_text("未建立 session", exact=True)).to_be_visible()
-            check("expired session cannot restore authenticated state", page.request.get(origin + "/api/session/current").status == 401)
+            check("expired session cannot restore authenticated state", page.evaluate("async () => (await fetch('/api/session/current')).status") == 401)
             page.screenshot(path=str(output / "browser-expired.png"), full_page=True)
             check("no browser runtime errors", report["browser_errors"] == [])
             context.close()
             browser.close()
             report["ok"] = True
     except Exception as error:
-        report["error"] = str(error)
-        raise
+        # Transport diagnostics can echo request cookies; never publish them.
+        safe_error = re.sub(r"(?im)(cookie:|authorization:)[^\n]*", r"\1 [REDACTED]", str(error))
+        report["error"] = safe_error
+        raise RuntimeError(safe_error) from None
     finally:
         serialized = json.dumps(report, indent=2) + "\n"
         for name, value in env.items():
