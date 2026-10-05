@@ -5,7 +5,7 @@
 click>=8.5.0
 anyio>=4.15.1
 cryptography>=50
-filelock>=4.0.4
+filelock>=4.0.9
 httpx2>=2.12.0
 jsonschema>=4.26.0
 msgpack>=1.2.2
