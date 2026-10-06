@@ -1,0 +1,97 @@
+{
+  "schema": "omnidesk-ios-simulator-repair-evidence/v1",
+  "base_commit": "41cca0af821d45a98216dfc20a8e32903e2c4f23",
+  "captured_at": "2026-10-07T05:41:30.278563+08:00",
+  "validation_boundary": "Local iOS Simulator only; exact GitHub PR-head checks remain authoritative. No physical device, APNS/FCM delivery, live Gateway, provisioning, TestFlight, App Store, or Real GA evidence.",
+  "environment": {
+    "flutter": "3.38.8",
+    "dart": "3.10.7",
+    "xcode": "26.6 (17F113)",
+    "device": {
+      "id": "82A6CAF0-DC2A-4EA3-BA13-42427F61B590",
+      "idHash": "324a542f33787a3b3b7b32b445b9505e2d5232733ed6fdda1fc5e93052bf1b10",
+      "name": "OmniDesk iOS Test 2026-10-07",
+      "platform": "ios",
+      "os": "26.5",
+      "model": "iPhone 17 Pro",
+      "simulator": true,
+      "provider": "local"
+    }
+  },
+  "results": {
+    "flutter_analyze": "passed",
+    "flutter_unit_widget_tests": 12,
+    "native_keychain_write_read_delete": "passed",
+    "unenrolled_sync": "visible prerequisite, no uncaught error",
+    "dark_theme": "passed",
+    "baseline_widget_controls": "all 3 fail on original code",
+    "mobai_cases": [
+      {
+        "name": "offline-connection",
+        "status": "passed",
+        "assertions": 3
+      },
+      {
+        "name": "offline-smoke",
+        "status": "passed",
+        "assertions": 5
+      },
+      {
+        "name": "offline-sync",
+        "status": "passed",
+        "assertions": 4
+      }
+    ]
+  },
+  "native_dependencies": {
+    "firebase_core": "4.15.0",
+    "firebase_messaging": "16.7.0"
+  },
+  "full_build_warnings": [
+    {
+      "message": "conformance of 'LocalAuthPlugin' to protocol 'FlutterApplicationLifeCycleDelegate' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/local_auth_darwin-2.0.3/darwin/local_auth_darwin/Sources/local_auth_darwin/LocalAuthPlugin.swift:36"
+    },
+    {
+      "message": "conformance of 'LocalAuthPlugin' to protocol 'FlutterSceneLifeCycleDelegate' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/local_auth_darwin-2.0.3/darwin/local_auth_darwin/Sources/local_auth_darwin/LocalAuthPlugin.swift:289"
+    },
+    {
+      "message": "'dummy.o' has no symbols"
+    },
+    {
+      "message": "implementing deprecated method [-Wdeprecated-implementations]",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/firebase_messaging-16.7.0/ios/firebase_messaging/Sources/firebase_messaging/FLTFirebaseMessagingPlugin.m:248"
+    },
+    {
+      "message": "'UNNotificationPresentationOptionAlert' is deprecated: first deprecated in iOS 14.0 [-Wdeprecated-declarations]",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/firebase_messaging-16.7.0/ios/firebase_messaging/Sources/firebase_messaging/FLTFirebaseMessagingPlugin.m:548"
+    },
+    {
+      "message": "'FCMToken' is deprecated: Use register(completion:) instead. [-Wdeprecated-declarations]",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/firebase_messaging-16.7.0/ios/firebase_messaging/Sources/firebase_messaging/FLTFirebaseMessagingPlugin.m:917"
+    },
+    {
+      "message": "'tokenWithCompletion:' is deprecated: Use register(completion:) instead. [-Wdeprecated-declarations]",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/firebase_messaging-16.7.0/ios/firebase_messaging/Sources/firebase_messaging/FLTFirebaseMessagingPlugin.m:918"
+    },
+    {
+      "message": "'deleteTokenWithCompletion:' is deprecated: Use unregister(completion:) instead. [-Wdeprecated-declarations]",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/firebase_messaging-16.7.0/ios/firebase_messaging/Sources/firebase_messaging/FLTFirebaseMessagingPlugin.m:944"
+    },
+    {
+      "message": "conflicting return type in implementation of 'scene:willConnectToSession:options:': 'BOOL' (aka 'bool') vs 'void' [-Wmismatched-return-types]",
+      "location": "/private/tmp/omnidesk-ios-20261007/pub-cache/hosted/pub.dev/firebase_messaging-16.7.0/ios/firebase_messaging/Sources/firebase_messaging/FLTFirebaseMessagingPlugin.m:771"
+    }
+  ],
+  "evidence_sha256": {
+    "flutter-analyze.log": "a9f52d582a6605cb600c5d63fc63cff4c5bb4fa7df3adf53008391808f18ec97",
+    "flutter-tests.log": "61601b1a4f99d136691015e06cd64312ec0f5ea942e24d9464c027694ae07f8e",
+    "native-keychain.log": "b9d66c757695afa4f6de937fa06805d5f11214ba2a13b329c79bfa2b9027a7b9",
+    "baseline-widget-regressions.log": "e93c436d0390bea4e9b5c673890e93ee6e5a00f1c634cb4fcfbf572917f17244",
+    "mobai-junit.xml": "8ce6e399036a899fdc03a20c6e7dd241d1bfc13a108349cdd2177cefc120a3be",
+    "flutter-version.json": "110ad717da2e7241e1f21351e7c478bf24432f03f98e59366801f088c1b2aa43",
+    "flutter-source-metadata.json": "503f47fc3e70b4c686e4bae98eb4fffbf4f28fb71a51e4680ca82c166ee60bd4"
+  },
+  "log_normalization": "Trailing whitespace removed from public log copies; original full logs remain in the local workspace evidence folder."
+}

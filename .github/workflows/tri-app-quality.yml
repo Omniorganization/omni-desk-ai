@@ -278,6 +278,18 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build ios --simulator --debug
+      - name: Native iOS Keychain and offline UI regression
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          simulator_id=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          candidates = [(tuple(map(int, runtime.split("iOS-")[1].split("-"))), device["udid"])
+                        for runtime, devices in json.load(sys.stdin)["devices"].items() if "iOS-" in runtime
+                        for device in devices if device.get("isAvailable") and device["name"].startswith("iPhone")]
+          print(max(candidates)[1])')
+          xcrun simctl bootstatus "$simulator_id" -b
+          flutter test integration_test/ios_smoke_test.dart -d "$simulator_id" --no-pub --reporter expanded
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-source
 
   mobile-ios-release:

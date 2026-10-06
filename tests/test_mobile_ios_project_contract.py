@@ -45,3 +45,14 @@ def test_ios_workspace_and_storyboards_are_present() -> None:
     )
     for path in required:
         assert Path(path).is_file(), path
+
+
+def test_ios_keychain_entitlements_are_bound_without_enabling_push() -> None:
+    runner = Path("apps/mobile-flutter/ios/Runner")
+    with (runner / "Runner.entitlements").open("rb") as handle:
+        entitlements = plistlib.load(handle)
+    assert entitlements == {
+        "keychain-access-groups": ["$(AppIdentifierPrefix)$(CFBundleIdentifier)"]
+    }
+    project = (runner.parent / "Runner.xcodeproj/project.pbxproj").read_text()
+    assert project.count("CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;") == 3
