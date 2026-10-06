@@ -1,0 +1,40 @@
+{
+  "schema": "omnidesk-ios-cold-install-native-test/v1",
+  "source_sha": "df9083db97b53456386776421e215400279a9d26",
+  "flutter": "3.38.8",
+  "dart": "3.10.7",
+  "runtime": "iOS26.5(23F77)",
+  "fresh_app_absence_exit": 2,
+  "boot_seconds": 25,
+  "test_exit": 0,
+  "native_tests_passed": 1,
+  "checks": [
+    "native secure storage write/read/delete",
+    "offline sync visible unenrolled state",
+    "headline MaterialApp theme"
+  ],
+  "xcode_build_seconds": 26.9,
+  "flutter_test_seconds": 40.896,
+  "simulator_app_already_running": true,
+  "headless_equivalence_verified": false,
+  "device_deleted_after_test": true,
+  "original_pro_simulator_changed": false,
+  "hashes": {
+    "pubspec.lock": "8cc54d62b0c753275bc6fae5dc108877dd4956923af100880b5f4a3300ccd59c",
+    "integration_test/ios_smoke_test.dart": "2bcb94c306d0a4eed7c5478699a11005857ec22b7799fed25a4718a722cc475a",
+    "ios/Runner/Runner.entitlements": "93b2dafd05af213ca1a43922cde55ef40b5e340dd1f8f81fc9214ed8622ea49c"
+  },
+  "limits": [
+    "Local macOS/Xcode/CoreSimulator environment only; CI runner headless context is different.",
+    "No real device, production signing, push or Gateway connection tested."
+  ],
+  "simulator_model": "iPhone 17e (new dedicated local Simulator)",
+  "signing": {
+    "manual_codesign": false,
+    "mcp_preinstall": false,
+    "xcode_signing_disabled": false,
+    "built_by": "flutter test; xcodebuild simulator",
+    "codesign_display_result": "empty entitlement dictionary; Xcode simulated xcent contains Keychain group"
+  },
+  "private_log_boundary": "Full verbose log remains local because device discovery includes unrelated physical-device identifiers and a temporary debug URI."
+}

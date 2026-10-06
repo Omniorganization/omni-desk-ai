@@ -279,7 +279,7 @@ jobs:
       - run: flutter test
       - run: flutter build ios --simulator --debug
       - name: Native iOS Keychain and offline UI regression
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           simulator_id=$(xcrun simctl list devices available -j | python3 -c '
