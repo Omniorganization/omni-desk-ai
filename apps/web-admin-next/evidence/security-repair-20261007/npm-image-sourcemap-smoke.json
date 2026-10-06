@@ -1,0 +1,11 @@
+{
+  "node": "v24.14.1",
+  "sharp": "0.35.5",
+  "librsvg": "2.63.2",
+  "source_map_js": "1.2.2",
+  "svg_png": {
+    "width": 2,
+    "height": 3
+  },
+  "sourcemap_roundtrip": "passed"
+}

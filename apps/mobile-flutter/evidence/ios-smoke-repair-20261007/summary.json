@@ -89,9 +89,9 @@
     "flutter-tests.log": "61601b1a4f99d136691015e06cd64312ec0f5ea942e24d9464c027694ae07f8e",
     "native-keychain.log": "b9d66c757695afa4f6de937fa06805d5f11214ba2a13b329c79bfa2b9027a7b9",
     "baseline-widget-regressions.log": "e93c436d0390bea4e9b5c673890e93ee6e5a00f1c634cb4fcfbf572917f17244",
-    "mobai-junit.xml": "8ce6e399036a899fdc03a20c6e7dd241d1bfc13a108349cdd2177cefc120a3be",
+    "mobai-junit.xml": "11dd9d5908ede907a5c939d4c6e41a7677001ee4786223f923231c6aa2af4cdf",
     "flutter-version.json": "110ad717da2e7241e1f21351e7c478bf24432f03f98e59366801f088c1b2aa43",
     "flutter-source-metadata.json": "503f47fc3e70b4c686e4bae98eb4fffbf4f28fb71a51e4680ca82c166ee60bd4"
   },
-  "log_normalization": "Trailing whitespace removed from public log copies; original full logs remain in the local workspace evidence folder."
+  "log_normalization": "Trailing whitespace removed from public log copies and final newline added to JUnit; original full artifacts remain in the local workspace evidence folder."
 }

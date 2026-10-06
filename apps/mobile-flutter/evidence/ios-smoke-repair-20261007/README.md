@@ -27,3 +27,9 @@ This is local Simulator evidence. Physical-device signing/provisioning, existing
 - Dependency updates affect both mobile platforms. Android and iOS CI jobs must pass before merging; Simulator success alone does not validate Android packaging or physical iPhone behavior.
 - Manual Sync requires enrollment again after a fresh process, while existing connect and post-mutation refresh retain their shared request path.
 - Revert the repair commit to roll back; restore its parent pubspec/lockfile, Dart source, entitlements, Xcode settings, and CI change together. Run analysis, unit/widget tests, Android packaging, and the iOS native integration/build before redistribution. Preserve existing secure-storage items; this repair does not delete user sessions or device keys.
+
+## CI follow-up
+
+The initial Source Governance failure was a missing final newline in the copied MobAI JUnit artifact; its copy and SHA-256 are corrected. The Ecosystem Dependency Audit also found two newly reported high-severity advisories in existing JavaScript dependencies. A separate follow-up commit updates Sharp to 0.35.5 (including its platform/libvips packages) and source-map-js to 1.2.2 in the affected Web/Desktop locks. No audit threshold is lowered.
+
+Both npm audits now report zero vulnerabilities; 13 Web and 29 Desktop tests, both typechecks/builds, and SVG/source-map smoke checks passed locally on Node 24.14.1. Exact CI Node 22.17.0 remains a cloud check. Audit evidence, hashes, risks, and rollback are in `apps/web-admin-next/evidence/security-repair-20261007/summary.json`. Reverting that dependency follow-up restores known vulnerable versions and must keep release blocked until a compatible patched graph is restored.
