@@ -1,4 +1,4 @@
-"""Host setup and recovery for a reviewed Web pilot. Never provisions or purchases a host."""
+"""Host setup and recovery for a reviewed Web/Gateway pilot. Never provisions or purchases a host."""
 from __future__ import annotations
 
 import argparse
@@ -70,7 +70,7 @@ def init(args) -> None:
     public_bytes = lambda key: key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     if public_bytes(certificate.public_key()) != public_bytes(private_key.public_key()):
         raise ValueError("TLS certificate and private key do not match")
-    if not re.fullmatch(r"sha256:[a-f0-9]{64}", args.web_image_id):
+    if not args.gateway_only and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.web_image_id or ""):
         raise ValueError("Use the verified immutable Web image ID")
     destination = Path("/etc/omnidesk/web-first")
     destination.mkdir(mode=0o750, parents=True, exist_ok=True)
@@ -117,6 +117,7 @@ def init(args) -> None:
     profile = {"provider": "ollama", "model": args.model, "api_key_env": None,
                "base_url": "http://127.0.0.1:11434", "max_output_tokens": 256}
     config["models"]["profiles"] = {name: dict(profile) for name in ("fast", "planner", "local", "code")}
+    config["runtime"]["required_ollama_models"] = [args.model]
     config["models"]["budget"].update(daily_usd_limit=0.01, monthly_usd_limit=0.01,
                                        per_actor_daily_usd_limit=0.01, on_exceed="block")
     from omnidesk_agent.config import AppConfig
@@ -126,17 +127,22 @@ def init(args) -> None:
     if not policy.get("ok"):
         raise ValueError("Production policy refused host configuration; inspect on-host diagnostics")
     private_write(destination / "runtime.env", runtime, user_id=account.pw_uid, group_id=account.pw_gid)
-    web = {"NODE_ENV": "production", "HOSTNAME": "127.0.0.1", "PORT": "13000",
-           "OMNI_WEB_PUBLIC_ORIGIN": origin, "OMNI_GATEWAY_URL": "http://127.0.0.1:18789",
-           "OMNI_WEB_SESSION_MAX_AGE_SECONDS": "3600", "OMNI_WEB_IMAGE_ID": args.web_image_id}
-    private_write(destination / "web.env", "\n".join(f'{name}={value}' for name, value in web.items()) + "\n",
-                  user_id=account.pw_uid, group_id=account.pw_gid)
+    if not args.gateway_only:
+        web = {"NODE_ENV": "production", "HOSTNAME": "127.0.0.1", "PORT": "13000",
+               "OMNI_WEB_PUBLIC_ORIGIN": origin, "OMNI_GATEWAY_URL": "http://127.0.0.1:18789",
+               "OMNI_WEB_SESSION_MAX_AGE_SECONDS": "3600", "OMNI_WEB_IMAGE_ID": args.web_image_id}
+        private_write(destination / "web.env", "\n".join(f'{name}={value}' for name, value in web.items()) + "\n",
+                      user_id=account.pw_uid, group_id=account.pw_gid)
     private_write(destination / "config.yaml", yaml.safe_dump(config), user_id=account.pw_uid, group_id=account.pw_gid)
-    template = Path("deploy/web-first/nginx.conf.template").read_text()
+    template_name = "nginx.gateway-only.conf.template" if args.gateway_only else "nginx.conf.template"
+    template = (Path("deploy/web-first") / template_name).read_text()
     nginx = template.replace("@HOST@", urlsplit(origin).hostname).replace("@AUTHORITY@", urlsplit(origin).netloc)
     nginx = nginx.replace("@CERT@", str(args.cert)).replace("@KEY@", str(args.key))
     private_write(destination / "nginx.conf", nginx, user_id=0, group_id=0)
-    for filename in ("omnidesk-web-first.service", "omnidesk-web-gateway.service", "omnidesk-web-runner.service"):
+    services = ["omnidesk-web-gateway.service", "omnidesk-web-runner.service"]
+    if not args.gateway_only:
+        services.insert(0, "omnidesk-web-first.service")
+    for filename in services:
         service = (Path("deploy/web-first") / filename).read_text().replace("@USER@", args.user).replace("@UID@", str(account.pw_uid))
         private_write(destination / filename, service, user_id=0, group_id=0)
     print("Private configuration generated; no credentials printed. Services are not activated.")
@@ -192,7 +198,9 @@ def main() -> None:
     setup.add_argument("--dsn-env", default="OMNIDESK_POSTGRES_DSN")
     setup.add_argument("--cert", type=Path, required=True)
     setup.add_argument("--key", type=Path, required=True)
-    setup.add_argument("--web-image-id", required=True)
+    mode = setup.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--web-image-id", help="Verified immutable image ID for the default Web-first mode")
+    mode.add_argument("--gateway-only", action="store_true", help="Generate only the private Gateway/runner and finite HTTPS API ingress")
     setup.add_argument("--model", default="smollm2:135m")
     dump = actions.add_parser("backup")
     dump.add_argument("--dsn-env", default="OMNIDESK_POSTGRES_DSN")
