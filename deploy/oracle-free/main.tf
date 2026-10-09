@@ -59,7 +59,8 @@ variable "free_capacity" {
 variable "ssh_public_key" {
   type = string
   validation {
-    condition     = can(regex("^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$", var.ssh_public_key))
+    # The fixed SSH wire header encodes algorithm length/name and exactly 32 key bytes.
+    condition     = can(regex("^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-P][A-Za-z0-9+/]{42}( .*)?$", var.ssh_public_key))
     error_message = "A dedicated deployment public key is required; never provide the private key."
   }
 }
@@ -121,6 +122,17 @@ resource "oci_core_security_list" "acceptance" {
         min = ingress_security_rules.value
         max = ingress_security_rules.value
       }
+    }
+  }
+  ingress_security_rules {
+    protocol    = "1"
+    source      = "0.0.0.0/0"
+    source_type = "CIDR_BLOCK"
+    description = "IPv4 path MTU discovery"
+    stateless   = false
+    icmp_options {
+      type = 3
+      code = 4
     }
   }
   dynamic "egress_security_rules" {

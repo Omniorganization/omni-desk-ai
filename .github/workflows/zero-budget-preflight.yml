@@ -29,10 +29,20 @@ jobs:
         with:
           terraform_version: 1.16.4
           terraform_wrapper: false
-      - run: terraform fmt -check -diff
-      - run: terraform init -backend=false -input=false
-      - run: terraform validate -no-color
-      - run: terraform test -no-color
+      - name: Validate and retain mock policy evidence
+        run: |
+          set -o pipefail
+          terraform fmt -check -diff 2>&1 | tee "$RUNNER_TEMP/oracle-free-fmt.log"
+          terraform init -backend=false -input=false 2>&1 | tee "$RUNNER_TEMP/oracle-free-init.log"
+          terraform validate -no-color 2>&1 | tee "$RUNNER_TEMP/oracle-free-validate.log"
+          terraform test -no-color 2>&1 | tee "$RUNNER_TEMP/oracle-free-tests.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: oracle-free-mock-policy-${{ github.sha }}
+          path: ${{ runner.temp }}/oracle-free-*.log
+          if-no-files-found: error
+          retention-days: 14
   windows-store-input:
     runs-on: windows-latest
     timeout-minutes: 10
@@ -40,5 +50,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Validate MSIX packaging with synthetic cloud-only PE and Store identity
         shell: pwsh
-        run: ./scripts/test_windows_store_package.ps1
+        run: ./scripts/test_windows_store_package.ps1 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/windows-store-preflight.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: windows-store-synthetic-preflight-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/windows-store-preflight.log
+            ${{ runner.temp }}/omnidesk-store-tests-*/positive/*
+          if-no-files-found: error
+          retention-days: 14
 # No secrets, cloud account or real-provider resource operation. Tests use mocks.

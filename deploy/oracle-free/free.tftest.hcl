@@ -26,13 +26,31 @@ run "fixed_free_single_host" {
     error_message = "No paid shape, extra CPU/RAM/disk or destructive volume cleanup is permitted."
   }
   assert {
-    condition     = length(oci_core_security_list.acceptance.ingress_security_rules) == 3 && alltrue([for rule in oci_core_security_list.acceptance.ingress_security_rules : contains([22, 80, 443], rule.tcp_options[0].min) && rule.tcp_options[0].min == rule.tcp_options[0].max])
+    condition     = length(oci_core_security_list.acceptance.ingress_security_rules) == 4 && alltrue([for rule in oci_core_security_list.acceptance.ingress_security_rules : rule.protocol != "6" || try(contains([22, 80, 443], rule.tcp_options[0].min) && rule.tcp_options[0].min == rule.tcp_options[0].max, false)])
     error_message = "Database, gateway and sandbox ports must stay private."
   }
   assert {
-    condition     = alltrue([for rule in oci_core_security_list.acceptance.ingress_security_rules : rule.protocol == "6" && rule.source_type == "CIDR_BLOCK" && !rule.stateless && (rule.tcp_options[0].min == 22 ? contains(var.ssh_cidrs, rule.source) : rule.source == "0.0.0.0/0")])
-    error_message = "Only stateful web and IP-restricted operator SSH may be exposed."
+    condition     = alltrue([for rule in oci_core_security_list.acceptance.ingress_security_rules : rule.source_type == "CIDR_BLOCK" && !rule.stateless && (rule.protocol == "6" ? try(rule.tcp_options[0].min == 22 ? contains(var.ssh_cidrs, rule.source) : rule.source == "0.0.0.0/0", false) : try(rule.protocol == "1" && rule.source == "0.0.0.0/0" && rule.icmp_options[0].type == 3 && rule.icmp_options[0].code == 4, false))])
+    error_message = "Only stateful web, IP-restricted operator SSH and IPv4 fragmentation-needed ICMP may be exposed."
   }
+  assert {
+    condition     = length([for rule in oci_core_security_list.acceptance.ingress_security_rules : rule if rule.protocol == "1"]) == 1
+    error_message = "Path MTU discovery must retain exactly one ICMP destination-unreachable/fragmentation-needed ingress rule."
+  }
+}
+run "reject_missing_ed25519_wire_key" {
+  command = plan
+  variables {
+    ssh_public_key = "ssh-ed25519 AAAA"
+  }
+  expect_failures = [var.ssh_public_key]
+}
+run "reject_wrong_ed25519_wire_key_length" {
+  command = plan
+  variables {
+    ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA=="
+  }
+  expect_failures = [var.ssh_public_key]
 }
 run "reject_paid_quote" {
   command = plan

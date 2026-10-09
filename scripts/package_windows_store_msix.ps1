@@ -16,16 +16,6 @@ foreach ($component in $Version.Split('.')) {
 }
 if ($Version.StartsWith('0.')) { throw 'MSIX major version must be greater than zero.' }
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
-$reader = [IO.BinaryReader]::new([IO.File]::OpenRead($executablePath))
-try {
-    if ($reader.BaseStream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) { throw 'Input is not a Windows PE executable.' }
-    $reader.BaseStream.Position = 0x3C
-    $peOffset = $reader.ReadUInt32()
-    if ($peOffset -lt 64 -or $peOffset -gt $reader.BaseStream.Length - 24) { throw 'Invalid PE header offset.' }
-    $reader.BaseStream.Position = $peOffset
-    if ($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0x8664) { throw 'Input must be an x64 Windows PE executable.' }
-} finally { $reader.Dispose() }
-
 $sdkTools = @(Get-ChildItem -Path "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/makeappx.exe" | Sort-Object FullName -Descending)
 if ($sdkTools.Count -eq 0) { throw 'Official Windows SDK MakeAppx is required.' }
 $makeappx = $sdkTools[0].FullName
@@ -40,6 +30,22 @@ $stage = Join-Path ([IO.Path]::GetTempPath()) ("omnidesk-msix-" + [guid]::NewGui
 [void][IO.Directory]::CreateDirectory((Join-Path $stage 'Assets'))
 try {
     Copy-Item -LiteralPath $executablePath -Destination (Join-Path $stage 'omnidesk_desktop.exe')
+    $reader = [IO.BinaryReader]::new([IO.File]::OpenRead((Join-Path $stage 'omnidesk_desktop.exe')))
+    try {
+        if ($reader.BaseStream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) { throw 'Input is not a Windows PE executable.' }
+        $reader.BaseStream.Position = 0x3C
+        $peOffset = $reader.ReadUInt32()
+        if ($peOffset -lt 64 -or $peOffset -gt $reader.BaseStream.Length - 24) { throw 'Invalid PE header offset.' }
+        $reader.BaseStream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0x8664) { throw 'Input must be an x64 Windows PE executable.' }
+        $reader.BaseStream.Position = $peOffset + 20
+        $optionalSize = $reader.ReadUInt16()
+        $characteristics = $reader.ReadUInt16()
+        if (($characteristics -band 0x0002) -eq 0 -or ($characteristics -band 0x2000) -ne 0) { throw 'Input must be an executable image, not a DLL.' }
+        if ($optionalSize -lt 112 -or $optionalSize -gt $reader.BaseStream.Length - $peOffset - 24 -or $reader.ReadUInt16() -ne 0x020B) { throw 'Input must have a complete x64 PE32+ optional header.' }
+        $reader.BaseStream.Position = $peOffset + 40
+        if ($reader.ReadUInt32() -eq 0) { throw 'Input executable must have an entry point.' }
+    } finally { $reader.Dispose() }
     foreach ($logo in @('Square44x44Logo.png', 'Square150x150Logo.png', 'StoreLogo.png')) {
         Copy-Item -LiteralPath (Join-Path $Assets $logo) -Destination (Join-Path $stage 'Assets' $logo)
     }
@@ -65,7 +71,7 @@ try {
         schema = 'omnidesk-windows-store-input/v1'
         status = 'packaged-unsigned-store-input'
         source_commit = $SourceCommit
-        executable_sha256 = (Get-FileHash -LiteralPath $executablePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        executable_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage 'omnidesk_desktop.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
         package_sha256 = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
         identity_name = $IdentityName
         publisher = $Publisher
