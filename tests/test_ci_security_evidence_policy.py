@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import yaml
+
 from scripts.check_ci_evidence_contract import main as check_ci_evidence_contract_main
 from scripts.check_license_policy import main as check_license_policy_main
 from scripts.check_production_install_policy import main as check_production_install_policy_main
@@ -88,7 +90,8 @@ def test_ci_and_security_workflow_policy_contracts_pass_current_tree() -> None:
 
 def test_coverage_evidence_sync_rejects_unprepared_paths_and_keeps_failed_results(tmp_path: Path) -> None:
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "OMNIDESK_COVERAGE_EVIDENCE_DIR: ${{ runner.temp }}/ci-coverage" in workflow
+    coverage = yaml.safe_load(workflow)["jobs"]["coverage"]
+    assert all("${{ runner." not in value for value in coverage["env"].values())
     block = workflow.split("      - name: Synchronize standard coverage evidence directory\n", 1)[1]
     sync = textwrap.dedent(block.split("        run: |\n", 1)[1].split("      - uses:", 1)[0])
     env = dict(os.environ)
