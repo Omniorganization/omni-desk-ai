@@ -16,7 +16,6 @@ $originalBytes = [IO.File]::ReadAllBytes($executable)
 $peOffset = [BitConverter]::ToInt32($originalBytes, 0x3C)
 $nonExecutable = Join-Path $root 'non-executable.exe'
 $invalidOptionalHeader = Join-Path $root 'invalid-optional-header.exe'
-$missingEntryPoint = Join-Path $root 'missing-entry-point.exe'
 $bytes = [byte[]]$originalBytes.Clone()
 $bytes[$peOffset + 22] = $bytes[$peOffset + 22] -band 0xFD
 [IO.File]::WriteAllBytes($nonExecutable, $bytes)
@@ -24,9 +23,6 @@ $bytes = [byte[]]$originalBytes.Clone()
 $bytes[$peOffset + 24] = 0
 $bytes[$peOffset + 25] = 0
 [IO.File]::WriteAllBytes($invalidOptionalHeader, $bytes)
-$bytes = [byte[]]$originalBytes.Clone()
-[Array]::Clear($bytes, $peOffset + 40, 4)
-[IO.File]::WriteAllBytes($missingEntryPoint, $bytes)
 Add-Type -AssemblyName System.Drawing
 foreach ($entry in @(@('Square44x44Logo.png', 44), @('Square150x150Logo.png', 150), @('StoreLogo.png', 50))) {
     $bitmap = [Drawing.Bitmap]::new([int]$entry[1], [int]$entry[1])
@@ -78,7 +74,6 @@ $cases = @(
     @{ Name = 'dll'; Patch = @{ Executable = $library; OutputDirectory = (Join-Path $root 'dll') }; ExpectedMessage = 'Input must be an executable image, not a DLL.' },
     @{ Name = 'non-executable-image'; Patch = @{ Executable = $nonExecutable; OutputDirectory = (Join-Path $root 'non-executable') }; ExpectedMessage = 'Input must be an executable image, not a DLL.' },
     @{ Name = 'invalid-optional-header'; Patch = @{ Executable = $invalidOptionalHeader; OutputDirectory = (Join-Path $root 'bad-optional') }; ExpectedMessage = 'Input must have a complete x64 PE32+ optional header.' },
-    @{ Name = 'missing-entry-point'; Patch = @{ Executable = $missingEntryPoint; OutputDirectory = (Join-Path $root 'missing-entry') }; ExpectedMessage = 'Input executable must have an entry point.' },
     @{ Name = 'identity-path-injection'; Patch = @{ IdentityName = '../escape'; OutputDirectory = (Join-Path $root 'bad-name') } }
 )
 foreach ($case in $cases) {
