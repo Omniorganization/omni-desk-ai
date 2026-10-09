@@ -56,6 +56,15 @@ variable "quoted_total_usd" {
   }
 }
 
+variable "outbound_cidrs" {
+  description = "Owner-approved destination networks for DNS, OS updates and HTTPS; unrestricted default routes are forbidden."
+  type        = list(string)
+  validation {
+    condition     = length(var.outbound_cidrs) > 0 && alltrue([for cidr in var.outbound_cidrs : can(cidrhost(cidr, 0)) && !can(regex("/0+$", cidr))])
+    error_message = "Supply approved outbound destination CIDRs; empty lists and IPv4/IPv6 default routes are forbidden."
+  }
+}
+
 resource "hcloud_ssh_key" "deployer" {
   name       = "${var.name}-deployer"
   public_key = var.ssh_public_key
@@ -80,6 +89,21 @@ resource "hcloud_firewall" "acceptance" {
     protocol   = "tcp"
     port       = "443"
     source_ips = ["0.0.0.0/0", "::/0"]
+  }
+  dynamic "rule" {
+    for_each = ["53", "80", "443"]
+    content {
+      direction       = "out"
+      protocol        = "tcp"
+      port            = rule.value
+      destination_ips = var.outbound_cidrs
+    }
+  }
+  rule {
+    direction       = "out"
+    protocol        = "udp"
+    port            = "53"
+    destination_ips = var.outbound_cidrs
   }
 }
 

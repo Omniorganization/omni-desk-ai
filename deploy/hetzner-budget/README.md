@@ -21,11 +21,14 @@ Only CX23 x86, Nuremberg/nbg1 or Helsinki/hel1, Ubuntu 24.04, one IPv4, IPv6 and
 
 Prefer the owner console for the first machine; reproduce the template settings, restricted SSH source IPs and cloud-init. SSH requires a dedicated Ed25519 public key and the operator's current /32 IPv4 or /128 IPv6. Never upload a private key to cloud-init. Do not register a persistent self-hosted Actions runner on this host.
 
+New routed outbound connections covered by the cloud firewall are limited to TCP 53/80/443 and UDP 53 to the required owner-approved `outbound_cidrs`. Review the resolver, Ubuntu/package registry and application-provider destination networks before apply; the template rejects empty lists and IPv4/IPv6 default routes. DNS/CDN addresses can change, so bootstrap may fail until the owner reviews an updated allowlist. Do not restore unrestricted egress to conceal that failure. Hetzner exempts local Layer 2/metadata traffic and its DNS/rescue services; established/related traffic and pre-existing connections also pass, so this is not complete host egress isolation. [Hetzner Firewall FAQ](https://docs.hetzner.com/cloud/firewalls/faq/). This network policy does not provide application-level URL or credential isolation.
+
 If Terraform is used, run it on an authorized cloud administration shell, not on the project user's Mac. Use Terraform 1.16.4 and the pinned provider 1.69.0. Supply a project-scoped `HCLOUD_TOKEN` only in that shell's secret environment, and keep the state and generated dependency lock in the owner's encrypted durable storage. This module intentionally has no remote state backend because no account/storage is available yet. Do not put state, plans, credentials or tfvars in public Actions artifacts or Git. Example inputs, with real owner values supplied separately:
 
 ```hcl
 ssh_public_key   = "ssh-ed25519 REPLACE_WITH_DEPLOYMENT_PUBLIC_KEY"
 ssh_cidrs        = ["REPLACE_WITH_OPERATOR_IP/32"]
+outbound_cidrs   = ["REPLACE_WITH_APPROVED_DESTINATION_CIDR"]
 quoted_total_usd = REPLACE_WITH_VERIFIED_GROSS_USD_QUOTE
 ```
 
