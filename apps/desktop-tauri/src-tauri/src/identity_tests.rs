@@ -1,6 +1,9 @@
-use super::write_identity_once;
+use super::{write_identity_once, IdentityStoreLock};
 use std::cell::Cell;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn test_lock_path() -> PathBuf {
     let nonce = std::time::SystemTime::now()
@@ -8,8 +11,9 @@ fn test_lock_path() -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "omnidesk-identity-test-{}-{nonce}.lock",
-        std::process::id()
+        "omnidesk-identity-test-{}-{nonce}-{}.lock",
+        std::process::id(),
+        TEST_LOCK_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
@@ -21,12 +25,60 @@ fn rejects_identity_replacement_and_read_errors_without_writes() {
         writes.set(writes.get() + 1);
         Ok(())
     };
-    assert!(write_identity_once(&path, "new", || Ok("existing".into()), write).is_err());
-    assert!(write_identity_once(&path, "new", || Err("store denied".into()), write).is_err());
-    assert!(write_identity_once(&path, "existing", || Ok("existing".into()), write).is_ok());
+    assert_eq!(
+        write_identity_once(&path, "new", || Ok("existing".into()), write),
+        Err("desktop identity already exists; refusing credential replacement".into())
+    );
+    assert_eq!(
+        write_identity_once(&path, "new", || Err("store denied".into()), write),
+        Err("store denied".into())
+    );
+    assert_eq!(
+        write_identity_once(&path, "existing", || Ok("existing".into()), write),
+        Ok(())
+    );
     assert_eq!(writes.get(), 0);
-    assert!(write_identity_once(&path, "new", || Ok(String::new()), write).is_ok());
+    assert_eq!(
+        write_identity_once(
+            &path,
+            "new",
+            || Ok(String::new()),
+            || Err("write denied".into()),
+        ),
+        Err("write denied".into())
+    );
+    assert_eq!(
+        write_identity_once(&path, "new", || Ok(String::new()), write),
+        Ok(())
+    );
     assert_eq!(writes.get(), 1);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn guard_unlocks_after_scope_even_with_a_duplicate_descriptor() {
+    let path = test_lock_path();
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap()
+    };
+    let file = open();
+    fs2::FileExt::try_lock_exclusive(&file).unwrap();
+    let duplicate = file.try_clone().unwrap();
+    let guard = IdentityStoreLock(file);
+    let contender = open();
+    assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
+    drop(guard);
+    // Closing one descriptor alone would keep the same lock held by duplicate.
+    fs2::FileExt::try_lock_exclusive(&contender).unwrap();
+    fs2::FileExt::unlock(&contender).unwrap();
+    drop(contender);
+    drop(duplicate);
     std::fs::remove_file(path).unwrap();
 }
 

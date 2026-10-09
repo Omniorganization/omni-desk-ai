@@ -38,6 +38,16 @@ fn secure_set(app: tauri::AppHandle, key: String, value: String) -> Result<(), S
         .map_err(|error| error.to_string())
 }
 
+struct IdentityStoreLock(fs::File);
+
+impl Drop for IdentityStoreLock {
+    fn drop(&mut self) {
+        // Closing alone can leave a flock held by a descriptor inherited at fork.
+        // Unlock only after the guarded read/write, including all early returns.
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
 fn write_identity_once(
     lock_path: &Path,
     value: &str,
@@ -53,6 +63,7 @@ fn write_identity_once(
         .map_err(|error| error.to_string())?;
     fs2::FileExt::try_lock_exclusive(&file)
         .map_err(|_| "desktop identity store is busy; retry initialization".to_string())?;
+    let _lock = IdentityStoreLock(file);
     let existing = read()?;
     if !existing.is_empty() {
         return if existing == value {
