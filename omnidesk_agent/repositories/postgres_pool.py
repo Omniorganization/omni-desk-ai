@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import time
+import logging
+import math
 from contextlib import contextmanager
-from queue import Empty, Full, LifoQueue
-from threading import Lock
+from threading import Condition
 from typing import Any, Iterator
 
 
@@ -32,10 +33,14 @@ class SharedPostgresConnectionPool:
             raise PostgresUnavailable('PostgreSQL DSN is required')
         self.dsn = str(dsn)
         self.max_size = max(2, min(int(max_size), 64))
+        if not all(math.isfinite(float(value)) and float(value) > 0 for value in (
+            acquire_timeout_seconds, connect_timeout_seconds,
+        )):
+            raise PostgresUnavailable('PostgreSQL pool timeouts must be finite and positive')
         self.acquire_timeout_seconds = max(0.1, float(acquire_timeout_seconds))
         self.connect_timeout_seconds = max(1.0, float(connect_timeout_seconds))
-        self._idle: LifoQueue[Any] = LifoQueue(maxsize=self.max_size)
-        self._lock = Lock()
+        self._idle: list[Any] = []
+        self._condition = Condition()
         self._created = 0
         self._in_use = 0
         self._waiters = 0
@@ -55,79 +60,69 @@ class SharedPostgresConnectionPool:
     def _usable(connection: Any) -> bool:
         return not bool(getattr(connection, 'closed', False))
 
-    def _reserve_connection_slot(self) -> bool:
-        with self._lock:
-            if self._closed:
-                raise PostgresUnavailable('PostgreSQL connection pool is closed')
-            if self._created >= self.max_size:
-                return False
-            self._created += 1
-            return True
-
-    def _decrement_created(self) -> None:
-        with self._lock:
-            self._created = max(0, self._created - 1)
+    @staticmethod
+    def _close_connection(connection: Any) -> None:
+        try:
+            connection.close()
+        except Exception:
+            # Cleanup must neither mask a transaction error nor stop draining
+            # other idle connections. Do not put credentials in diagnostics.
+            logging.getLogger(__name__).warning('PostgreSQL connection cleanup failed')
 
     def _acquire(self) -> Any:
-        while True:
-            try:
-                connection = self._idle.get_nowait()
-            except Empty:
-                connection = None
-            if connection is not None:
-                if self._usable(connection):
-                    with self._lock:
-                        self._in_use += 1
-                    return connection
-                self._decrement_created()
-                continue
-
-            if self._reserve_connection_slot():
-                try:
-                    connection = self._new_connection()
-                except Exception:
-                    self._decrement_created()
-                    raise
-                with self._lock:
-                    self._in_use += 1
-                return connection
-
-            with self._lock:
+        deadline = time.monotonic() + self.acquire_timeout_seconds
+        with self._condition:
+            while True:
                 if self._closed:
                     raise PostgresUnavailable('PostgreSQL connection pool is closed')
+                while self._idle:
+                    connection = self._idle.pop()
+                    if self._usable(connection):
+                        self._in_use += 1
+                        return connection
+                    self._created -= 1
+                if self._created < self.max_size:
+                    self._created += 1
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PostgresUnavailable(
+                        f'PostgreSQL pool acquisition timed out after {self.acquire_timeout_seconds:.1f}s'
+                    )
                 self._waiters += 1
-            try:
-                connection = self._idle.get(timeout=self.acquire_timeout_seconds)
-            except Empty as exc:
-                raise PostgresUnavailable(
-                    f'PostgreSQL pool acquisition timed out after {self.acquire_timeout_seconds:.1f}s'
-                ) from exc
-            finally:
-                with self._lock:
-                    self._waiters = max(0, self._waiters - 1)
-            if self._usable(connection):
-                with self._lock:
-                    self._in_use += 1
+                try:
+                    self._condition.wait(timeout=remaining)
+                finally:
+                    self._waiters -= 1
+
+        # Opening a socket must not hold the condition: close and stats must
+        # remain available while DNS/TLS/authentication is in progress.
+        try:
+            connection = self._new_connection()
+        except BaseException:
+            with self._condition:
+                self._created -= 1
+                self._condition.notify_all()
+            raise
+        with self._condition:
+            if not self._closed:
+                self._in_use += 1
                 return connection
-            self._decrement_created()
+            self._created -= 1
+            self._condition.notify_all()
+        self._close_connection(connection)
+        raise PostgresUnavailable('PostgreSQL connection pool is closed')
 
     def _release(self, connection: Any, *, discard: bool = False) -> None:
-        with self._lock:
-            self._in_use = max(0, self._in_use - 1)
-            closed = self._closed
-        if discard or closed or not self._usable(connection):
-            try:
-                connection.close()
-            finally:
-                self._decrement_created()
-            return
-        try:
-            self._idle.put_nowait(connection)
-        except Full:  # defensive: should not happen with in-use accounting
-            try:
-                connection.close()
-            finally:
-                self._decrement_created()
+        with self._condition:
+            self._in_use -= 1
+            if not discard and not self._closed and self._usable(connection):
+                self._idle.append(connection)
+                self._condition.notify_all()
+                return
+            self._created -= 1
+            self._condition.notify_all()
+        self._close_connection(connection)
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
@@ -139,7 +134,7 @@ class SharedPostgresConnectionPool:
         except BaseException:
             try:
                 connection.rollback()
-            except Exception:
+            except BaseException:
                 discard = True
             raise
         finally:
@@ -160,27 +155,24 @@ class SharedPostgresConnectionPool:
         }
 
     def stats(self) -> dict[str, int | bool]:
-        with self._lock:
+        with self._condition:
             return {
                 'max_size': self.max_size,
                 'created': self._created,
                 'in_use': self._in_use,
-                'idle': self._idle.qsize(),
+                'idle': len(self._idle),
                 'waiters': self._waiters,
                 'closed': self._closed,
             }
 
     def close(self) -> None:
-        with self._lock:
+        with self._condition:
             if self._closed:
                 return
             self._closed = True
-        while True:
-            try:
-                connection = self._idle.get_nowait()
-            except Empty:
-                break
-            try:
-                connection.close()
-            finally:
-                self._decrement_created()
+            idle, self._idle = self._idle, []
+            self._created -= len(idle)
+            self._condition.notify_all()
+        # Checked-out transactions finish normally and close on return.
+        for connection in idle:
+            self._close_connection(connection)

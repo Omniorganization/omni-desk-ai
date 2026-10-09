@@ -5,14 +5,17 @@ export interface WebAdminDeviceIdentity {
   publicKeyPem: string;
 }
 
-interface StoredWebAdminIdentity extends WebAdminDeviceIdentity {
+interface SessionWebAdminIdentity extends WebAdminDeviceIdentity {
   privateKey: CryptoKey;
 }
 
-const DB_NAME = 'omnidesk-web-admin-device-identity';
-const DB_VERSION = 1;
-const STORE_NAME = 'identity';
-const IDENTITY_KEY = 'current';
+// Private keys exist only in this page's memory, never browser storage.
+// A reload creates a new device identity and owner-approved enrollment.
+let sessionIdentity: Promise<SessionWebAdminIdentity> | null = null;
+
+export function resetWebAdminIdentity(): void {
+  sessionIdentity = null;
+}
 
 function randomHex(bytes: number): string {
   const array = new Uint8Array(bytes);
@@ -37,81 +40,28 @@ function pemWrap(label: string, base64: string): string {
   return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----`;
 }
 
-async function openIdentityDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-    request.onerror = () => reject(request.error || new Error('failed to open web admin identity db'));
-    request.onsuccess = () => resolve(request.result);
-  });
-}
-
-async function getStoredIdentity(): Promise<StoredWebAdminIdentity | null> {
-  const db = await openIdentityDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const request = tx.objectStore(STORE_NAME).get(IDENTITY_KEY);
-    request.onerror = () => reject(request.error || new Error('failed to read web admin identity'));
-    request.onsuccess = () => resolve((request.result as StoredWebAdminIdentity | undefined) || null);
-    tx.oncomplete = () => db.close();
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error || new Error('web admin identity read transaction failed'));
-    };
-  });
-}
-
-async function putStoredIdentity(identity: StoredWebAdminIdentity): Promise<void> {
-  const db = await openIdentityDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(identity, IDENTITY_KEY);
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error || new Error('web admin identity write transaction failed'));
-    };
-  });
-}
-
-async function createStoredIdentity(): Promise<StoredWebAdminIdentity> {
+async function createSessionIdentity(): Promise<SessionWebAdminIdentity> {
   const generated = await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-256' },
-    true,
+    false,
     ['sign', 'verify'],
   );
   const publicSpki = await crypto.subtle.exportKey('spki', generated.publicKey);
-  const privateJwk = await crypto.subtle.exportKey('jwk', generated.privateKey);
-  const privateKey = await crypto.subtle.importKey(
-    'jwk',
-    privateJwk,
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    false,
-    ['sign'],
-  );
   return {
     deviceId: `web_${randomHex(18)}`,
     publicKeyPem: pemWrap('PUBLIC KEY', arrayBufferToBase64(publicSpki)),
-    privateKey,
+    privateKey: generated.privateKey,
   };
 }
 
-async function loadPrivateKey(): Promise<StoredWebAdminIdentity> {
-  const existing = await getStoredIdentity();
-  if (existing?.deviceId && existing.publicKeyPem && existing.privateKey) {
-    return existing;
+async function loadPrivateKey(): Promise<SessionWebAdminIdentity> {
+  if (!sessionIdentity) sessionIdentity = createSessionIdentity();
+  try {
+    return await sessionIdentity;
+  } catch (error) {
+    sessionIdentity = null;
+    throw error;
   }
-  const created = await createStoredIdentity();
-  await putStoredIdentity(created);
-  return created;
 }
 
 export async function loadOrCreateWebAdminIdentity(): Promise<WebAdminDeviceIdentity> {

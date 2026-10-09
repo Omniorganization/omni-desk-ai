@@ -26,6 +26,6 @@
     "baseline-browser-mapping": "^2.11.22",
     "nanoid": "^3.3.18",
     "postcss": "^8.5.26",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.5"
   }
 }

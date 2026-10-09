@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Any
 
 from omnidesk_agent.repositories.base import RepositoryCapabilities
@@ -187,6 +188,8 @@ class PostgresRepositoryFactory:
         init=False,
         repr=False,
     )
+    _lifecycle_lock: Any = field(default_factory=RLock, init=False, repr=False, compare=False)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def _dsn(self) -> str:
         dsn = self.dsn or os.getenv("OMNIDESK_POSTGRES_DSN", "")
@@ -206,31 +209,36 @@ class PostgresRepositoryFactory:
             ) from exc
 
     def _connection_pool(self) -> SharedPostgresConnectionPool:
-        if self._pool is None:
-            self._pool = SharedPostgresConnectionPool(
-                self._dsn(),
-                max_size=self._pool_limit(),
-                acquire_timeout_seconds=float(
-                    os.getenv("OMNIDESK_CORE_POSTGRES_POOL_TIMEOUT_SECONDS", "5")
-                ),
-            )
-        return self._pool
+        with self._lifecycle_lock:
+            if self._closed:
+                raise PostgresUnavailable("PostgreSQL repository factory is closed")
+            if self._pool is None:
+                self._pool = SharedPostgresConnectionPool(
+                    self._dsn(),
+                    max_size=self._pool_limit(),
+                    acquire_timeout_seconds=float(
+                        os.getenv("OMNIDESK_CORE_POSTGRES_POOL_TIMEOUT_SECONDS", "5")
+                    ),
+                )
+            return self._pool
 
     def transactional_outbox(self) -> PostgresTransactionalOutboxRepository:
-        if self._outbox is None:
-            self._outbox = PostgresTransactionalOutboxRepository(
-                self._connection_pool()
-            )
-        return self._outbox
+        with self._lifecycle_lock:
+            pool = self._connection_pool()
+            if self._outbox is None:
+                self._outbox = PostgresTransactionalOutboxRepository(pool)
+            return self._outbox
 
     def _runtime_state(self):
-        if self._runtime is None:
-            from omnidesk_agent.repositories.postgres_state import (
-                PostgresRuntimeStateStores,
-            )
+        with self._lifecycle_lock:
+            pool = self._connection_pool()
+            if self._runtime is None:
+                from omnidesk_agent.repositories.postgres_state import (
+                    PostgresRuntimeStateStores,
+                )
 
-            self._runtime = PostgresRuntimeStateStores(self._connection_pool())
-        return self._runtime
+                self._runtime = PostgresRuntimeStateStores(pool)
+            return self._runtime
 
     def dual_approval_store(self):
         return self._runtime_state().dual_approval_store()
@@ -291,8 +299,13 @@ class PostgresRepositoryFactory:
         return self._connection_pool().stats()
 
     def close(self) -> None:
-        runtime = self._runtime
-        if runtime is not None:
-            runtime.close()
-        if self._pool is not None:
-            self._pool.close()
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                if self._runtime is not None:
+                    self._runtime.close()
+            finally:
+                if self._pool is not None:
+                    self._pool.close()

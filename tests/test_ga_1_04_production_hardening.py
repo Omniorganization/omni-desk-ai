@@ -41,6 +41,7 @@ def test_web_admin_csp_and_session_cookie_are_ga_hardened() -> None:
         encoding="utf-8"
     )
     session = Path("apps/web-admin-next/lib/session.ts").read_text(encoding="utf-8")
+    session_names = Path("apps/web-admin-next/lib/session-names.ts").read_text(encoding="utf-8")
     login = Path("apps/web-admin-next/app/api/session/login/route.ts").read_text(
         encoding="utf-8"
     )
@@ -52,7 +53,8 @@ def test_web_admin_csp_and_session_cookie_are_ga_hardened() -> None:
     assert "connect-src 'self' https:" not in next_config
     assert "connect-src 'self';" in next_config
     assert "img-src 'self' data:" not in next_config
-    assert "__Host-omni_session_token" in session
+    assert "__Host-omni_session_token" in session_names
+    assert "from './session-names'" in session
     assert "maxAge" in login
     assert "verifyGatewayIdentity" in login
     assert "payload.actor" not in login

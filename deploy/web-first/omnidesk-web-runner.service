@@ -1,0 +1,21 @@
+[Unit]
+Description=OmniDesk Web pilot private rootless sandbox runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/omnidesk/web-first/runtime.env
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus
+WorkingDirectory=/var/lib/omnidesk-web-first
+ExecStart=/opt/omnidesk-web-first/current/venv/bin/python -m omnidesk_agent.sandbox.runner_server
+Restart=on-failure
+RestartSec=5
+Delegate=cpu memory pids
+# Rootless Podman requires user namespaces. The runner itself remains unprivileged;
+# every executed sandbox retains its own enforced seccomp/caps/read-only limits.
+
+[Install]
+WantedBy=multi-user.target

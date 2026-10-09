@@ -1,11 +1,8 @@
 import { cookies, headers } from 'next/headers';
 import { resolveGatewayBaseUrl } from './gateway';
 
-export const SESSION_COOKIE = '__Host-omni_session_token';
-export const CSRF_COOKIE = '__Host-omni_csrf_token';
-export const GATEWAY_COOKIE = '__Host-omni_gateway_url';
-export const ACTOR_COOKIE = '__Host-omni_actor';
-export const ROLE_COOKIE = '__Host-omni_role';
+import { ACTOR_COOKIE, CSRF_COOKIE, GATEWAY_COOKIE, ROLE_COOKIE, SESSION_COOKIE } from './session-names';
+export { ACTOR_COOKIE, CSRF_COOKIE, GATEWAY_COOKIE, ROLE_COOKIE, SESSION_COOKIE } from './session-names';
 
 const DEVICE_SIGNATURE_HEADERS = [
   'x-omnidesk-device-id',
