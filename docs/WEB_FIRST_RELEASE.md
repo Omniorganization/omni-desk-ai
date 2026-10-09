@@ -47,6 +47,34 @@ AppSync 连接池现在在正常事务退出时提交，异常时仍回滚并丢
 6. 仅在 production environment 独立批准后，将生成的三份 systemd 单元安装到 `/etc/systemd/system/`，设置 `current` 指向该槽位，验证 nginx 配置后启用 HTTPS 反向代理与服务。先私有验收，再开放授权用户。
 7. 在该真实地址重复网页角色/入网/审批/重放/项目/模型/刷新/退出/失效验收，验证重启自启动、备份恢复、告警和回滚。确认全部端口的实际可见性。保留生产 origin、时间、source SHA/image ID、结果和 redacted evidence。不要上传 cookie、DSN、私钥、配置或备份内容。
 
+## MONICO 的 Gateway-only 模式（仅准备，未部署）
+
+已有 MONICO 网页时，可在同一审核过的源码槽位执行 `init --gateway-only`，复用原有 PostgreSQL、生产配置、安全验证、备份恢复及两份 Gateway/runner systemd 单元。此模式不需要 `--web-image-id`，不生成 `web.env` 或 Next 服务，也不运行或激活任何服务；省去 Web 镜像不等于省去 PostgreSQL、rootless Podman 沙箱和实际模型。默认 `--web-image-id` 模式仍生成原来的三份单元；两模式不可同时指定，不支持在已有配置上原地切换。
+
+在获授权的 Linux 主机完成上述来源验证、Python 依赖、专用 `omnidesk` 用户、私有数据库、TLS、rootless/cgroup 限制及模型准备后，通过私密环境变量提供 DSN，并填写实际 origin、证书路径与 actor：
+
+```sh
+sudo --preserve-env=OMNIDESK_POSTGRES_DSN ./venv/bin/python scripts/web_first_host.py init \
+  --gateway-only --origin "$OMNIDESK_PUBLIC_ORIGIN" --user omnidesk --actor "$OMNIDESK_ACTOR" \
+  --cert "$OMNIDESK_TLS_CERT" --key "$OMNIDESK_TLS_KEY" --model smollm2:135m
+```
+
+生成配置仍只写 `/etc/omnidesk/web-first` 和 `/var/lib/omnidesk-web-first`，拒绝覆盖现有配置/密钥。模型的四份 profile 与 `runtime.required_ollama_models` 使用同一 `--model` 值；模型下载、容量和实际回答仍需主机验证。已有 x86_64 候选验收不能证明 Oracle A1/arm64 兼容，arm64 的锁定依赖、沙箱镜像及 Ollama 需单独验证。
+
+独立的 `nginx.gateway-only.conf.template` 仅将 `/admin/session/identity`、`/api/chat/stream` 及 MONICO 当前使用的项目、会话问答/消息、审批、通知、设备注册/入网和单任务读取路径反代至 `127.0.0.1:18789`，其他路径返回404。它不开放通配的 `/app/`、管理状态、WebSocket、desktop claim、push dispatch 或任务执行接口。请求方法、RBAC、组织权限、设备签名、幂等和审批仍由后端校验；无 URI 重写以保留签名路径，SSE 关闭响应缓冲和缓存。仅443可公开，runner18890、Ollama11434、PostgreSQL及Gateway18789均保持私有。
+
+Gateway-only 模板明确清空 `X-Forwarded-For`，避免 Uvicorn 信任 loopback 代理后用公网地址替换 socket peer、使原 `admin_allowed_ips=[127.0.0.1]` 拒绝身份请求。令牌仍必需，IP白名单和本地免令牌禁用保持原样。实际 peer 留在 nginx access log；后端按代理共享 IP 限额，另有 actor/role/org 配额。不可扩大 IP 白名单或直接信任用户传入的代理头。
+
+激活前仍需数据库备份/迁移4检查、独立批准、安装仅两份生成的单元、设置审核槽位 `current`、实际 `nginx -t` 及防火墙/云安全组读回。通过真实 HTTPS 端到端身份、错误令牌、角色、设备入网/签名重放、持久化、SSE、重启和恢复验证后，才可配置 MONICO 的实际 Gateway 地址。当前本地测试只证明配置生成、有限路由和代理鉴权边界，未创建服务器、DNS、TLS或凭据，未证明模型/任务执行、长期可用性或生产上线。
+
+风险包括公网有限 API 入口、共享 IP 限额、模型质量/容量、TLS续期和单机故障；首次激活前保留私密备份并准备停服回退。回滚须停止写入与新入口，切回已验证上一源码/配置槽位，保留迁移4及 nonce 数据并复验；首次部署无旧槽位时停用入口/服务并保留受限状态和密钥，不自动删除或重新生成身份。
+
+本地准备验证（2026-10-07，Python 3.11.15）：以下针对性检查72项通过，覆盖两模式实际配置生成、防覆盖、有限路由、真实 Uvicorn 代理头处理、生产策略和恢复保护。配置生成测试全部写入临时目录并替换凭据/TLS/主机操作。原脚本在新增的前7项检查中5项失败、2项通过；修复后包含代理头回归的8项均通过。当前机器无 nginx，未执行实际 `nginx -t` 或主机部署验收。
+
+```sh
+/private/tmp/omnidesk-ios-20261007/checks-venv311/bin/python -m pytest tests/test_web_first_host.py tests/test_web_first_release.py tests/test_production_config_validator.py tests/test_admin_auth_production_default.py tests/test_api_resource_guard.py -q --tb=short
+```
+
 ## 备份、恢复和回滚
 
 `web_first_host.py backup` 使用私密 DSN 和匹配版本的 pg_dump，保存 custom backup 和 SHA256。备份目录必须是 0700，文件离机备份必须受限并加密；同时备份实际应用状态、审计及密钥至另一个私密位置。数据库单份快照不等于完整灾难恢复。
