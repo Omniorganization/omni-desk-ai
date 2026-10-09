@@ -1,0 +1,15 @@
+{
+  "frameworkVersion": "3.38.8",
+  "channel": "[user-branch]",
+  "repositoryUrl": "unknown source",
+  "frameworkRevision": "bd7a4a6b5576630823ca344e3e684c53aa1a0f46",
+  "frameworkCommitDate": "2026-01-26 15:21:03 -0800",
+  "engineRevision": "db373eb85a06eb3d706af362a45d42d0972f4b46",
+  "engineCommitDate": "2026-01-26 18:17:44.000Z",
+  "engineContentHash": "9c1e4933426257206c317269a99c77122da463cb",
+  "engineBuildDate": "2026-01-27 03:21:12.150",
+  "dartSdkVersion": "3.10.7",
+  "devToolsVersion": "2.51.1",
+  "flutterVersion": "3.38.8",
+  "flutterRoot": "/private/tmp/omnidesk-ios-20261007/flutter-3.38.8"
+}

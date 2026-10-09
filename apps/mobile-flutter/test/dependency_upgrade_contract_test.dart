@@ -17,8 +17,8 @@ void main() {
     ) as Map<String, dynamic>;
 
     expect(pubspec, contains('local_auth: ^3.0.2'));
-    expect(pubspec, contains('firebase_core: ^4.12.1'));
-    expect(pubspec, contains('firebase_messaging: ^16.4.3'));
+    expect(pubspec, contains('firebase_core: ^4.14.0'));
+    expect(pubspec, contains('firebase_messaging: ^16.7.0'));
     expect(mainSource, isNot(contains('AuthenticationOptions(')));
     expect(securitySource, isNot(contains('AuthenticationOptions(')));
     expect(securitySource, contains('persistAcrossBackgrounding: true'));

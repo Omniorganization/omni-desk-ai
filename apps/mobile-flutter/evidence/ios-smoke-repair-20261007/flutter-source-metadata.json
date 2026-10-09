@@ -1,0 +1,36 @@
+{
+  "source": "https://github.com/flutter/flutter.git",
+  "tag": "3.38.8",
+  "commit": "bd7a4a6b5576630823ca344e3e684c53aa1a0f46",
+  "engine_version": "db373eb85a06eb3d706af362a45d42d0972f4b46",
+  "method": "official GitHub tag shallow clone; no preinstalled SDK cache copied",
+  "archive_url": "https://storage.googleapis.com/flutter_infra_release/flutter/releases/stable/macos/flutter_macos_arm64_3.38.8-stable.zip",
+  "archive_result": "HTTP404; no archive downloaded; no archive hash claim",
+  "bootstrap_exit": 0,
+  "host_arm64": "1",
+  "version_log": "/private/tmp/omnidesk-ios-20261007/flutter-3.38.8-bootstrap-arm64.log",
+  "source_tree_sha": "61515557d8e7325fb1c57449119d38e33c5597a7",
+  "official_tree_matches": true,
+  "git_origin": "https://github.com/flutter/flutter.git",
+  "dart_binary_file": "/private/tmp/omnidesk-ios-20261007/flutter-3.38.8/bin/cache/dart-sdk/bin/dart: Mach-O 64-bit executable arm64",
+  "local_sha256": {
+    "bin/flutter": "ebf74cfdcd1cb57787c6cef8e6a8dfc1deeb26e6e5e034538bda16a184160c97",
+    "bin/internal/engine.version": "339298337c2235848455adb2e41c104d2a138d678b2595a20f61b19cb807fb65",
+    "bin/cache/dart-sdk/bin/dart": "0e1cdd073bcef597817a5843efa576a7bc9876fa4d3c83f1289c561a097af2e2"
+  },
+  "readback_version": {
+    "frameworkVersion": "3.38.8",
+    "channel": "[user-branch]",
+    "repositoryUrl": "unknown source",
+    "frameworkRevision": "bd7a4a6b5576630823ca344e3e684c53aa1a0f46",
+    "frameworkCommitDate": "2026-01-26 15:21:03 -0800",
+    "engineRevision": "db373eb85a06eb3d706af362a45d42d0972f4b46",
+    "engineCommitDate": "2026-01-26 18:17:44.000Z",
+    "engineContentHash": "9c1e4933426257206c317269a99c77122da463cb",
+    "engineBuildDate": "2026-01-27 03:21:12.150",
+    "dartSdkVersion": "3.10.7",
+    "devToolsVersion": "2.51.1",
+    "flutterVersion": "3.38.8",
+    "flutterRoot": "/private/tmp/omnidesk-ios-20261007/flutter-3.38.8"
+  }
+}

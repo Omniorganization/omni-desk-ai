@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
+
+import yaml
 
 from scripts.check_ci_evidence_contract import main as check_ci_evidence_contract_main
 from scripts.check_license_policy import main as check_license_policy_main
@@ -82,6 +86,50 @@ def test_ci_and_security_workflow_policy_contracts_pass_current_tree() -> None:
     assert check_ci_evidence_contract_main(["."]) == 0
     assert check_security_workflow_policy_main(["."]) == 0
     assert check_production_install_policy_main(["."]) == 0
+
+
+def test_coverage_evidence_sync_rejects_unprepared_paths_and_keeps_failed_results(tmp_path: Path) -> None:
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    coverage = yaml.safe_load(workflow)["jobs"]["coverage"]
+    assert all("${{ runner." not in value for value in coverage["env"].values())
+    block = workflow.split("      - name: Synchronize standard coverage evidence directory\n", 1)[1]
+    sync = textwrap.dedent(block.split("        run: |\n", 1)[1].split("      - uses:", 1)[0])
+    env = dict(os.environ)
+    source = tmp_path / "ci-coverage"
+    source.mkdir()
+    (source / "pytest-status").write_text("0\n", encoding="utf-8")
+    env["OMNIDESK_COVERAGE_EVIDENCE_DIR"] = str(source)
+    assert subprocess.run(["bash", "-e", "-c", sync], cwd=tmp_path, env=env, capture_output=True).returncode == 0
+    target = tmp_path / "reports/ci/coverage/pytest-status"
+    assert target.read_text(encoding="utf-8") == "0\n"
+
+    # A cp spy keeps the negative control safe if an empty-path regression returns.
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    spy = commands / "cp"
+    spy.write_text('#!/bin/sh\ntouch "$CP_CALLED"\nexit 13\n', encoding="utf-8")
+    spy.chmod(0o755)
+    env["PATH"] = str(commands) + os.pathsep + env["PATH"]
+    called = tmp_path / "cp-called"
+    env["CP_CALLED"] = str(called)
+    for path in (None, "", str(tmp_path / "missing")):
+        if path is None:
+            env.pop("OMNIDESK_COVERAGE_EVIDENCE_DIR", None)
+        else:
+            env["OMNIDESK_COVERAGE_EVIDENCE_DIR"] = path
+        assert subprocess.run(["bash", "-e", "-c", sync], cwd=tmp_path, env=env, capture_output=True).returncode != 0
+        assert not called.exists()
+        assert target.read_text(encoding="utf-8") == "0\n"
+
+    enforce = workflow.split("      - name: Enforce full test result\n", 1)[1].split("        run: ", 1)[1].splitlines()[0]
+    env["OMNIDESK_COVERAGE_EVIDENCE_DIR"] = str(source)
+    for status, success in (("0\n", True), ("1\n", False), (None, False)):
+        if status is None:
+            (source / "pytest-status").unlink()
+        else:
+            (source / "pytest-status").write_text(status, encoding="utf-8")
+        result = subprocess.run(["bash", "-e", "-c", enforce], cwd=tmp_path, env=env, capture_output=True)
+        assert (result.returncode == 0) is success
 
 
 def test_security_workflow_dependency_review_and_all_python_locks_are_blocking() -> None:
