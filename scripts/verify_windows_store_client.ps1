@@ -82,7 +82,16 @@ try {
     Write-Output 'PASS real release client created and sustained expected Windows window; not MSIX installation or Store certification.'
 } finally {
     $record | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $output 'client-preflight.json') -Encoding utf8
-    if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id }
+    if ($null -ne $process) {
+        if (-not $process.HasExited) {
+            # WebView descendants can retain inherited redirected log handles.
+            & taskkill.exe /PID $process.Id /T /F | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Client process tree cleanup failed.' }
+        }
+        if (-not $process.WaitForExit(10000)) { throw 'Client cleanup timed out.' }
+        $process.WaitForExit()
+        $process.Dispose()
+    }
 }
 $files = @(Get-ChildItem $output -File -Recurse | Sort-Object FullName)
 $lines = foreach ($file in $files) { "$((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $([IO.Path]::GetRelativePath($output, $file.FullName).Replace('\', '/'))" }
