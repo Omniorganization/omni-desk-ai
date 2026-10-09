@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -19,7 +21,7 @@ from omnidesk_agent.appsync.lease_safe_chat_repository import (
 from omnidesk_agent.appsync.migrated_postgres_store import (
     MigratedMultiInstancePostgresAppSyncStore,
 )
-from omnidesk_agent.appsync.postgres_migrations import apply_appsync_migrations
+from omnidesk_agent.appsync.postgres_migrations import MIGRATIONS, apply_appsync_migrations
 from omnidesk_agent.models.base import ModelResponse
 
 
@@ -30,10 +32,92 @@ def _dsn() -> str:
     return value
 
 
+def test_serialized_device_request_preserves_http_method_keyword() -> None:
+    dsn = _dsn()
+    namespace = f"method_keyword_{uuid.uuid4().hex}"
+    apply_appsync_migrations(dsn, namespace=namespace)
+    store = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+    try:
+        result = store.verify_device_request_signature(
+            device_id="unregistered", method="POST", path="/app/devices/unregistered/rotate-token",
+            body=b"{}", timestamp="", nonce="", signature="",
+        )
+        assert result == (False, "missing_timestamp")
+        assert store.ensure_user("after-rejection")["user_id"] == "after-rejection"
+    finally:
+        store.close()
+
+
+def test_device_nonce_is_durable_across_instances_and_recreation() -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    dsn = _dsn()
+    namespace = f"durable_nonce_{uuid.uuid4().hex}"
+    apply_appsync_migrations(dsn, namespace=namespace)
+    first = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+    second = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+    key = Ed25519PrivateKey.generate()
+    public = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    device_id = uuid.uuid4().hex
+    try:
+        first.register_device(actor="nonce-owner", device_id=device_id, device_type="desktop", name="Regression", platform="CI", public_key=public)
+        enrollment = first.start_device_enrollment(actor="nonce-owner", device_type="desktop", pairing_code="isolated-pairing-code")
+        first.complete_device_enrollment(actor="nonce-owner", enrollment_id=enrollment["enrollment_id"], pairing_code="isolated-pairing-code", device_id=device_id, public_key=public)
+        challenge = first.issue_device_challenge(actor="nonce-owner", enrollment_id=enrollment["enrollment_id"], device_id=device_id)
+        first.verify_device_challenge(actor="nonce-owner", enrollment_id=enrollment["enrollment_id"], challenge_id=challenge["challenge_id"], device_id=device_id, signature=key.sign(challenge["signing_message"].encode()).hex())
+
+        def signed_request():
+            timestamp = str(time.time())
+            nonce = uuid.uuid4().hex
+            body_hash = hashlib.sha256(b"{}").hexdigest()
+            path = f"/app/devices/{device_id}/rotate-token"
+            message = f"omnidesk-device-request:v1:POST:{path}:{body_hash}:{timestamp}:{nonce}".encode()
+            return dict(device_id=device_id, method="POST", path=path, body=b"{}", timestamp=timestamp,
+                        nonce=nonce, signature=key.sign(message).hex())
+
+        request = signed_request()
+        assert first.verify_device_request_signature(**request) == (True, "ok")
+        assert second.verify_device_request_signature(**request) == (False, "nonce_replay")
+        recreated = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+        try:
+            assert recreated.verify_device_request_signature(**request) == (False, "nonce_replay")
+        finally:
+            recreated.close()
+        concurrent = signed_request()
+        barrier = threading.Barrier(2)
+
+        def verify(store):
+            barrier.wait(timeout=10)
+            return store.verify_device_request_signature(**concurrent)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = [future.result(timeout=20) for future in [executor.submit(verify, store) for store in (first, second)]]
+        assert sorted(results) == [(False, "nonce_replay"), (True, "ok")]
+    finally:
+        first.close()
+        second.close()
+
+
+def test_version_three_database_requires_append_only_nonce_migration() -> None:
+    dsn = _dsn()
+    namespace = f"nonce_upgrade_{uuid.uuid4().hex}"
+    assert apply_appsync_migrations(dsn, namespace=namespace, migrations=MIGRATIONS[:3]) == [1, 2, 3]
+    unmigrated = MigratedMultiInstancePostgresAppSyncStore.__new__(MigratedMultiInstancePostgresAppSyncStore)
+    try:
+        with pytest.raises(RuntimeError, match="behind required version 4"):
+            unmigrated.__init__(dsn=dsn, namespace=namespace)
+    finally:
+        unmigrated.close()
+    assert apply_appsync_migrations(dsn, namespace=namespace) == [4]
+    store = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace)
+    store.close()
+
+
 def test_atomic_chat_is_single_writer_replayable_and_multi_instance_safe() -> None:
     dsn = _dsn()
     namespace = f"test_{uuid.uuid4().hex}"
-    assert apply_appsync_migrations(dsn, namespace=namespace) == [1, 2, 3]
+    assert apply_appsync_migrations(dsn, namespace=namespace) == [1, 2, 3, 4]
     assert apply_appsync_migrations(dsn, namespace=namespace) == []
 
     store_a = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=4)

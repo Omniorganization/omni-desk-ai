@@ -9,7 +9,7 @@ from typing import Any, Iterable, Protocol, cast
 from omnidesk_agent.appsync.postgres_store import NORMALIZED_SCHEMA_SQL
 
 MIGRATION_TABLE = "omnidesk_appsync_schema_migrations"
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 
 class _Cursor(Protocol):
@@ -107,6 +107,14 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             "CREATE INDEX IF NOT EXISTS omnidesk_messages_conversation_created_idx ON omnidesk_appsync_messages(namespace, organization_id, conversation_id, created_at)",
             "CREATE INDEX IF NOT EXISTS omnidesk_conversations_actor_updated_idx ON omnidesk_appsync_conversations(namespace, organization_id, actor, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS omnidesk_notifications_actor_created_idx ON omnidesk_appsync_notifications(namespace, organization_id, actor, created_at DESC)",
+        ),
+    ),
+    PostgresMigration(
+        4,
+        "durable_device_request_nonces",
+        (
+            "CREATE TABLE IF NOT EXISTS omnidesk_appsync_device_request_nonces (namespace TEXT NOT NULL, nonce_key TEXT NOT NULL, expires_at DOUBLE PRECISION NOT NULL, PRIMARY KEY(namespace, nonce_key))",
+            "CREATE INDEX IF NOT EXISTS omnidesk_device_request_nonces_expiry_idx ON omnidesk_appsync_device_request_nonces(namespace, expires_at)",
         ),
     ),
 )
