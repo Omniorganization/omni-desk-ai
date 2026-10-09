@@ -19,8 +19,24 @@ void main() {
       expect(await storage.read(key: key), isNull);
 
       await app.main();
-      await tester.pumpAndSettle();
-      expect(find.text('Security: secure storage ready'), findsOneWidget);
+      final ready = find.text('Security: secure storage ready');
+      final unavailable = find.text('Security: secure storage unavailable');
+      final deadline = tester.binding.clock.fromNowBy(
+        const Duration(seconds: 30),
+      );
+      // Native Keychain reads can remain pending after animation frames settle.
+      while (ready.evaluate().isEmpty &&
+          unavailable.evaluate().isEmpty &&
+          tester.binding.clock.now().isBefore(deadline)) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(
+        ready,
+        findsOneWidget,
+        reason:
+            'Native session restore must finish successfully; security labels: '
+            '${tester.widgetList<Text>(find.textContaining('Security: ')).map((widget) => widget.data).toList()}',
+      );
       final headline = find.text('我们应该在 AI 助理中做些什么？');
       final style = tester.widget<Text>(headline).style!;
       expect(

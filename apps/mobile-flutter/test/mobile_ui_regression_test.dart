@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,17 +13,22 @@ void main() {
   var storedValues = <String, String>{};
   var writes = <String>[];
   var denyTokenRead = false;
+  Completer<void>? pendingTokenRead;
 
   setUp(() {
     storedValues = <String, String>{};
     writes = <String>[];
     denyTokenRead = false;
+    pendingTokenRead = null;
     binding.defaultBinaryMessenger.setMockMethodCallHandler(storageChannel, (
       call,
     ) async {
       final arguments = Map<String, dynamic>.from(call.arguments as Map);
       final key = arguments['key'] as String;
       if (call.method == 'read') {
+        if (key == 'omni.token' && pendingTokenRead != null) {
+          await pendingTokenRead!.future;
+        }
         if (denyTokenRead && key == 'omni.token') {
           throw PlatformException(
             code: '-34018',
@@ -45,6 +52,32 @@ void main() {
       null,
     );
   });
+
+  for (final readFails in <bool>[false, true]) {
+    testWidgets(
+      'delayed secure storage read completes as ${readFails ? 'unavailable' : 'ready'}',
+      (tester) async {
+        pendingTokenRead = Completer<void>();
+        denyTokenRead = readFails;
+        await tester.pumpWidget(const OmniMobileApp());
+        await tester.pumpAndSettle();
+
+        expect(find.text('Security: checking secure storage'), findsOneWidget);
+        expect(find.text('Security: secure storage ready'), findsNothing);
+        pendingTokenRead!.complete();
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text(
+            'Security: secure storage ${readFails ? 'unavailable' : 'ready'}',
+          ),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+        expect(writes, isEmpty);
+      },
+    );
+  }
 
   testWidgets('unenrolled sync reports a visible error without creating keys', (
     tester,
