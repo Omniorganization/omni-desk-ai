@@ -43,8 +43,7 @@ try {
         $characteristics = $reader.ReadUInt16()
         if (($characteristics -band 0x0002) -eq 0 -or ($characteristics -band 0x2000) -ne 0) { throw 'Input must be an executable image, not a DLL.' }
         if ($optionalSize -lt 112 -or $optionalSize -gt $reader.BaseStream.Length - $peOffset - 24 -or $reader.ReadUInt16() -ne 0x020B) { throw 'Input must have a complete x64 PE32+ optional header.' }
-        $reader.BaseStream.Position = $peOffset + 40
-        if ($reader.ReadUInt32() -eq 0) { throw 'Input executable must have an entry point.' }
+        # Managed x64 EXEs can use a CLR entry token with no native PE entry point.
     } finally { $reader.Dispose() }
     foreach ($logo in @('Square44x44Logo.png', 'Square150x150Logo.png', 'StoreLogo.png')) {
         Copy-Item -LiteralPath (Join-Path $Assets $logo) -Destination (Join-Path $stage 'Assets' $logo)
