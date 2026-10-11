@@ -1,10 +1,13 @@
 # 本人本机官方 Codex CLI 登录；不填写 API key 或复制桌面 token。
 # 仅接受精确 CLI 版本 0.162.0-alpha.17.2；其它版本需独立兼容性验证。
 # 仅支持 POSIX 进程组清理；本轮宿主为 macOS，Windows 当前拒绝接入。
-# 2026-10-12 本人 macOS 的真实 loopback Gateway 三题严格通过：5 / 21 / NO_TOOLS。
-# 成功/持久 ledger 均 3 次；详细范围见 docs/evidence/codex-cli-gateway-20261012.json。
+# 上一版本本人 macOS 的真实三题通过，历史摘要保留于 docs/evidence/codex-cli-gateway-20261012.json。
+# 当前使用官方 AppServer stdio JSON-RPC；目录只含公开静态元数据，system/user分开经stdin传递。
+# AppServer不能ignore-user-config；逐名称禁全局MCP、清全局developer instructions、关history/telemetry。
+# 全局AGENTS无关闭入口；仅接受本人CODEX_HOME顶层两类AGENTS、本人UID/安全权限与目录内symlink。
+# 适配器不读取/打印该内容，CLI仍可加载本人常规指令；新AppServer完整真实验收仍待完成。
 # NO_TOOLS 自述与 JSONL 未接受工具事件是有限证据，不能证明绝对零工具执行/宿主零读取。
-# 本轮新增改动的 GitHub CI 尚未读取；本地问答成功不代表托管或生产验收。
+# 744ba691 的 CI 为 53 成功/2 跳过/1 CodeQL 失败；AppServer修复后CI待验证，未全绿。
 # 此配置只供本人本地使用，不是托管部署证明。
 # provider 内部临时别名只复用 CLI 的 OpenAI/ChatGPT 认证及官方地址，request/stream retries=0。
 # 从仓库根目录、项目隔离 Python 启动（端口应空闲，先安全设置 Gateway 认证）：

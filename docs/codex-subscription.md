@@ -15,7 +15,7 @@
 
 当前实现只接受已核对的精确 CLI 版本 `0.162.0-alpha.17.2`，本机来源为官方应用内置 CLI，模型为 `gpt-6.1-sol`。其它版本在完成兼容性验证前拒绝调用，不把更高版本视为自动兼容。默认优先使用本机官方应用内置 CLI，再查找 PATH；可在 profile 中设置可信的绝对 `codex_cli_path`。CLI、模型元数据或配置字段变化后应重新验证，未知字段或不兼容模型应停止。
 
-每次调用使用 CLI 内部临时 provider 别名 `omnidesk_codex_subscription`，复用 CLI 管理的 OpenAI/ChatGPT 认证和官方服务地址，并将 request/stream retries 设为零。该别名只用于 CLI 本次进程的官方配置，OmniDesk 对外仍是 `codex_cli` provider；不接受自定义 HTTP 地址或 API key，不修改全局配置。
+每次调用启动官方 CLI 的 **AppServer stdio JSON-RPC** transport，使用内部临时 provider 别名 `omnidesk_codex_subscription`，复用 CLI 管理的 OpenAI/ChatGPT 认证和官方服务地址，并将 request/stream retries 设为零。OmniDesk 对外仍是 `codex_cli` provider；不接受自定义 HTTP 地址或 API key，不修改全局配置。
 
 provider 当前仅支持具有 POSIX 进程组清理能力的本机宿主；本轮实际宿主为 macOS。Windows 在初始化时拒绝接入，Linux 尚未完成真实订阅验收。每个 CLI 子进程拥有独立进程组，超时、取消或错误后清理整个进程组，并限制清理等待；这不构成其它平台的已验证支持。
 
@@ -55,11 +55,17 @@ python -m scripts.verify_codex_cli_chat --config examples/config.codex-cli.yaml
 
 验收需同时检查匿名访问被拒绝、operator 不能使用订阅 profile、真实 owner 请求的模型与答案匹配、幂等重放不新增调用、SSE 完成事件及持久用量记录。脚本结果的 `success` 必须真实通过所有断言；脚本存在、profile 已加载或独立 CLI 回答成功不能代替这次 Gateway 验收。
 
-CLI 请求使用临时工作目录、忽略用户配置、严格配置检查、只读沙箱和临时会话。临时模型目录将 `shell_type` 设为 `disabled`、`apply_patch_tool_type` 设为 `null`、`experimental_supported_tools` 清空、`tool_mode` 收紧为该版本支持的 `direct`，同时关闭 `code_mode` / `code_mode_only`、搜索、MCP 及其它已知工具能力；任何工具或未知事件都使请求停止。只读沙箱本身仍可能允许读文件，不能单凭 `read-only` 宣称工具全禁。工具限制需要在实际 CLI/model 组合中验证；“未接受工具事件”也不能证明所有未来工具能力均已关闭。
+AppServer 请求使用临时工作目录、严格配置检查、只读沙箱和临时会话；`thread/start` 必须回报预期 model、provider、cwd、`readOnly`、`on-request` 审批及允许的指令来源，门禁通过后才能 `turn/start`。临时模型目录将 `shell_type` 设为 `disabled`、`apply_patch_tool_type` 设为 `null`、`experimental_supported_tools` 清空、`tool_mode` 收紧为该版本支持的 `direct`，同时关闭 `code_mode` / `code_mode_only`、搜索及其它已知工具能力。只读沙箱本身仍可能允许读文件，不能单凭 `read-only` 宣称工具全禁。
+
+AppServer 不支持 `--ignore-user-config`，所以先 `initialize`、再内部 `config/read`，先验证有效订阅别名的固定协议、认证、零重试及官方服务地址，拒绝额外非空认证/传输字段和端点覆盖；再仅投影全局 MCP server 名称并在 `thread/start` 逐个设为 `enabled: false`，不输出配置值。空 `{}` 会深度合并，不能靠它清空全局 MCP。当前进程还清空配置项中的全局 developer instructions，关闭 history 持久化、analytics 和 OTel exporter/trace exporter、禁止日志记录用户 prompt，并设置 `RUST_LOG=off`。这些限制不等于完全不读取宿主配置。
+
+官方协议没有关闭全局 AGENTS 文件的入口，`project_doc_max_bytes=0` 只约束项目文档。来源门禁仅接受本人 `CODEX_HOME` 顶层 `AGENTS.md` 或 `AGENTS.override.md`：目录和文件必须属于当前本人 UID，且不可由 group/world 写入，文件须为普通文件；符号链接解析后离开该目录即拒绝。来源字段缺失、非法或其它来源均停止请求。适配器只校验来源路径和文件元数据，不读取或打印内容；官方 CLI 自身仍可加载这些本人常规指令，不修改全局配置或复制认证。
+
+只忽略已知无动作的 remote-control、skills、account、app 状态通知。异常警告、工具项、服务端 action/approval 请求、模型改道、未允许的指令来源或未知事件均拒绝，停止当前请求；不自动批准。未接受工具事件仅是当前 CLI/model/config 组合的有限证据，不证明绝对零工具执行或未来所有能力都已关闭。
 
 本次进程关闭 `agents.enabled`，将模型的 `multi_agent_version` 设为 `disabled`；同时关闭技能目录自动提示、内置技能和 cloud skills。`skip_host_skill_discovery` 仅在没有注册贡献者要求宿主技能发现时跳过 host snapshots；它不是无条件禁止宿主资料读取的开关。普通文本中的技能提及仍可能由已注册的技能贡献者解析，本轮合成题没有请求技能。CLI 自身需要读取已保存的认证，因此本验收不宣称宿主资料绝对零读取或所有技能输入均已禁止。`suppress_unstable_features_warning` 只抑制该实验功能的启动信息提示，保留严格配置、沙箱、审批和事件拒绝门禁。
 
-可信的 `ModelRequest.system` 追加到原有模型 `base_instructions` 尾部；若模型提供优先使用的 canonical `model_messages.instructions_template`，同样追加到该模板尾部，保留两者原有内容。该 CLI 将其映射为 developer 指令；用户正文独立经 stdin 输入，不进入命令参数。成功响应必须按顺序包含 thread/turn 开始、完整助手消息及唯一完成事件，input/output token 用量必须是非负整数。未完成或用量不合法的请求停止，不记为成功。
+临时 `models.json` 只保存官方公开的 base/canonical 指令及收紧工具能力的静态元数据，不含请求 system、历史上下文或用户正文。公开 canonical 指令通过 `thread/start.baseInstructions` 指定；可信的 `ModelRequest.system` 通过独立 `thread/start.developerInstructions` 传递；用户正文在 `turn/start.input` 中单独传递。请求内容经 stdin JSON-RPC 进入子进程，不写入该目录文件、命令参数或环境变量。成功响应须完成 thread/turn 生命周期、完整助手消息及唯一成功完成事件，input/output token 用量必须是非负整数。未完成或用量不合法的请求停止，不记为成功。
 
 当前 `codex_cli` 的 `/api/chat/stream` 是**缓冲 SSE**：先等待 CLI 完整成功回答，再发出文本和完成事件，`native: false`。它不能提供逐 token 的原生实时推送。含图片的请求拒绝，JSON mode 输出不合法时停止。配置中的 `max_output_tokens` 用于本地预算估算，不是 CLI 输出的硬上限。
 
@@ -67,11 +73,13 @@ CLI 请求使用临时工作目录、忽略用户配置、严格配置检查、�
 
 2026-10-12，官方应用内置 CLI `0.162.0-alpha.17.2` 使用现有 ChatGPT 登录，以 `gpt-6.1-sol` 完成独立纯合成文本 smoke，JSONL 未接受工具事件。这只证明当时该本机 CLI/账号/model 的请求可用。
 
-**完整本地合成验收已通过**，时间为 `2026-10-12T06:05:46.853759+08:00`。真实 loopback Gateway 经认证、chat API、router 和官方 CLI 完成三次合成问答：普通问答严格回答 `5`、`21`，SSE 工具列表问题严格回答 `NO_TOOLS`。匿名和 operator 访问均返回 HTTP 403；幂等重放新增调用为零；成功调用和持久 ledger 均为 3 次，共 15,260 input tokens、31 output tokens；SSE 为 `native: false`。未使用 Platform API key、响应缓存或后台服务，未发送业务数据。证据见 [本地 Gateway 验收摘要](evidence/codex-cli-gateway-20261012.json)。
+**旧 exec transport 的完整本地合成验收已通过**，时间为 `2026-10-12T06:05:46.853759+08:00`。真实 loopback Gateway 经认证、chat API、router 和官方 CLI 完成三次合成问答：普通问答严格回答 `5`、`21`，SSE 工具列表问题严格回答 `NO_TOOLS`。匿名和 operator 访问均返回 HTTP 403；幂等重放新增调用为零；成功调用和持久 ledger 均为 3 次，共 15,260 input tokens、31 output tokens；SSE 为 `native: false`。未使用 Platform API key、响应缓存或后台服务，未发送业务数据。历史证据保留于 [此前本地 Gateway 验收摘要](evidence/codex-cli-gateway-20261012.json)，它不代表当前 AppServer transport 已完成真实推理验收。
 
-`NO_TOOLS` 是模型对当前工具列表的自述，JSONL 策略证明本次未接受工具事件；两者只能作为这个 CLI/model/config 组合的有限证据，不能独立证明绝对零工具执行、宿主零读取或未来版本也安全。本轮离线相关测试 173 项通过（`-Werror`，其中 provider 测试 70 项），Ruff 通过；假 CLI 测试不替代上述真实请求。
+`NO_TOOLS` 是模型对当前工具列表的自述，JSONL 策略证明该次未接受工具事件；两者不能独立证明绝对零工具执行、宿主零读取或未来版本也安全。旧版本离线相关测试 173 项通过（`-Werror`，其中 provider 测试 70 项），Ruff 通过。当前 AppServer provider 离线测试 180 项通过，7 个相关文件共 283 项通过（`-W error`）；Ruff、import graph 通过，Pyright 0 errors / 1,005 warnings，未做警告基线差分。假 CLI 测试不替代真实请求。
 
-**仍未验收：**本轮新增 `codex_cli` 改动的 GitHub CI 结果尚未读取，不能宣称全绿。源码、单测、PR 或本地问答通过都不代表托管部署或生产验收；独立 SIWC 授权及其真实推理仍未验证。
+已推送提交 `744ba691` 的全部 GitHub CI 已完成：53 项成功、2 项跳过、1 项失败。唯一失败为 CodeQL，报告编号 #15 的一条 high finding，涉及可信 system/context 追加到目录后写入明文 `models.json`。当前 AppServer 改动将请求上下文移出目录文件，尚需新提交的 CI 重新验证，不能宣称全绿。
+
+匿名目录管道的正负控曾证明 CLI 能读取管道，但真实执行需要重复读取目录，EOF 后不能再次读取，因此当前改用 AppServer。此前 `thread/start` 的全局 `AGENTS.md` 来源被“来源必须为空”的假设拒绝；当前已改为上述本人文件来源门禁，真实诊断已完成 turn。**当前 AppServer 完整本地三题验收通过**，时间为 `2026-10-12T06:47:01.467044+08:00`：HTTP 严格回答 `5`、`21`，缓冲 SSE 严格回答 `NO_TOOLS`；匿名/operator 均 403，幂等重放新增调用 0，成功及持久 ledger 均 3，共 15,450 input / 135 output tokens。未使用 Platform API key、响应缓存或后台服务，未发送业务数据。[当前 AppServer 验收摘要](evidence/codex-cli-gateway-security-20261012.json)绑定源码哈希；新提交的 GitHub CI 仍须在推送后独立核对。源码、单测、PR 或历史本地问答通过都不代表托管部署或生产验收；独立 SIWC 授权及其真实推理仍未验证。
 
 ## 独立 SIWC 路径
 
@@ -156,6 +164,7 @@ CLI 登录到期、撤销、订阅额度不足或 CLI/model 不兼容时，当�
 ## 官方依据
 
 - [Codex 认证与 ChatGPT 登录](https://learn.chatgpt.com/docs/auth)
+- [Codex AppServer 集成协议](https://learn.chatgpt.com/docs/app-server)
 - [Codex CLI 非交互执行与 JSON 事件](https://learn.chatgpt.com/docs/non-interactive-mode)
 - [Codex CLI 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)
 - [SIWC 开放源代码 / 本地宿主概览](https://developers.openai.com/siwc/token-sharing-open-source)
