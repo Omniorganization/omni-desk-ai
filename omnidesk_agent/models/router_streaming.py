@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, AsyncIterator
 
 from omnidesk_agent.models.base import ModelDelta, ModelRequest, ModelResponse
-from omnidesk_agent.models.provider_errors import ChatGPTPlanError, classify_provider_error
+from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error
 from omnidesk_agent.models.provider_streaming import stream_provider
 from omnidesk_agent.models.router import ModelRouter
 
@@ -24,8 +24,8 @@ class GovernedStreamingRouter:
             provider = self.router.providers.get(profile)
             if provider is None:
                 configured = self.router.cfg.profiles.get(profile)
-                if configured and configured.provider == "chatgpt_plan":
-                    raise ChatGPTPlanError("subscription_unavailable", "ChatGPT plan profile is disabled or unavailable")
+                if configured and configured.provider in SUBSCRIPTION_PROVIDERS:
+                    raise ChatGPTPlanError("subscription_unavailable", "Subscription profile is disabled or unavailable")
                 last_error = RuntimeError(
                     f"Model profile not configured or disabled: {profile}"
                 )
@@ -35,11 +35,11 @@ class GovernedStreamingRouter:
                     f"offline mode forbids external model profile: {profile}"
                 )
                 continue
-            if getattr(provider, "provider_name", "") == "chatgpt_plan":
+            if getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
                 self.router._assert_explicit_profile_allowed(profile, request.metadata)
             if self.router._circuit_open(profile, plan):
-                if getattr(provider, "provider_name", "") == "chatgpt_plan":
-                    raise ChatGPTPlanError("subscription_unavailable", "ChatGPT plan circuit is open; request stopped")
+                if getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
+                    raise ChatGPTPlanError("subscription_unavailable", "Subscription circuit is open; request stopped")
                 last_error = RuntimeError(f"Model profile circuit open: {profile}")
                 continue
             budget_action = self.router._check_budget(
@@ -77,7 +77,7 @@ class GovernedStreamingRouter:
                         self.router.error_counts.get(info.category, 0) + 1
                     )
                     self.router._record_failure(profile)
-                    if not info.fallback_recommended or getattr(provider, "provider_name", "") == "chatgpt_plan":
+                    if not info.fallback_recommended or getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
                         raise
                     if emitted:
                         raise RuntimeError(
@@ -90,8 +90,8 @@ class GovernedStreamingRouter:
                     break
 
         configured = self.router.cfg.profiles.get(plan.profiles[0]) if plan.profiles else None
-        if configured and configured.provider == "chatgpt_plan":
-            raise RuntimeError("ChatGPT plan stream stopped without completion") from last_error
+        if configured and configured.provider in SUBSCRIPTION_PROVIDERS:
+            raise RuntimeError("Subscription stream stopped without completion") from last_error
 
         # Some providers, staging fakes and older compatible endpoints expose a
         # governed complete transport but no native stream transport. Falling back
@@ -127,7 +127,7 @@ class GovernedStreamingRouter:
         profile: str,
         provider: Any,
     ) -> AsyncIterator[ModelDelta]:
-        subscription = getattr(provider, "provider_name", "") == "chatgpt_plan"
+        subscription = getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS
         decision = self.router.token_budget.decide(
             model=f"{profile}:{provider.model}",
             system=request.system,

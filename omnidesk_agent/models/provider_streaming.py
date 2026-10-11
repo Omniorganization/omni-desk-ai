@@ -410,7 +410,7 @@ async def stream_provider(provider: Any, request: ModelRequest) -> AsyncIterator
     """
 
     name = str(getattr(provider, "provider_name", ""))
-    if name == "chatgpt_plan":
+    if name in {"chatgpt_plan", "codex_cli"}:
         async for item in provider.stream(request):
             yield item
         return

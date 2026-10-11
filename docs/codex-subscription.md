@@ -1,16 +1,87 @@
 # OmniDesk 的 ChatGPT / Codex 订阅接入
 
-本适配新增 `chatgpt_plan` provider，接收**为 OmniDesk 独立注册并获用户授权的 Sign in with ChatGPT（SIWC）access token**，调用官方 `https://api.openai.com/v1/responses`。它复用 OmniDesk 的模型路由、ACL、审批、token 记录和持久费用 ledger；不会读取 Codex 的 `auth.json`，不会把 Codex CLI 登录凭据当作通用 API key。
+本适配提供两条独立路径：
+
+| Provider | 使用条件 | 范围 |
+| --- | --- | --- |
+| `codex_cli` | 本人本机已安装官方 Codex CLI，并已使用 ChatGPT 登录 | 本地 OmniDesk 调用官方 CLI；登录和刷新由 CLI 管理 |
+| `chatgpt_plan` | 为 OmniDesk 独立注册并获用户授权的 SIWC access token | 官方 Responses 协议适配；OAuth 生命周期由外部授权宿主管理 |
+
+两条路径都保留 OmniDesk 的角色/profile ACL、审批、预算、token 记录和持久费用 ledger。订阅 profile 包括自动路由选择，都必须通过既有 ACL；示例仅允许真实认证上下文中的 admin/owner 使用订阅。Gateway 从认证结果取得 role/actor，调用者不能自行声明身份。订阅失败不重试、不修复重发、不转付费 profile，也不读取或写入响应缓存。私密任务仍走本地 Ollama；本地模型不可用时停止。
+
+## 本人本机的 Codex CLI 路径
+
+独立配置见 [config.codex-cli.yaml](../examples/config.codex-cli.yaml)。它使用已有的官方 CLI ChatGPT 登录，无需为此路径重新注册 SIWC 应用。OmniDesk 不提取、复制或打印桌面登录凭据；不要填写 API key、共享账户凭据或将登录目录打包到配置中。此配置供本人本机使用，不能据此提供远程托管或其他人的订阅服务。
+
+当前实现只接受已核对的精确 CLI 版本 `0.162.0-alpha.17.2`，本机来源为官方应用内置 CLI，模型为 `gpt-6.1-sol`。其它版本在完成兼容性验证前拒绝调用，不把更高版本视为自动兼容。默认优先使用本机官方应用内置 CLI，再查找 PATH；可在 profile 中设置可信的绝对 `codex_cli_path`。CLI、模型元数据或配置字段变化后应重新验证，未知字段或不兼容模型应停止。
+
+每次调用使用 CLI 内部临时 provider 别名 `omnidesk_codex_subscription`，复用 CLI 管理的 OpenAI/ChatGPT 认证和官方服务地址，并将 request/stream retries 设为零。该别名只用于 CLI 本次进程的官方配置，OmniDesk 对外仍是 `codex_cli` provider；不接受自定义 HTTP 地址或 API key，不修改全局配置。
+
+provider 当前仅支持具有 POSIX 进程组清理能力的本机宿主；本轮实际宿主为 macOS。Windows 在初始化时拒绝接入，Linux 尚未完成真实订阅验收。每个 CLI 子进程拥有独立进程组，超时、取消或错误后清理整个进程组，并限制清理等待；这不构成其它平台的已验证支持。
+
+从仓库根目录，使用项目已隔离安装依赖的 Python。以下检查不请求模型、不读取登录凭据：
+
+```bash
+python - <<'PY'
+from omnidesk_agent.config import load_config
+
+c = load_config("examples/config.codex-cli.yaml", ensure_dirs=False)
+assert c.models.profiles["codex_cli"].provider == "codex_cli"
+assert c.models.profiles["codex_cli"].api_key_env is None
+assert c.models.budget.require_persistent_ledger
+assert c.models.routing["chat"]["fallback"] == []
+assert c.models.routing["chat"]["max_retries"] == 0
+assert c.models.routing["private"]["primary"] == "local"
+assert not c.gateway.allow_local_admin_without_token
+assert c.permissions.no_tty_mode == "deny"
+print("config passed; no inference")
+PY
+python -m pytest -q tests/models/test_codex_cli_provider.py
+```
+
+provider 测试使用假 CLI，并屏蔽真实 CLI 自动发现。它们只能证明本地契约，不能证明账号有订阅额度或模型权限。
+
+本人在本机安全设置好 Gateway 认证后，可启动本地服务。CLI 模块的入口是 `main()`，启动命令实际调用该入口；端口应选择本机空闲端口：
+
+```bash
+python -c 'from omnidesk_agent.cli import main; main()' --config examples/config.codex-cli.yaml serve --host 127.0.0.1 --port 19005
+```
+
+此 `serve` 命令启动配置中的正常服务。独立连通性验收使用下方脚本：它另建临时 loopback Gateway、临时本地认证和存储，关闭后台服务，只提交三个合成问题；不需要把其他服务的认证凭据复制给脚本。**该命令会真实调用已登录账号并消耗订阅额度**：
+
+```bash
+python -m scripts.verify_codex_cli_chat --config examples/config.codex-cli.yaml
+```
+
+验收需同时检查匿名访问被拒绝、operator 不能使用订阅 profile、真实 owner 请求的模型与答案匹配、幂等重放不新增调用、SSE 完成事件及持久用量记录。脚本结果的 `success` 必须真实通过所有断言；脚本存在、profile 已加载或独立 CLI 回答成功不能代替这次 Gateway 验收。
+
+CLI 请求使用临时工作目录、忽略用户配置、严格配置检查、只读沙箱和临时会话。临时模型目录将 `shell_type` 设为 `disabled`、`apply_patch_tool_type` 设为 `null`、`experimental_supported_tools` 清空、`tool_mode` 收紧为该版本支持的 `direct`，同时关闭 `code_mode` / `code_mode_only`、搜索、MCP 及其它已知工具能力；任何工具或未知事件都使请求停止。只读沙箱本身仍可能允许读文件，不能单凭 `read-only` 宣称工具全禁。工具限制需要在实际 CLI/model 组合中验证；“未接受工具事件”也不能证明所有未来工具能力均已关闭。
+
+本次进程关闭 `agents.enabled`，将模型的 `multi_agent_version` 设为 `disabled`；同时关闭技能目录自动提示、内置技能和 cloud skills。`skip_host_skill_discovery` 仅在没有注册贡献者要求宿主技能发现时跳过 host snapshots；它不是无条件禁止宿主资料读取的开关。普通文本中的技能提及仍可能由已注册的技能贡献者解析，本轮合成题没有请求技能。CLI 自身需要读取已保存的认证，因此本验收不宣称宿主资料绝对零读取或所有技能输入均已禁止。`suppress_unstable_features_warning` 只抑制该实验功能的启动信息提示，保留严格配置、沙箱、审批和事件拒绝门禁。
+
+可信的 `ModelRequest.system` 追加到原有模型 `base_instructions` 尾部；若模型提供优先使用的 canonical `model_messages.instructions_template`，同样追加到该模板尾部，保留两者原有内容。该 CLI 将其映射为 developer 指令；用户正文独立经 stdin 输入，不进入命令参数。成功响应必须按顺序包含 thread/turn 开始、完整助手消息及唯一完成事件，input/output token 用量必须是非负整数。未完成或用量不合法的请求停止，不记为成功。
+
+当前 `codex_cli` 的 `/api/chat/stream` 是**缓冲 SSE**：先等待 CLI 完整成功回答，再发出文本和完成事件，`native: false`。它不能提供逐 token 的原生实时推送。含图片的请求拒绝，JSON mode 输出不合法时停止。配置中的 `max_output_tokens` 用于本地预算估算，不是 CLI 输出的硬上限。
+
+## 证据与当前验收状态
+
+2026-10-12，官方应用内置 CLI `0.162.0-alpha.17.2` 使用现有 ChatGPT 登录，以 `gpt-6.1-sol` 完成独立纯合成文本 smoke，JSONL 未接受工具事件。这只证明当时该本机 CLI/账号/model 的请求可用。
+
+**完整本地合成验收已通过**，时间为 `2026-10-12T06:05:46.853759+08:00`。真实 loopback Gateway 经认证、chat API、router 和官方 CLI 完成三次合成问答：普通问答严格回答 `5`、`21`，SSE 工具列表问题严格回答 `NO_TOOLS`。匿名和 operator 访问均返回 HTTP 403；幂等重放新增调用为零；成功调用和持久 ledger 均为 3 次，共 15,260 input tokens、31 output tokens；SSE 为 `native: false`。未使用 Platform API key、响应缓存或后台服务，未发送业务数据。证据见 [本地 Gateway 验收摘要](evidence/codex-cli-gateway-20261012.json)。
+
+`NO_TOOLS` 是模型对当前工具列表的自述，JSONL 策略证明本次未接受工具事件；两者只能作为这个 CLI/model/config 组合的有限证据，不能独立证明绝对零工具执行、宿主零读取或未来版本也安全。本轮离线相关测试 173 项通过（`-Werror`，其中 provider 测试 70 项），Ruff 通过；假 CLI 测试不替代上述真实请求。
+
+**仍未验收：**本轮新增 `codex_cli` 改动的 GitHub CI 结果尚未读取，不能宣称全绿。源码、单测、PR 或本地问答通过都不代表托管部署或生产验收；独立 SIWC 授权及其真实推理仍未验证。
+
+## 独立 SIWC 路径
+
+`chatgpt_plan` provider 接收**为 OmniDesk 独立注册并获用户授权的 Sign in with ChatGPT（SIWC）access token**，调用官方 `https://api.openai.com/v1/responses`。它不会读取 Codex 的 `auth.json`，不会把 Codex CLI 登录凭据当作通用 API key。
 
 本次范围是模型协议适配。尚未实现 OmniDesk 的 OAuth 登录按钮、账户选择、ID-token 验证、刷新控制器或注销入口。外部授权宿主必须按官方流程完成独立注册、稳定 host ID、PKCE/state/nonce、ID-token 签名验证、用户同意、凭据保护、串行刷新和撤销。更新宿主注入的环境变量后，重启 OmniDesk worker 才能取得新 token。只有已有 Codex 订阅/CLI 登录而没有此独立授权时，仍不能使用本 provider。
 
-## 证据与当前边界
-
-2026-10-12 的独立 smoke：官方应用内置 Codex CLI `0.162.0-alpha.17.2` 使用现有 ChatGPT 登录，以 `gpt-6.1-sol` 完成一次纯合成文本请求，零工具执行。这证明当时 CLI 订阅路径可用；**不证明 SIWC 已注册，也不证明 OmniDesk 的真实订阅请求已通过**。代码测试和 GitHub PR 同样不代表部署或生产验收。
-
 官方开放源代码/本地宿主流程与收费或远程托管应用的准入不同；后者仍需完成官方 interest form。模型也须由同一授权账号的 `GET /v1/models` 目录确认；示例 `gpt-6.1-sol` 不是每个账号的可用性承诺。
 
-## Provider 行为
+### SIWC provider 行为
 
 - 从 `CHATGPT_PLAN_ACCESS_TOKEN` 读取 bearer token（可通过 `api_key_env` 指定其他环境变量名），缺失即拒绝；拒绝 Platform API key 和不满足 SIWC claims 的 token。
 - JWT payload 的 issuer、resource audience、整数 `exp`/`nbf` 以及 `chatgpt.tokens.use.direct`、`resource.invoke` scopes 仅作拒绝预检。预检不验证签名、用户身份或授权真实性；access-token 签名及最终授权由 OpenAI 服务端验证，授权宿主必须先验证 ID token。
@@ -21,7 +92,7 @@
 
 订阅请求仍消耗账号的 ChatGPT plan 使用量，计入现有 token/usage ledger；本 provider 不使用 Platform API key 或新增 Platform API 账单。它不是无限免费。ChatGPT Settings 的应用限额、共享额度及账号**已有的 credits 使用授权**由 OpenAI 管理；本代码不会自动购买或启用 credits。USD ledger 的订阅价格估算为零不代表额度剩余或没有 credits 消费，应以 [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage) 为准。
 
-## 配置与验证
+### SIWC 配置与验证
 
 独立本地示例见 [config.chatgpt-plan.yaml](../examples/config.chatgpt-plan.yaml)。它保留持久 ledger 和 token guardrail、使用独立本地记录目录，订阅路由 `fallback: []`、`max_retries: 0`。订阅 profile 包括自动路由选择，都必须通过既有角色/profile ACL；本示例仅允许现有 admin/owner 角色使用订阅。Gateway 必须从真实认证上下文取得 role/actor，不能接受调用者自行声明的身份。订阅请求不读取或写入响应缓存，缓存结果不能代替当前凭据和订阅服务验证。
 
@@ -76,10 +147,17 @@ PY
 
 ## 风险与回滚
 
-access token 通常一小时失效；刷新/撤销由外部授权宿主负责。没有刷新控制器时，长时间运行会因过期中止。提前断流仍可能消耗订阅额度，本地成功调用 ledger 不覆盖供方未回报的失败请求，不能替代 OpenAI 的使用量账本。公开预览的模型、字段和账号准入可变，部署前需重新核验官方目录与限制。取消订阅接入时停止 worker，恢复原配置或删除新 profile/路由，并重启 worker；撤销该注册的 renewable session/应用授权由外部宿主或本人在 ChatGPT Settings 完成。保留 ledger 和审计，不删除历史记录。
+CLI 登录到期、撤销、订阅额度不足或 CLI/model 不兼容时，当前请求停止，由本人通过官方 CLI 处理登录状态。SIWC access token 通常一小时失效；刷新/撤销由外部授权宿主负责。没有刷新控制器时，长时间运行会因过期中止。
+
+提前断流或失败仍可能消耗订阅额度，本地成功调用 ledger 不覆盖供方未回报的失败请求，不能替代 OpenAI 的使用量账本。两条订阅路径都不新增 Platform API key 账单，也不自动购买或启用 credits；账号已有的 credits 使用授权仍由 OpenAI 管理。零 USD 估算不表示无限免费或额度剩余，应核对 [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage)。
+
+模型、字段和账号准入可变，使用前需重新核验对应路径。取消接入时停止 worker，恢复原配置或删除新 profile/路由，并重启 worker；独立 SIWC 应用授权撤销由外部宿主或本人在 ChatGPT Settings 完成。保留 ledger 和审计，不删除历史记录。
 
 ## 官方依据
 
+- [Codex 认证与 ChatGPT 登录](https://learn.chatgpt.com/docs/auth)
+- [Codex CLI 非交互执行与 JSON 事件](https://learn.chatgpt.com/docs/non-interactive-mode)
+- [Codex CLI 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)
 - [SIWC 开放源代码 / 本地宿主概览](https://developers.openai.com/siwc/token-sharing-open-source)
 - [独立注册、登录与授权](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
 - [模型目录与流式推理](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)

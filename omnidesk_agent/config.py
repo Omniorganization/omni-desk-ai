@@ -41,6 +41,7 @@ class ModelProfileConfig(BaseModel):
     model: str = "gpt-5.1"
     api_key_env: Optional[str] = "OPENAI_API_KEY"
     base_url: Optional[str] = None
+    codex_cli_path: Optional[str] = None
     api_version: Optional[str] = None
     region: Optional[str] = None
     temperature: float = 0.2

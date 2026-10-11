@@ -13,7 +13,7 @@ from omnidesk_agent.models.cost_ledger import ModelCostLedger
 from omnidesk_agent.models.cost_store import ModelCostStore
 from omnidesk_agent.models.budget_policy import ModelBudgetEnforcer, ModelBudgetPolicy
 from omnidesk_agent.models.pricing import ModelPricingTable
-from omnidesk_agent.models.provider_errors import ChatGPTPlanError, classify_provider_error
+from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error
 from omnidesk_agent.models.schema_retry import StructuredOutputError, build_repair_prompt, validate_json_text
 
 
@@ -107,8 +107,8 @@ class ModelRouter:
         decision = self.budget_enforcer.check(actor=str(actor) if actor else None, projected_cost_usd=projected)
         if decision.ok:
             return None
-        if getattr(provider, "provider_name", "") == "chatgpt_plan":
-            raise ChatGPTPlanError("subscription_budget", "ChatGPT plan request stopped by the model budget policy")
+        if getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
+            raise ChatGPTPlanError("subscription_budget", "Subscription request stopped by the model budget policy")
         if decision.action == "fallback_local" and profile != "local" and "local" in self.providers:
             return "fallback_local"
         raise RuntimeError(f"model budget exceeded: {decision.reason}; action={decision.action}; observed={decision.observed_cost_usd:.6f}; limit={decision.limit_usd}")
@@ -138,6 +138,7 @@ class ModelRouter:
             temperature=p.temperature,
             extra_headers=p.extra_headers,
             extra_body=p.extra_body,
+            codex_cli_path=p.codex_cli_path,
         ))
         provider.provider_name = p.provider
         return provider
@@ -180,24 +181,29 @@ class ModelRouter:
             raise PermissionError(f"high-cost model profile requires approval: profile={profile}")
 
     def route_plan(self, task: str, metadata: Optional[dict[str, Any]] = None) -> RoutePlan:
+        check_implicit_acl = metadata is not None
         metadata = metadata or {}
         explicit_profile = metadata.get("profile")
         if explicit_profile:
             profile = str(explicit_profile)
             self._assert_explicit_profile_allowed(profile, metadata)
             configured = self.cfg.profiles.get(profile)
-            return RoutePlan(profiles=[profile], max_retries=0 if configured and configured.provider == "chatgpt_plan" else 1)
+            return RoutePlan(profiles=[profile], max_retries=0 if configured and configured.provider in SUBSCRIPTION_PROVIDERS else 1)
         if getattr(self.cfg, "offline_mode", False):
             return RoutePlan(profiles=["local"], max_retries=0)
         raw = self.cfg.routing.get(task) or self.cfg.routing.get("chat") or self.cfg.default
         if isinstance(raw, str):
             configured = self.cfg.profiles.get(raw)
-            return RoutePlan(profiles=[raw], max_retries=0 if configured and configured.provider == "chatgpt_plan" else 1)
+            if check_implicit_acl and configured and configured.provider in SUBSCRIPTION_PROVIDERS:
+                self._assert_explicit_profile_allowed(raw, metadata)
+            return RoutePlan(profiles=[raw], max_retries=0 if configured and configured.provider in SUBSCRIPTION_PROVIDERS else 1)
         if isinstance(raw, dict):
             primary = str(raw.get("primary") or self.cfg.default)
             fallback = [str(p) for p in raw.get("fallback", []) if str(p) != primary]
             configured = self.cfg.profiles.get(primary)
-            subscription = configured is not None and configured.provider == "chatgpt_plan"
+            subscription = configured is not None and configured.provider in SUBSCRIPTION_PROVIDERS
+            if check_implicit_acl and subscription:
+                self._assert_explicit_profile_allowed(primary, metadata)
             breaker = raw.get("circuit_breaker") or {}
             if not isinstance(breaker, dict):
                 breaker = {}
@@ -208,7 +214,9 @@ class ModelRouter:
                 reset_seconds=max(1, int(breaker.get("reset_seconds", 60))),
             )
         configured = self.cfg.profiles.get(self.cfg.default)
-        return RoutePlan(profiles=[self.cfg.default], max_retries=0 if configured and configured.provider == "chatgpt_plan" else 1)
+        if check_implicit_acl and configured and configured.provider in SUBSCRIPTION_PROVIDERS:
+            self._assert_explicit_profile_allowed(self.cfg.default, metadata)
+        return RoutePlan(profiles=[self.cfg.default], max_retries=0 if configured and configured.provider in SUBSCRIPTION_PROVIDERS else 1)
 
     def select_profile(self, task: str) -> str:
         return self.route_plan(task).profiles[0]
@@ -221,18 +229,18 @@ class ModelRouter:
             provider = self.providers.get(profile)
             if not provider:
                 configured = self.cfg.profiles.get(profile)
-                if configured and configured.provider == "chatgpt_plan":
-                    raise ChatGPTPlanError("subscription_unavailable", "ChatGPT plan profile is disabled or unavailable")
+                if configured and configured.provider in SUBSCRIPTION_PROVIDERS:
+                    raise ChatGPTPlanError("subscription_unavailable", "Subscription profile is disabled or unavailable")
                 last_error = RuntimeError(f"Model profile not configured or disabled: {profile}")
                 continue
             if self._offline_forbids_profile(profile, provider):
                 last_error = RuntimeError(f"offline mode forbids external model profile: {profile}")
                 continue
-            if getattr(provider, "provider_name", "") == "chatgpt_plan":
+            if getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
                 self._assert_explicit_profile_allowed(profile, request.metadata)
             if self._circuit_open(profile, plan):
-                if getattr(provider, "provider_name", "") == "chatgpt_plan":
-                    raise ChatGPTPlanError("subscription_unavailable", "ChatGPT plan circuit is open; request stopped")
+                if getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
+                    raise ChatGPTPlanError("subscription_unavailable", "Subscription circuit is open; request stopped")
                 last_error = RuntimeError(f"Model profile circuit open: {profile}")
                 continue
             budget_action = self._check_budget(request, profile=profile, provider=provider)
@@ -251,7 +259,7 @@ class ModelRouter:
                     info = classify_provider_error(exc)
                     self.error_counts[info.category] = self.error_counts.get(info.category, 0) + 1
                     self._record_failure(profile)
-                    if not info.fallback_recommended or getattr(provider, "provider_name", "") == "chatgpt_plan":
+                    if not info.fallback_recommended or getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
                         raise
                     if info.retryable and attempt < plan.max_retries:
                         await asyncio.sleep(min(0.2 * (2 ** attempt), 1.0))
@@ -261,7 +269,7 @@ class ModelRouter:
         raise RuntimeError(f"All model profiles failed for task={request.task}; tried={tried}; last_error={last_error}") from last_error
 
     async def _complete_with_provider(self, request: ModelRequest, profile: str, provider: Any) -> ModelResponse:
-        subscription = getattr(provider, "provider_name", "") == "chatgpt_plan"
+        subscription = getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS
         decision = self.token_budget.decide(
             model=f"{profile}:{provider.model}",
             system=request.system,
@@ -329,14 +337,14 @@ class ModelRouter:
             return resp
         schema = request.metadata.get("json_schema") or request.metadata.get("schema")
         max_repairs = int(request.metadata.get("schema_retry_max", 1))
-        if getattr(provider, "provider_name", "") == "chatgpt_plan":
+        if getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
             max_repairs = 0
         try:
             validate_json_text(resp.text, schema if isinstance(schema, dict) else None)
             return resp
         except StructuredOutputError as exc:
-            if getattr(provider, "provider_name", "") == "chatgpt_plan":
-                raise ChatGPTPlanError("subscription_schema", "ChatGPT plan output failed structured validation; request stopped") from None
+            if getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS:
+                raise ChatGPTPlanError("subscription_schema", "Subscription output failed structured validation; request stopped") from None
             if max_repairs <= 0:
                 raise
             system, user = build_repair_prompt(original_text=resp.text, error=str(exc), schema=schema if isinstance(schema, dict) else None)

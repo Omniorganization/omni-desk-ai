@@ -12,6 +12,9 @@ class ProviderErrorInfo:
     status_code: Optional[int] = None
 
 
+SUBSCRIPTION_PROVIDERS = frozenset({"chatgpt_plan", "codex_cli"})
+
+
 class ChatGPTPlanError(RuntimeError):
     """Subscription failures must stop rather than retry or use a paid profile."""
 
