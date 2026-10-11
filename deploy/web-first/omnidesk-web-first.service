@@ -1,0 +1,19 @@
+[Unit]
+Description=OmniDesk scoped Web pilot
+After=network-online.target omnidesk-web-gateway.service
+Wants=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+EnvironmentFile=/etc/omnidesk/web-first/web.env
+ExecStart=/usr/bin/podman run --rm --name omnidesk-web-first --read-only --cap-drop ALL --security-opt no-new-privileges --memory 512m --cpus 1 --pids-limit 128 --network host --tmpfs /tmp:size=64m,noexec,nosuid,nodev --env-file /etc/omnidesk/web-first/web.env ${OMNI_WEB_IMAGE_ID}
+ExecStop=/usr/bin/podman stop --time 20 omnidesk-web-first
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+Delegate=cpu memory pids
+
+[Install]
+WantedBy=multi-user.target

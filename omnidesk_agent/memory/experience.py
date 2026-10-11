@@ -10,6 +10,7 @@ from omnidesk_agent.config import MemoryPrivacyConfig
 from omnidesk_agent.privacy.encryption import EncryptionProvider
 from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter
 from omnidesk_agent.memory.governed_writer import GovernedMemoryWriter
+from omnidesk_agent.memory.retrieval import known_memory_identity, matches_memory_query, planner_memory_visible
 from omnidesk_agent.security.prompt_injection import sanitize_memory_text
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from omnidesk_agent.storage.sqlite import connect_sqlite
@@ -78,9 +79,13 @@ class ExperienceStore:
           task TEXT NOT NULL,
           plan TEXT,
           outcome TEXT,
-          tags TEXT
+          tags TEXT,
+          channel TEXT NOT NULL DEFAULT 'unknown',
+          actor TEXT NOT NULL DEFAULT 'unknown'
         )
         """)
+        self._ensure_column("experiences", "channel", "ALTER TABLE experiences ADD COLUMN channel TEXT NOT NULL DEFAULT 'unknown'")
+        self._ensure_column("experiences", "actor", "ALTER TABLE experiences ADD COLUMN actor TEXT NOT NULL DEFAULT 'unknown'")
         cur.execute("""
         CREATE TABLE IF NOT EXISTS structured_experiences (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,8 +210,8 @@ class ExperienceStore:
         outcome = self._encrypt_text(self._sanitize_persisted_text(outcome))
         cur = self.conn.cursor()
         cur.execute(
-            "INSERT INTO experiences(created_at, task, plan, outcome, tags) VALUES(?,?,?,?,?)",
-            (time.time(), task, plan, outcome, self._encrypt_text(json.dumps(tags or [], ensure_ascii=False))),
+            "INSERT INTO experiences(created_at, task, plan, outcome, tags, channel, actor) VALUES(?,?,?,?,?,?,?)",
+            (time.time(), task, plan, outcome, self._encrypt_text(json.dumps(tags or [], ensure_ascii=False)), channel, actor),
         )
         self.conn.commit()
         return int(cur.lastrowid or 0)
@@ -380,13 +385,33 @@ class ExperienceStore:
                 ).fetchall()
         return [self._decode_structured(dict(r)) for r in rows]
 
-    def retrieve_for_task(self, task: str, limit: int = 5) -> list[dict[str, Any]]:
-        rows = self.search_similar(task, limit=limit)
+    def retrieve_for_task(self, task: str, limit: int = 5, *, channel: str | None = None, actor: str | None = None) -> list[dict[str, Any]]:
+        if not known_memory_identity(channel, actor) or not task.strip() or limit <= 0:
+            return []
+        channel, actor = str(channel), str(actor)
+        limit = min(int(limit), 100)
         now = time.time()
-        cur = self.conn.cursor()
-        for row in rows:
-            cur.execute("UPDATE structured_experiences SET last_used_at=? WHERE id=?", (now, row["id"]))
-        self.conn.commit()
+        # A write transaction keeps curator status and last-used updates consistent.
+        with connect_sqlite(self.db_path) as con:
+            con.row_factory = sqlite3.Row
+            con.execute("BEGIN IMMEDIATE")
+            candidates = con.execute(
+                """SELECT * FROM structured_experiences WHERE channel=? AND actor=?
+                AND memory_status IN ('candidate', 'validated', 'trusted')
+                ORDER BY updated_at DESC LIMIT ?""",
+                (channel, actor, min(max(limit * 20, limit), 1000)),
+            ).fetchall()
+            rows: list[dict[str, Any]] = []
+            for candidate in candidates:
+                row = dict(candidate)
+                if not planner_memory_visible(row, channel=channel, actor=actor, now=now):
+                    continue
+                decoded = self._decode_structured(row)
+                if matches_memory_query(decoded, task):
+                    con.execute("UPDATE structured_experiences SET last_used_at=? WHERE id=?", (now, row["id"]))
+                    rows.append(decoded)
+                if len(rows) == limit:
+                    break
         return rows
 
     def summarize_failures(self, days: int = 7, limit: int = 10) -> list[dict[str, Any]]:

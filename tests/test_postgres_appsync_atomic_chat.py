@@ -32,6 +32,33 @@ def _dsn() -> str:
     return value
 
 
+def test_project_sql_commits_across_instances_and_rolls_back_failed_transaction() -> None:
+    from omnidesk_agent.appsync.projects import GatewayProjectStore
+
+    dsn = _dsn()
+    namespace = f"project_commit_{uuid.uuid4().hex}"
+    apply_appsync_migrations(dsn, namespace=namespace)
+    first = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+    second = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=2)
+    try:
+        writer, reader = GatewayProjectStore(first), GatewayProjectStore(second)
+        project = writer.create_project(actor="project-owner", name="Committed project")
+        assert [row["project_id"] for row in reader.list_projects(actor="project-owner")] == [project["project_id"]]
+        with pytest.raises(RuntimeError, match="abort transaction"):
+            with first._connect() as connection, connection.cursor() as cursor:
+                cursor.execute("UPDATE omnidesk_appsync_projects SET name=%s WHERE namespace=%s AND project_id=%s",
+                               ("Must roll back", namespace, project["project_id"]))
+                raise RuntimeError("abort transaction")
+        assert reader.list_projects(actor="project-owner")[0]["name"] == "Committed project"
+        writer.update_project(actor="project-owner", project_id=project["project_id"], patch={"name": "Updated project"})
+        assert reader.list_projects(actor="project-owner")[0]["name"] == "Updated project"
+        writer.delete_project(actor="project-owner", project_id=project["project_id"])
+        assert reader.list_projects(actor="project-owner") == []
+    finally:
+        first.close()
+        second.close()
+
+
 def test_serialized_device_request_preserves_http_method_keyword() -> None:
     dsn = _dsn()
     namespace = f"method_keyword_{uuid.uuid4().hex}"

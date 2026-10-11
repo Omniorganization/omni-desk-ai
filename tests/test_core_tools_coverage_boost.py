@@ -43,7 +43,7 @@ class Memory:
     def search(self, text: str, limit: int = 4):
         return [{"task": text, "limit": limit}]
 
-    def retrieve_for_task(self, text: str, limit: int = 4):
+    def retrieve_for_task(self, text: str, limit: int = 4, *, channel=None, actor=None):
         return [{"task": text, "source": "retrieve", "limit": limit}]
 
 
