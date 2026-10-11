@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -10,6 +11,7 @@ from typing import Any, Optional
 import httpx
 
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
+from omnidesk_agent.models.provider_errors import ChatGPTPlanError
 
 
 ALLOWED_IMAGE_SUFFIXES = {
@@ -170,6 +172,64 @@ class OpenAIResponsesProvider:
             usage=data.get("usage"),
             raw=data,
         )
+
+
+class ChatGPTPlanProvider(OpenAIResponsesProvider):
+    provider_name = "chatgpt_plan"
+
+    def __init__(self, s: ProviderSettings):
+        super().__init__(s)
+        if s.base_url and s.base_url.rstrip("/") != "https://api.openai.com/v1":
+            raise ValueError("ChatGPT plan requires https://api.openai.com/v1")
+        if s.extra_body or s.extra_headers:
+            raise ValueError("ChatGPT plan does not accept extra_body or extra_headers")
+        if s.api_key_env in {"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}:
+            raise ValueError("ChatGPT plan requires its own SIWC access-token environment variable")
+
+    def access_token(self) -> str:
+        token = env(self.settings.api_key_env or "CHATGPT_PLAN_ACCESS_TOKEN")
+        try:
+            if len(token) > 16384:
+                raise ValueError
+            header, payload, signature = token.split(".")
+            if not header or not signature:
+                raise ValueError
+            claims = json.loads(base64.b64decode(payload + "=" * (-len(payload) % 4), altchars=b"-_", validate=True))
+            now = time.time()
+            if (not isinstance(claims, dict) or claims.get("iss") != "https://auth.openai.com"
+                    or claims.get("aud") != "https://api.openai.com/v1"
+                    or not isinstance(claims.get("scope"), str)
+                    or not {"chatgpt.tokens.use.direct", "resource.invoke"}.issubset(claims["scope"].split())
+                    or type(claims.get("exp")) is not int or claims["exp"] <= now
+                    or type(claims.get("nbf")) is not int or claims["nbf"] > now):
+                raise ValueError
+        except (ValueError, TypeError, UnicodeError):
+            raise ChatGPTPlanError("subscription_auth", "A current, separately authorized SIWC ChatGPT plan token is required") from None
+        # This is a rejection preflight; OpenAI verifies the token signature and grant.
+        return token
+
+    async def stream(self, request: ModelRequest):
+        from omnidesk_agent.models.provider_streaming import _openai_responses_stream
+
+        try:
+            async for delta in _openai_responses_stream(self, request):
+                yield delta
+        except httpx.HTTPStatusError as exc:
+            category = "subscription_limit" if exc.response.status_code in {402, 429} else "subscription_http"
+            raise ChatGPTPlanError(category, f"ChatGPT plan request stopped (HTTP {exc.response.status_code})") from None
+        except httpx.HTTPError:
+            raise ChatGPTPlanError("subscription_transport", "ChatGPT plan transport failed; request stopped") from None
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        text = []
+        final = None
+        async for delta in self.stream(request):
+            text.append(delta.text)
+            final = delta
+        if final is None or final.finish_reason != "stop":
+            raise ChatGPTPlanError("subscription_incomplete", "ChatGPT plan stream ended without response.completed")
+        return ModelResponse(text="".join(text), provider=self.provider_name, model=self.model,
+                             profile=self.profile_name, usage=final.usage, raw={"id": final.provider_request_id})
 
 
 class OpenAICompatibleProvider:
@@ -460,6 +520,7 @@ class BedrockProvider:
 
 
 PROVIDER_CLASSES = {
+    "chatgpt_plan": ChatGPTPlanProvider,
     "openai": OpenAIResponsesProvider,
     "openai_responses": OpenAIResponsesProvider,
     "openai_compatible": OpenAICompatibleProvider,

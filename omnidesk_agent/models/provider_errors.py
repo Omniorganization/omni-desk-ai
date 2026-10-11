@@ -12,8 +12,18 @@ class ProviderErrorInfo:
     status_code: Optional[int] = None
 
 
+class ChatGPTPlanError(RuntimeError):
+    """Subscription failures must stop rather than retry or use a paid profile."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
+
+
 def classify_provider_error(exc: BaseException) -> ProviderErrorInfo:
     """Normalize provider failures for retry/fallback/cost attribution."""
+    if isinstance(exc, ChatGPTPlanError):
+        return ProviderErrorInfo(exc.category, False, False)
     status_code = getattr(getattr(exc, "response", None), "status_code", None)
     text = str(exc).lower()
     if status_code == 429 or "rate limit" in text or "quota" in text:

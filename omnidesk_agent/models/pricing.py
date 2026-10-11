@@ -41,6 +41,8 @@ class ModelPricingTable:
 
 
 DEFAULT_PRICES: dict[tuple[str, str], ModelPrice] = {
+    # SIWC consumes the user's plan allowance, not separately billed Platform tokens.
+    ("chatgpt_plan", "*"): ModelPrice(input_per_million_usd=0.0, output_per_million_usd=0.0),
     ("openai", "gpt-5.1"): ModelPrice(input_per_million_usd=1.25, output_per_million_usd=10.00),
     ("openai", "gpt-5.1-mini"): ModelPrice(input_per_million_usd=0.25, output_per_million_usd=2.00),
     ("openai", "gpt-5"): ModelPrice(input_per_million_usd=1.25, output_per_million_usd=10.00),

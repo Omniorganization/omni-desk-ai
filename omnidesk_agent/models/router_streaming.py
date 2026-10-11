@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, AsyncIterator
 
 from omnidesk_agent.models.base import ModelDelta, ModelRequest, ModelResponse
-from omnidesk_agent.models.provider_errors import classify_provider_error
+from omnidesk_agent.models.provider_errors import ChatGPTPlanError, classify_provider_error
 from omnidesk_agent.models.provider_streaming import stream_provider
 from omnidesk_agent.models.router import ModelRouter
 
@@ -23,6 +23,9 @@ class GovernedStreamingRouter:
             profile = configured_profile
             provider = self.router.providers.get(profile)
             if provider is None:
+                configured = self.router.cfg.profiles.get(profile)
+                if configured and configured.provider == "chatgpt_plan":
+                    raise ChatGPTPlanError("subscription_unavailable", "ChatGPT plan profile is disabled or unavailable")
                 last_error = RuntimeError(
                     f"Model profile not configured or disabled: {profile}"
                 )
@@ -32,7 +35,11 @@ class GovernedStreamingRouter:
                     f"offline mode forbids external model profile: {profile}"
                 )
                 continue
+            if getattr(provider, "provider_name", "") == "chatgpt_plan":
+                self.router._assert_explicit_profile_allowed(profile, request.metadata)
             if self.router._circuit_open(profile, plan):
+                if getattr(provider, "provider_name", "") == "chatgpt_plan":
+                    raise ChatGPTPlanError("subscription_unavailable", "ChatGPT plan circuit is open; request stopped")
                 last_error = RuntimeError(f"Model profile circuit open: {profile}")
                 continue
             budget_action = self.router._check_budget(
@@ -70,6 +77,8 @@ class GovernedStreamingRouter:
                         self.router.error_counts.get(info.category, 0) + 1
                     )
                     self.router._record_failure(profile)
+                    if not info.fallback_recommended or getattr(provider, "provider_name", "") == "chatgpt_plan":
+                        raise
                     if emitted:
                         raise RuntimeError(
                             "model stream failed after partial delivery: "
@@ -79,6 +88,10 @@ class GovernedStreamingRouter:
                         await asyncio.sleep(min(0.2 * (2**attempt), 1.0))
                         continue
                     break
+
+        configured = self.router.cfg.profiles.get(plan.profiles[0]) if plan.profiles else None
+        if configured and configured.provider == "chatgpt_plan":
+            raise RuntimeError("ChatGPT plan stream stopped without completion") from last_error
 
         # Some providers, staging fakes and older compatible endpoints expose a
         # governed complete transport but no native stream transport. Falling back
@@ -114,6 +127,7 @@ class GovernedStreamingRouter:
         profile: str,
         provider: Any,
     ) -> AsyncIterator[ModelDelta]:
+        subscription = getattr(provider, "provider_name", "") == "chatgpt_plan"
         decision = self.router.token_budget.decide(
             model=f"{profile}:{provider.model}",
             system=request.system,
@@ -131,7 +145,7 @@ class GovernedStreamingRouter:
                 f"Model call blocked by token guardrail: {decision.reason}"
             )
 
-        cached = self.router.token_budget.get_cached(decision.cache_key or "")
+        cached = None if subscription else self.router.token_budget.get_cached(decision.cache_key or "")
         if cached is not None:
             yield ModelDelta(
                 sequence=1,
@@ -258,7 +272,7 @@ class GovernedStreamingRouter:
             usage=final_usage,
             estimated_output_tokens=estimated_output_tokens,
         )
-        if decision.cache_key and text:
+        if decision.cache_key and text and not subscription:
             self.router.token_budget.put_cached(
                 cache_key=decision.cache_key,
                 model=f"{profile}:{provider.model}",

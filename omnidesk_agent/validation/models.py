@@ -3,6 +3,7 @@ from typing import Optional
 
 import os
 from omnidesk_agent.models.base import ModelRequest
+from omnidesk_agent.models.providers import PROVIDER_CLASSES
 
 
 def validate_models(runtime) -> dict:
@@ -22,12 +23,7 @@ def validate_models(runtime) -> dict:
             else:
                 route_profiles = [str(raw)] if raw else []
         coverage[task] = bool(route_profiles) and all(profile in profiles for profile in route_profiles)
-    provider_aliases = sorted({
-        "openai", "openai_responses", "openai_chat", "openai_compatible", "azure_openai",
-        "anthropic", "claude", "gemini", "google", "ollama", "deepseek", "qwen", "dashscope",
-        "groq", "mistral", "xai", "openrouter", "together", "fireworks", "perplexity",
-        "moonshot", "kimi", "zhipu", "cohere", "baidu_qianfan", "bedrock",
-    })
+    provider_aliases = sorted(PROVIDER_CLASSES)
     return {
         "ok": all(coverage.values()) and bool(profiles),
         "task_coverage": coverage,
