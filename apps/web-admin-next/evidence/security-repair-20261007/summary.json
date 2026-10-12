@@ -1,0 +1,126 @@
+{
+  "schema": "omnidesk-npm-security-repair/v1",
+  "base_sha": "364b96388a007017b6d7c970569308f1ded3dd25",
+  "runtime": {
+    "node": "24.14.1",
+    "npm": "11.11.0",
+    "ci_node": "22.17.0",
+    "local_is_ci_runtime": false
+  },
+  "changes": {
+    "web": {
+      "sharp": "0.35.4 -> 0.35.5",
+      "source-map-js": "1.2.1 -> 1.2.2",
+      "sharp_floor": "^0.35.5"
+    },
+    "desktop": {
+      "source-map-js": "1.2.1 -> 1.2.2"
+    }
+  },
+  "advisories": [
+    "https://github.com/advisories/GHSA-wq5f-xc86-pv6w",
+    "https://github.com/advisories/GHSA-68fv-2mgg-jv7q"
+  ],
+  "audit": {
+    "web": {
+      "before": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 2,
+        "critical": 0,
+        "total": 2
+      },
+      "after": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      }
+    },
+    "desktop": {
+      "before": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 1,
+        "critical": 0,
+        "total": 1
+      },
+      "after": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      }
+    }
+  },
+  "tests": {
+    "web": {
+      "npm_ci": "passed",
+      "npm_audit": "passed",
+      "npm_test": {
+        "passed": 13,
+        "failed": 0
+      },
+      "typecheck": "passed",
+      "build": "passed"
+    },
+    "desktop": {
+      "npm_ci": "passed",
+      "npm_audit": "passed",
+      "npm_test": {
+        "passed": 29,
+        "failed": 0
+      },
+      "typecheck": "passed",
+      "build": "passed"
+    },
+    "svg_sourcemap_smoke": {
+      "node": "v24.14.1",
+      "sharp": "0.35.5",
+      "librsvg": "2.63.2",
+      "source_map_js": "1.2.2",
+      "svg_png": {
+        "width": 2,
+        "height": 3
+      },
+      "sourcemap_roundtrip": "passed"
+    }
+  },
+  "risk_notes": [
+    "Sharp native platform packages and libvips are updated at compatible patch versions; local image decoding was checked only on macOS, and CI must verify Linux.",
+    "Local runtime is Node24.14.1; exact CI Node22.17.0 verification remains remote. No Next/Vite/PostCSS versions or application security controls changed."
+  ],
+  "rollback_steps": [
+    "Revert only this security repair commit or its three npm files; do not revert concurrent iOS changes.",
+    "A reverted lock restores known vulnerable versions, so keep the dependency audit blocking and do not release until a patched compatible graph is restored."
+  ],
+  "evidence_files": [
+    "npm-web-audit-before.json",
+    "npm-web-audit-after.json",
+    "npm-desktop-audit-before.json",
+    "npm-desktop-audit-after.json",
+    "npm-image-sourcemap-smoke.json",
+    "npm-web-test.log",
+    "npm-desktop-test.log",
+    "npm-web-build.log",
+    "npm-desktop-build.log"
+  ],
+  "evidence_sha256": {
+    "npm-web-audit-before.json": "fc6c04c3dabc42dac26b5ffe22665150c8f9da67a68de378b884a4303103d3ee",
+    "npm-web-audit-after.json": "076a479d36cedf96250237f91dbd1ddf9aad971ffc7db4e67173cf2a6f6de85e",
+    "npm-desktop-audit-before.json": "617dbd935f5f28f5ac973d111b09dacd4362c43d44f977159b06ee91e9fae362",
+    "npm-desktop-audit-after.json": "2018af6b6eeb5abf4fb81dc56753a99a4af5f8586bd21ec0447cec834e6e8813",
+    "npm-image-sourcemap-smoke.json": "fd87fc4766e9ba11650cb236e90e918de10303436f720f5f55cb4fcc5cbae11c",
+    "npm-web-test.log": "d7a71106a8cce7fb7c4777323fdbe24b8deea45028167057ee046e7bacdbf435",
+    "npm-desktop-test.log": "71df8f05c7ea16edff85386728a5ebab8a54b25be1c196587be031054229aa1d",
+    "npm-web-build.log": "86d37fe5e387a4524230aa5b9a32bc131e0d2c807e462c310521195346e0f7b2",
+    "npm-desktop-build.log": "bfe4ba07809344e974727b03d12311e65f059c9b4df6374e626292800afefa66"
+  },
+  "log_normalization": "Trailing whitespace removed and final newline ensured in public copies; full original artifacts preserved locally."
+}
