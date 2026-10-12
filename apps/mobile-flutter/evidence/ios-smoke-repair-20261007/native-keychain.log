@@ -1,0 +1,6 @@
+00:00 +0: loading /Users/macbookair/Desktop/AI助理/Omni-desk-AI-ios-repair/apps/mobile-flutter/integration_test/ios_smoke_test.dart
+Running Xcode build...
+Xcode build done.                                           10.4s
+00:00 +0: native Keychain works and offline sync reports enrollment
+00:01 +1: (tearDownAll)
+00:01 +1: All tests passed!
