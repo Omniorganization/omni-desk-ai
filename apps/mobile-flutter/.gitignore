@@ -1,0 +1,10 @@
+.dart_tool/
+.flutter-plugins-dependencies
+android/local.properties
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+ios/.symlinks/
+ios/Pods/
+ios/Podfile.lock
+ios/Flutter/ephemeral/
+ios/Flutter/Flutter.podspec
+ios/Flutter/flutter_export_environment.sh

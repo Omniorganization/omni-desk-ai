@@ -42,12 +42,13 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   String? activeProjectId;
   String projectError = '';
   String error = '';
-  String securityState = 'secure storage ready';
+  String securityState = 'checking secure storage';
   String pushState = 'push not registered';
   bool accountSettingsOpen = true;
   bool dailyAutomation = true;
   bool approvalAutomation = true;
   bool contentAutomation = false;
+  bool deviceEnrolled = false;
   OmniDeviceIdentity? deviceIdentity;
 
   DeviceIdentityStore get identityStore =>
@@ -77,14 +78,24 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   }
 
   Future<void> _restoreSession() async {
-    final restored = await securityService.restoreSession(
-      fallbackGateway: gatewayController.text,
-      fallbackActor: actorController.text,
-    );
-    gatewayController.text = restored.gateway;
-    tokenController.text = restored.token;
-    actorController.text = restored.actor;
-    if (mounted) setState(() {});
+    try {
+      final restored = await securityService.restoreSession(
+        fallbackGateway: gatewayController.text,
+        fallbackActor: actorController.text,
+      );
+      if (!mounted) return;
+      gatewayController.text = restored.gateway;
+      tokenController.text = restored.token;
+      actorController.text = restored.actor;
+      setState(() => securityState = 'secure storage ready');
+    } catch (_) {
+      if (!mounted) return;
+      tokenController.clear();
+      setState(() {
+        securityState = 'secure storage unavailable';
+        error = '无法恢复会话：安全存储不可用，请检查应用签名与设备权限。';
+      });
+    }
   }
 
   Future<void> _saveSession() async {
@@ -178,6 +189,18 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     return loaded;
   }
 
+  Future<void> _syncProjectsFromUi() async {
+    try {
+      if (!deviceEnrolled) {
+        throw StateError('请先连接 Omni Gateway 完成设备登记。');
+      }
+      await syncProjects();
+      if (mounted) setState(() => projectError = '');
+    } catch (e) {
+      if (mounted) setState(() => projectError = e.toString());
+    }
+  }
+
   Future<void> createProject([String? fallbackName]) async {
     final name = (fallbackName ?? projectController.text).trim();
     if (name.isEmpty) {
@@ -203,6 +226,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       final project = _projectFromGateway(
         Map<String, dynamic>.from(rawProject),
       );
+      if (!mounted) return;
       setState(() {
         projects = <ProjectItem>[
           project,
@@ -213,7 +237,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
         projectError = '';
       });
     } catch (e) {
-      setState(() => projectError = e.toString());
+      if (mounted) setState(() => projectError = e.toString());
     }
   }
 
@@ -250,7 +274,10 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   }
 
   Future<void> connect() async {
-    setState(() => error = '');
+    setState(() {
+      error = '';
+      deviceEnrolled = false;
+    });
     try {
       await _saveSession();
       final token = await _resolvePushToken();
@@ -261,11 +288,13 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
         pushToken: token,
         publicKey: identity.publicKey,
       );
+      deviceEnrolled = true;
       if (token != null) {
         await client.registerPushToken(identity.deviceId, token);
       }
       snapshot = await client.bootstrap();
       await syncProjects();
+      if (!mounted) return;
       setState(() {
         securityState =
             'session saved in flutter_secure_storage; biometric/PIN required for approval';
@@ -274,7 +303,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
             : 'FCM/APNS token registered';
       });
     } catch (e) {
-      setState(() => error = e.toString());
+      if (mounted) setState(() => error = e.toString());
     }
   }
 
@@ -288,9 +317,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
         risk: 'high',
       );
       snapshot = await client.bootstrap();
-      setState(() {});
+      if (mounted) setState(() {});
     } catch (e) {
-      setState(() => error = e.toString());
+      if (mounted) setState(() => error = e.toString());
     }
   }
 
@@ -313,15 +342,16 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       final messages = await client.listMessages(conversationId);
       chatMessages = messages['messages'] as List<dynamic>? ?? <dynamic>[];
       snapshot = await client.bootstrap();
-      setState(() {});
+      if (mounted) setState(() {});
     } catch (e) {
-      setState(() => error = e.toString());
+      if (mounted) setState(() => error = e.toString());
     }
   }
 
   Future<void> decide(String approvalId, String decision) async {
     try {
       final confirmed = await _confirmSensitiveAction();
+      if (!mounted) return;
       if (!confirmed) {
         setState(() => error = '审批被本机生物识别/PIN取消。');
         return;
@@ -333,9 +363,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
         sourceDeviceId: deviceIdentity?.deviceId,
       );
       snapshot = await client.bootstrap();
-      setState(() {});
+      if (mounted) setState(() {});
     } catch (e) {
-      setState(() => error = e.toString());
+      if (mounted) setState(() => error = e.toString());
     }
   }
 
@@ -375,34 +405,36 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
             ),
           ],
         ),
-        body: ListView(
-          padding: const EdgeInsets.all(16),
-          children: <Widget>[
-            _heroCard(),
-            _projectCard(),
-            _quickActions(),
-            _composerCard(),
-            if (error.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  error,
-                  style: const TextStyle(color: Colors.redAccent),
+        body: Builder(
+          builder: (context) => ListView(
+            padding: const EdgeInsets.all(16),
+            children: <Widget>[
+              _heroCard(context),
+              _projectCard(),
+              _quickActions(),
+              _composerCard(),
+              if (error.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    error,
+                    style: const TextStyle(color: Colors.redAccent),
+                  ),
                 ),
-              ),
-            if (accountSettingsOpen) _accountSettingsCard(),
-            _connectionCard(),
-            _approvalCard(approvals),
-            _automationCard(),
-            _messagesCard(),
-            _notificationsCard(notifications),
-          ],
+              if (accountSettingsOpen) _accountSettingsCard(),
+              _connectionCard(),
+              _approvalCard(context, approvals),
+              _automationCard(),
+              _messagesCard(),
+              _notificationsCard(context, notifications),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _heroCard() {
+  Widget _heroCard(BuildContext context) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -478,9 +510,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
                   ),
                 ),
                 OutlinedButton(
-                  onPressed: () {
-                    syncProjects();
-                  },
+                  onPressed: _syncProjectsFromUi,
                   child: const Text('同步'),
                 ),
                 const SizedBox(width: 8),
@@ -777,7 +807,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     );
   }
 
-  Widget _approvalCard(List<dynamic> approvals) {
+  Widget _approvalCard(BuildContext context, List<dynamic> approvals) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -894,7 +924,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     );
   }
 
-  Widget _notificationsCard(List<dynamic> notifications) {
+  Widget _notificationsCard(BuildContext context, List<dynamic> notifications) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
