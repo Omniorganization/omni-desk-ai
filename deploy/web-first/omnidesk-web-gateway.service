@@ -1,0 +1,28 @@
+[Unit]
+Description=OmniDesk Web pilot private production Gateway
+After=network-online.target omnidesk-web-runner.service
+Wants=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/omnidesk/web-first/runtime.env
+WorkingDirectory=/var/lib/omnidesk-web-first
+ExecStartPre=/opt/omnidesk-web-first/current/venv/bin/python -m omnidesk_agent.appsync.migrate --dsn-env OMNIDESK_POSTGRES_DSN --namespace production --check
+ExecStart=/opt/omnidesk-web-first/current/venv/bin/omnidesk --config /etc/omnidesk/web-first/config.yaml serve --host 127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/omnidesk-web-first
+
+[Install]
+WantedBy=multi-user.target

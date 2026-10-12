@@ -88,3 +88,45 @@ foreach ($case in $cases) {
     Write-Output "PASS $($case.Name)"
 }
 Write-Output 'PASS package schema, staged executable digest after source replacement, PE rejection, XML escaping and unsigned classification; fixture was not executed.'
+
+$tokens = $null
+$errors = $null
+$client = [Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $PSScriptRoot 'verify_windows_store_client.ps1'), [ref]$tokens, [ref]$errors)
+if ($errors.Count -ne 0) { throw 'Client verifier PowerShell syntax is invalid.' }
+$cleanup = $client.Find({
+    param($node)
+    $node -is [Management.Automation.Language.TryStatementAst] -and $null -ne $node.Finally -and
+        $node.Finally.Extent.Text.Contains('Client cleanup timed out.')
+}, $true).Finally.Extent.Text
+$cleanup = [scriptblock]::Create($cleanup.Substring(1, $cleanup.Length - 2))
+$output = Join-Path $root 'client-cleanup'
+[void][IO.Directory]::CreateDirectory($output)
+$record = @{ kind = 'redirected-process-cleanup-control'; customer_ga = $false }
+$env:OMNIDESK_CLEANUP_READY = Join-Path $output 'ready'
+$childCommand = @'
+[Console]::WriteLine("stdout-marker")
+[Console]::Error.WriteLine("stderr-marker")
+$child = [Diagnostics.Process]::Start((Join-Path $PSHOME "pwsh.exe"), "-NoProfile -NonInteractive -Command Start-Sleep -Seconds 30")
+[IO.File]::WriteAllText($env:OMNIDESK_CLEANUP_READY, $child.Id.ToString())
+Start-Sleep -Seconds 30
+'@
+$encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+$process = Start-Process -FilePath (Get-Process -Id $PID).Path -PassThru -ArgumentList @(
+    '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedCommand
+) -RedirectStandardOutput (Join-Path $output 'launch.stdout.log') -RedirectStandardError (Join-Path $output 'launch.stderr.log')
+try {
+    for ($attempt = 0; $attempt -lt 100 -and -not (Test-Path $env:OMNIDESK_CLEANUP_READY); $attempt++) { Start-Sleep -Milliseconds 100 }
+    if (-not (Test-Path $env:OMNIDESK_CLEANUP_READY)) { throw 'Redirected cleanup child did not start.' }
+} finally {
+    & $cleanup
+    Remove-Item Env:OMNIDESK_CLEANUP_READY
+}
+foreach ($stream in @('stdout', 'stderr')) {
+    $log = Join-Path $output "launch.$stream.log"
+    if ((Get-FileHash $log -Algorithm SHA256).Hash.Length -ne 64) { throw "Cleanup left $stream locked." }
+    if ((Get-Content -Raw $log) -notmatch "$stream-marker") { throw "Cleanup did not drain $stream." }
+}
+$descendant = Get-Process -Id ([int](Get-Content -Raw (Join-Path $output 'ready'))) -ErrorAction SilentlyContinue
+if ($null -ne $descendant) { throw 'Cleanup left a descendant holding inherited stream handles.' }
+Write-Output 'PASS real redirected process tree cleanup drains both streams and releases logs before hashing.'
