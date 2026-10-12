@@ -1,0 +1,129 @@
+00:00 +0: loading /Users/macbookair/Desktop/AI助理/iOS测试/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart
+00:00 +0: unenrolled sync reports a visible error without creating keys
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following StateError was thrown running a test:
+Bad state: mobile device private key is not initialized
+
+When the exception was thrown, this was the stack:
+#0      DeviceIdentityStore.signRequest (package:omnidesk_mobile/device_identity.dart:62:7)
+<asynchronous suspension>
+#1      OmniApiClient._headers (package:omnidesk_mobile/omni_api.dart:45:11)
+<asynchronous suspension>
+#2      OmniApiClient._request (package:omnidesk_mobile/omni_api.dart:71:21)
+<asynchronous suspension>
+#3      _OmniMobileAppState.syncProjects (package:omnidesk_mobile/main.dart:159:22)
+<asynchronous suspension>
+
+The test description was:
+  unenrolled sync reports a visible error without creating keys
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:00 +0 -1: unenrolled sync reports a visible error without creating keys [E]
+  Test failed. See exception logs above.
+  The test description was: unenrolled sync reports a visible error without creating keys
+
+Warning: At least one test in this suite creates an HttpClient. When running a test suite that uses
+TestWidgetsFlutterBinding, all HTTP requests will return status code 400, and no network request
+will actually be made. Any test expecting a real network connection and status code will fail.
+To test code that needs an HttpClient, provide your own HttpClient implementation to the code under
+test, so that your test can consistently provide a testable response to the code under test.
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test (but after the test had completed):
+Expected: exactly one matching candidate
+  Actual: _TextContainingWidgetFinder:<Found 0 widgets with text containing 请先连接 Omni Gateway
+完成设备登记。: []>
+   Which: means none were found but one was expected
+
+When the exception was thrown, this was the stack:
+#0      fail (package:matcher/src/expect/expect.dart:187:31)
+#1      _expect (package:matcher/src/expect/expect.dart:182:3)
+#2      expect (package:matcher/src/expect/expect.dart:65:3)
+#3      expect (package:flutter_test/src/widget_tester.dart:473:18)
+#4      main.<anonymous closure> (file:///Users/macbookair/Desktop/AI%E5%8A%A9%E7%90%86/iOS%E6%B5%8B%E8%AF%95/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart:47:5)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  Test failed. See exception logs above.
+  The test description was: unenrolled sync reports a visible error without creating keys
+
+00:00 +0 -1: secure storage read failure stays visible and restores no token
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following PlatformException was thrown running a test:
+PlatformException(-34018, native credential detail, null, null)
+
+When the exception was thrown, this was the stack:
+#0      StandardMethodCodec.decodeEnvelope (package:flutter/src/services/message_codecs.dart:653:7)
+#1      MethodChannel._invokeMethod (package:flutter/src/services/platform_channel.dart:366:18)
+<asynchronous suspension>
+#2      MobileSecurityService.restoreSession (package:omnidesk_mobile/mobile_security_service.dart:36:14)
+<asynchronous suspension>
+#3      _OmniMobileAppState._restoreSession (package:omnidesk_mobile/main.dart:80:22)
+<asynchronous suspension>
+
+The test description was:
+  secure storage read failure stays visible and restores no token
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:00 +0 -2: secure storage read failure stays visible and restores no token [E]
+  Test failed. See exception logs above.
+  The test description was: secure storage read failure stays visible and restores no token
+
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test (but after the test had completed):
+Expected: exactly one matching candidate
+  Actual: _TextWidgetFinder:<Found 0 widgets with text "Security: secure storage unavailable": []>
+   Which: means none were found but one was expected
+
+When the exception was thrown, this was the stack:
+#0      fail (package:matcher/src/expect/expect.dart:187:31)
+#1      _expect (package:matcher/src/expect/expect.dart:182:3)
+#2      expect (package:matcher/src/expect/expect.dart:65:3)
+#3      expect (package:flutter_test/src/widget_tester.dart:473:18)
+#4      main.<anonymous closure> (file:///Users/macbookair/Desktop/AI%E5%8A%A9%E7%90%86/iOS%E6%B5%8B%E8%AF%95/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart:60:5)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  Test failed. See exception logs above.
+  The test description was: secure storage read failure stays visible and restores no token
+
+00:00 +0 -2: headline and section titles use the app dark theme
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: Color:<Color(alpha: 1.0000, red: 0.8941, green: 0.8824, blue: 0.9137, colorSpace:
+ColorSpace.sRGB)>
+  Actual: Color:<Color(alpha: 1.0000, red: 0.1137, green: 0.1059, blue: 0.1255, colorSpace:
+ColorSpace.sRGB)>
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure> (file:///Users/macbookair/Desktop/AI%E5%8A%A9%E7%90%86/iOS%E6%B5%8B%E8%AF%95/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart:83:5)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///Users/macbookair/Desktop/AI%E5%8A%A9%E7%90%86/iOS%E6%B5%8B%E8%AF%95/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart line 83
+The test description was:
+  headline and section titles use the app dark theme
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:00 +0 -3: headline and section titles use the app dark theme [E]
+  Test failed. See exception logs above.
+  The test description was: headline and section titles use the app dark theme
+
+00:00 +0 -3: Some tests failed.
+
+Failing tests:
+  /Users/macbookair/Desktop/AI助理/iOS测试/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart: headline and section titles use the app dark theme
+  /Users/macbookair/Desktop/AI助理/iOS测试/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart: secure storage read failure stays visible and restores no token
+  /Users/macbookair/Desktop/AI助理/iOS测试/2026-10-07/source/apps/mobile-flutter/test/mobile_ui_regression_test.dart: unenrolled sync reports a visible error without creating keys
