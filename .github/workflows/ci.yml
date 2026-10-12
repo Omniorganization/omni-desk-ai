@@ -226,6 +226,7 @@ jobs:
       - name: Synchronize standard coverage evidence directory
         if: always()
         run: |
+          test -d "$OMNIDESK_COVERAGE_EVIDENCE_DIR"
           rm -rf reports/ci/coverage
           mkdir -p reports/ci/coverage
           cp -a "$OMNIDESK_COVERAGE_EVIDENCE_DIR/." reports/ci/coverage/
