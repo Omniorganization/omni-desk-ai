@@ -1,0 +1,48 @@
+
+> omnidesk-web-admin@1.12.7 build
+> next build
+
+▲ Next.js 16.3.8 (Turbopack)
+✓ Running next.config.mjs took 5ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1512ms
+  Running TypeScript ...
+  Finished TypeScript in 693ms ...
+  Collecting page data using 9 workers ...
+  Generating static pages using 9 workers (0/17) ...
+  Generating static pages using 9 workers (4/17)
+  Generating static pages using 9 workers (8/17)
+  Generating static pages using 9 workers (12/17)
+✓ Generating static pages using 9 workers (17/17) in 73ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/omni/approvals
+├ ƒ /api/omni/approvals/[id]/decide
+├ ƒ /api/omni/bootstrap
+├ ƒ /api/omni/channels/ecosystem
+├ ƒ /api/omni/chat/stream
+├ ƒ /api/omni/conversations
+├ ƒ /api/omni/conversations/[id]/ask
+├ ƒ /api/omni/conversations/[id]/messages
+├ ƒ /api/omni/devices
+├ ƒ /api/omni/devices/enrollment/[enrollmentId]/challenge
+├ ƒ /api/omni/devices/enrollment/[enrollmentId]/complete
+├ ƒ /api/omni/devices/enrollment/[enrollmentId]/verify
+├ ƒ /api/omni/devices/enrollment/start
+├ ƒ /api/omni/devices/register
+├ ƒ /api/omni/notifications
+├ ƒ /api/omni/projects
+├ ƒ /api/omni/projects/[projectId]
+├ ƒ /api/omni/runtime
+├ ƒ /api/session/csrf
+├ ƒ /api/session/login
+├ ƒ /api/session/logout
+└ ○ /stream
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
