@@ -1,0 +1,41 @@
+
+> omnidesk-desktop-app@1.12.7 test
+> node --import tsx --test tests/*.test.ts
+
+✔ desktop typed client contract cases match shared contract and emitted requests (13.124959ms)
+✔ desktop registration trims the gateway URL and sends operator identity (0.61875ms)
+✔ createProject uses the shared /app/projects contract (0.177041ms)
+✔ heartbeat, task status, and sync use the shared /app contract (0.151209ms)
+✔ askConversation uses the shared audited chat endpoint (0.114084ms)
+✔ gateway errors include the response body (0.23875ms)
+✔ desktop upgrade separates browser and Node type environments (1.490916ms)
+✔ fresh and concurrent initialization creates one durable identity; subsequent load reuses it (9.623417ms)
+✔ read failure for omni.deviceId.v2 cannot overwrite existing identity (0.304333ms)
+✔ read failure for omni.devicePublicKeyPem.v2 cannot overwrite existing identity (0.0895ms)
+✔ read failure for omni.devicePrivateKeyJwk.v2 cannot overwrite existing identity (0.117375ms)
+✔ partial identity 1 requires recovery and never rotates surviving records (0.118208ms)
+✔ partial identity 2 requires recovery and never rotates surviving records (0.079417ms)
+✔ partial identity 3 requires recovery and never rotates surviving records (0.085708ms)
+✔ partial identity 4 requires recovery and never rotates surviving records (0.062875ms)
+✔ partial identity 5 requires recovery and never rotates surviving records (3.194625ms)
+✔ partial identity 6 requires recovery and never rotates surviving records (0.1045ms)
+✔ interrupted initialization at omni.devicePublicKeyPem.v2 cannot trigger a replacement on retry (1.963459ms)
+✔ interrupted initialization at omni.devicePrivateKeyJwk.v2 cannot trigger a replacement on retry (1.442834ms)
+✔ signing propagates backend read errors and never writes (0.11025ms)
+✔ advertises only executable runtime capabilities (0.493167ms)
+✔ unknown capability fails closed instead of falling back to dry-run (0.109916ms)
+✔ task without explicit capability remains a bounded dry-run (0.052625ms)
+✔ JSON gateway 5xx details are never exposed to the desktop UI (9.81025ms)
+✔ workspace task summaries omit both contents and relative paths (0.168166ms)
+✔ native workspace boundary rejects symlinked approved roots (0.284291ms)
+✔ parseSseBlock accepts monotonic JSON events and ignores heartbeat (0.610875ms)
+✔ Desktop stream sends signed resume and idempotency headers (11.282875ms)
+✔ Desktop stream propagates AbortSignal cancellation (0.3345ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 146.51875
