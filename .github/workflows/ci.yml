@@ -95,7 +95,7 @@ jobs:
         run: |
           set -o pipefail
           pyright --project pyrightconfig.json 2>&1 | tee reports/ci/governance/pyright.txt
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: ci-governance-${{ github.sha }}
@@ -135,7 +135,7 @@ jobs:
             --python-version "${{ matrix.python-version }}" \
             --artifact-name "ci-evidence-${{ matrix.python-version }}" \
             --log "pytest=reports/ci/${{ matrix.python-version }}/pytest-unit.txt"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: ci-evidence-${{ matrix.python-version }}
@@ -230,7 +230,7 @@ jobs:
           rm -rf reports/ci/coverage
           mkdir -p reports/ci/coverage
           cp -a "$OMNIDESK_COVERAGE_EVIDENCE_DIR/." reports/ci/coverage/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: ci-evidence-coverage

@@ -67,7 +67,7 @@ jobs:
           set -e
           cat reports/industrial-runtime-fast-lane/ruff.txt
           echo "status=$status" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: industrial-runtime-fast-lane-${{ github.sha }}
@@ -120,7 +120,7 @@ jobs:
           assert not root.findall(".//skipped")
           print("Baseline: six controls fail; patched controls passed in prerequisite job")
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: boundary-baseline-controls-${{ github.sha }}
