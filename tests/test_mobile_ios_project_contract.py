@@ -128,7 +128,7 @@ def test_ios_ci_requires_real_xctest_results_and_dart_negative_control() -> None
     assert any(s.get("with", {}).get("flutter-version") == "3.38.8" for s in steps)
     artifact = next(s for s in steps if s.get("name") == "Preserve iOS XCTest evidence")
     assert artifact["if"] == "always()"
-    assert artifact["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    assert artifact["uses"] == "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
     assert artifact["with"]["if-no-files-found"] == "error"
 
 

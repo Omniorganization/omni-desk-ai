@@ -28,7 +28,7 @@ jobs:
           PY
       - run: python scripts/maintenance_sqlite.py --integrity-check --wal-checkpoint --vacuum --json maintenance-test.sqlite3 | tee maintenance-report.json
       - run: python scripts/check_disk_guard.py --path . --max-used-percent 99 --min-free-mb 1 | tee disk-guard-report.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: maintenance-drill-report
           path: |

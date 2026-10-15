@@ -95,7 +95,7 @@ jobs:
       - run: python scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json
       - run: python scripts/check_security_workflow_policy.py .
       - run: python scripts/check_security_attack_surface.py .
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: security-core-${{ github.sha }}
@@ -110,14 +110,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: |
             apps/web-admin-next/package-lock.json
             apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: "1.90.0"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
@@ -166,7 +166,7 @@ jobs:
           echo "$status" > reports/ecosystem-security/flutter-osv.status
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: ecosystem-security-${{ github.sha }}
