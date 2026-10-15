@@ -38,8 +38,11 @@ def test_next_dependency_cannot_restore_known_vulnerable_versions():
     root = Path(__file__).resolve().parents[1] / "apps/web-admin-next"
     manifest = json.loads((root / "package.json").read_text())
     lock = json.loads((root / "package-lock.json").read_text())
-    assert manifest["dependencies"]["next"] == "^16.3.6"
-    assert lock["packages"][""]["dependencies"]["next"] == "^16.3.6"
+    requirement = manifest["dependencies"]["next"]
+    assert lock["packages"][""]["dependencies"]["next"] == requirement
+    assert requirement.startswith("^16.")
+    version = tuple(int(part) for part in requirement[1:].split("."))
+    assert len(version) == 3 and version >= (16, 3, 6)
     for name, metadata in lock["packages"].items():
         if name == "node_modules/next" or name.startswith("node_modules/@next/"):
             assert tuple(int(part) for part in metadata["version"].split(".")) >= (16, 3, 6)
