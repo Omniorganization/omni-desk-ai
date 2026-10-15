@@ -1,0 +1,74 @@
+name: Windows Store Client
+on:
+  workflow_dispatch:
+    inputs:
+      identity_name:
+        description: Exact Partner Center Package Identity Name (empty means test identity)
+        type: string
+        default: ''
+      publisher:
+        description: Exact Partner Center Publisher CN (empty means test identity)
+        type: string
+        default: ''
+      publisher_display_name:
+        description: Actual publisher display name (required with real identity)
+        type: string
+        default: ''
+  pull_request:
+    paths:
+      - apps/desktop-tauri/**
+      - scripts/*windows_store*.ps1
+      - .github/workflows/windows-store-client.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop-tauri/**
+      - scripts/*windows_store*.ps1
+      - .github/workflows/windows-store-client.yml
+permissions:
+  contents: read
+jobs:
+  actual-client:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.17.0'
+          cache: npm
+          cache-dependency-path: apps/desktop-tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: '1.90.0'
+          components: clippy
+      - run: npm ci
+        working-directory: apps/desktop-tauri
+      - run: npm run typecheck
+        working-directory: apps/desktop-tauri
+      - run: npm test
+        working-directory: apps/desktop-tauri
+      - run: npm run build
+        working-directory: apps/desktop-tauri
+      - run: cargo test --locked --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml -- -D warnings
+      - name: Build release client with embedded frontend
+        run: cargo build --release --locked --features tauri/custom-protocol --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml
+      - name: SDK positive and negative packaging controls
+        shell: pwsh
+        run: ./scripts/test_windows_store_package.ps1
+      - name: Package and launch real client in isolated Windows cloud
+        shell: pwsh
+        env:
+          STORE_IDENTITY_NAME: ${{ inputs.identity_name }}
+          STORE_PUBLISHER: ${{ inputs.publisher }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
+        run: ./scripts/verify_windows_store_client.ps1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: windows-store-client-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-store-client
+          if-no-files-found: error
+          retention-days: 14
+# No signing key, Store credential or publication. Test identities cannot be submitted.

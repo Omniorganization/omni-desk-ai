@@ -285,11 +285,12 @@ class OutboundMessageStore:
     def requeue(self, message_id: str) -> dict[str, Any]:
         now = time.time()
         with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
             row = con.execute("SELECT status FROM outbound_messages WHERE id=?", (message_id,)).fetchone()
             if not row:
                 raise KeyError(message_id)
-            if row[0] == "sent":
-                raise ValueError(f"sent outbound message cannot be retried: {message_id}")
+            if row[0] not in {"pending", "retry", "dead_letter", "ambiguous", "cancelled"}:
+                raise ValueError(f"outbound message cannot be retried from status {row[0]}: {message_id}")
             con.execute(
                 """
                 UPDATE outbound_messages
@@ -304,6 +305,7 @@ class OutboundMessageStore:
     def cancel(self, message_id: str) -> dict[str, Any]:
         now = time.time()
         with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
             row = con.execute("SELECT status FROM outbound_messages WHERE id=?", (message_id,)).fetchone()
             if not row:
                 raise KeyError(message_id)

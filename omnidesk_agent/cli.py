@@ -255,7 +255,8 @@ def main() -> None:
 
     if args.cmd == "experience-search":
         with runtime_context(cfg) as rt:
-            print(json.dumps(rt.memory.retrieve_for_task(args.query, limit=args.limit), ensure_ascii=False, indent=2))
+            # Explicit local operator diagnostics are separate from planner context.
+            print(json.dumps(rt.memory.search_similar(args.query, limit=args.limit), ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "upgrade-proposals":
