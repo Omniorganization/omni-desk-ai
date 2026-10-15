@@ -17,10 +17,15 @@ class EmptyPlanner:
 
 
 class FakeMemory:
+    def __init__(self):
+        self.writes = []
+
     def add(self, **kwargs):
+        self.writes.append(kwargs)
         return None
 
-    def add_experience(self, value):
+    def add_experience(self, value, **kwargs):
+        self.writes.append(kwargs)
         return None
 
     def record_metric(self, **kwargs):
@@ -55,6 +60,8 @@ def test_orchestrator_delegates_sync_run_store_calls_to_thread(monkeypatch):
     assert result["status"] == "completed"
     assert calls == ["create", "complete"]
     assert run_store.completed == [("run-1", "completed", [])]
+    assert len(orchestrator.memory.writes) == 2
+    assert all(row["channel"] == "test" and row["actor"] == "u" for row in orchestrator.memory.writes)
 
 
 def test_webhook_worker_delegates_sync_queue_calls_to_thread(tmp_path, monkeypatch):

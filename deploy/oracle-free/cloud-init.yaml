@@ -1,0 +1,30 @@
+#cloud-config
+package_update: true
+ssh_pwauth: false
+disable_root: true
+packages:
+  - ca-certificates
+  - docker.io
+  - docker-compose-v2
+  - podman
+  - uidmap
+  - slirp4netns
+  - unattended-upgrades
+write_files:
+  - path: /etc/ssh/sshd_config.d/60-omnidesk.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      X11Forwarding no
+      AllowTcpForwarding no
+  - path: /etc/docker/daemon.json
+    permissions: '0644'
+    content: |
+      {"log-driver":"local","log-opts":{"max-size":"10m","max-file":"3"}}
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [systemctl, restart, ssh]
+  - [install, -d, -m, '0700', /opt/omnidesk]
+# No app, credential, sandbox socket or persistent CI runner is installed.

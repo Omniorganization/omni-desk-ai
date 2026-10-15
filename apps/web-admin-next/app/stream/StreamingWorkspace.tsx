@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 
 import { OmniAdminApi, type AdminRole, type ChatStreamEvent } from '@/lib/api';
@@ -42,6 +42,20 @@ export default function StreamingWorkspace() {
   const abortRef = useRef<AbortController | null>(null);
   const activeMessageIdRef = useRef('');
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch('/api/session/current', { cache: 'no-store', signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) return;
+        const session = await response.json();
+        setCsrfToken(String(session.csrfToken || ''));
+        setActor(String(session.actor));
+        setRole(session.role);
+        setStatus(`已连接 · ${session.actor} · ${session.role}`);
+      }).catch(() => {});
+    return () => controller.abort();
+  }, []);
+
   const api = useMemo(
     () => new OmniAdminApi({
       csrfToken,
@@ -70,6 +84,11 @@ export default function StreamingWorkspace() {
     setCsrfToken(activeCsrf);
     setActor(activeActor);
     setRole(activeRole);
+    setToken('');
+    if (activeRole === 'viewer') {
+      setStatus(`已连接 · ${activeActor} · ${activeRole}`);
+      return;
+    }
 
     const loadedIdentity = await loadOrCreateWebAdminIdentity();
     setIdentity(loadedIdentity);
@@ -105,12 +124,12 @@ export default function StreamingWorkspace() {
     } else if (event.event === 'chat.started') {
       const id = String(event.data.conversation_id || '');
       if (id) setConversationId(id);
-      setStatus('模型流式生成中');
+      setStatus('请求模型并接收流式结果');
     } else if (event.event === 'chat.usage') {
       setStatus(`Usage: ${JSON.stringify(event.data)}`);
     } else if (event.event === 'chat.completed') {
       setTraceId(String(event.data.audit_trace_id || ''));
-      setStatus(event.data.native === false ? '已完成 · 非流式兼容回退' : '已完成 · Provider 原生流式');
+      setStatus(event.data.native === true ? '已完成 · Provider 原生流式' : '已完成 · 审计后流式交付');
     } else if (event.event === 'chat.failed') {
       setStatus(`失败 · ${String(event.data.code || 'chat_stream_failed')}`);
     }
