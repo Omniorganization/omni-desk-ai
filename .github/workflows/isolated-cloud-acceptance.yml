@@ -1,0 +1,124 @@
+name: Isolated Cloud Acceptance
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/isolated-cloud-acceptance.yml'
+      - 'scripts/isolated_cloud_acceptance.py'
+      - 'omnidesk_agent/sandbox/**'
+      - 'omnidesk_agent/appsync/migrated_postgres_store.py'
+      - 'omnidesk_agent/appsync/postgres_migrations.py'
+      - 'tests/test_postgres_appsync_atomic_chat.py'
+      - 'tests/test_sandbox_runner.py'
+      - 'tests/test_rootless_runner_command.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: isolated-cloud-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  actual-runtime:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: acceptance
+        ports:
+          - '127.0.0.1:5432:5432'
+        options: >-
+          --health-cmd "pg_isready -U postgres -d acceptance"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      OMNIDESK_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/acceptance
+      OMNIDESK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/acceptance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+      - name: Install locked dependencies and rootless runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns
+          python -m pip install --require-hashes -r requirements.dev.lock
+          python -m pip install --require-hashes -r requirements.enterprise.lock
+          python -m pip install -e . --no-deps --no-build-isolation
+      - name: Delegate actual resource controllers to the unprivileged CI user
+        run: |
+          mkdir -p reports/isolated-cloud
+          sudo loginctl enable-linger "$(whoami)"
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '%s\n' '[Service]' 'Delegate=cpu memory pids' |
+            sudo tee /etc/systemd/system/user@.service.d/omnidesk-ci.conf
+          sudo systemctl daemon-reload
+          if ! sudo systemctl is-active --quiet "user@$(id -u).service"; then
+            sudo journalctl --no-pager --unit "user@$(id -u).service" -n 80 |
+              tee reports/isolated-cloud/delegation-failure.log
+            exit 1
+          fi
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+          sudo systemctl show "user@$(id -u).service" --property=DelegateControllers |
+            tee reports/isolated-cloud/delegated-controllers.log
+      - name: Immutable PostgreSQL keyword collision negative control
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          baseline = '37a2ce5a8540cbf4681662596c13da9717dc3f96'
+          destination = Path(os.environ['RUNNER_TEMP']) / 'keyword-baseline'
+          test = Path('tests/test_postgres_appsync_atomic_chat.py').resolve()
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', baseline], check=True)
+          subprocess.run(['git', 'worktree', 'add', '--detach', str(destination), baseline], check=True)
+          environment = dict(os.environ, PYTHONPATH=str(destination))
+          result = subprocess.run(
+              [sys.executable, '-m', 'pytest', '-q', str(test) + '::test_serialized_device_request_preserves_http_method_keyword'],
+              cwd=destination, env=environment, capture_output=True, text=True)
+          output = Path('reports/isolated-cloud')
+          output.mkdir(parents=True, exist_ok=True)
+          (output / 'keyword-baseline.log').write_text(result.stdout + result.stderr)
+          matched = result.returncode == 1 and "got multiple values for argument 'method'" in result.stdout
+          (output / 'keyword-baseline.json').write_text(json.dumps({
+              'kind': 'negative-control', 'baseline_sha': baseline, 'matched_original_failure': matched,
+              'exit_code': result.returncode, 'customer_ga': False}, indent=2) + '\n')
+          if not matched:
+              raise SystemExit('Pinned baseline did not reproduce the exact keyword collision')
+          nonce_baseline = '00e969e06efcadc8cdf03f8a5db51f4ddf7dfdcc'
+          nonce_destination = Path(os.environ['RUNNER_TEMP']) / 'nonce-baseline'
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', nonce_baseline], check=True)
+          subprocess.run(['git', 'worktree', 'add', '--detach', str(nonce_destination), nonce_baseline], check=True)
+          environment = dict(os.environ, PYTHONPATH=str(nonce_destination))
+          result = subprocess.run(
+              [sys.executable, '-m', 'pytest', '-q', str(test) + '::test_device_nonce_is_durable_across_instances_and_recreation'],
+              cwd=nonce_destination, env=environment, capture_output=True, text=True)
+          (output / 'nonce-baseline.log').write_text(result.stdout + result.stderr)
+          matched = result.returncode == 1 and "(True, 'ok')" in result.stdout and 'nonce_replay' in result.stdout
+          (output / 'nonce-baseline.json').write_text(json.dumps({
+              'kind': 'negative-control', 'baseline_sha': nonce_baseline, 'matched_original_failure': matched,
+              'exit_code': result.returncode, 'customer_ga': False}, indent=2) + '\n')
+          if not matched:
+              raise SystemExit('Pinned baseline did not reproduce the exact cross-instance replay failure')
+          PY
+      - name: Actual private HTTPS, persistence, restore and sandbox verification
+        env:
+          ACCEPTANCE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: >-
+          systemd-run --user --scope --property=Delegate=yes --working-directory="$GITHUB_WORKSPACE"
+          python scripts/isolated_cloud_acceptance.py --output reports/isolated-cloud
+      - name: Sandbox regression tests
+        run: >-
+          pytest -q tests/test_sandbox_runner.py tests/test_sandbox_docker_command.py
+          tests/test_rootless_runner_command.py tests/test_postgres_appsync_atomic_chat.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: isolated-cloud-acceptance
+          path: reports/isolated-cloud/
+          if-no-files-found: error
