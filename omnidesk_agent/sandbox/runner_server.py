@@ -153,13 +153,27 @@ def _build_docker_command(payload: dict[str, Any], workspace: Path, cfg: RunnerC
     if image not in _image_allowlist(cfg):
         raise ValueError("sandbox image is not in runner allowlist")
     readonly = bool(payload.get("readonly", True))
+    mappings: list[str] = []
+    if Path(cfg.container_runtime).name == "podman":
+        info = subprocess.run(
+            [cfg.container_runtime, "info", "--format", "json"],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+        if json.loads(info.stdout).get("host", {}).get("security", {}).get("rootless") is not True:
+            raise ValueError("Podman sandbox requires a rootless runtime")
+        # Map the unprivileged host owner to container nobody, keeping private
+        # archive directories private. Container root maps to subordinate IDs.
+        for flag in ("--uidmap", "--gidmap"):
+            mappings.extend([flag, "0:1:65534", flag, "65534:0:1", flag, "65535:65535:1"])
     return [
         cfg.container_runtime, "run", "--rm", "--network", "none", "--init", "--pull", "never",
         "--log-driver", "none", "--oom-kill-disable=false", "--memory", "512m", "--cpus", "1.0",
         "--pids-limit", "128", "--user", "65534:65534", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m",  # nosec B108
+        *mappings,
         "--mount", f"type=bind,src={workspace},dst=/workspace,{ 'readonly' if readonly else 'rw' }",
-        "-w", "/workspace", "--env", "PYTHONDONTWRITEBYTECODE=1", image, *argv,
+        "-w", "/workspace", "--env", "PYTHONDONTWRITEBYTECODE=1",
+        "--env", "PYTHONPYCACHEPREFIX=/tmp/omnidesk-pycache", image, *argv,
     ]
 
 
