@@ -68,6 +68,13 @@ class MemoryJsonState:
                 stats[str(status)] = stats.get(str(status), 0) + 1
         return stats
 
+    def count_by_field(self, namespace: str, field: str, value: str) -> int:
+        return sum(row.get(field) == value for row in self.rows.get(namespace, {}).values())
+
+    def list_planner_memories(self, namespace: str, *, channel: str, actor: str, limit: int) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.rows.get(namespace, {}).values()
+                if row.get("channel") == channel and row.get("actor") == actor][:limit]
+
     def find_by_field(self, namespace: str, field: str, value: str) -> Optional[dict[str, Any]]:
         if field not in {"id", "dedupe_key", "idempotency_key", "status", "waiting_approval_id"}:
             raise ValueError(f"unsupported JSON field lookup: {field}")
@@ -299,7 +306,7 @@ def test_postgres_learning_memory_token_and_cost_contracts() -> None:
     )
     assert exp_id > 0
     assert memory.search_similar("outage", only_reusable=True)
-    assert memory.retrieve_for_task("outage")
+    assert memory.retrieve_for_task("outage", channel="slack", actor="operator") == []
     assert memory.summarize_failures(days=1)[0]["failure_reason"] == "bad deploy"
     assert memory.list_structured(statuses=["candidate"])
     memory.update_memory_review(exp_id, memory_status="validated", confidence=0.9, reason="works")
