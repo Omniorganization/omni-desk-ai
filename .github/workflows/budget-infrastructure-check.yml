@@ -1,0 +1,45 @@
+name: Budget Infrastructure Check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - deploy/hetzner-budget/**
+      - .github/workflows/budget-infrastructure-check.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/hetzner-budget/**
+      - .github/workflows/budget-infrastructure-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: deploy/hetzner-budget
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+      - name: Exercise budget and network guards without a cloud account
+        run: |
+          set -o pipefail
+          terraform fmt -check 2>&1 | tee "$RUNNER_TEMP/budget-infrastructure-fmt.log"
+          terraform init -backend=false -input=false 2>&1 | tee "$RUNNER_TEMP/budget-infrastructure-init.log"
+          terraform validate -no-color 2>&1 | tee "$RUNNER_TEMP/budget-infrastructure-validate.log"
+          terraform test -no-color 2>&1 | tee "$RUNNER_TEMP/budget-infrastructure-tests.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: budget-infrastructure-mock-policy-${{ github.sha }}
+          path: ${{ runner.temp }}/budget-infrastructure-*.log
+          if-no-files-found: error
+          retention-days: 14
+# This workflow has no cloud token, secret access, apply or resource mutation.
