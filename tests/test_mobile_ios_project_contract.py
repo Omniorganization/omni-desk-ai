@@ -3,6 +3,8 @@ from __future__ import annotations
 import plistlib
 from pathlib import Path
 
+import yaml
+
 
 def test_ios_xcode_project_has_real_build_configuration_graph() -> None:
     project = Path("apps/mobile-flutter/ios/Runner.xcodeproj/project.pbxproj").read_text(
@@ -56,3 +58,38 @@ def test_ios_keychain_entitlements_are_bound_without_enabling_push() -> None:
     }
     project = (runner.parent / "Runner.xcodeproj/project.pbxproj").read_text()
     assert project.count("CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;") == 3
+
+
+def test_ios_native_smoke_has_separate_bounded_simulator_preparation() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/tri-app-quality.yml").read_text())
+    job = workflow["jobs"]["mobile-ios-simulator"]
+    assert job["timeout-minutes"] == 30
+    steps = job["steps"]
+    prepare = next(step for step in steps if step.get("id") == "ios_simulator")
+    native = next(step for step in steps if step.get("name") == "Native iOS Keychain and offline UI regression")
+    assert steps.index(prepare) + 1 == steps.index(native)
+    assert prepare["timeout-minutes"] == 8
+    assert native["timeout-minutes"] == 15
+    for step in (prepare, native):
+        assert not step.get("continue-on-error", False)
+        assert step.get("if", "success()") == "success()"
+        assert 'test -n "$simulator_id"' in step["run"]
+        assert step["run"].startswith("set -euo pipefail\n")
+    assert "xcrun simctl list devices available -j" in prepare["run"]
+    assert 'xcrun simctl bootstatus "$simulator_id" -b' in prepare["run"]
+    assert prepare["run"].endswith('echo "udid=$simulator_id" >> "$GITHUB_OUTPUT"\n')
+    assert native["env"]["simulator_id"] == "${{ steps.ios_simulator.outputs.udid }}"
+    assert native["run"].splitlines() == [
+        "set -euo pipefail",
+        'test -n "$simulator_id"',
+        'flutter test integration_test/ios_smoke_test.dart -d "$simulator_id" --no-pub --reporter expanded',
+    ]
+    assert any(step.get("with", {}).get("flutter-version") == "3.38.8" for step in steps)
+    commands = {step.get("run") for step in steps}
+    assert {
+        "flutter pub get",
+        "flutter analyze",
+        "flutter test",
+        "flutter build ios --simulator --debug",
+        "python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-source",
+    } <= commands

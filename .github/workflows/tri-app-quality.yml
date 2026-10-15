@@ -285,8 +285,9 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build ios --simulator --debug
-      - name: Native iOS Keychain and offline UI regression
-        timeout-minutes: 15
+      - name: Prepare iOS Simulator
+        id: ios_simulator
+        timeout-minutes: 8
         run: |
           set -euo pipefail
           simulator_id=$(xcrun simctl list devices available -j | python3 -c '
@@ -295,7 +296,16 @@ jobs:
                         for runtime, devices in json.load(sys.stdin)["devices"].items() if "iOS-" in runtime
                         for device in devices if device.get("isAvailable") and device["name"].startswith("iPhone")]
           print(max(candidates)[1])')
+          test -n "$simulator_id"
           xcrun simctl bootstatus "$simulator_id" -b
+          echo "udid=$simulator_id" >> "$GITHUB_OUTPUT"
+      - name: Native iOS Keychain and offline UI regression
+        timeout-minutes: 15
+        env:
+          simulator_id: ${{ steps.ios_simulator.outputs.udid }}
+        run: |
+          set -euo pipefail
+          test -n "$simulator_id"
           flutter test integration_test/ios_smoke_test.dart -d "$simulator_id" --no-pub --reporter expanded
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-source
 
