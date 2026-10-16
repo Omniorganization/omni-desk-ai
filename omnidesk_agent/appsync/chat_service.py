@@ -472,9 +472,9 @@ class ChatTurnService:
                 },
             )
             raise HTTPException(
-                502,
+                403 if isinstance(exc, PermissionError) else 502,
                 {
-                    "code": "model_provider_unavailable",
+                    "code": "model_profile_forbidden" if isinstance(exc, PermissionError) else "model_provider_unavailable",
                     "trace_id": trace_id,
                 },
             ) from exc

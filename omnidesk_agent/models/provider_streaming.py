@@ -7,6 +7,7 @@ import httpx
 
 from omnidesk_agent.models.base import ModelDelta, ModelRequest
 from omnidesk_agent.models.providers import _image_part_from_path, env, msgs
+from omnidesk_agent.models.provider_errors import ChatGPTPlanError
 
 
 def _delta(
@@ -119,7 +120,10 @@ async def _openai_compatible_stream(provider: Any, request: ModelRequest) -> Asy
 
 async def _openai_responses_stream(provider: Any, request: ModelRequest) -> AsyncIterator[ModelDelta]:
     settings = provider.settings
-    key = env(settings.api_key_env)
+    subscription = provider.provider_name == "chatgpt_plan"
+    if subscription and request.images:
+        raise ChatGPTPlanError("subscription_input", "ChatGPT plan provider currently accepts text inputs only")
+    key = provider.access_token() if subscription else env(settings.api_key_env)
     if not key:
         raise RuntimeError(f"Missing {settings.api_key_env}")
     base = (settings.base_url or "https://api.openai.com/v1").rstrip("/")
@@ -132,6 +136,9 @@ async def _openai_responses_stream(provider: Any, request: ModelRequest) -> Asyn
         "max_output_tokens": settings.max_output_tokens,
         "stream": True,
     }
+    if subscription:
+        body = {"model": provider.model, "instructions": request.system,
+                "input": [{"role": "user", "content": request.user}], "store": False, "stream": True}
     if request.json_mode:
         body["text"] = {"format": {"type": "json_object"}}
 
@@ -144,7 +151,7 @@ async def _openai_responses_stream(provider: Any, request: ModelRequest) -> Asyn
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=None)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=120 if subscription else None)) as client:
         async with client.stream("POST", f"{base}/responses", headers=headers, json=body) as response:
             response.raise_for_status()
             request_id = response.headers.get("x-request-id")
@@ -165,11 +172,20 @@ async def _openai_responses_stream(provider: Any, request: ModelRequest) -> Asyn
                     if reasoning:
                         yield _delta(provider, sequence, reasoning=reasoning, provider_request_id=request_id)
                         sequence += 1
-                elif event_type in {"response.completed", "response.incomplete", "response.failed"}:
+                elif event_type in {"response.completed", "response.incomplete", "response.failed"} or subscription and event_type == "error":
+                    if subscription and event_type != "response.completed":
+                        error = response_obj.get("error") or payload.get("error")
+                        code = error.get("code") if isinstance(error, dict) else payload.get("code")
+                        category = "subscription_limit" if isinstance(code, str) and code in {
+                            "subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable",
+                        } else "subscription_response"
+                        raise ChatGPTPlanError(category, "ChatGPT plan response failed or was incomplete; request stopped")
                     raw_usage = response_obj.get("usage")
                     if isinstance(raw_usage, dict):
                         usage = raw_usage
                     finish_reason = "stop" if event_type == "response.completed" else event_type.removeprefix("response.")
+    if subscription and finish_reason != "stop":
+        raise ChatGPTPlanError("subscription_incomplete", "ChatGPT plan stream ended without response.completed")
     yield _delta(
         provider,
         sequence,
@@ -394,6 +410,10 @@ async def stream_provider(provider: Any, request: ModelRequest) -> AsyncIterator
     """
 
     name = str(getattr(provider, "provider_name", ""))
+    if name in {"chatgpt_plan", "codex_cli"}:
+        async for item in provider.stream(request):
+            yield item
+        return
     if name == "openai":
         async for item in _openai_responses_stream(provider, request):
             yield item

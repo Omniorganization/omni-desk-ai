@@ -53,7 +53,7 @@ jobs:
           set -o pipefail
           python scripts/check_ga_release_gate.py . \
             2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/ga-release-gate.txt"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: tri-app-backend-${{ github.sha }}
@@ -67,7 +67,7 @@ jobs:
         working-directory: apps/web-admin-next
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "22.17.0"
           cache: npm
@@ -84,12 +84,12 @@ jobs:
         working-directory: apps/desktop-tauri
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: "1.90.0"
           components: rustfmt, clippy
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "22.17.0"
       - name: Build real desktop assets for optimized native harness
@@ -116,7 +116,7 @@ jobs:
         run: |
           npm ci
           npm run build
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: "1.90.0"
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
@@ -145,7 +145,7 @@ jobs:
           export CARGO_TARGET_DIR="$RUNNER_TEMP/glib-patched-target"
           set -o pipefail
           cargo test --release --locked --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml --test glib_variant_regression 2>&1 | tee reports/glib-backport/patched.log
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: glib-backport-${{ github.sha }}
@@ -159,12 +159,12 @@ jobs:
         working-directory: apps/desktop-tauri
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: "1.90.0"
       - run: npm ci
@@ -187,12 +187,12 @@ jobs:
         working-directory: apps/desktop-tauri
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: "1.90.0"
       - run: npm ci
@@ -285,8 +285,9 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build ios --simulator --debug
-      - name: Native iOS Keychain and offline UI regression
-        timeout-minutes: 15
+      - name: Prepare iOS Simulator
+        id: ios_simulator
+        timeout-minutes: 8
         run: |
           set -euo pipefail
           simulator_id=$(xcrun simctl list devices available -j | python3 -c '
@@ -295,9 +296,108 @@ jobs:
                         for runtime, devices in json.load(sys.stdin)["devices"].items() if "iOS-" in runtime
                         for device in devices if device.get("isAvailable") and device["name"].startswith("iPhone")]
           print(max(candidates)[1])')
+          test -n "$simulator_id"
           xcrun simctl bootstatus "$simulator_id" -b
-          flutter test integration_test/ios_smoke_test.dart -d "$simulator_id" --no-pub --reporter expanded
+          echo "udid=$simulator_id" >> "$GITHUB_OUTPUT"
+      - name: Native iOS Keychain and offline UI regression
+        timeout-minutes: 15
+        env:
+          simulator_id: ${{ steps.ios_simulator.outputs.udid }}
+          OMNI_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$simulator_id"
+          evidence="$RUNNER_TEMP/omnidesk-ios-xctest"
+          mkdir -p "$evidence"
+          original=integration_test/ios_smoke_test.dart
+          negative="integration_test/ios_smoke_negative_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.dart"
+          test ! -e "$negative"
+          trap 'rm -f "$negative"' EXIT
+          flutter --version --machine > "$evidence/flutter-version.json"
+          xcodebuild -version > "$evidence/xcode-version.txt"
+          xcrun simctl list devices available -j > "$evidence/simulators.json"
+          git rev-parse HEAD > "$evidence/checkout-sha.txt"
+          python3 - "$original" "$negative" "$evidence/source.json" <<'PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+          original, negative, manifest = map(Path, sys.argv[1:])
+          version = json.loads((manifest.parent / 'flutter-version.json').read_text())
+          assert version['frameworkVersion'] == '3.38.8', 'Expected the fixed Flutter SDK'
+          source = original.read_bytes()
+          needle = b"expect(await storage.read(key: key), 'native-readback');"
+          assert source.count(needle) == 1, 'Expected one original Keychain assertion'
+          replacement = b"expect(await storage.read(key: key), 'OMNI_IOS_XCTEST_NEGATIVE_CONTROL');"
+          with negative.open('xb') as handle:
+              handle.write(source.replace(needle, replacement))
+          manifest.write_text(json.dumps({
+              'original_path': str(original),
+              'original_sha256': hashlib.sha256(source).hexdigest(),
+              'negative_path': str(negative),
+              'negative_sha256': hashlib.sha256(negative.read_bytes()).hexdigest(),
+              'pr_head': os.environ['OMNI_PR_HEAD'],
+              'simulator_udid': os.environ['simulator_id'],
+              'runner_image': os.environ.get('ImageOS'),
+              'runner_image_version': os.environ.get('ImageVersion'),
+          }, indent=2) + '\n')
+          PY
+          run_xctest() {
+            label=$1
+            dart_target=$2
+            shift 2
+            flutter build ios --simulator --debug --config-only --no-pub \
+              --target "$dart_target" \
+              --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=true
+            cp ios/Flutter/Generated.xcconfig "$evidence/$label.Generated.xcconfig"
+            python3 - "$dart_target" "$evidence/source.json" <<'PY'
+          import base64, hashlib, json, sys
+          from pathlib import Path
+          target = Path(sys.argv[1]).resolve()
+          manifest = json.loads(Path(sys.argv[2]).read_text())
+          original = Path(manifest['original_path'])
+          assert hashlib.sha256(original.read_bytes()).hexdigest() == manifest['original_sha256']
+          config = dict(line.split('=', 1) for line in Path('ios/Flutter/Generated.xcconfig').read_text().splitlines() if '=' in line and not line.startswith('//'))
+          assert Path(config['FLUTTER_TARGET']).resolve() == target, 'Wrong Dart entrypoint'
+          defines = [base64.b64decode(item, validate=True).decode() for item in config['DART_DEFINES'].split(',')]
+          reports = [item for item in defines if item.startswith('INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=')]
+          assert reports == ['INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=true'], 'Native result reporting must be enabled'
+          PY
+            xcode_status=0
+            xcodebuild test \
+              -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
+              -sdk iphonesimulator -destination "id=$simulator_id" \
+              -parallel-testing-enabled NO \
+              -derivedDataPath "$RUNNER_TEMP/omnidesk-ios-derived" \
+              -resultBundlePath "$evidence/$label.xcresult" \
+              -only-testing:RunnerTests > "$evidence/$label.xcodebuild.log" 2>&1 || xcode_status=$?
+            cat "$evidence/$label.xcodebuild.log"
+            xcrun xcresulttool get test-results summary --schema-version 0.1.0 \
+              --path "$evidence/$label.xcresult" > "$evidence/$label.summary.json"
+            xcrun xcresulttool get test-results tests --schema-version 0.1.0 \
+              --path "$evidence/$label.xcresult" > "$evidence/$label.tests.json"
+            python3 ../../scripts/check_ios_xcresult.py \
+              --summary "$evidence/$label.summary.json" --tests "$evidence/$label.tests.json" \
+              --xcodebuild-exit "$xcode_status" "$@" > "$evidence/$label.verified.json"
+            cat "$evidence/$label.verified.json"
+          }
+          run_xctest negative "$negative" --expected-failure-marker OMNI_IOS_XCTEST_NEGATIVE_CONTROL
+          rm "$negative"
+          run_xctest positive "$original"
+          python3 - "$evidence/source.json" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          manifest = json.loads(Path(sys.argv[1]).read_text())
+          assert hashlib.sha256(Path(manifest['original_path']).read_bytes()).hexdigest() == manifest['original_sha256']
+          assert not Path(manifest['negative_path']).exists()
+          PY
       - run: python ../../scripts/check_tri_app_release_readiness.py ../.. --mode mobile-ios-source
+      - name: Preserve iOS XCTest evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ios-xctest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/omnidesk-ios-xctest
+          if-no-files-found: error
+          retention-days: 7
 
   mobile-ios-release:
     runs-on: macos-latest

@@ -95,7 +95,7 @@ def test_release_workflows_use_bound_evidence_and_non_bypassable_final_gate() ->
     assert "release/external-evidence/**" in main_verification
     assert "check_customer_distribution_ga.py" in release
     assert "check_customer_distribution_ga.py" in readiness
-    assert "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in release
+    assert "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" in release
     assert "npm run tauri:build" in release
     assert "flutter build appbundle --release" in release
     assert "flutter build ipa --release" in release
