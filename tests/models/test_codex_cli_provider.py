@@ -448,7 +448,9 @@ def test_gateway_to_provider_accepts_owned_global_agents_source_without_external
         close_all_open_connections()
 
 
-def test_cli_calls_use_saved_chatgpt_login_and_sanitized_environment(cli, monkeypatch):
+@pytest.mark.parametrize("version", ["0.162.0-alpha.17.2", "0.163.0-alpha.10.2"])
+def test_cli_calls_use_saved_chatgpt_login_and_sanitized_environment(cli, monkeypatch, version):
+    cli.write_text(cli.read_text().replace("0.162.0-alpha.17.2", version))
     for name in ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_APP_TOOLS_PIPE_PATH"]:
         monkeypatch.setenv(name, "fixture-must-not-reach-child")
     result = asyncio.run(CodexCLIProvider(settings(cli)).complete(request()))
@@ -542,7 +544,7 @@ def test_missing_chatgpt_login_does_not_attempt_inference(cli):
     assert not cli.with_suffix(".calls").exists()
 
 
-@pytest.mark.parametrize("version", ["0.136.0", "0.162.0", "0.163.0", "0.162.0-alpha.17.3"])
+@pytest.mark.parametrize("version", ["0.136.0", "0.162.0", "0.163.0", "0.162.0-alpha.17.3", "0.163.0-alpha.10.3"])
 def test_unverified_cli_is_rejected_without_relaxing_flags(cli, version):
     cli.write_text(cli.read_text().replace("0.162.0-alpha.17.2", version))
     with pytest.raises(ChatGPTPlanError):
