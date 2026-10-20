@@ -67,3 +67,13 @@ updates:
       actions:
         patterns: ["*"]
     labels: [dependencies, github-actions]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
+        patterns: ["*"]
+    labels: [dependencies, docker]

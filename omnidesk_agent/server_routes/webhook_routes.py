@@ -44,7 +44,7 @@ def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
     async def whatsapp_verify(request: Request):
         params = dict(request.query_params)
         verify_token = os.getenv(cfg.channels.whatsapp_cloud.verify_token_env, "")
-        if params.get("hub.mode") == "subscribe" and hmac.compare_digest(params.get("hub.verify_token", ""), verify_token):
+        if verify_token and params.get("hub.mode") == "subscribe" and hmac.compare_digest(params.get("hub.verify_token", ""), verify_token):
             return Response(content=params.get("hub.challenge", ""), media_type="text/plain")
         raise HTTPException(403, "verification failed")
 
@@ -59,7 +59,7 @@ def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
     async def meta_verify(request: Request):
         params = dict(request.query_params)
         verify_token = os.getenv(cfg.channels.meta_graph.verify_token_env, "")
-        if params.get("hub.mode") == "subscribe" and hmac.compare_digest(params.get("hub.verify_token", ""), verify_token):
+        if verify_token and params.get("hub.mode") == "subscribe" and hmac.compare_digest(params.get("hub.verify_token", ""), verify_token):
             return Response(content=params.get("hub.challenge", ""), media_type="text/plain")
         raise HTTPException(403, "verification failed")
 
