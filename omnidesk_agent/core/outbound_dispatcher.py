@@ -7,6 +7,7 @@ from typing import Any, Optional
 from omnidesk_agent.core.outbound_messages import OutboundMessageStore
 from omnidesk_agent.channels.provider_errors import classify_channel_error
 from omnidesk_agent.channels.idempotency import capability_for
+from omnidesk_agent.tools.channel_send import validate_send_text_options
 
 
 class OutboundDispatcher:
@@ -111,9 +112,11 @@ class OutboundDispatcher:
         payload_type = payload.get("type")
         if payload_type != "text":
             raise RuntimeError(f"Unsupported outbound payload type: {payload_type}")
-        options = dict(payload.get("options") or {})
+        # Re-validate queued options (rows may predate the tool-side allowlist);
+        # unsafe keys such as service_url/webhook_url dead-letter the message.
+        options = validate_send_text_options(payload.get("options") or {})
         idempotency_key = str(message.get("idempotency_key") or message["id"])
-        options.setdefault("idempotency_key", idempotency_key)
+        options["idempotency_key"] = idempotency_key
         result = await adapter.send_text(recipient, str(payload.get("text", "")), **options)
         provider_message_id = None
         provider_request_id = idempotency_key
