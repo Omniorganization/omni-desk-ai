@@ -3,21 +3,34 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 from pathlib import Path
-from typing import Any, Coroutine, Optional, TypeVar
+from typing import Any, Coroutine, Optional, Protocol, TypeVar
 
-from omnidesk_agent.config import SandboxConfig
 from omnidesk_agent.self_learning.schemas import LearningProposal, SandboxValidationResult
-from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
 
 T = TypeVar("T")
+
+
+class CommandRunResult(Protocol):
+    ok: bool
+    output: str
+    exit_code: int
+
+
+class CommandRunner(Protocol):
+    """Sandboxed, allowlisted command runner (e.g. self_upgrade.SandboxRunner).
+
+    Injected by the caller: self_learning may not import self_upgrade.
+    """
+
+    async def run(self, command: Any, timeout: int = 120) -> CommandRunResult: ...
 
 
 class SandboxValidator:
     """Run bounded validation before a proposal can be approved or promoted."""
 
-    def __init__(self, repo_root: Path, *, sandbox_cfg: SandboxConfig | None = None):
+    def __init__(self, repo_root: Path, *, runner: CommandRunner | None = None):
         self.repo_root = repo_root.resolve()
-        self.runner = SandboxRunner(self.repo_root, sandbox_cfg=sandbox_cfg)
+        self.runner = runner
 
     def validate(self, proposal: LearningProposal, *, commands: Optional[list[list[str]]] = None, timeout: int = 180) -> SandboxValidationResult:
         commands = commands if commands is not None else self._default_commands(proposal)
@@ -59,6 +72,9 @@ class SandboxValidator:
         # Proposal test plans are generated content: run them through the same
         # allowlisted SandboxRunner (docker/remote backend in production) as other
         # upgrade checks instead of spawning them directly on the host.
+        if self.runner is None:
+            # Fail closed: never fall back to running generated commands on the host.
+            return {"command": command, "exit_code": 126, "stdout": "", "stderr": "no sandbox runner configured for validation"}
         result = _run_sync(self.runner.run(command, timeout=timeout))
         return {
             "command": command,
