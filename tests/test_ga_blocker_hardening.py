@@ -216,7 +216,7 @@ def test_github_workflows_pin_actions_and_permissions():
             stripped = line.strip()
             if not stripped.startswith("- uses: "):
                 continue
-            ref = stripped.split("@", 1)[1]
+            ref = stripped.split("@", 1)[1].split("#", 1)[0].strip()
             assert len(ref) == 40 and all(ch in "0123456789abcdef" for ch in ref), f"{workflow}: {stripped}"
 
 

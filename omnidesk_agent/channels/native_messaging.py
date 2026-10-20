@@ -386,7 +386,9 @@ class MicrosoftTeamsChannel:
 
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
         token = self.bot_token or _require_env(self.cfg.bot_token_env, channel=self.name)
-        service_url = kwargs.get("service_url") or self.cfg.service_url
+        # The bot bearer token is sent to service_url, so it is pinned to the
+        # configured value; a caller-supplied service_url kwarg is ignored.
+        service_url = self.cfg.service_url
         if not service_url:
             raise RuntimeError("Teams service_url is missing")
         url = f"{str(service_url).rstrip('/')}/v3/conversations/{recipient}/activities"
