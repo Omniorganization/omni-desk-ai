@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from omnidesk_agent.models.providers import ProviderSettings
 
 
-SUPPORTED_CLI_VERSION = "0.162.0-alpha.17.2"
+SUPPORTED_CLI_VERSIONS = {"0.162.0-alpha.17.2", "0.163.0-alpha.10.2"}
 CLI_PROVIDER_ID = "omnidesk_codex_subscription"
 TIMEOUT_SECONDS = 120
 CLEANUP_TIMEOUT_SECONDS = 2
@@ -415,8 +415,8 @@ class CodexCLIProvider:
             local_argv = [self.binary, "-c", f"log_dir={json.dumps(str(workdir / 'logs'))}"]
             output, _, code = await self._run([*local_argv, "--version"], env=environment, cwd=workdir)
             version = re.search(rb"(?m)^codex(?:-cli)? ([^\s]+)\s*$", output)
-            if code or version is None or version[1].decode("ascii", errors="replace") != SUPPORTED_CLI_VERSION:
-                raise ChatGPTPlanError("subscription_cli_version", "Codex CLI 0.162.0-alpha.17.2 is the verified version; other versions require compatibility validation")
+            if code or version is None or version[1].decode("ascii", errors="replace") not in SUPPORTED_CLI_VERSIONS:
+                raise ChatGPTPlanError("subscription_cli_version", "Codex CLI version is unverified; compatibility validation is required")
             output, diagnostics, code = await self._run([*local_argv, "login", "status"], env=environment, cwd=workdir)
             lines = (output + b"\n" + diagnostics).decode("utf-8", errors="replace").splitlines()
             if code or not any(line.strip().lower() == "logged in using chatgpt" for line in lines):
