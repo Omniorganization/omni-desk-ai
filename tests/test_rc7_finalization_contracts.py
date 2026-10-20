@@ -134,11 +134,11 @@ def test_strict_sandbox_smoke_exercises_rejection_paths(monkeypatch):
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
             member = tf.getmembers()[0]
         if member.name.startswith("../"):
-            return 500, {"ok": False, "stderr": "workspace archive contains unsafe path"}
+            return 400, {"ok": False, "stderr": "workspace archive contains unsafe path"}
         if member.issym():
-            return 500, {"ok": False, "stderr": "workspace archive may not contain links"}
+            return 400, {"ok": False, "stderr": "workspace archive may not contain links"}
         if member.size > 1024 * 1024:
-            return 500, {"ok": False, "stderr": "workspace archive file exceeds maximum size"}
+            return 400, {"ok": False, "stderr": "workspace archive file exceeds maximum size"}
         raise AssertionError(f"unexpected strict sandbox payload: {payload}")
 
     monkeypatch.setattr(production_smoke_test, "post_json_response", fake_post_json_response)
