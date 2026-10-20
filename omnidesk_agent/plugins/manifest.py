@@ -13,6 +13,9 @@ except ModuleNotFoundError:
 from pydantic import BaseModel, Field
 
 
+MANIFEST_FILE_NAMES = frozenset({"plugin.yaml", "plugin.yml", "plugin.json"})
+
+
 class PluginManifest(BaseModel):
     name: str
     version: str = "0.0.0"
@@ -24,6 +27,10 @@ class PluginManifest(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     signature: Optional[str] = None
     sha256: Optional[str] = None
+    # v1 signs only the entrypoint digest. v2 also binds the security-relevant
+    # manifest fields (sandbox, permissions, trusted, ...) and every file in the
+    # plugin directory, so editing plugin.yaml or a sibling module is detected.
+    signature_version: int = 1
 
     @classmethod
     def load(cls, path: Path) -> "PluginManifest":
@@ -35,7 +42,39 @@ class PluginManifest(BaseModel):
             data = json.loads(path.read_text(encoding="utf-8"))
         return cls.model_validate(data)
 
-    def verify(self, plugin_dir: Path, signing_secret: Optional[str] = None) -> None:
+    def signing_payload_v2(self, plugin_dir: Path) -> bytes:
+        files: dict[str, str] = {}
+        root = plugin_dir.resolve()
+        for path in sorted(plugin_dir.rglob("*")):
+            rel = path.relative_to(plugin_dir).as_posix()
+            if "__pycache__" in path.parts or rel in MANIFEST_FILE_NAMES:
+                continue
+            if path.is_symlink():
+                raise PermissionError(f"plugin may not contain symlinks: {self.name}: {rel}")
+            if path.is_file():
+                if root not in path.resolve().parents:
+                    raise PermissionError(f"plugin file escapes plugin directory: {self.name}: {rel}")
+                files[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        payload = {
+            "v": 2,
+            "name": self.name,
+            "version": self.version,
+            "entrypoint": self.entrypoint,
+            "sandbox": self.sandbox,
+            "permissions": sorted(self.permissions),
+            "trusted": self.trusted,
+            "files": files,
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    def sign_v2(self, plugin_dir: Path, signing_secret: str) -> None:
+        """Set sha256 and a v2 signature for this manifest (operator tooling)."""
+        entry = (plugin_dir / self.entrypoint).resolve()
+        self.sha256 = hashlib.sha256(entry.read_bytes()).hexdigest()
+        self.signature_version = 2
+        self.signature = hmac.new(signing_secret.encode("utf-8"), self.signing_payload_v2(plugin_dir), hashlib.sha256).hexdigest()
+
+    def verify(self, plugin_dir: Path, signing_secret: Optional[str] = None, *, require_manifest_signature: bool = False) -> None:
         entry = (plugin_dir / self.entrypoint).resolve()
         if not entry.exists():
             raise FileNotFoundError(entry)
@@ -48,6 +87,12 @@ class PluginManifest(BaseModel):
             raise PermissionError(f"plugin signature is required: {self.name}")
         if not signing_secret:
             raise PermissionError(f"plugin signature requires signing secret: {self.name}")
-        expected = hmac.new(signing_secret.encode("utf-8"), digest.encode("utf-8"), hashlib.sha256).hexdigest()
+        if self.signature_version >= 2:
+            message = self.signing_payload_v2(plugin_dir)
+        elif require_manifest_signature:
+            raise PermissionError(f"plugin requires a v2 manifest signature: {self.name}")
+        else:
+            message = digest.encode("utf-8")
+        expected = hmac.new(signing_secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, self.signature):
             raise PermissionError(f"plugin signature mismatch: {self.name}")

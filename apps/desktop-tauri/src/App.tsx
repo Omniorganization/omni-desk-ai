@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
-import { OmniApiClient } from './api';
+import { OmniApiClient, normalizeGatewayBaseUrl } from './api';
 import { buildControlHubPanels } from './controlHub';
 import { advertisedRuntimeCapabilities, executeRuntimeTask } from './executor';
 import { createDesktopDeviceRequestSigner, loadOrCreateDesktopIdentity, DesktopDeviceIdentity } from './deviceIdentity';
@@ -174,6 +174,8 @@ function App() {
   async function connect() {
     setError('');
     try {
+      // Validate before persisting so a bad URL never reaches the keychain.
+      normalizeGatewayBaseUrl(gatewayUrl);
       await keychainSet('omni.gateway', gatewayUrl);
       await keychainSet('omni.operatorToken', token);
       await keychainSet('omni.actor', actor);
