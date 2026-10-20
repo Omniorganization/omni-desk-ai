@@ -200,16 +200,16 @@ def register_admin_routes(app: FastAPI, cfg, rt, metrics, version: str, admin: A
     @app.get("/admin/memory/purge-expired")
     async def admin_memory_purge_expired_dry_run(
         request: Request,
-        dry_run: bool = True,
         limit: int = 1000,
         channel: Optional[str] = None,
         actor: Optional[str] = None,
     ):
+        # GET is always a preview; deleting rows requires the owner-only POST.
         await admin(request, "operator")
         memory = getattr(rt, "memory", None)
         if memory is None or not hasattr(memory, "purge_expired"):
             raise HTTPException(404, "memory store not available")
-        return {"ok": True, "purge": memory.purge_expired(dry_run=dry_run, limit=limit, channel=channel, actor=actor)}
+        return {"ok": True, "purge": memory.purge_expired(dry_run=True, limit=limit, channel=channel, actor=actor)}
 
     @app.post("/admin/memory/purge-expired")
     async def admin_memory_purge_expired_execute(
