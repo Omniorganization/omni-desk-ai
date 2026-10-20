@@ -51,8 +51,10 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   bool deviceEnrolled = false;
   OmniDeviceIdentity? deviceIdentity;
 
-  DeviceIdentityStore get identityStore =>
-      DeviceIdentityStore(securityService.storage);
+  DeviceIdentityStore get identityStore => DeviceIdentityStore(
+    securityService.storage,
+    beforeAccess: securityService.ensureKeychainMigrated,
+  );
   OmniApiClient get client => OmniApiClient(
     baseUrl: gatewayController.text,
     token: tokenController.text,
