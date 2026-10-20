@@ -13,7 +13,7 @@
 
 独立配置见 [config.codex-cli.yaml](../examples/config.codex-cli.yaml)。它使用已有的官方 CLI ChatGPT 登录，无需为此路径重新注册 SIWC 应用。OmniDesk 不提取、复制或打印桌面登录凭据；不要填写 API key、共享账户凭据或将登录目录打包到配置中。此配置供本人本机使用，不能据此提供远程托管或其他人的订阅服务。
 
-当前实现只接受已核对的精确 CLI 版本 `0.162.0-alpha.17.2`，本机来源为官方应用内置 CLI，模型为 `gpt-6.1-sol`。其它版本在完成兼容性验证前拒绝调用，不把更高版本视为自动兼容。默认优先使用本机官方应用内置 CLI，再查找 PATH；可在 profile 中设置可信的绝对 `codex_cli_path`。CLI、模型元数据或配置字段变化后应重新验证，未知字段或不兼容模型应停止。
+当前实现只接受已核对的精确 CLI 版本 `0.162.0-alpha.17.2` 和 `0.163.0-alpha.10.2`，本机来源为官方应用内置 CLI，模型为 `gpt-6.1-sol`。其它版本在完成兼容性验证前拒绝调用，不把更高版本视为自动兼容。默认优先使用本机官方应用内置 CLI，再查找 PATH；可在 profile 中设置可信的绝对 `codex_cli_path`。CLI、模型元数据或配置字段变化后应重新验证，未知字段或不兼容模型应停止。
 
 每次调用启动官方 CLI 的 **AppServer stdio JSON-RPC** transport，使用内部临时 provider 别名 `omnidesk_codex_subscription`，复用 CLI 管理的 OpenAI/ChatGPT 认证和官方服务地址，并将 request/stream retries 设为零。OmniDesk 对外仍是 `codex_cli` provider；不接受自定义 HTTP 地址或 API key，不修改全局配置。
 
@@ -70,6 +70,12 @@ AppServer 不支持 `--ignore-user-config`，所以先 `initialize`、再内部 
 当前 `codex_cli` 的 `/api/chat/stream` 是**缓冲 SSE**：先等待 CLI 完整成功回答，再发出文本和完成事件，`native: false`。它不能提供逐 token 的原生实时推送。含图片的请求拒绝，JSON mode 输出不合法时停止。配置中的 `max_output_tokens` 用于本地预算估算，不是 CLI 输出的硬上限。
 
 ## 证据与当前验收状态
+
+2026-10-19，本机官方应用内置 CLI 已升级到 `0.163.0-alpha.10.2`；旧适配器会在版本门禁拒绝请求。当前只追加此精确版本，保留旧版本及所有协议、权限与工具拒绝门禁。已核对该版本生成的官方 JSON Schema，并在严格配置下完成初始化与配置预检。
+
+新版本完整本机 Gateway 三题验收于 `2026-10-19T01:49:11.586080+08:00` 通过：普通聊天回答 `5`、`21`，缓冲 SSE 回答 `NO_TOOLS`；匿名/operator 均 403，重放新增调用 0，成功及持久 ledger 均 3，共 15,457 input / 114 output tokens。未使用 Platform API key、响应缓存或后台业务服务，未发送业务数据。受限沙箱内的首次启动因系统权限拒绝而失败，保留该失败；正式获准执行后才取得成功结果。[本次验收及源码绑定](evidence/codex-cli-0163-20261019.json)。这证明当前 Mac 本机订阅接入可用，不代表新提交 CI、合并、Linux/Windows 或生产部署验收；回滚时恢复原配置或部署此前已验收的旧 CLI/适配器组合，保留 ledger 与审计。
+
+以下是 2026-10-12 的历史迭代记录，其中旧提交的待验收/失败状态不代表当前提交状态。
 
 2026-10-12，官方应用内置 CLI `0.162.0-alpha.17.2` 使用现有 ChatGPT 登录，以 `gpt-6.1-sol` 完成独立纯合成文本 smoke，JSONL 未接受工具事件。这只证明当时该本机 CLI/账号/model 的请求可用。
 
