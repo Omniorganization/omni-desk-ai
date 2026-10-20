@@ -66,6 +66,7 @@ tests/                         单元、集成、e2e、load 分层入口与现�
 examples/config.yaml           配置样例
 deploy/systemd                 Linux 后台常驻
 deploy/launchd                 macOS 后台常驻
+docs/history/                  历史版本补丁清单、GA 证据与修复报告
 ```
 
 ## Offline-First / Reconnect Update
