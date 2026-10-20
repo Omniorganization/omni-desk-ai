@@ -62,10 +62,13 @@ jobs:
         if: ${{ inputs.external_evidence_run_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id }}
+          EXTERNAL_EVIDENCE_ARTIFACT_NAME: ${{ inputs.external_evidence_artifact_name }}
         run: |
           set -euo pipefail
-          gh run download "${{ inputs.external_evidence_run_id }}" \
-            --name "${{ inputs.external_evidence_artifact_name }}" \
+          [[ "$EXTERNAL_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
+          gh run download "$EXTERNAL_EVIDENCE_RUN_ID" \
+            --name "$EXTERNAL_EVIDENCE_ARTIFACT_NAME" \
             --dir dist/imported-external-evidence
           python - <<'PY'
           from pathlib import Path
@@ -173,9 +176,10 @@ jobs:
         env:
           READINESS_CHANNEL: ${{ inputs.readiness_channel }}
           GITHUB_TOKEN: ${{ github.token }}
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id }}
         run: |
           set -euo pipefail
-          if [[ "$READINESS_CHANNEL" == "real-ga" && -z "${{ inputs.external_evidence_run_id }}" ]]; then
+          if [[ "$READINESS_CHANNEL" == "real-ga" && -z "$EXTERNAL_EVIDENCE_RUN_ID" ]]; then
             echo "real-ga readiness requires an enforced Main Verification evidence run id" >&2
             exit 64
           fi

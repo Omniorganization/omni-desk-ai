@@ -44,6 +44,15 @@ class FilesTool:
             raise PermissionError(f"path escapes workspace: {rel}") from exc
         return candidate
 
+    def _writable_path(self, rel: str) -> Path:
+        path = self._safe_path(rel)
+        # Allowlisted git commands run in this same root. Repository config,
+        # hooks and nested .git dirs/files decide what git executes (fsmonitor,
+        # diff/filter drivers, sshCommand, ...), so the agent must never write them.
+        if any(part.lower() == ".git" for part in path.relative_to(self.root).parts):
+            raise PermissionError(f"writes to git metadata are not allowed: {rel}")
+        return path
+
     @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "read_text":
@@ -57,7 +66,7 @@ class FilesTool:
         if action == "write_text":
             if not self.allow_write:
                 raise PermissionError("File writes are disabled by capability policy")
-            path = self._safe_path(str(args["path"]))
+            path = self._writable_path(str(args["path"]))
             text = str(args.get("text", ""))
             expected = str(args.get("expected_result") or f"Write {path.name}")
             ctx.permissions.verify(proposal("files", "write_text", {"path": str(path), "length": len(text), "expected_result": expected}, "high", "写入工作区文件", ctx))
