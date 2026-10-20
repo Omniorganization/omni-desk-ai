@@ -86,6 +86,10 @@ def test_admin_memory_purge_expired_endpoints(tmp_path):
             assert dry["ok"] is True
             assert dry["purge"]["candidate_count"] == 1
             assert dry["purge"]["deleted_count"] == 0
+            # GET must never delete, even if a caller passes dry_run=false.
+            forced = client.get("/admin/memory/purge-expired", params={"dry_run": "false"}).json()
+            assert forced["purge"]["deleted_count"] == 0
+            assert forced["purge"]["candidate_count"] == 1
             executed = client.post("/admin/memory/purge-expired").json()
             assert executed["purge"]["deleted_count"] == 1
     finally:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hmac
 import os
 from typing import Any, Optional, Union
 from omnidesk_agent.config import LarkConfig, FeishuConfig
@@ -29,7 +30,8 @@ class _BaseLarkFeishuChannel:
     def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
         from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
         token = self.verification_token or env_secret(self.cfg.verification_token_env, channel=self.name)
-        if not isinstance(payload, dict) or payload.get("token") != token:
+        supplied = payload.get("token") if isinstance(payload, dict) else None
+        if not token or not isinstance(supplied, str) or not hmac.compare_digest(supplied, token):
             raise PermissionError(f"invalid {self.name} verification token")
         secret = os.getenv(getattr(self.cfg, "webhook_secret_env", ""), "")
         signature = header(headers, "x-omnidesk-webhook-signature-256")
