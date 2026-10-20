@@ -192,6 +192,9 @@ class DiscordChannel:
         return {"message_id": data.get("id"), "request_id": result.request_id}
 
 
+GOOGLE_CHAT_WEBHOOK_PREFIX = "https://chat.googleapis.com/v1/spaces/"
+
+
 class GoogleChatChannel:
     name = "google_chat"
 
@@ -233,9 +236,14 @@ class GoogleChatChannel:
         return ChannelMessage(channel=self.name, sender_id=sender or "unknown", thread_id=space or sender, message_id=str(msg.get("name") or ""), text=text, raw=payload)
 
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
-        url = kwargs.get("webhook_url") or self.incoming_webhook_url or recipient
-        if not str(url).startswith("https://"):
+        # Never post to a caller-chosen URL (kwargs or an LLM-chosen recipient):
+        # use the operator-configured webhook, or a recipient that is itself a
+        # Google Chat incoming-webhook URL.
+        url = self.incoming_webhook_url or str(recipient or "")
+        if not url.startswith("https://"):
             raise RuntimeError("Google Chat incoming webhook URL is missing")
+        if not self.incoming_webhook_url and not url.startswith(GOOGLE_CHAT_WEBHOOK_PREFIX):
+            raise PermissionError("Google Chat recipient must be a https://chat.googleapis.com/ incoming webhook URL")
         result = await self.http.post(str(url), json={"text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
         data = result.data or {}
         return {"message_id": data.get("name"), "request_id": result.request_id}
@@ -378,7 +386,9 @@ class MicrosoftTeamsChannel:
 
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
         token = self.bot_token or _require_env(self.cfg.bot_token_env, channel=self.name)
-        service_url = kwargs.get("service_url") or self.cfg.service_url
+        # The bot bearer token is sent to service_url, so it is pinned to the
+        # configured value; a caller-supplied service_url kwarg is ignored.
+        service_url = self.cfg.service_url
         if not service_url:
             raise RuntimeError("Teams service_url is missing")
         url = f"{str(service_url).rstrip('/')}/v3/conversations/{recipient}/activities"

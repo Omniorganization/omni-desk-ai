@@ -833,15 +833,21 @@ class AppSyncStore:
             if existing:
                 if self._normalize_org_id(existing.organization_id) != organization_id:
                     raise PermissionError("device is already bound to a different organization")
+                if existing.actor != actor:
+                    raise PermissionError("device is already bound to a different actor")
+                if existing.credential_status == "revoked" or existing.revoked_at:
+                    raise PermissionError("device is revoked; enroll a new device")
+                key_changed = bool(public_key) and public_key != existing.public_key
+                if key_changed and existing.credential_status == "verified":
+                    raise PermissionError("verified device keys can only be replaced through re-enrollment")
                 existing.device_type = device_type
                 existing.name = name or existing.name
                 existing.platform = platform or existing.platform
-                existing.actor = actor
                 existing.organization_id = organization_id
                 existing.push_token = push_token or existing.push_token
                 existing.public_key = public_key or existing.public_key
                 existing.token_hash = token_hash or existing.token_hash
-                if public_key:
+                if key_changed:
                     existing.credential_status = "enrolled"
                     existing.trust_level = "public_key_registered"
                 existing.capabilities = list(capabilities or existing.capabilities)

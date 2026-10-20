@@ -5,14 +5,27 @@ use std::path::{Component, Path, PathBuf};
 use tauri::Manager;
 
 const SERVICE: &str = "ai.omnidesk.desktop";
+const IDENTITY_KEYS: [&str; 3] = [
+    "omni.deviceId.v2",
+    "omni.devicePublicKeyPem.v2",
+    "omni.devicePrivateKeyJwk.v2",
+];
+const SESSION_KEYS: [&str; 3] = ["omni.gateway", "omni.operatorToken", "omni.actor"];
+
+/// The webview may only touch the keychain entries the app itself uses.
+fn checked_keychain_key(key: &str) -> Result<&str, String> {
+    if IDENTITY_KEYS.contains(&key) || SESSION_KEYS.contains(&key) {
+        Ok(key)
+    } else {
+        Err("unsupported keychain key".to_string())
+    }
+}
 
 #[tauri::command]
 fn secure_set(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE, &key).map_err(|error| error.to_string())?;
-    if matches!(
-        key.as_str(),
-        "omni.deviceId.v2" | "omni.devicePublicKeyPem.v2" | "omni.devicePrivateKeyJwk.v2"
-    ) {
+    let key = checked_keychain_key(&key)?;
+    let entry = keyring::Entry::new(SERVICE, key).map_err(|error| error.to_string())?;
+    if IDENTITY_KEYS.contains(&key) {
         let directory = app
             .path()
             .app_local_data_dir()
@@ -77,7 +90,8 @@ fn write_identity_once(
 
 #[tauri::command]
 fn secure_get(key: String) -> Result<String, String> {
-    let entry = keyring::Entry::new(SERVICE, &key).map_err(|error| error.to_string())?;
+    let key = checked_keychain_key(&key)?;
+    let entry = keyring::Entry::new(SERVICE, key).map_err(|error| error.to_string())?;
     match entry.get_password() {
         Ok(value) => Ok(value),
         Err(keyring::Error::NoEntry) => Ok(String::new()),
@@ -259,7 +273,7 @@ mod identity_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::validate_relative_path;
+    use super::{checked_keychain_key, validate_relative_path};
 
     #[test]
     fn accepts_bounded_relative_paths() {
@@ -278,5 +292,13 @@ mod tests {
     fn rejects_control_and_oversized_paths() {
         assert!(validate_relative_path("bad\0path").is_err());
         assert!(validate_relative_path(&"a".repeat(1025)).is_err());
+    }
+
+    #[test]
+    fn keychain_commands_only_accept_app_keys() {
+        assert!(checked_keychain_key("omni.operatorToken").is_ok());
+        assert!(checked_keychain_key("omni.devicePrivateKeyJwk.v2").is_ok());
+        assert!(checked_keychain_key("omni.other").is_err());
+        assert!(checked_keychain_key("").is_err());
     }
 }
