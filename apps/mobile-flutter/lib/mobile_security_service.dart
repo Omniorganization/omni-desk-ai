@@ -2,6 +2,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
 
+import 'secure_store.dart';
+
 class MobileSessionSnapshot {
   const MobileSessionSnapshot({
     required this.gateway,
@@ -19,18 +21,24 @@ class MobileSecurityService {
     FlutterSecureStorage? storage,
     LocalAuthentication? localAuthentication,
     FirebaseMessaging? messaging,
-  }) : storage = storage ?? const FlutterSecureStorage(),
+  }) : storage = storage ?? omniSecureStorage,
        _localAuthentication = localAuthentication ?? LocalAuthentication(),
        _messaging = messaging;
 
   final FlutterSecureStorage storage;
   final LocalAuthentication _localAuthentication;
   final FirebaseMessaging? _messaging;
+  Future<void>? _keychainMigration;
+
+  /// Runs the one-time keychain accessibility migration before first access.
+  Future<void> ensureKeychainMigrated() =>
+      _keychainMigration ??= migrateLegacyKeychainItems(current: storage);
 
   Future<MobileSessionSnapshot> restoreSession({
     required String fallbackGateway,
     required String fallbackActor,
   }) async {
+    await ensureKeychainMigrated();
     return MobileSessionSnapshot(
       gateway: await storage.read(key: 'omni.gateway') ?? fallbackGateway,
       token: await storage.read(key: 'omni.token') ?? '',
@@ -43,6 +51,7 @@ class MobileSecurityService {
     required String token,
     required String actor,
   }) async {
+    await ensureKeychainMigrated();
     await Future.wait(<Future<void>>[
       storage.write(key: 'omni.gateway', value: gateway),
       storage.write(key: 'omni.token', value: token),

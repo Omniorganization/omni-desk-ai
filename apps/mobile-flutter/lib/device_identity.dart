@@ -13,14 +13,19 @@ class OmniDeviceIdentity {
 }
 
 class DeviceIdentityStore {
-  DeviceIdentityStore(this.storage);
+  DeviceIdentityStore(this.storage, {this.beforeAccess});
 
   final FlutterSecureStorage storage;
+
+  /// Awaited before reading keys (the keychain migration must run first, or a
+  /// missing identity would be regenerated instead of migrated).
+  final Future<void> Function()? beforeAccess;
   static const _deviceIdKey = 'omni.device_id.v2';
   static const _publicKeyKey = 'omni.device_public_key.v2';
   static const _privateKeyKey = 'omni.device_private_key.v2';
 
   Future<OmniDeviceIdentity> loadOrCreate() async {
+    await beforeAccess?.call();
     final existingId = await storage.read(key: _deviceIdKey);
     final existingPublicKey = await storage.read(key: _publicKeyKey);
     final existingPrivateKey = await storage.read(key: _privateKeyKey);
@@ -53,6 +58,7 @@ class DeviceIdentityStore {
     required String path,
     String body = '',
   }) async {
+    await beforeAccess?.call();
     final deviceId = await storage.read(key: _deviceIdKey);
     final privateKeyEncoded = await storage.read(key: _privateKeyKey);
     if (deviceId == null ||
