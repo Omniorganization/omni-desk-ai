@@ -11,7 +11,7 @@
   "app": {
     "windows": [{ "title": "Omni Desktop Runtime", "width": 1180, "height": 760 }],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* https: ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'"
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* https:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {

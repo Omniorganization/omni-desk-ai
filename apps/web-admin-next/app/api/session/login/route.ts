@@ -2,8 +2,12 @@ import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { resolveGatewayBaseUrl } from '@/lib/gateway';
 import { verifyGatewayIdentity } from '@/lib/session-login';
+import { loginClientKey, loginRateLimiter } from '@/lib/login-rate-limit';
 import { ACTOR_COOKIE, CSRF_COOKIE, GATEWAY_COOKIE, ROLE_COOKIE, SESSION_COOKIE } from '@/lib/session';
 export async function POST(request: Request) {
+  if (!loginRateLimiter.allow(loginClientKey(request.headers))) {
+    return NextResponse.json({ ok: false, error: 'too many login attempts' }, { status: 429, headers: { 'retry-after': '60' } });
+  }
   const payload = await request.json();
   const token = String(payload.token || '');
   const gatewayUrl = resolveGatewayBaseUrl(String(payload.gatewayUrl || ''), process.env);

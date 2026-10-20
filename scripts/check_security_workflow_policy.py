@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 SECURITY_SNIPPETS = [
-    "github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7",
-    "github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7",
+    "github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e",
+    "github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e",
     "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
     "github.com/zricethezav/gitleaks/v8@v8.28.0",
     "fetch-depth: 0",

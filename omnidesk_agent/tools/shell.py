@@ -15,6 +15,7 @@ from omnidesk_agent.security.command_policy import (
     SAFE_CI_ALLOWED_PREFIXES,
     UPGRADE_ALLOWED_PREFIXES,
     argv_allowed,
+    harden_exec_argv,
     readonly_command,
 )
 
@@ -105,7 +106,7 @@ class ShellTool:
             "--mount", f"type=bind,src={self.cwd},dst=/workspace,{'readonly' if mount_mode == 'ro' else 'rw'}",
             "-w", "/workspace",
             str(image),
-            *argv,
+            *harden_exec_argv(argv),
         ])
         return docker_args
 
@@ -138,6 +139,8 @@ class ShellTool:
                 hmac_secret_env=getattr(self.sandbox_cfg, "runner_hmac_secret_env", "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET"),
             )
             try:
+                # Plain argv: the runner re-validates it against the same
+                # policy and its workspace archive excludes .git.
                 remote = await client.run_command(
                     argv=argv,
                     workspace=self.cwd,
@@ -160,7 +163,9 @@ class ShellTool:
             }
             return ToolResult(remote.ok, data=data, summary=f"shell remote exit {remote.exit_code}", error=None if remote.ok else stderr[:2000])
 
-        exec_argv = self._docker_argv(argv) if self.backend == 'docker' else argv
+        # The allowlist and approval above saw the plain argv; only the spawned
+        # process gets the git config-hardening flags.
+        exec_argv = self._docker_argv(argv) if self.backend == 'docker' else harden_exec_argv(argv)
         proc = await asyncio.create_subprocess_exec(
             *exec_argv,
             cwd=str(self.cwd),

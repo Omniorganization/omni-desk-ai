@@ -86,6 +86,30 @@ export function parseSseBlock(block: string): ChatStreamEvent | null {
   return { id, event: event as ChatStreamEvent['event'], data: payload };
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/**
+ * Same rule as the mobile client: the operator token is sent to this origin, so
+ * require https unless the gateway is on loopback, and reject credentials,
+ * query strings and fragments.
+ */
+export function normalizeGatewayBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error('Gateway URL must be an absolute URL');
+  }
+  const loopback = LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error('Gateway URL must use https unless it targets loopback');
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('Gateway URL must not include credentials, query, or fragment');
+  }
+  return value.trim().replace(/\/+$/, '');
+}
+
 export class OmniApiClient {
   constructor(private options: OmniClientOptions) {}
 
@@ -101,7 +125,7 @@ export class OmniApiClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}, idempotencyKey?: string): Promise<T> {
-    const baseUrl = this.options.baseUrl.replace(/\/$/, '');
+    const baseUrl = normalizeGatewayBaseUrl(this.options.baseUrl);
     const method = (init.method || 'GET').toString().toUpperCase();
     const body = typeof init.body === 'string' ? init.body : '';
     const response = await fetch(`${baseUrl}${path}`, {
@@ -149,7 +173,7 @@ export class OmniApiClient {
       source_device_id: options.sourceDeviceId,
     });
     const key = options.idempotencyKey || `desktop-stream-${options.conversationId || 'new'}-${crypto.randomUUID()}`;
-    const response = await fetch(`${this.options.baseUrl.replace(/\/$/, '')}${path}`, {
+    const response = await fetch(`${normalizeGatewayBaseUrl(this.options.baseUrl)}${path}`, {
       method: 'POST',
       body,
       signal: options.signal,
