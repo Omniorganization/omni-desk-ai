@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -22,6 +23,8 @@ from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.security.command_policy import SAFE_CI_ALLOWED_PREFIXES, argv_allowed
 from omnidesk_agent.sandbox.limits import DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_MAX_ARCHIVE_FILE_BYTES, DEFAULT_MAX_ARCHIVE_FILES
+
+LOGGER = logging.getLogger(__name__)
 
 
 ALLOWED_PREFIXES = SAFE_CI_ALLOWED_PREFIXES
@@ -330,8 +333,15 @@ class SandboxRunnerHandler(BaseHTTPRequestHandler):
                     tmp.cleanup()
         except subprocess.TimeoutExpired as exc:
             self._json(200, {"ok": False, "exit_code": 124, "stdout": exc.stdout or "", "stderr": "sandbox timed out"})
-        except Exception as exc:
-            self._json(500, {"ok": False, "exit_code": 1, "stderr": str(exc)})
+        except ValueError as exc:  # includes JSONDecodeError and base64 binascii.Error
+            # Request validation errors carry messages written by this module
+            # (size limits, workspace root checks) and are safe to return.
+            self._json(400, {"ok": False, "exit_code": 1, "stderr": str(exc)})
+        except Exception:
+            # Anything else may include host paths or runtime internals; log it
+            # on the runner and return a generic message to the caller.
+            LOGGER.exception("sandbox runner request failed")
+            self._json(500, {"ok": False, "exit_code": 1, "stderr": "sandbox runner internal error"})
 
 
 def run_server(host: str = "0.0.0.0", port: int = 18890, cfg: RunnerConfig | None = None) -> None:  # nosec B104
