@@ -25,7 +25,7 @@ jobs:
         working-directory: deploy/oracle-free
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e
         with:
           terraform_version: 1.16.4
           terraform_wrapper: false
@@ -36,7 +36,7 @@ jobs:
           terraform init -backend=false -input=false 2>&1 | tee "$RUNNER_TEMP/oracle-free-init.log"
           terraform validate -no-color 2>&1 | tee "$RUNNER_TEMP/oracle-free-validate.log"
           terraform test -no-color 2>&1 | tee "$RUNNER_TEMP/oracle-free-tests.log"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: oracle-free-mock-policy-${{ github.sha }}
@@ -51,7 +51,7 @@ jobs:
       - name: Validate MSIX packaging with synthetic cloud-only PE and Store identity
         shell: pwsh
         run: ./scripts/test_windows_store_package.ps1 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/windows-store-preflight.log"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: windows-store-synthetic-preflight-${{ github.sha }}
