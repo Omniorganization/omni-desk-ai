@@ -50,11 +50,19 @@ class WormAuditCheckpoint:
         actual = hashlib.sha256(Path(audit_log).expanduser().read_bytes()).hexdigest()
         if actual != record.get("audit_log_sha256"):
             return False
+        payload = {k: record[k] for k in ("audit_log", "audit_log_sha256", "created_at", "label") if k in record}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        checkpoint_hash = record.get("checkpoint_hash")
+        expected_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if not isinstance(checkpoint_hash, str) or not hmac.compare_digest(expected_hash.encode("utf-8"), checkpoint_hash.encode("utf-8")):
+            return False
         key = os.getenv(self.hmac_key_env, "")
+        if not key:
+            return True
+        # With a key configured, an unsigned (or stripped-signature) checkpoint
+        # must fail closed instead of downgrading to hash-only verification.
         signature = record.get("signature")
-        if signature and key:
-            payload = {k: record[k] for k in ("audit_log", "audit_log_sha256", "created_at", "label") if k in record}
-            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-            expected = hmac.new(key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
-            return hmac.compare_digest(expected, signature)
-        return bool(record.get("checkpoint_hash"))
+        if not isinstance(signature, str) or not signature:
+            return False
+        expected = hmac.new(key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected.encode("utf-8"), signature.encode("utf-8"))

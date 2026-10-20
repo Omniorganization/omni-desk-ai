@@ -9,6 +9,7 @@ from pathlib import Path
 from omnidesk_agent.config import AppConfig, DEFAULT_SANDBOX_IMAGE, SandboxConfig
 from omnidesk_agent.validation.production import is_production_mode
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
+from omnidesk_agent.security.command_policy import argv_allowed, harden_exec_argv
 from omnidesk_agent.self_upgrade.models import TestResult
 
 
@@ -48,7 +49,9 @@ class SandboxRunner:
         self.require_isolation = require_isolation
 
     def allowed(self, argv: list[str]) -> bool:
-        return any(len(argv) >= len(prefix) and argv[:len(prefix)] == prefix for prefix in self.allowed_prefixes)
+        # Same prefix + per-argument deny policy as ShellTool and the remote
+        # runner: a matching prefix alone does not make extra options safe.
+        return argv_allowed(argv, self.allowed_prefixes, workspace_root=self.repo_root)
 
     async def run(self, command: Union[str, list], timeout: int = 120) -> TestResult:
         # Explicit runtime context covers public-host/URL configuration; the
@@ -76,7 +79,7 @@ class SandboxRunner:
             output = (result.stdout + ("\n" + result.stderr if result.stderr else ""))[-12000:]
             return TestResult(result.ok, "remote_docker " + " ".join(argv), output, int(result.exit_code))
 
-        exec_argv = self._docker_command(argv) if self.backend == "docker" else argv
+        exec_argv = self._docker_command(argv) if self.backend == "docker" else harden_exec_argv(argv)
         proc = await asyncio.create_subprocess_exec(
             *exec_argv,
             cwd=str(self.repo_root),
@@ -112,5 +115,5 @@ class SandboxRunner:
             "-w", "/workspace",
             "--env", "PYTHONDONTWRITEBYTECODE=1",
             str(self.docker_image),
-            *argv,
+            *harden_exec_argv(argv),
         ]
