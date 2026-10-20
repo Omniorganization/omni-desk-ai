@@ -17,6 +17,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install --require-hashes -r requirements.bootstrap.lock
+      - run: python -m pip install --require-hashes -r requirements.runtime.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: python scripts/check_kubernetes_contract.py .
       - run: python scripts/production_closure_drill.py --root . --contract-only
