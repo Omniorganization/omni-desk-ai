@@ -337,7 +337,7 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
 
         async def call_approve():
             result = body.model_dump(exclude_none=True)
-            result.setdefault("decided_by", actor)
+            result["decided_by"] = actor
             try:
                 return {"ok": True, "approval": approvals.decide(approval_id, "approved", result)}
             except PermissionError as exc:
@@ -362,7 +362,7 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
 
         async def call_deny():
             result = body.model_dump(exclude_none=True)
-            result.setdefault("decided_by", actor)
+            result["decided_by"] = actor
             return {"ok": True, "approval": approvals.decide(approval_id, "denied", result)}
 
         return await _idempotent_side_effect(
