@@ -13,6 +13,9 @@ from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.channels.http_client import ChannelHttpClient
 
 
+WECHAT_SIGNATURE_MAX_AGE_SECONDS = 300
+
+
 class WeChatOfficialChannel:
     """WeChat Official Account adapter.
 
@@ -38,9 +41,13 @@ class WeChatOfficialChannel:
         self.app_id = os.getenv(cfg.app_id_env, "")
         self.app_secret = os.getenv(cfg.app_secret_env, "")
         self._access_token: Optional[tuple[str, float]] = None
+        self._seen_nonces: dict[str, float] = {}
         self.http = ChannelHttpClient()
 
     def verify_signature(self, signature: str, timestamp: str, nonce: str) -> bool:
+        if not self.token or not signature or not timestamp or not nonce:
+            # An empty token would make the signature computable by anyone.
+            return False
         raw = "".join(sorted([self.token, timestamp, nonce]))
         # WeChat Official Account webhook verification mandates SHA-1 over
         # token/timestamp/nonce. This is protocol compatibility, not a general
@@ -50,8 +57,25 @@ class WeChatOfficialChannel:
 
 
     def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload) -> None:
-        if not self.verify_signature(query_params.get("signature", ""), query_params.get("timestamp", ""), query_params.get("nonce", "")):
+        timestamp = query_params.get("timestamp", "")
+        nonce = query_params.get("nonce", "")
+        if not self.verify_signature(query_params.get("signature", ""), timestamp, nonce):
             raise PermissionError("invalid WeChat webhook signature")
+        # The plaintext-mode signature does not cover the body, so a captured
+        # signature/timestamp/nonce must not be reusable: enforce freshness and
+        # single use of each nonce within the window.
+        try:
+            sent_at = int(timestamp)
+        except ValueError as exc:
+            raise PermissionError("invalid WeChat webhook timestamp") from exc
+        now = time.time()
+        if abs(now - sent_at) > WECHAT_SIGNATURE_MAX_AGE_SECONDS:
+            raise PermissionError("stale WeChat webhook signature")
+        self._seen_nonces = {key: seen for key, seen in self._seen_nonces.items() if now - seen <= WECHAT_SIGNATURE_MAX_AGE_SECONDS}
+        replay_key = f"{timestamp}:{nonce}"
+        if replay_key in self._seen_nonces:
+            raise PermissionError("replayed WeChat webhook signature")
+        self._seen_nonces[replay_key] = now
 
     def parse_xml(self, xml_body: bytes) -> Optional[ChannelMessage]:
         root = ET.fromstring(xml_body)

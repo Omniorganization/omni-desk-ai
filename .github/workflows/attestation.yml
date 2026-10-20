@@ -19,15 +19,20 @@ permissions:
 
 jobs:
   attest:
+    # Only sign artifacts when dispatched from the protected main branch.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Download release artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
         run: |
+          [[ "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
           mkdir -p dist
-          gh run download "${{ inputs.artifact_run_id }}" --name "${{ inputs.artifact_name }}" --dir dist
+          gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist
       - name: Generate GitHub artifact attestation
         env:
           GH_TOKEN: ${{ github.token }}

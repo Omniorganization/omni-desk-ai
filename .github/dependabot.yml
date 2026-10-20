@@ -21,6 +21,11 @@ updates:
     groups:
       web-admin:
         patterns: ["*"]
+    ignore:
+      # Web Admin runs on Node 22; tests/dependency-upgrade-contract.test.ts
+      # requires @types/node to stay on the 22.x line.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     labels: [dependencies, web-admin]
 
   - package-ecosystem: npm
@@ -62,3 +67,13 @@ updates:
       actions:
         patterns: ["*"]
     labels: [dependencies, github-actions]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
+        patterns: ["*"]
+    labels: [dependencies, docker]
