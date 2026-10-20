@@ -127,11 +127,11 @@ def check_strict_sandbox(runner_url: str, token: str, hmac_secret: str, timeout_
 
     traversal = dict(base_payload, workspace_archive_base64=_file_archive_base64("../evil.py", b"print('evil')\n"))
     status, data = post_json_response(run_url, traversal, token, hmac_secret)
-    checks["path_traversal_archive"] = _assert_rejected("path traversal archive", status, data, {400, 500}, "unsafe path")
+    checks["path_traversal_archive"] = _assert_rejected("path traversal archive", status, data, {400}, "unsafe path")
 
     symlink = dict(base_payload, workspace_archive_base64=_symlink_archive_base64("escape", "/etc/passwd"))
     status, data = post_json_response(run_url, symlink, token, hmac_secret)
-    checks["symlink_escape_archive"] = _assert_rejected("symlink archive", status, data, {400, 500}, "links")
+    checks["symlink_escape_archive"] = _assert_rejected("symlink archive", status, data, {400}, "links")
 
     blocked = dict(base_payload, argv=["bash", "-c", "id"], workspace_archive_base64=build_smoke_workspace_archive())
     status, data = post_json_response(run_url, blocked, token, hmac_secret)
@@ -146,7 +146,7 @@ def check_strict_sandbox(runner_url: str, token: str, hmac_secret: str, timeout_
 
     oversized = dict(base_payload, workspace_archive_base64=_file_archive_base64("large.py", b"x" * (1024 * 1024 + 1)))
     status, data = post_json_response(run_url, oversized, token, hmac_secret)
-    checks["oversized_archive_reject"] = _assert_rejected("oversized archive", status, data, {413, 500}, "exceeds maximum size")
+    checks["oversized_archive_reject"] = _assert_rejected("oversized archive", status, data, {400, 413}, "exceeds maximum size")
     return checks
 
 
