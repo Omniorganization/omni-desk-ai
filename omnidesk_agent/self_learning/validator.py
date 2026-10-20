@@ -1,17 +1,23 @@
 from __future__ import annotations
 
-import subprocess
+import asyncio
+import concurrent.futures
 from pathlib import Path
-from typing import Optional
+from typing import Any, Coroutine, Optional, TypeVar
 
+from omnidesk_agent.config import SandboxConfig
 from omnidesk_agent.self_learning.schemas import LearningProposal, SandboxValidationResult
+from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
+
+T = TypeVar("T")
 
 
 class SandboxValidator:
     """Run bounded validation before a proposal can be approved or promoted."""
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, *, sandbox_cfg: SandboxConfig | None = None):
         self.repo_root = repo_root.resolve()
+        self.runner = SandboxRunner(self.repo_root, sandbox_cfg=sandbox_cfg)
 
     def validate(self, proposal: LearningProposal, *, commands: Optional[list[list[str]]] = None, timeout: int = 180) -> SandboxValidationResult:
         commands = commands if commands is not None else self._default_commands(proposal)
@@ -50,25 +56,23 @@ class SandboxValidator:
         return commands
 
     def _run(self, command: list[str], *, timeout: int) -> dict:
-        try:
-            result = subprocess.run(command, cwd=self.repo_root, text=True, capture_output=True, timeout=timeout, check=False)
-            return {
-                "command": command,
-                "exit_code": result.returncode,
-                "stdout": result.stdout[-4000:],
-                "stderr": result.stderr[-4000:],
-            }
-        except subprocess.TimeoutExpired as exc:
-            return {
-                "command": command,
-                "exit_code": 124,
-                "stdout": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
-                "stderr": (exc.stderr or "")[-4000:] if isinstance(exc.stderr, str) else "validation timed out",
-            }
-        except OSError as exc:
-            return {
-                "command": command,
-                "exit_code": 127,
-                "stdout": "",
-                "stderr": str(exc),
-            }
+        # Proposal test plans are generated content: run them through the same
+        # allowlisted SandboxRunner (docker/remote backend in production) as other
+        # upgrade checks instead of spawning them directly on the host.
+        result = _run_sync(self.runner.run(command, timeout=timeout))
+        return {
+            "command": command,
+            "exit_code": result.exit_code,
+            "stdout": result.output[-4000:],
+            "stderr": "" if result.ok else result.output[-4000:],
+        }
+
+
+def _run_sync(coro: Coroutine[Any, Any, T]) -> T:
+    """Run a coroutine from sync code, also when called inside a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
