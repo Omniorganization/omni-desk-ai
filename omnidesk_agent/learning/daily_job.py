@@ -5,11 +5,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from omnidesk_agent.config import SandboxConfig
+
 from omnidesk_agent.learning.failure_analyzer import FailureAnalyzer
 from omnidesk_agent.learning.growth_plan import GrowthPlan, GrowthPlanner
 from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.self_upgrade.approval_gate import UpgradeApprovalGate
 from omnidesk_agent.self_upgrade.models import UpgradeRequest
+from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
 from omnidesk_agent.self_upgrade.proposal.proposal_generator import UpgradeProposalGenerator
 from omnidesk_agent.self_upgrade.proposal.proposal_store import UpgradeProposalStore
 from omnidesk_agent.self_learning.analyzer import LearningAnalyzer
@@ -37,7 +40,7 @@ class DailySelfLearningJob:
     reviewable upgrade request artifacts.
     """
 
-    def __init__(self, memory: ExperienceStore, workspace_root: Path):
+    def __init__(self, memory: ExperienceStore, workspace_root: Path, *, sandbox_cfg: SandboxConfig | None = None):
         self.memory = memory
         self.workspace_root = workspace_root.expanduser()
         self.failure_analyzer = FailureAnalyzer()
@@ -57,7 +60,10 @@ class DailySelfLearningJob:
         self.controlled_proposals = ControlledProposalGenerator()
         self.learning_policy = SelfLearningBoundaryPolicy()
         self.human_approval_gate = HumanApprovalGate(self.self_learning_store)
-        self.sandbox_validator = SandboxValidator(self.workspace_root)
+        self.sandbox_validator = SandboxValidator(
+            self.workspace_root,
+            runner=SandboxRunner(self.workspace_root.expanduser().resolve(), sandbox_cfg=sandbox_cfg),
+        )
         self.rollback_manager = RollbackManager(self.self_learning_store)
 
     def run(self, days: int = 7) -> dict[str, Any]:

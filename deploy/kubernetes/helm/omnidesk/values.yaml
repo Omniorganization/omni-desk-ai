@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/yinyufan0813-cmyk/omni-desk-ai
+  repository: ghcr.io/omniorganization/omni-desk-ai/omnidesk-agent # pushed by .github/workflows/release.yml
   digest: "" # required: release pipeline must inject the final OmniDesk app OCI digest
   pullPolicy: IfNotPresent
 replicaCount: 3
@@ -56,7 +56,7 @@ config:
   sandboxRunnerUrl: http://sandbox-runner:18890
   trustedProxyIps: []
 sandboxRunner:
-  repository: ghcr.io/yinyufan0813-cmyk/omnidesk-sandbox-runner
+  repository: ghcr.io/omniorganization/omni-desk-ai/omnidesk-sandbox-runner
   digest: "" # required: runner image digest must be pinned
 migrations:
   enabled: true
