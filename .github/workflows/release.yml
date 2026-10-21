@@ -631,15 +631,22 @@ jobs:
           cosign attest-blob --yes --predicate dist/sbom.json --type spdx "$wheel" --output-signature dist/sbom.intoto.sig --output-certificate dist/sbom.intoto.pem
           cosign attest-blob --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$wheel" --output-signature dist/slsa.intoto.sig --output-certificate dist/slsa.intoto.pem
 
-      - name: Generate artifact attestations
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: List release payload for GitHub artifact attestation
         run: |
+          set -euo pipefail
           test -f dist/release_metadata.json
           test -f dist/release_signatures.json
-          python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
-            gh attestation sign "$artifact" --repo "$GITHUB_REPOSITORY"
-          done
+          # Attest every top-level file after the last signing step: promotion,
+          # staging and rollback verify an attestation for each one
+          # (find dist -maxdepth 1 -type f). The list lives outside dist/.
+          find dist -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/attestation-subjects.sha256"
+          test -s "$RUNNER_TEMP/attestation-subjects.sha256"
+      - name: Generate artifact attestations
+        # gh has no subcommand that creates attestations; GitHub's action creates the
+        # Sigstore-signed provenance that `gh attestation verify` checks.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/attestation-subjects.sha256
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: dist-and-sbom
