@@ -33,11 +33,15 @@ jobs:
           [[ "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
           mkdir -p dist
           gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist
-      - name: Generate GitHub artifact attestation
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: List artifacts to attest
         run: |
-          for artifact in dist/*; do
-            test -f "$artifact" || continue
-            gh attestation sign "$artifact" --repo "$GITHUB_REPOSITORY"
-          done
+          set -euo pipefail
+          find dist -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/attestation-subjects.sha256"
+          test -s "$RUNNER_TEMP/attestation-subjects.sha256"
+      - name: Generate GitHub artifact attestation
+        # Note: production promotion only trusts attestations signed by
+        # release.yml (--signer-workflow); this workflow is for re-attesting
+        # artifacts outside the promotion path.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/attestation-subjects.sha256

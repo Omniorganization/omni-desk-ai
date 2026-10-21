@@ -11,7 +11,7 @@ REQUIRED_RELEASE_SNIPPETS = [
     "cosign sign --yes",
     "cosign attest --yes",
     "slsa-provenance",
-    "gh attestation sign",
+    "actions/attest-build-provenance@",
     "docker build",
     "docker push",
     "OMNIDESK_IMAGE_DIGEST",

@@ -4,12 +4,14 @@
 # prevent dependency resolution from drifting back onto vulnerable releases.
 click>=8.5.0
 anyio>=4.15.1
+certifi>=2026.10.19
 cryptography>=50
 filelock>=4.0.9
 httpx2>=2.12.0
 jsonschema>=4.26.0
 msgpack>=1.2.2
 pillow>=12.3.0
+pillow>=13.0.0; python_version >= '3.11'
 pip>=26.2.1
 pytest>=9.0.3
 requests>=2.34.2
