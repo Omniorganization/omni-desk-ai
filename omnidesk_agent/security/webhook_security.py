@@ -15,6 +15,11 @@ from omnidesk_agent.validation.webhook_signatures import line_signature_valid
 @dataclass
 class WebhookSecurityConfig:
     replay_ttl_seconds: int = 300
+    # How long seen message digests are kept. Many channels (DingTalk, X, Lark,
+    # Discord, Teams, Matrix, Telegram) carry no signed timestamp, so a captured
+    # signed request could be replayed once its digest expired; keep them longer
+    # than any realistic capture-and-replay window.
+    seen_retention_seconds: int = 7 * 24 * 3600
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 60
 
@@ -98,7 +103,7 @@ class WebhookSecurity:
                 raise PermissionError(f"webhook rate limit exceeded for {key}")
 
     def _mark_seen(self, channel: str, digest: str) -> bool:
-        cutoff = time.time() - self.cfg.replay_ttl_seconds
+        cutoff = time.time() - max(self.cfg.replay_ttl_seconds, self.cfg.seen_retention_seconds)
         with connect_sqlite(self.db_path) as con:
             con.execute("DELETE FROM webhook_seen WHERE created_at < ?", (cutoff,))
             try:
