@@ -9,54 +9,78 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_signing import REQUIRE_ED25519_ENV, ed25519_required, ed25519_verifier  # noqa: E402
+from release_signing import (  # noqa: E402
+    ED25519,
+    LEGACY_HMAC_KEY_ENV,
+    SIGNATURE_MANIFEST_NAME,
+    ed25519_verifier,
+    policy_algorithm,
+    signable_artifact_names,
+)
+
+
+def _fail(message: str, code: int = 1) -> int:
+    print(message, file=sys.stderr)
+    return code
 
 
 def main(dist_dir: str = "dist") -> int:
     root = Path(dist_dir)
-    manifest_path = root / "release_signatures.json"
+    manifest_path = root / SIGNATURE_MANIFEST_NAME
     if not manifest_path.exists():
-        print("release_signatures.json is missing", file=sys.stderr)
-        return 1
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    algorithm = str(manifest.get("algorithm") or "hmac-sha256")
-    if algorithm == "ed25519":
+        return _fail(f"{SIGNATURE_MANIFEST_NAME} is missing")
+    try:
+        # The verifier's own policy decides the algorithm; the manifest only has to agree.
+        algorithm = policy_algorithm()
+    except ValueError as exc:
+        return _fail(str(exc))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        return _fail(f"{SIGNATURE_MANIFEST_NAME} is not valid JSON: {exc}")
+    if not isinstance(manifest, dict):
+        return _fail(f"{SIGNATURE_MANIFEST_NAME} must be a JSON object")
+    if manifest.get("algorithm") != algorithm:
+        return _fail(f"{SIGNATURE_MANIFEST_NAME} declares {manifest.get('algorithm')!r}; this verifier only accepts {algorithm}")
+    if algorithm == ED25519:
         verify = ed25519_verifier()
         if verify is None:
-            print("an Ed25519 release verification public key is required to verify release signatures", file=sys.stderr)
-            return 2
-    elif algorithm == "hmac-sha256":
-        if ed25519_required():
-            print(f"legacy hmac-sha256 release signatures are refused ({REQUIRE_ED25519_ENV} is set)", file=sys.stderr)
-            return 1
-        key = os.getenv("OMNIDESK_RELEASE_SIGNING_KEY", "")
+            return _fail("an Ed25519 release verification public key is required to verify release signatures", 2)
+    else:
+        key = os.getenv(LEGACY_HMAC_KEY_ENV, "")
         if not key:
-            print("OMNIDESK_RELEASE_SIGNING_KEY is required to verify release signatures", file=sys.stderr)
-            return 2
+            return _fail(f"{LEGACY_HMAC_KEY_ENV} is required to verify legacy {algorithm} release signatures", 2)
 
         def verify(data: bytes, signature: str) -> bool:
             expected = hmac.new(key.encode("utf-8"), data, hashlib.sha256).hexdigest()
             return hmac.compare_digest(expected, signature)
-    else:
-        print(f"unsupported release signature algorithm: {algorithm}", file=sys.stderr)
-        return 1
-    for item in manifest.get("artifacts", []):
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return _fail(f"{SIGNATURE_MANIFEST_NAME} lists no signed artifacts")
+    names: list[str] = []
+    for item in artifacts:
+        name = str(item.get("name") or "") if isinstance(item, dict) else ""
+        if not name or name in {".", ".."} or Path(name).name != name:
+            return _fail(f"{SIGNATURE_MANIFEST_NAME} contains an invalid artifact name: {name!r}")
+        names.append(name)
+    if len(set(names)) != len(names):
+        return _fail(f"{SIGNATURE_MANIFEST_NAME} lists an artifact more than once")
+    signable = signable_artifact_names(root)
+    if set(names) != signable:
+        return _fail(f"signed artifact set mismatch: unsigned={sorted(signable - set(names))} missing={sorted(set(names) - signable)}")
+    for item in artifacts:
         artifact = root / item["name"]
-        if not artifact.exists():
-            print(f"signed artifact missing: {artifact.name}", file=sys.stderr)
-            return 1
         data = artifact.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         if not hmac.compare_digest(digest, str(item.get("sha256", ""))):
-            print(f"sha256 mismatch: {artifact.name}", file=sys.stderr)
-            return 1
+            return _fail(f"sha256 mismatch: {artifact.name}")
         sig_file = artifact.with_suffix(artifact.suffix + ".sig")
         actual = sig_file.read_text(encoding="utf-8").strip() if sig_file.exists() else ""
         listed = str(item.get("signature", ""))
         if not actual or not hmac.compare_digest(actual, listed) or not verify(data, actual):
-            print(f"signature mismatch: {artifact.name}", file=sys.stderr)
-            return 1
-    print(f"release signatures verified ({algorithm})")
+            return _fail(f"signature mismatch: {artifact.name}")
+    print(f"release signatures verified ({algorithm}, {len(names)} artifacts)")
     return 0
 
 

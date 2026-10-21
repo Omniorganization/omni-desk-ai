@@ -87,7 +87,7 @@ Before promotion:
 python -m compileall omnidesk_agent
 pytest --cov=omnidesk_agent --cov-report=json --cov-fail-under=80 -q
 python scripts/check_coverage_gates.py coverage.json
-OMNIDESK_RELEASE_SIGNING_KEY="$KEY" OMNIDESK_IMAGE_DIGEST="sha256:<64-hex>" bash scripts/build_release.sh
+OMNIDESK_RELEASE_SIGNING_ED25519_KEY="$(cat release-signing-private-key.pem)" OMNIDESK_IMAGE_DIGEST="sha256:<64-hex>" bash scripts/build_release.sh
 bash scripts/docker_scan.sh omnidesk-agent:local
 ```
 
@@ -122,7 +122,7 @@ If `/var/run/docker.sock` is detected in a deployment review, treat the deployme
 
 ## 10. Release signing verification
 
-`OMNIDESK_RELEASE_SIGNING_KEY` is mandatory for production release artifacts. `scripts/build_release.sh` now signs artifacts and immediately verifies signatures. `OMNIDESK_ALLOW_UNSIGNED_RELEASE=1` is reserved only for local development smoke checks and must not be used for production releases.
+Release artifacts are signed with Ed25519 (`OMNIDESK_RELEASE_SIGNING_ED25519_KEY`, a secret of the protected `release` environment) and verified with the committed `release/release-signing-public-key.pem`; verifiers hold no secret. `scripts/finalize_release_payload.py` writes `checksums.txt`, signs every file in `dist/` and verifies the result, so it runs after everything that ships exists. The legacy HMAC mode (`OMNIDESK_RELEASE_SIGNATURE_ALGORITHM=hmac-sha256` with `OMNIDESK_RELEASE_SIGNING_KEY`) and `OMNIDESK_ALLOW_UNSIGNED_RELEASE=1` are reserved for local development and are rejected by the workflow policy. See `docs/RELEASE_SIGNING_TRUST.md`.
 
 
 ## Digest-pinned images

@@ -113,8 +113,23 @@ steps:
         release/external-ga-evidence-import-report.json
         release/ios-real-device-evidence-import-report.json
         release/tri-app-live-smoke-evidence-import-report.json
+  - environment: release
+    env:
+      OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
+  - run: python scripts/fetch_ci_evidence_artifact.py --consumer release --dest release/external-evidence
+  - run: bash scripts/build_release.sh
+    env:
+      OMNIDESK_RELEASE_DEFER_SIGNING: "1"
+  - run: python scripts/write_native_artifact_manifest.py --output dist/tri-app-native-artifacts.json
+  - run: python scripts/render_locked_helm_values.py --output dist/values.production.locked.yaml
   - run: python scripts/write_slsa_provenance.py dist --builder-id release_metadata
-  - run: gh attestation sign dist/release_metadata.json
+  - run: cosign sign-blob --yes "$artifact"
+  - run: cosign attest-blob --yes --predicate dist/sbom.json
+  - env:
+      OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
+    run: test -f release/release-signing-public-key.pem && python scripts/finalize_release_payload.py dist
+  - name: Generate artifact attestations
+    uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
 """,
         encoding="utf-8",
     )

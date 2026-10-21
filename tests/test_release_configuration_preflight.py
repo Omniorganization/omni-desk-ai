@@ -23,7 +23,7 @@ def _set_complete_release_config(monkeypatch) -> None:
         "OMNI_IOS_CERTIFICATE_PASSWORD",
         "OMNI_IOS_PROVISIONING_PROFILE_BASE64",
         "OMNI_IOS_KEYCHAIN_PASSWORD",
-        "OMNIDESK_RELEASE_SIGNING_KEY",
+        "OMNIDESK_RELEASE_SIGNING_ED25519_KEY",
     ]:
         monkeypatch.setenv(name, "set")
     monkeypatch.setenv("OMNI_IOS_APPLE_TEAM_ID", "TEAM123456")
@@ -31,7 +31,8 @@ def _set_complete_release_config(monkeypatch) -> None:
 
 
 def _set_complete_downstream_config(monkeypatch) -> None:
-    monkeypatch.setenv("OMNIDESK_RELEASE_SIGNING_KEY", "set")
+    # Stands in for the committed release/release-signing-public-key.pem.
+    monkeypatch.setenv("OMNIDESK_RELEASE_VERIFY_PUBLIC_KEY", "set")
     monkeypatch.setenv("OMNIDESK_SMOKE_BASE_URL", "https://staging.example.test")
     monkeypatch.setenv("OMNIDESK_SMOKE_ADMIN_TOKEN", "set")
     monkeypatch.setenv("OMNIDESK_SMOKE_SANDBOX_URL", "https://sandbox.example.test")
@@ -564,3 +565,25 @@ def test_ios_evidence_preflight_rejects_semantically_invalid_tree(monkeypatch, t
 
     assert main(["--scope", "ios-evidence"]) == 1
     assert "launch_success" in capsys.readouterr().err
+
+
+def test_release_preflight_requires_ed25519_key_not_legacy_hmac(monkeypatch, capsys) -> None:
+    _clear_known_env(monkeypatch)
+    _set_complete_release_config(monkeypatch)
+    monkeypatch.delenv("OMNIDESK_RELEASE_SIGNING_ED25519_KEY")
+    monkeypatch.setenv("OMNIDESK_RELEASE_SIGNING_KEY", "legacy-hmac")
+
+    assert main(["--scope", "release"]) == 1
+    assert "missing secret: OMNIDESK_RELEASE_SIGNING_ED25519_KEY" in capsys.readouterr().err
+
+
+def test_downstream_preflight_requires_committed_release_public_key(monkeypatch, capsys, tmp_path) -> None:
+    from scripts import check_release_configuration
+
+    _clear_known_env(monkeypatch)
+    _set_complete_downstream_config(monkeypatch)
+    monkeypatch.delenv("OMNIDESK_RELEASE_VERIFY_PUBLIC_KEY")
+    monkeypatch.setattr(check_release_configuration, "RELEASE_VERIFY_PUBLIC_KEY", tmp_path / "missing.pem")
+
+    assert main(["--scope", "staging", "--deploy-mode", "noop"]) == 1
+    assert "commit release/release-signing-public-key.pem" in capsys.readouterr().err

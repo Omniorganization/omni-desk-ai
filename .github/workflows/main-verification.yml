@@ -56,10 +56,16 @@ jobs:
             exit 2
           fi
           if [[ -n "${EXTERNAL_EVIDENCE_RUN_ID:-}" ]]; then
-            mkdir -p release/external-evidence
-            gh run download "$EXTERNAL_EVIDENCE_RUN_ID" \
-              --name "$EXTERNAL_EVIDENCE_ARTIFACT_NAME" \
-              --dir release/external-evidence
+            [[ "$EXTERNAL_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
+            # Release trusts the bound artifact this run uploads, so the source must be a
+            # successful control-plane or remote-evidence run on main
+            # (release/evidence-source-workflows.json); only expected evidence files are copied.
+            python scripts/fetch_ci_evidence_artifact.py \
+              --consumer main-verification \
+              --run-id "$EXTERNAL_EVIDENCE_RUN_ID" \
+              --artifact-name "$EXTERNAL_EVIDENCE_ARTIFACT_NAME" \
+              --dest release/external-evidence \
+              --write-report "$RUNNER_TEMP/external-evidence-fetch-report.json"
           else
             echo "No external evidence supplied for PR/push source verification; customer-distribution Real GA remains blocked."
           fi

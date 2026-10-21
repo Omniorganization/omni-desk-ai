@@ -36,7 +36,8 @@ RELEASE_SECRETS = [
     "OMNI_IOS_CERTIFICATE_PASSWORD",
     "OMNI_IOS_PROVISIONING_PROFILE_BASE64",
     "OMNI_IOS_KEYCHAIN_PASSWORD",
-    "OMNIDESK_RELEASE_SIGNING_KEY",
+    # Secret of the protected `release` environment only.
+    "OMNIDESK_RELEASE_SIGNING_ED25519_KEY",
 ]
 
 RELEASE_VARS = [
@@ -44,9 +45,11 @@ RELEASE_VARS = [
     "OMNIDESK_SANDBOX_RUNNER_DIGEST",
 ]
 
-ARTIFACT_VERIFY_SECRETS = [
-    "OMNIDESK_RELEASE_SIGNING_KEY",
-]
+# Staging, production and rollback verify Ed25519 release signatures with the
+# committed public key and must not hold any release signing secret.
+ARTIFACT_VERIFY_SECRETS: list[str] = []
+ARTIFACT_VERIFY_PUBLIC_KEY_ENV = "OMNIDESK_RELEASE_VERIFY_PUBLIC_KEY"
+RELEASE_VERIFY_PUBLIC_KEY = Path(__file__).resolve().parents[1] / "release" / "release-signing-public-key.pem"
 
 SMOKE_SECRETS = [
     "OMNIDESK_SMOKE_ADMIN_TOKEN",
@@ -190,6 +193,7 @@ ALL_KNOWN_NAMES = sorted(
     set(RELEASE_SECRETS)
     | set(RELEASE_VARS)
     | set(ARTIFACT_VERIFY_SECRETS)
+    | {ARTIFACT_VERIFY_PUBLIC_KEY_ENV}
     | set(SMOKE_SECRETS)
     | set(SANDBOX_SMOKE_SECRETS)
     | set(SMOKE_VARS)
@@ -709,6 +713,14 @@ def check_downstream(
             message="invalid deploy mode: production promotion must not use noop",
         )
     _require(ARTIFACT_VERIFY_SECRETS, "secret", issues)
+    if not RELEASE_VERIFY_PUBLIC_KEY.exists() and not _value(ARTIFACT_VERIFY_PUBLIC_KEY_ENV):
+        _issue(
+            issues,
+            severity="blocker",
+            kind="missing_public_key",
+            name="release/release-signing-public-key.pem",
+            message="missing release verification key: commit release/release-signing-public-key.pem (scripts/generate_release_signing_key.py)",
+        )
     _require(SMOKE_SECRETS, "secret", issues)
     _require(SMOKE_VARS, "var", issues)
     if require_sandbox_smoke:
