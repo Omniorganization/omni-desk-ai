@@ -57,6 +57,19 @@ def _device_signing_message(*, challenge_id: str, nonce_hash: str) -> bytes:
     return f"omnidesk-device-challenge:v2:{challenge_id}:{nonce_hash}".encode("utf-8")
 
 
+def _approval_decision_message(*, approval_id: str, decision: str, timestamp: str, nonce: str) -> bytes:
+    return f"omnidesk-approval-decision:v1:{approval_id}:{decision}:{timestamp}:{nonce}".encode("utf-8")
+
+
+def _is_ed25519_public_key(value: str) -> bool:
+    if not value.startswith("base64:"):
+        return False
+    try:
+        return len(base64.b64decode(value.split(":", 1)[1], validate=True)) == 32
+    except Exception:
+        return False
+
+
 def _sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload or b"").hexdigest()
 
@@ -161,6 +174,10 @@ class DeviceRecord:
     last_seen_at: float = field(default_factory=_now)
     created_at: float = field(default_factory=_now)
     updated_at: float = field(default_factory=_now)
+    # Ed25519 key held in biometric/passcode-gated storage on the device; once
+    # set, approval decisions from this device must carry its signature.
+    approval_public_key: Optional[str] = None
+    approval_key_registered_at: Optional[float] = None
 
 
 @dataclass
@@ -1293,6 +1310,83 @@ class AppSyncStore:
             )
             self._persist()
             return self._record(item)
+
+    def register_approval_key(self, *, actor: str, device_id: str, public_key: str) -> dict[str, Any]:
+        public_key = (public_key or "").strip()
+        if not _is_ed25519_public_key(public_key):
+            raise ValueError("approval key must be an Ed25519 public key (base64:<32 bytes>)")
+        with self._lock:
+            device = self.devices.get(device_id)
+            if not device:
+                raise KeyError("device not found")
+            if device.actor != actor:
+                raise PermissionError("device is bound to a different actor")
+            if device.revoked_at or device.credential_status == "revoked":
+                raise PermissionError("device is revoked")
+            if device.credential_status != "verified" or device.trust_level != "challenge_verified":
+                raise PermissionError("device must be challenge-verified before registering an approval key")
+            if device.device_type != "mobile":
+                raise PermissionError("approval keys are only supported for mobile devices")
+            if device.approval_public_key:
+                if device.approval_public_key == public_key:
+                    return self._record(device)
+                # Write-once: a stolen device token must not be able to swap it.
+                raise PermissionError("approval key already registered; re-enroll the device to replace it")
+            device.approval_public_key = public_key
+            device.approval_key_registered_at = _now()
+            device.updated_at = _now()
+            self._event("device.approval_key_registered", actor, {"device_id": device_id, "organization_id": device.organization_id})
+            self._persist()
+            return self._record(device)
+
+    def device_approval_key(self, device_id: str) -> Optional[str]:
+        with self._lock:
+            device = self.devices.get(device_id)
+            return device.approval_public_key if device else None
+
+    def verify_approval_signature(
+        self,
+        *,
+        device_id: str,
+        approval_id: str,
+        decision: str,
+        timestamp: str,
+        nonce: str,
+        signature: str,
+        max_skew_seconds: int = 300,
+        nonce_ttl_seconds: int = 600,
+    ) -> tuple[bool, str]:
+        now = _now()
+        timestamp = (timestamp or "").strip()
+        nonce = (nonce or "").strip()
+        signature = (signature or "").strip()
+        if not self.device_approval_key(device_id):
+            return False, "approval_key_not_registered"
+        if not timestamp or not nonce or not signature:
+            return False, "missing_approval_signature"
+        try:
+            ts = float(timestamp)
+            if ts > 10_000_000_000:
+                ts = ts / 1000.0
+        except ValueError:
+            return False, "invalid_timestamp"
+        if abs(now - ts) > max(30, int(max_skew_seconds or 300)):
+            return False, "timestamp_out_of_window"
+        if len(nonce) < 16 or len(nonce) > 180:
+            return False, "invalid_nonce"
+        with self._lock:
+            device = self.devices.get(device_id)
+            if not device or not device.approval_public_key:
+                return False, "approval_key_not_registered"
+            nonce_key = f"approval:{device_id}:{nonce}"
+            if nonce_key in self.device_request_nonces:
+                return False, "nonce_replay"
+            message = _approval_decision_message(approval_id=approval_id, decision=decision, timestamp=timestamp, nonce=nonce)
+            if not _verify_device_signature(device.approval_public_key, message, signature):
+                return False, "approval_signature_mismatch"
+            self.device_request_nonces[nonce_key] = now + max(60, int(nonce_ttl_seconds or 600))
+            self._persist()
+            return True, "ok"
 
     def verify_device_request_signature(
         self,
