@@ -132,6 +132,7 @@ steps:
       name: dist-and-sbom
       path: dist/**
   - uses: actions/upload-artifact
+    if: always()
     with:
       name: real-ga-evidence-import-reports
       if-no-files-found: error

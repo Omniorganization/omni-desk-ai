@@ -46,9 +46,11 @@ set from the repository.
   never `dist/`: `scripts/build_release.sh` starts with `rm -rf dist`, and
   `dist/` is the signed, attested payload. The build job checks that every report
   exists before it publishes anything, and the `real-ga-evidence-import-reports`
-  upload sets `if-no-files-found: error`. `check_workflow_governance.py
-  --require-real-workflows` rejects a `dist/` path before `build_release.sh` and
-  a report missing from the check or the upload.
+  upload runs `if: always()` (a failed gate keeps its reports) with
+  `if-no-files-found: error`. `check_workflow_governance.py
+  --require-real-workflows` rejects a `dist/` path before `build_release.sh`, an
+  upload without either setting, and a report missing from the check or the
+  upload.
 
 ## Owner actions in GitHub
 
@@ -127,6 +129,11 @@ set from the repository.
   `reports/release/` instead of `dist/`, and the four preflight reports that were
   never uploaded, the Main Verification live report and the audit/summary copies
   are now included.
+- The reports artifact is now also uploaded when the build job fails, with
+  whatever reports exist at that point. It is diagnostic only: no workflow
+  consumes it, and `fetch_ci_evidence_artifact.py` rejects artifacts from runs
+  that did not succeed, so a failed run's reports never count as evidence. After a
+  failure that happens before any report is written, the upload step fails too.
 
 ## Rollback
 
@@ -140,3 +147,5 @@ needs it as a secret it can read.
 The gate-report move can be reverted on its own (revert the commit that added
 the "Gate reports" note). Signing and verification are unaffected; the reports
 are then deleted by `build_release.sh` again and missing from the upload.
+Uploading on failure can be reverted separately by removing `if: always()` from
+the upload and the matching check in `check_workflow_governance.py`.

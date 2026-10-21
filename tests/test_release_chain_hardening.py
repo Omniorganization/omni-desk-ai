@@ -452,6 +452,11 @@ def test_workflow_governance_rejects_direct_evidence_download(tmp_path: Path) ->
             "must set if-no-files-found: error",
         ),
         (
+            "        if: always()\n        with:\n          name: real-ga-evidence-import-reports\n",
+            "        with:\n          name: real-ga-evidence-import-reports\n",
+            "must run if: always()",
+        ),
+        (
             "            reports/release/main-verification-live-artifact.json\n",
             "",
             "upload missing reports/release/main-verification-live-artifact.json",

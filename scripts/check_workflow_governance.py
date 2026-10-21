@@ -154,6 +154,8 @@ def _release_report_issues(text: str) -> list[str]:
         return issues
     if "if-no-files-found: error" not in upload:
         issues.append("real-ga-evidence-import-reports upload must set if-no-files-found: error")
+    if "if: always()" not in upload:
+        issues.append("real-ga-evidence-import-reports upload must run if: always(), so a failed gate's reports are kept")
     if DIST_PATH_RE.search(upload):
         issues.append("real-ga-evidence-import-reports must not upload from dist/, the signed release payload")
     for report in RELEASE_GATE_REPORTS:
