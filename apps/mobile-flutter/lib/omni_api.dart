@@ -150,6 +150,7 @@ class OmniApiClient {
   Future<Map<String, dynamic>> registerMobile({
     required String deviceId,
     String? pushToken,
+    String pushTokenType = 'fid',
     String? publicKey,
   }) =>
       _request(
@@ -161,6 +162,7 @@ class OmniApiClient {
           'name': 'Omni Mobile',
           'platform': 'flutter',
           'push_token': pushToken,
+          if (pushToken != null) 'push_token_type': pushTokenType,
           'public_key': publicKey,
           'capabilities': <String>[
             'chat',
@@ -322,16 +324,20 @@ class OmniApiClient {
         idempotencyKey ?? 'mobile-approval-$approvalId-$decision',
       );
 
+  /// [pushToken] is a Firebase Installation ID by default (firebase_messaging
+  /// 17 register()/onRegistered); pass tokenType 'fcm_token' for legacy tokens.
   Future<Map<String, dynamic>> registerPushToken(
     String deviceId,
     String pushToken, {
     String platform = 'flutter',
+    String tokenType = 'fid',
   }) =>
       _request(
         'POST',
         '/app/devices/${_pathSegment(deviceId)}/push-token',
         <String, dynamic>{
           'push_token': pushToken,
+          'token_type': tokenType,
           'platform': platform,
         },
       );
