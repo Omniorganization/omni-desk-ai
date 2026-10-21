@@ -76,6 +76,8 @@ jobs:
       - name: Verify release artifacts and attestations
         env:
           OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          # Set this repository variable to 1 once releases are Ed25519-signed to refuse HMAC manifests.
+          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: ${{ vars.OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES }}
           GH_TOKEN: ${{ github.token }}
           CURRENT_VERSION: ${{ inputs.current_version }}
           PREVIOUS_VERSION: ${{ inputs.previous_version }}
