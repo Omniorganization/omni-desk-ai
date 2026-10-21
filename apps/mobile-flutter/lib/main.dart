@@ -6,6 +6,7 @@ import 'omni_api.dart';
 import 'device_identity.dart';
 import 'app_models.dart';
 import 'mobile_security_service.dart';
+import 'approval_key_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,6 +53,8 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   bool contentAutomation = false;
   bool deviceEnrolled = false;
   bool deviceVerified = false;
+  bool approvalKeyReady = false;
+  final approvalKeys = ApprovalKeyStore();
   OmniDeviceIdentity? deviceIdentity;
   StreamSubscription<String>? _pushTargetChanges;
 
@@ -153,6 +156,20 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
         identity.deviceId,
         signature,
       );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Creates and registers the biometric-gated approval key once the device
+  /// is verified. Devices without biometrics/passcode keep the in-app check.
+  Future<bool> _ensureApprovalKey(OmniDeviceIdentity identity) async {
+    try {
+      if (await approvalKeys.isRegisteredFor(identity.deviceId)) return true;
+      final publicKey = await approvalKeys.ensurePublicKey();
+      await client.registerApprovalKey(identity.deviceId, publicKey);
+      await approvalKeys.markRegisteredFor(identity.deviceId);
       return true;
     } catch (_) {
       return false;
@@ -334,6 +351,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       final verified =
           device is Map && device['credential_status'] == 'verified';
       deviceVerified = verified || await _verifyDevice(identity);
+      approvalKeyReady = deviceVerified && await _ensureApprovalKey(identity);
       if (token != null) {
         await client.registerPushToken(identity.deviceId, token);
       }
@@ -403,17 +421,33 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
 
   Future<void> decide(String approvalId, String decision) async {
     try {
-      final confirmed = await _confirmSensitiveAction();
-      if (!mounted) return;
-      if (!confirmed) {
-        setState(() => error = '审批被本机生物识别/PIN取消。');
-        return;
+      var approvalSignature = const <String, String>{};
+      if (approvalKeyReady) {
+        // The OS gates the approval key behind biometrics/passcode, so
+        // signing is the confirmation; a cancelled prompt throws.
+        try {
+          approvalSignature = await approvalKeys.signDecision(
+            approvalId,
+            decision,
+          );
+        } catch (_) {
+          if (mounted) setState(() => error = '审批被本机生物识别/PIN取消。');
+          return;
+        }
+      } else {
+        final confirmed = await _confirmSensitiveAction();
+        if (!mounted) return;
+        if (!confirmed) {
+          setState(() => error = '审批被本机生物识别/PIN取消。');
+          return;
+        }
       }
       await client.decideApproval(
         approvalId,
         decision,
         reason: reasonController.text,
         sourceDeviceId: deviceIdentity?.deviceId,
+        approvalSignature: approvalSignature,
       );
       snapshot = await client.bootstrap();
       if (mounted) setState(() {});

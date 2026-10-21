@@ -120,6 +120,14 @@ const mobileTypedClientContractCases = <TypedClientContractCase>[
   TypedClientContractCase(
     surface: 'mobile',
     method: 'POST',
+    contractPath: '/app/devices/{device_id}/approval-key',
+    clientPath: '/app/devices/mobile-1/approval-key',
+    signedInProduction: true,
+    invoke: _invokeRegisterApprovalKey,
+  ),
+  TypedClientContractCase(
+    surface: 'mobile',
+    method: 'POST',
     contractPath: '/app/devices/enrollment/start',
     clientPath: '/app/devices/enrollment/start',
     invoke: _invokeStartEnrollment,
@@ -177,6 +185,8 @@ Future<dynamic> _invokeRegisterPushToken(OmniApiClient client) =>
     client.registerPushToken('mobile-1', 'push-token');
 Future<dynamic> _invokeNotifications(OmniApiClient client) =>
     client.notifications();
+Future<dynamic> _invokeRegisterApprovalKey(OmniApiClient client) =>
+    client.registerApprovalKey('mobile-1', 'base64:pk');
 Future<dynamic> _invokeStartEnrollment(OmniApiClient client) =>
     client.startDeviceEnrollment('0123456789abcdef');
 Future<dynamic> _invokeCompleteEnrollment(OmniApiClient client) => client
@@ -195,7 +205,11 @@ void main() {
       if (contractCase.signedInProduction) {
         expect(
           contractCase.contractPath,
-          anyOf(contains('/approvals/'), contains('/push-token')),
+          anyOf(
+            contains('/approvals/'),
+            contains('/push-token'),
+            contains('/approval-key'),
+          ),
         );
       }
 
