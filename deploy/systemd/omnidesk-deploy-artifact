@@ -51,6 +51,12 @@ if [[ ! -f "$ARTIFACT" ]]; then
   echo "artifact not found: $ARTIFACT" >&2
   exit 66
 fi
+# The version ends up in a file name and in $RUNTIME_ENV_FILE (read by systemd),
+# so a newline or path separator here could inject service environment.
+if [[ ! "$EXPECTED_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$ ]]; then
+  echo "--expected-version must match ^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$" >&2
+  exit 64
+fi
 if ! is_sha256 "$EXPECTED_SHA"; then
   echo "--sha256 must be a lowercase 64-character sha256 digest" >&2
   exit 64

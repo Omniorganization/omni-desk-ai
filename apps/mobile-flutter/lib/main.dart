@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'omni_api.dart';
@@ -50,6 +52,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   bool contentAutomation = false;
   bool deviceEnrolled = false;
   OmniDeviceIdentity? deviceIdentity;
+  StreamSubscription<String>? _pushTargetChanges;
 
   DeviceIdentityStore get identityStore => DeviceIdentityStore(
     securityService.storage,
@@ -70,6 +73,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
 
   @override
   void dispose() {
+    _pushTargetChanges?.cancel();
     gatewayController.dispose();
     tokenController.dispose();
     actorController.dispose();
@@ -120,9 +124,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     }
   }
 
-  Future<String?> _resolvePushToken() async {
+  Future<String?> _resolvePushTarget() async {
     try {
-      return await securityService.resolvePushToken();
+      return await securityService.resolvePushTarget();
     } catch (_) {
       return null;
     }
@@ -282,7 +286,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     });
     try {
       await _saveSession();
-      final token = await _resolvePushToken();
+      final token = await _resolvePushTarget();
       final identity = await identityStore.loadOrCreate();
       deviceIdentity = identity;
       await client.registerMobile(
@@ -294,6 +298,13 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       if (token != null) {
         await client.registerPushToken(identity.deviceId, token);
       }
+      // FCM may rotate the FID; keep the gateway's push target current.
+      await _pushTargetChanges?.cancel();
+      _pushTargetChanges = securityService.pushTargetChanges().listen((fid) {
+        client.registerPushToken(identity.deviceId, fid).catchError((_) {
+          return <String, dynamic>{};
+        });
+      }, onError: (_) {});
       snapshot = await client.bootstrap();
       await syncProjects();
       if (!mounted) return;
