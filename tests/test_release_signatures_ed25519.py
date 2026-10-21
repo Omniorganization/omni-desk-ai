@@ -84,3 +84,15 @@ def test_raw_base64_seed_is_accepted_as_signing_key(tmp_path, monkeypatch):
     monkeypatch.delenv("OMNIDESK_RELEASE_SIGNING_ED25519_KEY")
     monkeypatch.setenv("OMNIDESK_RELEASE_VERIFY_PUBLIC_KEY", public)
     assert verify_release_signatures.main(str(dist)) == 0
+
+
+def test_signing_job_self_check_derives_public_key_from_private_key(tmp_path, monkeypatch):
+    dist = _dist(tmp_path)
+    private, _ = _keys()
+    monkeypatch.setenv("OMNIDESK_RELEASE_SIGNING_ED25519_KEY", private)
+    import sys
+
+    # The scripts import release_signing as a top-level module (sys.path insert).
+    monkeypatch.setattr(sys.modules["release_signing"], "COMMITTED_PUBLIC_KEY", tmp_path / "missing.pem")
+    assert sign_release.main(str(dist)) == 0
+    assert verify_release_signatures.main(str(dist)) == 0

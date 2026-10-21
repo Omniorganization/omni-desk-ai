@@ -548,12 +548,14 @@ jobs:
 
       - run: bash scripts/build_release.sh
         env:
+          OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
           OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
           OMNIDESK_IMAGE_REF: ${{ env.OMNIDESK_IMAGE_REF }}
           OMNIDESK_IMAGE_DIGEST: ${{ env.OMNIDESK_IMAGE_DIGEST }}
 
       - name: Bind all native application artifacts into the signed release payload
         env:
+          OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
           OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail

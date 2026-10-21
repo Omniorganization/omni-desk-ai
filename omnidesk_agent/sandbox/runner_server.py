@@ -344,9 +344,42 @@ class SandboxRunnerHandler(BaseHTTPRequestHandler):
             self._json(500, {"ok": False, "exit_code": 1, "stderr": "sandbox runner internal error"})
 
 
+ALLOW_ROOTFUL_RUNTIME_ENV = "OMNIDESK_SANDBOX_ALLOW_ROOTFUL_RUNTIME"
+
+
+def runtime_is_rootless(cfg: RunnerConfig) -> bool:
+    """True when the configured container runtime/API socket runs rootless.
+
+    With a rootful Docker/Podman API socket, anyone who compromises the runner
+    effectively has root on the host, so the runner refuses to start on one.
+    """
+    try:
+        if Path(cfg.container_runtime).name == "podman":
+            info = subprocess.run([cfg.container_runtime, "info", "--format", "json"], check=True, capture_output=True, text=True, timeout=10)
+            return json.loads(info.stdout).get("host", {}).get("security", {}).get("rootless") is True
+        info = subprocess.run([cfg.container_runtime, "info", "--format", "{{json .SecurityOptions}}"], check=True, capture_output=True, text=True, timeout=10)
+        options = json.loads(info.stdout or "[]") or []
+        return any("name=rootless" in str(option) for option in options)
+    except Exception:
+        return False
+
+
+def require_rootless_runtime(cfg: RunnerConfig) -> None:
+    if os.getenv(ALLOW_ROOTFUL_RUNTIME_ENV, "0").lower() in {"1", "true", "yes"}:
+        LOGGER.warning("sandbox runner allowing a rootful container runtime (%s=1)", ALLOW_ROOTFUL_RUNTIME_ENV)
+        return
+    if not runtime_is_rootless(cfg):
+        raise SystemExit(
+            f"sandbox runner refuses a rootful container runtime ({cfg.container_runtime}); "
+            f"use a rootless Podman/Docker socket or set {ALLOW_ROOTFUL_RUNTIME_ENV}=1 on a dedicated runner host"
+        )
+
+
 def run_server(host: str = "0.0.0.0", port: int = 18890, cfg: RunnerConfig | None = None) -> None:  # nosec B104
+    cfg = cfg or RunnerConfig()
+    require_rootless_runtime(cfg)
     server = ThreadingHTTPServer((host, port), SandboxRunnerHandler)
-    server.runner_config = cfg or RunnerConfig()  # type: ignore[attr-defined]
+    server.runner_config = cfg  # type: ignore[attr-defined]
     server.serve_forever()
 
 

@@ -62,9 +62,13 @@ def ed25519_verifier():
     value = os.getenv(ED25519_PUBLIC_KEY_ENV, "")
     if not value and COMMITTED_PUBLIC_KEY.exists():
         value = COMMITTED_PUBLIC_KEY.read_text(encoding="utf-8")
-    if not value:
+    if value:
+        key = _load_public_key(value)
+    elif os.getenv(ED25519_PRIVATE_KEY_ENV, ""):
+        # The signing job's own self-check (verifier jobs never hold the private key).
+        key = _load_private_key(os.environ[ED25519_PRIVATE_KEY_ENV]).public_key()
+    else:
         return None
-    key = _load_public_key(value)
 
     def verify(data: bytes, signature: str) -> bool:
         from cryptography.exceptions import InvalidSignature
