@@ -672,8 +672,6 @@ class PostgresAppSyncStore(AppSyncStore):
         return task
 
 
-_TASK_COLUMNS = "namespace, task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at"
-
 # An approval authorizes exactly one claim: only a queued task with an unused
 # approval is claimable, and an expired run is never re-claimed under it. Only task
 # rows are locked: FOR UPDATE cannot apply to the nullable side of the approval join.
@@ -705,19 +703,19 @@ SET status = 'consumed'
 WHERE namespace = %(namespace)s AND approval_id = %(approval_id)s AND status = 'approved'
 """
 
-TASK_FOR_UPDATE_SQL = f"""
-SELECT {_TASK_COLUMNS}
+TASK_FOR_UPDATE_SQL = """
+SELECT namespace, task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at
 FROM omnidesk_appsync_tasks
 WHERE namespace = %(namespace)s AND task_id = %(task_id)s
 FOR UPDATE
 """
 
-TASK_STATUS_UPDATE_SQL = f"""
+TASK_STATUS_UPDATE_SQL = """
 UPDATE omnidesk_appsync_tasks
 SET status = %(status)s, result_summary = %(result_summary)s, assigned_runtime_device_id = %(assigned_runtime_device_id)s,
     claimed_by_device_id = %(claimed_by_device_id)s, lease_expires_at = %(lease_expires_at)s, updated_at = %(updated_at)s
 WHERE namespace = %(namespace)s AND organization_id = %(organization_id)s AND task_id = %(task_id)s
-RETURNING {_TASK_COLUMNS}
+RETURNING namespace, task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at
 """
 
 IDEMPOTENCY_INSERT_SQL = """
