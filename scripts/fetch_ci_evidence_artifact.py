@@ -10,6 +10,12 @@ fork), a successful conclusion, and a head commit equal to (or, where the
 policy allows, an ancestor of) the consuming commit. The artifact is unpacked
 outside the workspace and only the expected evidence JSON files, plus the
 artifacts they reference, are copied to --dest.
+
+A consumer whose policy sets allow_same_run may also take an artifact that an
+earlier job of the current workflow run uploaded (run id == GITHUB_RUN_ID, as
+when a workflow_call passes github.run_id). That run is still in progress and
+runs the consuming commit's own workflow code, so the run check is skipped;
+the copy is still limited to the expected evidence files.
 """
 from __future__ import annotations
 
@@ -51,6 +57,8 @@ def consumer_policy(policy: dict[str, Any], consumer: str) -> dict[str, Any]:
         raise ValueError(f"evidence source policy for {consumer!r} must list workflows and events")
     if spec.get("head_sha") not in {"exact", "ancestor"}:
         raise ValueError(f"evidence source policy for {consumer!r} must set head_sha to exact or ancestor")
+    if not isinstance(spec.get("allow_same_run", False), bool):
+        raise ValueError(f"evidence source policy for {consumer!r} must set allow_same_run to true or false")
     return spec
 
 
@@ -127,6 +135,7 @@ def fetch(
     get_run: Callable[[str], dict[str, Any]],
     is_ancestor: Callable[[str, str], bool],
     download: Callable[[Path], None],
+    current_run_id: str = "",
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema": SCHEMA_VERSION,
@@ -137,6 +146,7 @@ def fetch(
         "repository": repository,
         "consumer_sha": consumer_sha,
         "source_run": {},
+        "same_run": False,
         "copied_files": [],
         "ignored_files": [],
         "issues": [],
@@ -156,15 +166,20 @@ def fetch(
         report["issues"].append(str(exc))
         return report
 
-    run = get_run(run_id)
-    report["source_run"] = {
-        key: run.get(key)
-        for key in ("id", "path", "event", "head_branch", "head_sha", "status", "conclusion", "html_url")
-    }
-    issues = validate_source_run(run, spec, repository=repository, consumer_sha=consumer_sha, is_ancestor=is_ancestor)
-    if issues:
-        report["issues"].extend(issues)
-        return report
+    if spec.get("allow_same_run") is True and run_id == current_run_id:
+        # Uploaded by an earlier job of this run: same repository, commit and workflow code.
+        report["same_run"] = True
+        report["source_run"] = {"id": int(run_id)}
+    else:
+        run = get_run(run_id)
+        report["source_run"] = {
+            key: run.get(key)
+            for key in ("id", "path", "event", "head_branch", "head_sha", "status", "conclusion", "html_url")
+        }
+        issues = validate_source_run(run, spec, repository=repository, consumer_sha=consumer_sha, is_ancestor=is_ancestor)
+        if issues:
+            report["issues"].extend(issues)
+            return report
 
     quarantine = Path(tempfile.mkdtemp(prefix="evidence-download-", dir=os.environ.get("RUNNER_TEMP") or None))
     try:
@@ -209,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         get_run=lambda run_id: _gh_run(args.repository, run_id),
         is_ancestor=_gh_is_ancestor(args.repository),
         download=lambda target: _gh_download(args.repository, args.run_id, args.artifact_name, target),
+        current_run_id=os.environ.get("GITHUB_RUN_ID", ""),
     )
     text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.write_report:

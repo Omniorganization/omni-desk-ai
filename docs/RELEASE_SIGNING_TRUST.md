@@ -35,7 +35,10 @@ set from the repository.
   `main` in this repository (not a fork or pull request), and have a head
   commit equal to (Release) or an ancestor of (other consumers) the consuming
   commit. The artifact is unpacked outside the workspace and only the expected
-  evidence JSON files and the artifacts they reference are copied. pytest
+  evidence JSON files and the artifacts they reference are copied. Only the
+  read-only Real GA Readiness audit (`allow_same_run`) skips the run check, and
+  only for an artifact uploaded earlier in its own workflow run (the control
+  plane's `workflow_call`); it still copies only the expected files. pytest
   collects only `tests/`, so nothing in `release/`, `dist/`, `current/` or
   `previous/` is imported.
 

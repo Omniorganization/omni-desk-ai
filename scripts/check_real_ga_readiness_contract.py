@@ -22,6 +22,8 @@ REQUIRED_FILES = (
     "scripts/check_github_team_governance_live.py",
     "scripts/check_team_governance_contract.py",
     "scripts/import_external_ga_evidence.py",
+    "scripts/fetch_ci_evidence_artifact.py",
+    "release/evidence-source-workflows.json",
     "scripts/assemble_external_ga_evidence_bundle.py",
     "scripts/check_bigseller_route_enablement.py",
     "scripts/run_bigseller_live_smoke.py",
@@ -42,7 +44,8 @@ WORKFLOW_SNIPPETS = (
     "external_evidence_run_id",
     "external_evidence_artifact_name",
     "external-ga-evidence-bound",
-    "gh run download",
+    "scripts/fetch_ci_evidence_artifact.py",
+    "--consumer real-ga-readiness",
     "real-ga",
     "candidate",
 )
@@ -145,6 +148,11 @@ def audit(root: Path) -> dict[str, object]:
         workflow = _read(root, ".github/workflows/real-ga-readiness.yml")
         for snippet in WORKFLOW_SNIPPETS:
             _check(snippet in workflow, failures, f"real-ga-readiness workflow missing snippet: {snippet}")
+        _check(
+            "gh run download" not in workflow,
+            failures,
+            "real-ga-readiness workflow must import evidence through scripts/fetch_ci_evidence_artifact.py, not gh run download",
+        )
         _check("--audit-only" in workflow, failures, "real-ga-readiness workflow must support audit-only candidate runs")
         _check("workflow_call" in workflow, failures, "real-ga-readiness workflow must support control-plane workflow_call reuse")
         _check("contents: read" in workflow and "actions: read" in workflow, failures, "real-ga-readiness workflow must use least-privilege read permissions")

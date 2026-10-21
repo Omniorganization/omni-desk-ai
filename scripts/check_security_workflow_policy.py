@@ -109,7 +109,11 @@ EVIDENCE_CONSUMER_WORKFLOWS = {
     "main-verification.yml": "main-verification",
     "remote-evidence-pipeline.yml": "remote-evidence-pipeline",
     "real-ga-evidence-control-plane.yml": "real-ga-evidence-control-plane",
+    "real-ga-readiness.yml": "real-ga-readiness",
 }
+# Consumers that may take an artifact from their own in-progress run (allow_same_run).
+# real-ga-readiness is read-only and is called by the control plane with github.run_id.
+SAME_RUN_EVIDENCE_CONSUMERS = ("real-ga-readiness",)
 EVIDENCE_SOURCE_POLICY = "release/evidence-source-workflows.json"
 SIGNER_IDENTITY_RE = re.compile(r"RELEASE_SIGNER_IDENTITY_REGEXP:\s*'([^']*)'")
 
@@ -247,6 +251,9 @@ def _evidence_source_issues(root: Path) -> list[str]:
             issues.append(f"{workflow_name}: evidence must be downloaded with scripts/fetch_ci_evidence_artifact.py, not gh run download")
         if "scripts/fetch_ci_evidence_artifact.py" not in text or f"--consumer {consumer}" not in text:
             issues.append(f"{workflow_name}: evidence downloads must use scripts/fetch_ci_evidence_artifact.py --consumer {consumer}")
+    for consumer, spec in consumers.items():
+        if isinstance(spec, dict) and spec.get("allow_same_run") and consumer not in SAME_RUN_EVIDENCE_CONSUMERS:
+            issues.append(f"{EVIDENCE_SOURCE_POLICY}: consumer {consumer} must not skip the source run check (allow_same_run)")
     if consumers.get("release", {}).get("head_sha") != "exact":
         issues.append(f"{EVIDENCE_SOURCE_POLICY}: release must only accept evidence bound to the exact release commit")
     return issues
