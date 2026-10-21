@@ -113,11 +113,11 @@ if [[ "${OMNIDESK_RELEASE_SMOKE:-1}" == "1" ]]; then
   bash scripts/release_smoke_locked.sh
 fi
 
-if [[ -z "${OMNIDESK_RELEASE_SIGNING_KEY:-}" && "${OMNIDESK_ALLOW_UNSIGNED_RELEASE:-0}" != "1" ]]; then
-  echo "OMNIDESK_RELEASE_SIGNING_KEY is required for production release artifacts" >&2
+if [[ -z "${OMNIDESK_RELEASE_SIGNING_ED25519_KEY:-}${OMNIDESK_RELEASE_SIGNING_KEY:-}" && "${OMNIDESK_ALLOW_UNSIGNED_RELEASE:-0}" != "1" ]]; then
+  echo "OMNIDESK_RELEASE_SIGNING_ED25519_KEY (preferred) or OMNIDESK_RELEASE_SIGNING_KEY is required for production release artifacts" >&2
   exit 2
 fi
-if [[ -n "${OMNIDESK_RELEASE_SIGNING_KEY:-}" ]]; then
+if [[ -n "${OMNIDESK_RELEASE_SIGNING_ED25519_KEY:-}${OMNIDESK_RELEASE_SIGNING_KEY:-}" ]]; then
   python scripts/sign_release.py dist
   python scripts/verify_release_signatures.py dist
   python scripts/verify_release_artifact.py dist --require-signatures --require-metadata
