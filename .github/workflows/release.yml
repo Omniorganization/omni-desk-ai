@@ -358,11 +358,13 @@ jobs:
           path: ${{ runner.temp }}/tri-app-native-input
           merge-multiple: false
       - name: Run tri-app release configuration preflight scopes
+        # Preflight and evidence reports go to reports/release/, never dist/:
+        # build_release.sh starts with rm -rf dist, and dist/ is the signed payload.
         run: |
-          python scripts/check_release_configuration.py --scope web-admin --format json --report-path dist/web-admin-preflight.json
-          python scripts/check_release_configuration.py --scope desktop --format json --report-path dist/desktop-preflight.json
-          python scripts/check_release_configuration.py --scope mobile --format json --report-path dist/mobile-preflight.json
-          python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+          python scripts/check_release_configuration.py --scope web-admin --format json --report-path reports/release/web-admin-preflight.json
+          python scripts/check_release_configuration.py --scope desktop --format json --report-path reports/release/desktop-preflight.json
+          python scripts/check_release_configuration.py --scope mobile --format json --report-path reports/release/mobile-preflight.json
+          python scripts/check_release_configuration.py --scope tri-app --format json --report-path reports/release/tri-app-preflight.json
       - name: Download complete external evidence artifact
         if: ${{ inputs.external_evidence_run_id != '' }}
         env:
@@ -391,14 +393,14 @@ jobs:
             python scripts/check_release_configuration.py \
               --scope external-ga-evidence \
               --format json \
-              --report-path dist/external-ga-evidence-preflight.json
+              --report-path reports/release/external-ga-evidence-preflight.json
             python scripts/import_external_ga_evidence.py \
               --raw-dir "$EXTERNAL_GA_EVIDENCE_RAW_DIR" \
               --expected-version "$EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION" \
               --copy \
               --write-report release/external-ga-evidence-import-report.json
           else
-            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"EXTERNAL_GA_EVIDENCE_RAW_DIR is not set; use external_evidence_run_id or specialized importers"}; Path("dist/external-ga-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/external-ga-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+            python -c 'import json; from pathlib import Path; Path("reports/release").mkdir(parents=True, exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"EXTERNAL_GA_EVIDENCE_RAW_DIR is not set; use external_evidence_run_id or specialized importers"}; Path("reports/release/external-ga-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/external-ga-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
           fi
       - name: Import iOS real-device evidence
         env:
@@ -407,14 +409,14 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${IOS_EVIDENCE_RAW_DIR:-}" ]]; then
-            python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
+            python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path reports/release/ios-evidence-preflight.json
             python scripts/import_ios_real_device_evidence.py \
               --raw-dir "$IOS_EVIDENCE_RAW_DIR" \
               --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" \
               --copy \
               --write-report release/ios-real-device-evidence-import-report.json
           else
-            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"IOS_EVIDENCE_RAW_DIR is not set"}; Path("dist/ios-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/ios-real-device-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+            python -c 'import json; from pathlib import Path; Path("reports/release").mkdir(parents=True, exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"IOS_EVIDENCE_RAW_DIR is not set"}; Path("reports/release/ios-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/ios-real-device-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
           fi
       - name: Import tri-app live smoke evidence
         env:
@@ -432,7 +434,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${TRI_APP_LIVE_SMOKE_REPORT_PATH:-}" ]]; then
-            python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+            python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path reports/release/tri-app-live-smoke-preflight.json
             python scripts/import_tri_app_live_smoke_evidence.py \
               --report "$TRI_APP_LIVE_SMOKE_REPORT_PATH" \
               --expected-org-id "$TRI_APP_ORG_ID" \
@@ -440,7 +442,7 @@ jobs:
               --copy \
               --write-report release/tri-app-live-smoke-evidence-import-report.json
           else
-            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"TRI_APP_LIVE_SMOKE_REPORT_PATH is not set"}; Path("dist/tri-app-live-smoke-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/tri-app-live-smoke-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+            python -c 'import json; from pathlib import Path; Path("reports/release").mkdir(parents=True, exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"TRI_APP_LIVE_SMOKE_REPORT_PATH is not set"}; Path("reports/release/tri-app-live-smoke-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/tri-app-live-smoke-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
           fi
       - run: python scripts/check_workflow_governance.py . --require-real-workflows
       - run: python scripts/check_team_governance_contract.py .
@@ -493,7 +495,7 @@ jobs:
             --source-commit "$GITHUB_SHA" \
             --release-run-id "$GITHUB_RUN_ID" \
             --main-verification-run-id "$EXTERNAL_EVIDENCE_RUN_ID" \
-            --write-report dist/current-release-artifact-binding.json \
+            --write-report reports/release/current-release-artifact-binding.json \
             "${audit_args[@]}"
       - name: Run complete Real GA evidence and final Customer GA gate
         env:
@@ -507,8 +509,8 @@ jobs:
             python scripts/check_customer_distribution_ga.py . \
               --repository "$GITHUB_REPOSITORY" \
               --commit "$GITHUB_SHA" \
-              --current-release-binding-report dist/current-release-artifact-binding.json \
-              --write-live-report dist/main-verification-live-artifact.json \
+              --current-release-binding-report reports/release/current-release-artifact-binding.json \
+              --write-live-report reports/release/main-verification-live-artifact.json \
               --write-report release/real-ga-evidence-audit-1.12.7.json
           elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
             python scripts/check_real_ga_complete.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json
@@ -516,19 +518,46 @@ jobs:
               --audit-only \
               --repository "$GITHUB_REPOSITORY" \
               --commit "$GITHUB_SHA" \
-              --current-release-binding-report dist/current-release-artifact-binding.json \
-              --write-live-report dist/main-verification-live-artifact.json \
+              --current-release-binding-report reports/release/current-release-artifact-binding.json \
+              --write-live-report reports/release/main-verification-live-artifact.json \
               --write-report release/real-ga-evidence-audit-1.12.7.json
           else
             echo "release_channel must be candidate or real-ga" >&2
             exit 64
           fi
-          cp release/real-ga-evidence-audit-1.12.7.json dist/external-ga-evidence-audit.json
+          cp release/real-ga-evidence-audit-1.12.7.json reports/release/external-ga-evidence-audit.json
           python scripts/write_real_ga_evidence_summary.py . \
             --audit-report release/real-ga-evidence-audit-1.12.7.json \
             --output release/real-ga-evidence-summary-1.12.7.json \
             --source-commit "$GITHUB_SHA"
-          cp release/real-ga-evidence-summary-1.12.7.json dist/external-ga-evidence-summary.json
+          cp release/real-ga-evidence-summary-1.12.7.json reports/release/external-ga-evidence-summary.json
+
+      - name: Check every Real GA evidence import report was written
+        # if-no-files-found on the upload below only fails when none of its files
+        # exist, so check each one before anything is published.
+        run: |
+          set -euo pipefail
+          for report in \
+            release/real-ga-evidence-audit-1.12.7.json \
+            release/real-ga-evidence-summary-1.12.7.json \
+            release/external-ga-evidence-import-report.json \
+            release/ios-real-device-evidence-import-report.json \
+            release/tri-app-live-smoke-evidence-import-report.json \
+            release/external-evidence/control-plane/github-branch-protection-live.json \
+            release/external-evidence/control-plane/github-team-governance-live.json \
+            reports/release/web-admin-preflight.json \
+            reports/release/desktop-preflight.json \
+            reports/release/mobile-preflight.json \
+            reports/release/tri-app-preflight.json \
+            reports/release/external-ga-evidence-preflight.json \
+            reports/release/ios-evidence-preflight.json \
+            reports/release/tri-app-live-smoke-preflight.json \
+            reports/release/current-release-artifact-binding.json \
+            reports/release/main-verification-live-artifact.json \
+            reports/release/external-ga-evidence-audit.json \
+            reports/release/external-ga-evidence-summary.json; do
+            test -s "$report" || { echo "missing Real GA evidence import report: $report" >&2; exit 1; }
+          done
 
       - name: Verify release channel policy after external evidence gate
         run: |
@@ -665,6 +694,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: real-ga-evidence-import-reports
+          if-no-files-found: error
           path: |
             release/real-ga-evidence-audit-1.12.7.json
             release/real-ga-evidence-summary-1.12.7.json
@@ -673,7 +703,14 @@ jobs:
             release/tri-app-live-smoke-evidence-import-report.json
             release/external-evidence/control-plane/github-branch-protection-live.json
             release/external-evidence/control-plane/github-team-governance-live.json
-            dist/current-release-artifact-binding.json
-            dist/external-ga-evidence-preflight.json
-            dist/ios-evidence-preflight.json
-            dist/tri-app-live-smoke-preflight.json
+            reports/release/web-admin-preflight.json
+            reports/release/desktop-preflight.json
+            reports/release/mobile-preflight.json
+            reports/release/tri-app-preflight.json
+            reports/release/external-ga-evidence-preflight.json
+            reports/release/ios-evidence-preflight.json
+            reports/release/tri-app-live-smoke-preflight.json
+            reports/release/current-release-artifact-binding.json
+            reports/release/main-verification-live-artifact.json
+            reports/release/external-ga-evidence-audit.json
+            reports/release/external-ga-evidence-summary.json

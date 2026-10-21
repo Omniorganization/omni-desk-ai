@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +47,27 @@ RELEASE_PAYLOAD_ORDER = [
     "actions/attest-build-provenance@",
 ]
 
+# Gate reports live in reports/release/, outside the signed payload: build_release.sh
+# starts with rm -rf dist, so a report written to dist/ before it is silently lost.
+RELEASE_REPORTS_ARTIFACT = "name: real-ga-evidence-import-reports"
+RELEASE_REPORTS_CHECK_MARKER = "missing Real GA evidence import report"
+RELEASE_GATE_REPORTS = [
+    "reports/release/web-admin-preflight.json",
+    "reports/release/desktop-preflight.json",
+    "reports/release/mobile-preflight.json",
+    "reports/release/tri-app-preflight.json",
+    "reports/release/external-ga-evidence-preflight.json",
+    "reports/release/ios-evidence-preflight.json",
+    "reports/release/tri-app-live-smoke-preflight.json",
+    "reports/release/current-release-artifact-binding.json",
+    "reports/release/main-verification-live-artifact.json",
+    "reports/release/external-ga-evidence-audit.json",
+    "reports/release/external-ga-evidence-summary.json",
+]
+# A workspace-relative dist/ path (not apps/x/dist/ or $RUNNER_TEMP/dist/).
+DIST_PATH_RE = re.compile(r"(?<![\w./$}-])dist/")
+JOB_KEY_RE = re.compile(r"^  [\w-]+:[ \t]*$", re.MULTILINE)
+
 RELEASE_CHAIN_SNIPPETS = [
     'OMNIDESK_RELEASE_DEFER_SIGNING: "1"',
     "OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}",
@@ -88,6 +110,60 @@ def _release_chain_issues(text: str) -> list[str]:
     return issues
 
 
+def _step_containing(text: str, marker: str) -> str:
+    """The workflow step (YAML list item) whose lines contain marker, or ""."""
+    lines = text.splitlines()
+    hit = next((i for i, line in enumerate(lines) if marker in line), None)
+    if hit is None:
+        return ""
+    start = next((i for i in range(hit, -1, -1) if lines[i].lstrip().startswith("- ")), hit)
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    end = next(
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) <= indent
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
+def _release_report_issues(text: str) -> list[str]:
+    issues: list[str] = []
+    build = text.find("bash scripts/build_release.sh")
+    if build < 0:
+        return []  # _release_chain_issues reports the missing payload step.
+    job_start = max((m.start() for m in JOB_KEY_RE.finditer(text, 0, build)), default=0)
+    for match in DIST_PATH_RE.finditer(text, job_start, build):
+        line = text[text.rfind("\n", 0, match.start()) + 1 : text.find("\n", match.start())].strip()
+        if not line.startswith("#"):
+            issues.append(
+                "release workflow uses dist/ before bash scripts/build_release.sh, which deletes it; "
+                f"write gate reports to reports/release/: {line}"
+            )
+            break
+    # if-no-files-found only fails when none of the upload's files exist, so a
+    # step before the build (and before anything is published) checks each report.
+    check_step = _step_containing(text, RELEASE_REPORTS_CHECK_MARKER)
+    if not 0 <= text.find(RELEASE_REPORTS_CHECK_MARKER) < build:
+        issues.append("release workflow must check every gate report exists before bash scripts/build_release.sh")
+    upload = _step_containing(text, RELEASE_REPORTS_ARTIFACT)
+    if not upload:
+        issues.append("release workflow must upload gate reports as the real-ga-evidence-import-reports artifact")
+        return issues
+    if "if-no-files-found: error" not in upload:
+        issues.append("real-ga-evidence-import-reports upload must set if-no-files-found: error")
+    if DIST_PATH_RE.search(upload):
+        issues.append("real-ga-evidence-import-reports must not upload from dist/, the signed release payload")
+    for report in RELEASE_GATE_REPORTS:
+        if report not in check_step:
+            issues.append(f"release workflow report check missing {report}")
+        if report not in upload:
+            issues.append(f"real-ga-evidence-import-reports upload missing {report}")
+    return issues
+
+
 def _read_existing(paths: list[Path]) -> str:
     return "\n".join(
         p.read_text(encoding="utf-8") for p in paths if p.exists() and p.is_file()
@@ -127,6 +203,7 @@ def check(root: Path, *, require_real_workflows: bool = False) -> list[str]:
                     f"real workflow governance missing release metadata/attestation snippet: {snippet}"
                 )
         issues.extend(_release_chain_issues(text))
+        issues.extend(_release_report_issues(text))
     return issues
 
 

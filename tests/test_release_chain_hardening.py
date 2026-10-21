@@ -428,6 +428,67 @@ def test_workflow_governance_rejects_direct_evidence_download(tmp_path: Path) ->
     assert any("not gh run download" in issue for issue in issues), issues
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        (
+            "--report-path reports/release/web-admin-preflight.json",
+            "--report-path dist/web-admin-preflight.json",
+            "uses dist/ before bash scripts/build_release.sh",
+        ),
+        (
+            "--write-live-report reports/release/main-verification-live-artifact.json",
+            "--write-live-report dist/main-verification-live-artifact.json",
+            "uses dist/ before bash scripts/build_release.sh",
+        ),
+        (
+            "cp release/real-ga-evidence-summary-1.12.7.json reports/release/",
+            "cp release/real-ga-evidence-summary-1.12.7.json dist/",
+            "uses dist/ before bash scripts/build_release.sh",
+        ),
+        (
+            "          name: real-ga-evidence-import-reports\n          if-no-files-found: error\n",
+            "          name: real-ga-evidence-import-reports\n",
+            "must set if-no-files-found: error",
+        ),
+        (
+            "            reports/release/main-verification-live-artifact.json\n",
+            "",
+            "upload missing reports/release/main-verification-live-artifact.json",
+        ),
+        (
+            "            reports/release/current-release-artifact-binding.json\n",
+            "            dist/current-release-artifact-binding.json\n",
+            "must not upload from dist/",
+        ),
+        (
+            "            reports/release/main-verification-live-artifact.json \\\n",
+            "",
+            "report check missing reports/release/main-verification-live-artifact.json",
+        ),
+    ],
+)
+def test_workflow_governance_keeps_gate_reports_out_of_the_release_payload(
+    tmp_path: Path, old: str, new: str, expected: str
+) -> None:
+    # build_release.sh starts with rm -rf dist: a gate report written to dist/ before
+    # it is silently lost, and dist/ is the signed, attested release payload.
+    issues = _release_governance_issues(tmp_path, old, new)
+    assert any(expected in issue for issue in issues), issues
+
+
+def test_workflow_governance_checks_gate_reports_before_the_payload_build(tmp_path: Path) -> None:
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    start = release.index("      - name: Check every Real GA evidence import report was written\n")
+    end = release.index("      - name: Verify release channel policy after external evidence gate\n")
+    check_step = release[start:end]
+    moved = release[:start] + release[end:] + check_step
+    root = _copy_release_tree(tmp_path)
+    (root / ".github" / "workflows" / "release.yml").write_text(moved, encoding="utf-8")
+    issues = check_workflow_governance.check(root, require_real_workflows=True)
+    assert any("must check every gate report exists before bash scripts/build_release.sh" in issue for issue in issues), issues
+
+
 def test_supply_chain_standard_rejects_tag_signer_identity(tmp_path: Path, capsys) -> None:
     root = tmp_path / "repo"
     shutil.copytree(ROOT, root, ignore=shutil.ignore_patterns(".git", "node_modules", "apps", "*.egg-info", "__pycache__"))
