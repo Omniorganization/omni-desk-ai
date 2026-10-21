@@ -67,7 +67,7 @@ def test_serialized_device_request_preserves_http_method_keyword() -> None:
     try:
         result = store.verify_device_request_signature(
             device_id="unregistered", method="POST", path="/app/devices/unregistered/rotate-token",
-            body=b"{}", timestamp="", nonce="", signature="",
+            body=b"{}", timestamp="", nonce="", signature="", expected_actor="nobody",
         )
         assert result == (False, "missing_timestamp")
         assert store.ensure_user("after-rejection")["user_id"] == "after-rejection"
@@ -101,7 +101,7 @@ def test_device_nonce_is_durable_across_instances_and_recreation() -> None:
             path = f"/app/devices/{device_id}/rotate-token"
             message = f"omnidesk-device-request:v1:POST:{path}:{body_hash}:{timestamp}:{nonce}".encode()
             return dict(device_id=device_id, method="POST", path=path, body=b"{}", timestamp=timestamp,
-                        nonce=nonce, signature=key.sign(message).hex())
+                        nonce=nonce, signature=key.sign(message).hex(), expected_actor="nonce-owner")
 
         request = signed_request()
         assert first.verify_device_request_signature(**request) == (True, "ok")

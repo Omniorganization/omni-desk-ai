@@ -170,6 +170,7 @@ class MigratedMultiInstancePostgresAppSyncStore(
             "verify_device_request_signature",
             "bootstrap",
             "sync_since",
+            "record_event",
         }
     )
 
@@ -215,6 +216,14 @@ class MigratedMultiInstancePostgresAppSyncStore(
                 (self.namespace, time.time()),
             )
             self.device_request_nonces = {str(key): float(expires_at) for key, expires_at in cur.fetchall()}
+
+    def _persist(self) -> None:
+        # Mirroring upserts this instance's whole cache. Outside the advisory lock and
+        # a fresh reload it would roll back other instances' writes, such as device
+        # revocations, consumed approvals and completed enrollments.
+        if int(getattr(self._operation_state, "depth", 0)) <= 0:
+            raise RuntimeError("AppSync state can only be persisted inside a serialized operation")
+        super()._persist()
 
     def _mirror_normalized(self, cur: Any, Jsonb: Any) -> None:
         super()._mirror_normalized(cur, Jsonb)

@@ -43,6 +43,8 @@ def _signed_headers(*, device_id: str, secret: str, method: str, path: str, body
 
 def test_production_desktop_claim_requires_verified_device_signature(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    # Device signatures only count for the actor that owns the device.
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "alice")
     cfg = _cfg(tmp_path)
     app = create_app(cfg)
     store = app.state.runtime.app_sync

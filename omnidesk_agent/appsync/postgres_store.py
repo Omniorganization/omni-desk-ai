@@ -606,43 +606,51 @@ class PostgresAppSyncStore(AppSyncStore):
             with conn.cursor() as cur:
                 cur.execute(CLAIM_NEXT_TASK_SQL, params)
                 row = cur.fetchone()
+                task = self._row_to_task(row) if row else None
+                if task and task.get("approval_id"):
+                    # Consume the approval in the claim's transaction so a re-queued
+                    # task can never run again under it.
+                    cur.execute(CONSUME_APPROVAL_SQL, {"namespace": self.namespace, "approval_id": task["approval_id"]})
             conn.commit()
-        if not row:
+        if not task:
             return None
-        task = self._row_to_task(row)
         self.tasks[task["task_id"]] = TaskRecord(**task)
         self._event("task.claimed", actor, {"task_id": task["task_id"], "device_id": device_id, "lease_expires_at": task.get("lease_expires_at"), "capabilities": list(capabilities or []), "organization_id": task.get("organization_id", organization_id)})
+        approval = self.approvals.get(task.get("approval_id") or "")
+        if approval is not None:
+            self._consume_approval_locked(approval, actor=actor, device_id=device_id)
         self._persist()
         return task
 
-    def update_task_status(self, *, task_id: str, actor: str, status: str, result_summary: str | None = None, assigned_runtime_device_id: str | None = None, idempotency_key: str | None = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def update_task_status(self, *, task_id: str, actor: str, status: str, result_summary: str | None = None, assigned_runtime_device_id: str | None = None, device_id: str | None = None, idempotency_key: str | None = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         import time
-        now = time.time()
-        existing_task = self.tasks.get(task_id)
-        organization_id = self._normalize_org_id(existing_task.organization_id if existing_task else self._organization_for_actor(actor))
-        if assigned_runtime_device_id and assigned_runtime_device_id in self.devices and self._organization_for_device(assigned_runtime_device_id) != organization_id:
-            raise PermissionError("runtime device belongs to a different organization")
-        with self._connect() as conn:
-            self._ensure_schema(conn)
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE omnidesk_appsync_tasks
-                    SET status=%(status)s, result_summary=COALESCE(%(result_summary)s, result_summary), assigned_runtime_device_id=COALESCE(%(assigned_runtime_device_id)s, assigned_runtime_device_id), lease_expires_at=CASE WHEN %(status)s IN ('completed','failed','cancelled') THEN NULL ELSE lease_expires_at END, updated_at=%(now)s
-                    WHERE namespace=%(namespace)s AND organization_id=%(organization_id)s AND task_id=%(task_id)s
-                    RETURNING namespace, task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at
-                    """,
-                    {"namespace": self.namespace, "organization_id": organization_id, "task_id": task_id, "status": status, "result_summary": result_summary, "assigned_runtime_device_id": assigned_runtime_device_id, "now": now},
-                )
-                row = cur.fetchone()
-            conn.commit()
-        if not row:
-            raise KeyError("task not found in postgres appsync source of truth")
-        task = self._row_to_task(row)
-        self.tasks[task["task_id"]] = TaskRecord(**task)
-        self._event("task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.get("organization_id", organization_id)})
-        self._persist()
-        return task
+        with self._lock:
+            cached = self._idempotency_get(actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload)
+            if cached is not None:
+                return cached
+            now = time.time()
+            with self._connect() as conn:
+                self._ensure_schema(conn)
+                with conn.cursor() as cur:
+                    cur.execute(TASK_FOR_UPDATE_SQL, {"namespace": self.namespace, "task_id": task_id})
+                    current = cur.fetchone()
+                    if not current:
+                        raise KeyError("task not found in postgres appsync source of truth")
+                    # Authorize against the row-locked database state, not the cache.
+                    record = TaskRecord(**self._row_to_task(current))
+                    self._authorize_task_status_change_locked(record, actor=actor, status=status, device_id=device_id, assigned_runtime_device_id=assigned_runtime_device_id)
+                    self._apply_task_status(record, status=status, result_summary=result_summary, now=now)
+                    cur.execute(TASK_STATUS_UPDATE_SQL, {**asdict(record), "namespace": self.namespace})
+                    row = cur.fetchone()
+                conn.commit()
+            if not row:
+                raise KeyError("task not found in postgres appsync source of truth")
+            task = self._row_to_task(row)
+            self.tasks[task["task_id"]] = TaskRecord(**task)
+            self._event("task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.get("organization_id")})
+            self._idempotency_put(actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload, response=task)
+            self._persist()
+            return task
 
     def renew_task_lease(self, *, actor: str, task_id: str, device_id: str, lease_seconds: int = 60) -> dict[str, Any]:
         import time
@@ -664,6 +672,11 @@ class PostgresAppSyncStore(AppSyncStore):
         return task
 
 
+_TASK_COLUMNS = "namespace, task_id, conversation_id, title, actor, organization_id, status, assigned_runtime_device_id, requires_desktop_runtime, approval_id, result_summary, idempotency_key, claimed_by_device_id, lease_expires_at, attempt_count, created_at, updated_at"
+
+# An approval authorizes exactly one claim: only a queued task with an unused
+# approval is claimable, and an expired run is never re-claimed under it. Only task
+# rows are locked: FOR UPDATE cannot apply to the nullable side of the approval join.
 CLAIM_NEXT_TASK_SQL = """
 WITH candidate AS (
     SELECT t.task_id
@@ -674,9 +687,9 @@ WITH candidate AS (
       AND t.requires_desktop_runtime = true
       AND t.status IN ('queued', 'running')
       AND (t.status = 'queued' OR t.lease_expires_at IS NULL OR t.lease_expires_at <= %(now)s)
-      AND (t.approval_id IS NULL OR a.status = 'approved')
+      AND (t.approval_id IS NULL OR (t.status = 'queued' AND a.task_id = t.task_id AND a.status = 'approved'))
     ORDER BY t.created_at ASC
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF t SKIP LOCKED
     LIMIT 1
 )
 UPDATE omnidesk_appsync_tasks t
@@ -684,6 +697,27 @@ SET status = 'running', assigned_runtime_device_id = %(device_id)s, claimed_by_d
 FROM candidate
 WHERE t.namespace = %(namespace)s AND t.task_id = candidate.task_id
 RETURNING t.namespace, t.task_id, t.conversation_id, t.title, t.actor, t.organization_id, t.status, t.assigned_runtime_device_id, t.requires_desktop_runtime, t.approval_id, t.result_summary, t.idempotency_key, t.claimed_by_device_id, t.lease_expires_at, t.attempt_count, t.created_at, t.updated_at
+"""
+
+CONSUME_APPROVAL_SQL = """
+UPDATE omnidesk_appsync_approvals
+SET status = 'consumed'
+WHERE namespace = %(namespace)s AND approval_id = %(approval_id)s AND status = 'approved'
+"""
+
+TASK_FOR_UPDATE_SQL = f"""
+SELECT {_TASK_COLUMNS}
+FROM omnidesk_appsync_tasks
+WHERE namespace = %(namespace)s AND task_id = %(task_id)s
+FOR UPDATE
+"""
+
+TASK_STATUS_UPDATE_SQL = f"""
+UPDATE omnidesk_appsync_tasks
+SET status = %(status)s, result_summary = %(result_summary)s, assigned_runtime_device_id = %(assigned_runtime_device_id)s,
+    claimed_by_device_id = %(claimed_by_device_id)s, lease_expires_at = %(lease_expires_at)s, updated_at = %(updated_at)s
+WHERE namespace = %(namespace)s AND organization_id = %(organization_id)s AND task_id = %(task_id)s
+RETURNING {_TASK_COLUMNS}
 """
 
 IDEMPOTENCY_INSERT_SQL = """
