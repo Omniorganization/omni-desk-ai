@@ -158,11 +158,11 @@ def _release_signing_secret_issues(name: str, workflow: dict[str, Any]) -> list[
         if not isinstance(job, dict):
             continue
         job_text = yaml.safe_dump(job, sort_keys=False)
-        secrets = [secret for secret in RELEASE_SIGNING_SECRETS if f"secrets.{secret}" in job_text]
-        if not secrets:
+        # Only report that a job reads them; the policy output never lists secret names.
+        if not any(f"secrets.{secret}" in job_text for secret in RELEASE_SIGNING_SECRETS):
             continue
         if _job_environment(job) != "release":
-            issues.append(f"{name}: job {job_id} reads release signing secrets {secrets} outside the protected release environment")
+            issues.append(f"{name}: job {job_id} reads release signing secrets outside the protected release environment")
         if str(job.get("if") or "").strip() != MAIN_ONLY_IF:
             issues.append(f"{name}: job {job_id} reads release signing secrets and must run only if: {MAIN_ONLY_IF}")
     return issues
