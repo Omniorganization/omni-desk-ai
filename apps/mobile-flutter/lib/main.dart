@@ -51,6 +51,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   bool approvalAutomation = true;
   bool contentAutomation = false;
   bool deviceEnrolled = false;
+  bool deviceVerified = false;
   OmniDeviceIdentity? deviceIdentity;
   StreamSubscription<String>? _pushTargetChanges;
 
@@ -119,6 +120,40 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   Future<bool> _confirmSensitiveAction() async {
     try {
       return await securityService.confirmSensitiveAction();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Enrolls and challenge-verifies this device so the gateway accepts its
+  /// signed requests (approval decisions, push-token updates). Needs an owner
+  /// token; returns false instead of failing the connection otherwise.
+  Future<bool> _verifyDevice(OmniDeviceIdentity identity) async {
+    try {
+      final pairingCode = DeviceIdentityStore.newPairingCode();
+      final started = await client.startDeviceEnrollment(pairingCode);
+      final enrollmentId = '${(started['enrollment'] as Map)['enrollment_id']}';
+      await client.completeDeviceEnrollment(
+        enrollmentId,
+        pairingCode,
+        identity.deviceId,
+        identity.publicKey,
+      );
+      final challenged = await client.issueDeviceChallenge(
+        enrollmentId,
+        identity.deviceId,
+      );
+      final challenge = challenged['challenge'] as Map;
+      final signature = await identityStore.signChallenge(
+        '${challenge['signing_message']}',
+      );
+      await client.verifyDeviceChallenge(
+        enrollmentId,
+        '${challenge['challenge_id']}',
+        identity.deviceId,
+        signature,
+      );
+      return true;
     } catch (_) {
       return false;
     }
@@ -289,12 +324,16 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       final token = await _resolvePushTarget();
       final identity = await identityStore.loadOrCreate();
       deviceIdentity = identity;
-      await client.registerMobile(
+      final registered = await client.registerMobile(
         deviceId: identity.deviceId,
         pushToken: token,
         publicKey: identity.publicKey,
       );
       deviceEnrolled = true;
+      final device = registered['device'];
+      final verified =
+          device is Map && device['credential_status'] == 'verified';
+      deviceVerified = verified || await _verifyDevice(identity);
       if (token != null) {
         await client.registerPushToken(identity.deviceId, token);
       }
@@ -309,8 +348,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       await syncProjects();
       if (!mounted) return;
       setState(() {
-        securityState =
-            'session saved in flutter_secure_storage; biometric/PIN required for approval';
+        securityState = deviceVerified
+            ? 'session saved in flutter_secure_storage; device verified; biometric/PIN required for approval'
+            : 'session saved; device not verified (approvals need an owner token to verify this device)';
         pushState = token == null
             ? 'push provider unavailable in this build'
             : 'FCM/APNS token registered';
