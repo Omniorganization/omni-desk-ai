@@ -342,6 +342,53 @@ class OmniApiClient {
         },
       );
 
+  /// Device enrollment (owner token): start, complete with this device's
+  /// public key, then prove possession of the private key via a challenge.
+  Future<Map<String, dynamic>> startDeviceEnrollment(String pairingCode) =>
+      _request('POST', '/app/devices/enrollment/start', <String, dynamic>{
+        'device_type': 'mobile',
+        'pairing_code': pairingCode,
+      });
+
+  Future<Map<String, dynamic>> completeDeviceEnrollment(
+    String enrollmentId,
+    String pairingCode,
+    String deviceId,
+    String publicKey,
+  ) => _request(
+    'POST',
+    '/app/devices/enrollment/${_pathSegment(enrollmentId)}/complete',
+    <String, dynamic>{
+      'pairing_code': pairingCode,
+      'device_id': deviceId,
+      'public_key': publicKey,
+    },
+  );
+
+  Future<Map<String, dynamic>> issueDeviceChallenge(
+    String enrollmentId,
+    String deviceId,
+  ) => _request(
+    'POST',
+    '/app/devices/enrollment/${_pathSegment(enrollmentId)}/challenge',
+    <String, dynamic>{'device_id': deviceId},
+  );
+
+  Future<Map<String, dynamic>> verifyDeviceChallenge(
+    String enrollmentId,
+    String challengeId,
+    String deviceId,
+    String signature,
+  ) => _request(
+    'POST',
+    '/app/devices/enrollment/${_pathSegment(enrollmentId)}/verify',
+    <String, dynamic>{
+      'challenge_id': challengeId,
+      'device_id': deviceId,
+      'signature': signature,
+    },
+  );
+
   Future<Map<String, dynamic>> notifications() =>
       _request('GET', '/app/notifications?audience=mobile');
 
