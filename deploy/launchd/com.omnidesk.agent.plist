@@ -7,11 +7,11 @@
   <array>
     <string>/bin/sh</string>
     <string>-lc</string>
-    <string>exec /usr/local/bin/omnidesk --config "$HOME/.omnidesk/config.yaml" serve</string>
+    <!-- Logs go to the user's own Library/Logs: a shared /tmp path can be
+         pre-created or symlinked by another local user. -->
+    <string>umask 077; mkdir -p "$HOME/Library/Logs/omnidesk" &amp;&amp; exec /usr/local/bin/omnidesk --config "$HOME/.omnidesk/config.yaml" serve &gt;&gt;"$HOME/Library/Logs/omnidesk/agent.out.log" 2&gt;&gt;"$HOME/Library/Logs/omnidesk/agent.err.log"</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/omnidesk.launchd.out.log</string>
-  <key>StandardErrorPath</key><string>/tmp/omnidesk.launchd.err.log</string>
 </dict>
 </plist>

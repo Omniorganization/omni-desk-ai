@@ -74,6 +74,11 @@ if [[ -z "$ARTIFACT" || -z "$ENVIRONMENT" ]]; then
   usage
   exit 64
 fi
+if [[ -n "$EXPECTED_VERSION" && ! "$EXPECTED_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$ ]]; then
+  # Interpolated into a quoted remote ssh command and a root-owned env file.
+  echo "expected version must match ^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$" >&2
+  exit 64
+fi
 if [[ "$ENVIRONMENT" != "staging" && "$ENVIRONMENT" != "production" ]]; then
   echo "environment must be staging or production" >&2
   exit 64

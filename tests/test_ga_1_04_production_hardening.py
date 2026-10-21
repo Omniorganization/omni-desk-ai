@@ -285,8 +285,14 @@ def test_native_apps_generate_per_install_device_identity() -> None:
     mobile_pubspec = Path("apps/mobile-flutter/pubspec.yaml").read_text(
         encoding="utf-8"
     )
-    assert "crypto.subtle.generateKey" in desktop
-    assert "omni.devicePrivateKeyJwk.v2" in desktop
+    # Desktop: the private key is generated and used only in Rust; the webview
+    # never sees it (it gets the device id, public key and signatures).
+    desktop_keys = Path("apps/desktop-tauri/src-tauri/src/device_keys.rs").read_text(encoding="utf-8")
+    desktop_main = Path("apps/desktop-tauri/src-tauri/src/main.rs").read_text(encoding="utf-8")
+    assert "SecretKey::random" in desktop_keys
+    assert "omni.devicePrivateKeyJwk.v2" in desktop_main
+    assert "devicePrivateKeyJwk" not in desktop
+    assert "invoke<DesktopDeviceIdentity>('device_identity')" in desktop
     assert "crypto.subtle.generateKey" in web_admin
     assert "signWebAdminDeviceRequest" in web_admin
     assert "web-admin-console" not in web_admin
