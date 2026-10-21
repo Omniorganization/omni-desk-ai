@@ -25,7 +25,7 @@
     "omnidesk_agent/appsync/postgres_migrations.py",
     "omnidesk_agent/appsync/strict_json_store.py"
   ],
-  "pythonVersion": "3.10",
+  "pythonVersion": "3.11",
   "typeCheckingMode": "basic",
   "reportMissingImports": "warning",
   "reportMissingTypeStubs": "none",

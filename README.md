@@ -231,7 +231,7 @@ This repository now includes an industrialization baseline:
 - Channel adapters expose `verify_request()` and `extract_envelope()` contracts.
 - Self-upgrade is PR-only and cannot patch `main` directly.
 - Upgrade sandbox supports Docker no-network read-only execution.
-- CI includes Python 3.10-3.13 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.
+- CI includes Python 3.11-3.13 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.
 
 
 ---

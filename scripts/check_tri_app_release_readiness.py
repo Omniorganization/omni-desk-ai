@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
     warnings: list[str] = []
     ok: list[str] = []
-    _check(sys.version_info >= (3, 10), f"Python runtime is >=3.10 ({sys.version.split()[0]})", failures, ok)
+    _check(sys.version_info >= (3, 11), f"Python runtime is >=3.11 ({sys.version.split()[0]})", failures, ok)
     required_files = [apps/"shared"/"omni-app-api.contract.json", apps/"web-admin-next"/"package.json", apps/"web-admin-next"/"lib"/"gateway.ts", apps/"desktop-tauri"/"package.json", apps/"desktop-tauri"/"src-tauri"/"tauri.conf.json", apps/"desktop-tauri"/"src-tauri"/"build.rs", apps/"desktop-tauri"/"src-tauri"/"icons"/"icon.png", apps/"mobile-flutter"/"pubspec.yaml"]
     for path in required_files:
         _check(path.exists(), f"Required tri-app file exists: {path.relative_to(root)}", failures, ok)
