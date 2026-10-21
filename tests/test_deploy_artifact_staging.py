@@ -147,17 +147,19 @@ class Helper:
         _write_exe(bin_dir / "systemctl", "exit 0\n")
         venv_bin = self.install_dir / "venv" / "bin"
         venv_bin.mkdir(parents=True)
-        # Fake venv python: record which file pip installs and its bytes at install time.
+        # Fake venv python: record which file pip installs and its bytes at install time;
+        # `python -` is the health check, which exits with $HEALTH_EXIT.
         _write_exe(
             venv_bin / "python",
-            f"""if [[ "$1 $2" == "-m pip" ]]; then
+            f"""if [[ "${{1:-}} ${{2:-}}" == "-m pip" ]]; then
   wheel="${{@: -1}}"
-  n=$(wc -l < {str(self.pip_log)!r} 2>/dev/null || echo 0)
+  n=0
+  if [[ -f {str(self.pip_log)!r} ]]; then n=$(wc -l < {str(self.pip_log)!r}); fi
   printf '%s\\n' "$wheel" >> {str(self.pip_log)!r}
-  cp -- "$wheel" {str(self.installed)!r}/$((n + 0))
+  cp -- "$wheel" {str(self.installed)!r}/$((n + 0)) || true
   exit 0
 fi
-if [[ "$1" == "-" ]]; then cat > /dev/null; exit 0; fi
+if [[ "${{1:-}}" == "-" ]]; then cat > /dev/null; exit "${{HEALTH_EXIT:-0}}"; fi
 exit 2
 """,
         )
@@ -177,11 +179,12 @@ exit 2
             env=self.env, capture_output=True, text=True, cwd=self.tmp,
         )
 
-    def installs(self) -> list[tuple[str, bytes]]:
+    def installs(self) -> list[tuple[str, bytes | None]]:
         if not self.pip_log.exists():
             return []
         paths = self.pip_log.read_text(encoding="utf-8").splitlines()
-        return [(path, (self.installed / str(i)).read_bytes()) for i, path in enumerate(paths)]
+        copies = [self.installed / str(i) for i in range(len(paths))]
+        return [(path, copy.read_bytes() if copy.exists() else None) for path, copy in zip(paths, copies)]
 
     def staging_dirs(self) -> list[Path]:
         return sorted(self.install_dir.glob(".deploy-staging.*"))
@@ -272,6 +275,37 @@ def test_helper_rejects_a_hash_mismatch_and_cleans_up(tmp_path):
     assert helper.installs() == []
     assert helper.staging_dirs() == []
     assert not (helper.install_dir / "artifacts" / "current.whl").exists()
+
+
+def test_failed_first_deploy_does_not_roll_back_to_a_self_referencing_link(tmp_path):
+    # GNU readlink -f resolves a missing current.whl to its own path; the old helper
+    # then pointed current.whl at itself and tried to pip install it.
+    helper = Helper(tmp_path)
+    helper.env["HEALTH_EXIT"] = "1"  # bash 3.2 already fails at the ${var@Q} health step
+    result = helper.run()
+    assert result.returncode != 0
+    installs = helper.installs()
+    assert [content for _, content in installs] == [GOOD], result.stderr
+    current = helper.install_dir / "artifacts" / "current.whl"
+    assert os.readlink(current) == str(helper.install_dir / "artifacts" / f"1.2.3-{_sha(GOOD)}" / WHEEL_NAME)
+    assert helper.staging_dirs() == []
+
+
+def test_failed_deploy_rolls_back_to_the_previous_wheel(tmp_path):
+    helper = Helper(tmp_path)
+    previous = helper.install_dir / "artifacts" / "1.2.2-prev" / "omnidesk_agent-1.2.2-py3-none-any.whl"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"previous wheel")
+    (helper.install_dir / "artifacts" / "current.whl").symlink_to(previous)
+    helper.env["HEALTH_EXIT"] = "1"
+    result = helper.run()
+    assert result.returncode != 0
+    assert "rolling back" in result.stderr
+    installs = helper.installs()
+    assert [content for _, content in installs] == [GOOD, b"previous wheel"], result.stderr
+    assert Path(installs[1][0]).resolve() == previous.resolve()
+    assert Path(os.readlink(helper.install_dir / "artifacts" / "current.whl")).resolve() == previous.resolve()
+    assert helper.staging_dirs() == []
 
 
 @pytest.mark.parametrize("name", ["artifact.zip", "current.whl.bak", ".hidden.whl"])

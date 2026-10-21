@@ -107,7 +107,12 @@ fi
 RELEASE_WHEEL="$ARTIFACT_DIR/$EXPECTED_VERSION-$actual_sha/$WHEEL_NAME"
 mkdir -p "$(dirname "$RELEASE_WHEEL")" "$(dirname "$RUNTIME_ENV_FILE")"
 cp -- "$STAGED_WHEEL" "$RELEASE_WHEEL"
-PREVIOUS_WHEEL="$(readlink -f "$ARTIFACT_DIR/current.whl" 2>/dev/null || true)"
+# GNU readlink -f also resolves a missing current.whl to its own path, which
+# made a failed first deploy "roll back" to a symlink pointing at itself.
+PREVIOUS_WHEEL=""
+if [[ -e "$ARTIFACT_DIR/current.whl" ]]; then
+  PREVIOUS_WHEEL="$(readlink -f "$ARTIFACT_DIR/current.whl" 2>/dev/null || true)"
+fi
 ln -sfn "$RELEASE_WHEEL" "$ARTIFACT_DIR/current.whl"
 
 rollback() {
