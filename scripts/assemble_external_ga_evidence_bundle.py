@@ -39,36 +39,31 @@ def _candidate_roots(source: Path, required_files: list[str]) -> list[Path]:
     return candidates
 
 
-def _copy_candidate(candidate: Path, dest_dir: Path) -> tuple[list[str], list[str]]:
+def _copy_candidate(candidate: Path, dest_dir: Path) -> tuple[list[str], list[str], list[str]]:
     copied: list[str] = []
     issues: list[str] = []
     source_root = candidate.resolve()
     dest_root = dest_dir.resolve()
     if source_root == dest_root or _is_within(dest_root, source_root):
-        return copied, [f"destination must not be inside source candidate: {source_root}"]
+        return copied, [f"destination must not be inside source candidate: {source_root}"], []
 
-    for item in sorted(source_root.rglob("*")):
-        rel = item.relative_to(source_root)
-        if any(part in {"", ".", ".."} for part in rel.parts):
-            issues.append(f"unsupported evidence path: {rel}")
-            continue
-        target = (dest_root / rel).resolve()
+    # Only the expected evidence JSON files and the artifacts they reference are
+    # merged; anything else a provider artifact carries is left behind.
+    selection = import_external_ga_evidence.select_expected_evidence_files(source_root)
+    issues.extend(selection["issues"])
+    for rel_text in selection["selected"]:
+        item = source_root / rel_text
+        target = (dest_root / rel_text).resolve()
         if not _is_within(target, dest_root):
-            issues.append(f"refusing to copy path outside destination: {rel}")
-            continue
-        if item.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        if not item.is_file():
-            issues.append(f"unsupported evidence path type: {rel}")
+            issues.append(f"refusing to copy path outside destination: {rel_text}")
             continue
         if target.exists() and not filecmp.cmp(item, target, shallow=False):
-            issues.append(f"conflicting evidence file from multiple providers: {rel}")
+            issues.append(f"conflicting evidence file from multiple providers: {rel_text}")
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item, target)
-        copied.append(str(rel))
-    return copied, issues
+        copied.append(rel_text)
+    return copied, issues, selection["ignored"]
 
 
 def assemble_bundle(
@@ -90,7 +85,7 @@ def assemble_bundle(
         "copied_files": [],
         "issues": [],
         "validation": {},
-        "policy": "The assembler only merges provider-produced evidence files and then runs the real external evidence gate. It never creates passing evidence.",
+        "policy": "The assembler only merges the expected provider-produced evidence JSON files and the artifacts they reference, then runs the real external evidence gate. It never creates passing evidence.",
     }
     if not source_dirs:
         report["issues"].append("at least one provider or staging evidence source dir is required")
@@ -98,7 +93,7 @@ def assemble_bundle(
     dest_dir.mkdir(parents=True, exist_ok=True)
     for source in source_dirs:
         source = source.resolve()
-        source_result: dict[str, Any] = {"source": str(source), "candidate_roots": [], "copied_files": [], "issues": []}
+        source_result: dict[str, Any] = {"source": str(source), "candidate_roots": [], "copied_files": [], "ignored_files": [], "issues": []}
         if not source.exists() or not source.is_dir():
             source_result["issues"].append("source dir does not exist or is not a directory")
             report["sources"].append(source_result)
@@ -110,8 +105,9 @@ def assemble_bundle(
                 "source must contain release/external-evidence or required evidence paths"
             )
         for candidate in candidates:
-            copied, issues = _copy_candidate(candidate, dest_dir)
+            copied, issues, ignored = _copy_candidate(candidate, dest_dir)
             source_result["copied_files"].extend(copied)
+            source_result["ignored_files"].extend(ignored)
             source_result["issues"].extend(issues)
             report["copied_files"].extend(copied)
         report["sources"].append(source_result)

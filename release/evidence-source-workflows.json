@@ -1,0 +1,37 @@
+{
+  "schema": "omnidesk-evidence-source-workflows/v1",
+  "policy": "A workflow that downloads evidence from another run id accepts it only from a reviewed producer workflow that ran on main in this repository (no forks), finished successfully, and whose head commit is the consuming commit (exact) or one of its ancestors (ancestor). Register a new producer workflow here in a reviewed change before using its run ids.",
+  "consumers": {
+    "release": {
+      "description": "release.yml imports the bound evidence that an enforced Main Verification run uploaded for the exact commit being released.",
+      "workflows": [".github/workflows/main-verification.yml"],
+      "events": ["workflow_dispatch"],
+      "head_branch": "main",
+      "head_sha": "exact"
+    },
+    "main-verification": {
+      "description": "Main Verification binds the clean external-ga-evidence artifact assembled by the control plane or the remote evidence pipeline.",
+      "workflows": [
+        ".github/workflows/real-ga-evidence-control-plane.yml",
+        ".github/workflows/remote-evidence-pipeline.yml"
+      ],
+      "events": ["workflow_dispatch"],
+      "head_branch": "main",
+      "head_sha": "ancestor"
+    },
+    "remote-evidence-pipeline": {
+      "description": "Raw provider evidence bundles uploaded by registered producer workflows.",
+      "workflows": [".github/workflows/browserstack-android-evidence.yml"],
+      "events": ["workflow_dispatch"],
+      "head_branch": "main",
+      "head_sha": "ancestor"
+    },
+    "real-ga-evidence-control-plane": {
+      "description": "Provider and staging evidence producers. Release-artifact, AWS Device Farm, live-services and staging-operations producers must be added here once their workflows exist on main.",
+      "workflows": [".github/workflows/browserstack-android-evidence.yml"],
+      "events": ["workflow_dispatch"],
+      "head_branch": "main",
+      "head_sha": "ancestor"
+    }
+  }
+}

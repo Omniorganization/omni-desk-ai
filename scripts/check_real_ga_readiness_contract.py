@@ -234,7 +234,7 @@ def audit(root: Path) -> dict[str, object]:
         _check("actions/download-artifact@" in release_workflow, failures, "release workflow must download native application artifacts before final signing")
         current_binding_index = release_workflow.find("check_current_release_artifact_binding.py")
         customer_ga_index = release_workflow.find("check_customer_distribution_ga.py")
-        final_signing_index = release_workflow.find("python scripts/sign_release.py dist")
+        final_signing_index = release_workflow.find("python scripts/finalize_release_payload.py dist")
         _check(current_binding_index >= 0, failures, "release workflow must rehash and bind current native artifacts")
         _check(
             0 <= current_binding_index < customer_ga_index < final_signing_index,

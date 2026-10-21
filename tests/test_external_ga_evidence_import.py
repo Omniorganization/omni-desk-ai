@@ -401,3 +401,66 @@ def test_external_ga_evidence_preflight_accepts_complete_bundle(
     assert config_main(["--scope", "external-ga-evidence", "--format", "json"]) == 0
 
     assert '"ok": true' in capsys.readouterr().out
+
+
+def _plant_unexpected_files(root: Path) -> None:
+    (root / "conftest.py").write_text("raise SystemExit('planted')\n", encoding="utf-8")
+    (root / "control-plane").mkdir(parents=True, exist_ok=True)
+    (root / "control-plane" / "conftest.py").write_text("raise SystemExit('planted')\n", encoding="utf-8")
+    (root / "notes" / "unexpected.json").parent.mkdir(parents=True, exist_ok=True)
+    (root / "notes" / "unexpected.json").write_text("{}", encoding="utf-8")
+
+
+def test_import_copies_only_expected_evidence_files(tmp_path, capsys) -> None:
+    raw = tmp_path / "raw"
+    dest = tmp_path / "dest"
+    _write_complete_raw_evidence(raw)
+    _plant_unexpected_files(raw)
+
+    assert main(["--raw-dir", str(raw), "--dest-dir", str(dest), "--copy", "--expected-version", VERSION, "--write-report", str(tmp_path / "report.json")]) == 0
+
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert (dest / "drills" / "rollback-drill.json").exists()
+    assert (dest / "artifacts" / "signed" / "android.aab").exists()  # referenced by evidence JSON
+    assert not (dest / "conftest.py").exists()
+    assert not (dest / "control-plane" / "conftest.py").exists()
+    assert not (dest / "notes").exists()
+    assert {"conftest.py", "control-plane/conftest.py", "notes/unexpected.json"} <= set(report["ignored_files"])
+    capsys.readouterr()
+
+
+def test_assemble_copies_only_expected_evidence_files(tmp_path, capsys) -> None:
+    raw = tmp_path / "raw"
+    provider = tmp_path / "provider-artifact" / "release" / "external-evidence"
+    dest = tmp_path / "assembled"
+    _write_complete_raw_evidence(raw)
+    shutil.copytree(raw, provider)
+    _plant_unexpected_files(provider)
+
+    assert assemble_main(["--root", ".", "--source-dir", str(provider.parent.parent), "--dest-dir", str(dest), "--expected-version", VERSION, "--write-report", str(tmp_path / "assembly.json")]) == 0
+
+    assert (dest / "drills" / "rollback-drill.json").exists()
+    assert not (dest / "conftest.py").exists()
+    assert not (dest / "control-plane" / "conftest.py").exists()
+    assert not (dest / "notes").exists()
+    capsys.readouterr()
+
+
+def test_import_refuses_code_referenced_as_an_evidence_artifact(tmp_path, capsys) -> None:
+    raw = tmp_path / "raw"
+    dest = tmp_path / "dest"
+    _write_complete_raw_evidence(raw)
+    doc_path = raw / "model" / "model-live-smoke.json"
+    doc = json.loads(doc_path.read_text(encoding="utf-8"))
+    payload = b"import os\n"
+    (raw / "model" / "conftest.py").write_bytes(payload)
+    doc["artifacts"] = [{"path": "model/conftest.py", "sha256": hashlib.sha256(payload).hexdigest()}]
+    doc_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    assert main(["--raw-dir", str(raw), "--dest-dir", str(dest), "--copy", "--expected-version", VERSION, "--write-report", str(tmp_path / "report.json")]) == 1
+
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert report["copied"] is False
+    assert any("refusing to copy code file" in issue for issue in report["issues"])
+    assert not (dest / "model" / "conftest.py").exists()
+    capsys.readouterr()

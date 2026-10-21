@@ -45,8 +45,10 @@ permissions:
   id-token: write
 
 env:
-  # Attestations are only trusted when produced by the Release Build workflow.
+  # Attestations are only trusted when produced by the Release Build workflow
+  # (release.yml) running from main; tags are not a trusted release ref.
   RELEASE_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+  RELEASE_SOURCE_REF: refs/heads/main
 
 jobs:
   rollback-drill:
@@ -75,9 +77,9 @@ jobs:
           gh run download "$PREVIOUS_ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir previous
       - name: Verify release artifacts and attestations
         env:
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
-          # Set this repository variable to 1 once releases are Ed25519-signed to refuse HMAC manifests.
-          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: ${{ vars.OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES }}
+          # Ed25519 only, against the committed release/release-signing-public-key.pem;
+          # this job holds no signing secret, so it cannot forge a release.
+          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
           GH_TOKEN: ${{ github.token }}
           CURRENT_VERSION: ${{ inputs.current_version }}
           PREVIOUS_VERSION: ${{ inputs.previous_version }}
@@ -89,7 +91,7 @@ jobs:
           python scripts/verify_release_artifact.py previous --expected-version "$PREVIOUS_VERSION" --require-signatures --require-metadata
           python scripts/verify_release_signatures.py previous
           find current previous -maxdepth 1 -type f -print0 | sort -z | while IFS= read -r -d '' artifact; do
-            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$RELEASE_SIGNER_WORKFLOW"
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$RELEASE_SIGNER_WORKFLOW" --source-ref "$RELEASE_SOURCE_REF" --deny-self-hosted-runners
           done
           current_wheel="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
           previous_wheel="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"

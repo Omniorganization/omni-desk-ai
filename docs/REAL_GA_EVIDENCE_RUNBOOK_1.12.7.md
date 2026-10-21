@@ -16,6 +16,8 @@ Preferred control-plane run:
 2. Produce staging operations evidence from the approved Kubernetes or systemd staging environment. This artifact must include the Postgres soak, rollback, backup/restore, and self-healing failure-injection JSON files under `release/external-evidence/drills/`.
 3. Run `.github/workflows/real-ga-evidence-control-plane.yml` with the provider run ids and `staging_operations_evidence_run_id`. All producer runs should upload the shared artifact name from `provider_evidence_artifact_name`, which defaults to `external-ga-evidence-raw`. This workflow assembles provider artifacts, validates the complete bundle, uploads `external-ga-evidence`, and invokes `real-ga-readiness.yml`.
 
+Every workflow that takes evidence from another run id (`release.yml`, `main-verification.yml`, `remote-evidence-pipeline.yml`, `real-ga-evidence-control-plane.yml`) downloads it with `scripts/fetch_ci_evidence_artifact.py`. The source run must be a producer workflow registered for that consumer in `release/evidence-source-workflows.json`, must have succeeded on `main` in this repository, and its head commit must be the consuming commit (`release.yml`) or an ancestor of it. Only the expected evidence JSON files and the artifacts they reference are copied out of the artifact. Release-artifact, AWS Device Farm, live-services and staging-operations producers have no workflow on `main` yet; add the producer workflow and register it in `release/evidence-source-workflows.json` in a reviewed change before using its run ids.
+
 Run `.github/workflows/real-ga-readiness.yml` manually.
 
 - Use `readiness_channel=candidate` to collect an audit report without blocking on missing evidence.
