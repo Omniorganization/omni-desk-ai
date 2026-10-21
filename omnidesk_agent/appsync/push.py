@@ -2,8 +2,41 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+# Push targets are stored as plain FCM registration tokens (legacy clients) or
+# as "fid:<Firebase Installation ID>" (firebase_messaging >= 17 register() /
+# onRegistered). FCM registration tokens always have ":" after a 22-character
+# instance id, so they can never start with "fid:".
+FID_PREFIX = "fid:"
+PUSH_TOKEN_TYPES = frozenset({"fcm_token", "fid"})
+_FID_RE = re.compile(r"^[A-Za-z0-9_-]{22}$")
+
+
+def normalize_push_target(value: object, token_type: object = "fcm_token") -> str | None:
+    """Validates a client-supplied push target and returns its stored form."""
+    target = str(value or "").strip()
+    if not target:
+        return None
+    kind = str(token_type or "fcm_token")
+    if kind not in PUSH_TOKEN_TYPES:
+        raise ValueError("token_type must be fcm_token or fid")
+    if kind == "fid":
+        if not _FID_RE.fullmatch(target):
+            raise ValueError("invalid Firebase Installation ID")
+        return FID_PREFIX + target
+    if target.startswith(FID_PREFIX) or len(target) > 4096:
+        raise ValueError("invalid FCM registration token")
+    return target
+
+
+def split_push_target(stored: str) -> tuple[str, str]:
+    """Returns (kind, value) for a stored push target."""
+    if stored.startswith(FID_PREFIX):
+        return "fid", stored[len(FID_PREFIX):]
+    return "fcm_token", stored
 
 @dataclass
 class PushDeliveryResult:
@@ -52,18 +85,29 @@ class FirebasePushProvider:
     def send(self, item: dict[str, Any]) -> PushDeliveryResult:
         try:
             messaging = self._messaging()
-            token = str(item.get("push_token") or item.get("token") or "")
-            if not token:
+            stored = str(item.get("push_token") or item.get("token") or "")
+            if not stored:
                 raise ValueError("push token is required")
-            message = messaging.Message(
-                token=token,
-                notification=messaging.Notification(title=str(item.get("title") or "Omni"), body=str(item.get("body") or "")),
-                data={"push_id": str(item.get("push_id") or ""), "related_id": str(item.get("related_id") or ""), "audience": str(item.get("audience") or "")},
-            )
-            message_id = messaging.send(message, app=self.app)
+            kind, target = split_push_target(stored)
+            content = {
+                "notification": messaging.Notification(title=str(item.get("title") or "Omni"), body=str(item.get("body") or "")),
+                "data": {"push_id": str(item.get("push_id") or ""), "related_id": str(item.get("related_id") or ""), "audience": str(item.get("audience") or "")},
+            }
+            message_id = messaging.send(_build_message(messaging, kind, target, content), app=self.app)
             return PushDeliveryResult(push_id=str(item.get("push_id")), ok=True, provider=self.name, provider_message_id=message_id)
         except Exception as exc:
             return PushDeliveryResult(push_id=str(item.get("push_id")), ok=False, provider=self.name, error=str(exc))
+
+def _build_message(messaging: Any, kind: str, target: str, content: dict[str, Any]) -> Any:
+    if kind == "fid":
+        try:
+            return messaging.Message(fid=target, **content)
+        except TypeError:
+            # firebase_admin releases without the `fid` field: FCM v1 accepts an
+            # FID in `token` during the FID transition period.
+            return messaging.Message(token=target, **content)
+    return messaging.Message(token=target, **content)
+
 
 class ApnsPushProvider:
     """APNS release adapter seam.

@@ -17,8 +17,12 @@ void main() {
     ) as Map<String, dynamic>;
 
     expect(pubspec, contains('local_auth: ^3.0.2'));
-    expect(pubspec, contains('firebase_core: ^4.14.0'));
-    expect(pubspec, contains('firebase_messaging: ^16.7.0'));
+    expect(pubspec, contains('firebase_core: ^5.0.0'));
+    expect(pubspec, contains('firebase_messaging: ^17.0.0'));
+    // firebase_messaging 17: FID registration replaces registration tokens.
+    expect(securitySource, contains('messaging.register()'));
+    expect(securitySource, isNot(contains('getToken(')));
+    expect(securitySource, isNot(contains('onTokenRefresh')));
     expect(mainSource, isNot(contains('AuthenticationOptions(')));
     expect(securitySource, isNot(contains('AuthenticationOptions(')));
     expect(securitySource, contains('persistAcrossBackgrounding: true'));
