@@ -90,7 +90,10 @@ services:
       - "18890"
     volumes:
       - sandbox-runner-state:/runner-state
-      - ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock:ro
+      # A read-only bind mount does not restrict the container API; isolation comes
+      # from the socket being rootless (the runner refuses to start on a rootful one
+      # unless OMNIDESK_SANDBOX_ALLOW_ROOTFUL_RUNTIME=1) and from a dedicated host.
+      - ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock
     tmpfs:
       - /tmp:size=128m,noexec,nosuid,nodev
     healthcheck:
