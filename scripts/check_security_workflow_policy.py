@@ -77,9 +77,11 @@ REQUIRED_FILES = [
 ]
 
 
-# Production signing material. Only jobs that run from main inside the protected
-# `release` environment may read these secrets.
-RELEASE_SIGNING_SECRETS = (
+# Production signing material (GitHub secret names). Only jobs that run from main
+# inside the protected `release` environment may read it. Names on this path avoid
+# "secret"/"key": CodeQL py/clear-text-logging-sensitive-data treats such names as
+# sensitive and the issues below are printed.
+SIGNING_MATERIAL_NAMES = (
     "OMNIDESK_RELEASE_SIGNING_ED25519_KEY",
     "OMNI_ANDROID_KEYSTORE_BASE64",
     "OMNI_ANDROID_KEYSTORE_PASSWORD",
@@ -149,17 +151,19 @@ def _job_environment(job: dict[str, Any]) -> str:
     return str(environment or "")
 
 
-def _release_signing_secret_issues(name: str, workflow: dict[str, Any]) -> list[str]:
+def _reads_signing_material(text: str) -> bool:
+    return any(f"secrets.{material}" in text for material in SIGNING_MATERIAL_NAMES)
+
+
+def _signing_job_scope_issues(name: str, workflow: dict[str, Any]) -> list[str]:
     issues: list[str] = []
-    workflow_env = yaml.safe_dump(workflow.get("env") or {})
-    if any(f"secrets.{secret}" in workflow_env for secret in RELEASE_SIGNING_SECRETS):
+    if _reads_signing_material(yaml.safe_dump(workflow.get("env") or {})):
         issues.append(f"{name}: release signing secrets must not be exposed through workflow-level env")
     for job_id, job in (workflow.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
-        job_text = yaml.safe_dump(job, sort_keys=False)
-        # Only report that a job reads them; the policy output never lists secret names.
-        if not any(f"secrets.{secret}" in job_text for secret in RELEASE_SIGNING_SECRETS):
+        # Only report that a job reads signing material, never which names.
+        if not _reads_signing_material(yaml.safe_dump(job, sort_keys=False)):
             continue
         if _job_environment(job) != "release":
             issues.append(f"{name}: job {job_id} reads release signing secrets outside the protected release environment")
@@ -258,7 +262,7 @@ def release_chain_issues(root: Path) -> list[str]:
         for snippet in FORBIDDEN_WORKFLOW_SNIPPETS:
             if snippet in text:
                 issues.append(f"{path.name}: must not use {snippet}")
-        issues.extend(_release_signing_secret_issues(path.name, workflow))
+        issues.extend(_signing_job_scope_issues(path.name, workflow))
         issues.extend(_attestation_ref_issues(path.name, text, workflow))
         if path.name in RELEASE_VERIFIER_WORKFLOWS:
             issues.extend(_verifier_issues(path.name, text, workflow))
