@@ -46,7 +46,9 @@ class ChatAwareApiResourceGuard(ApiResourceGuard):
         release = self._acquire(route_class(request.url.path))
         return await self._ingest_admitted(request, release)
 
-    def check_authenticated(self, request: Request, *, actor: str, role: str) -> None:
+    def check_authenticated(
+        self, request: Request, *, actor: str, role: str, organization: str | None = None
+    ) -> None:
         if not self._enabled():
             return
         path = _path_key(request.url.path)
@@ -54,11 +56,8 @@ class ChatAwareApiResourceGuard(ApiResourceGuard):
         window = int(getattr(self.cfg, "window_seconds", 60))
         actor_key = _clean(actor or "unknown")
         role_key = _clean(role or "unknown")
-        org_key = _clean(
-            request.headers.get("x-omnidesk-org")
-            or request.headers.get("x-omnidesk-organization")
-            or "org_default"
-        )
+        # Server-resolved organization only; x-omnidesk-org is client-controlled.
+        org_key = _clean(organization or "org_default")
         self._check_rate(
             f"actor:{actor_key}",
             int(getattr(self.cfg, "max_requests_per_actor", 120)),
