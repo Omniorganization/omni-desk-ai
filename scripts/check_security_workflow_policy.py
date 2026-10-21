@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 
+# CodeQL must be pinned to a full commit SHA, with init and analyze on the
+# same commit. The exact SHA is not hardcoded so Dependabot can bump it.
+CODEQL_PIN_RE = re.compile(r"github/codeql-action/(init|analyze)@([0-9a-f]{40})\b")
+
 SECURITY_SNIPPETS = [
-    "github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e",
-    "github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e",
     "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
     "github.com/zricethezav/gitleaks/v8@v8.28.0",
     "fetch-depth: 0",
@@ -70,6 +73,20 @@ REQUIRED_FILES = [
 ]
 
 
+def _codeql_pin_issues(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if re.search(r"github/codeql-action/[a-z-]+@(?![0-9a-f]{40}\b)", text):
+        return ["security.yml: github/codeql-action must be pinned to a full commit SHA"]
+    pins: dict[str, set[str]] = {}
+    for step, sha in CODEQL_PIN_RE.findall(text):
+        pins.setdefault(step, set()).add(sha)
+    if not pins.get("init") or not pins.get("analyze"):
+        return ["security.yml: github/codeql-action init and analyze steps are required"]
+    if len(pins["init"] | pins["analyze"]) != 1:
+        return ["security.yml: github/codeql-action init and analyze must use the same commit"]
+    return []
+
+
 def _missing_snippets(path: Path, snippets: list[str]) -> list[str]:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     return [snippet for snippet in snippets if snippet not in text]
@@ -92,6 +109,7 @@ def check(root: Path) -> list[str]:
     missing_security = _missing_snippets(security_workflow, SECURITY_SNIPPETS)
     if missing_security:
         issues.append("security.yml missing snippets: " + ", ".join(missing_security))
+    issues.extend(_codeql_pin_issues(security_workflow))
     attack_surface_workflow = root / ".github" / "workflows" / "security-attack-surface.yml"
     missing_attack_surface = _missing_snippets(
         attack_surface_workflow, ATTACK_SURFACE_WORKFLOW_SNIPPETS
