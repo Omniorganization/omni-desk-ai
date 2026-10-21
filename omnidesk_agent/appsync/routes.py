@@ -12,6 +12,14 @@ from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
 from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
+from omnidesk_agent.appsync.sync_websocket import (
+    MAX_CONCURRENT_SYNC_POLLS,
+    WebSocketConnectionLimiter,
+    WebSocketRejected,
+    admit_authenticated,
+    admit_handshake,
+    stream_sync_events,
+)
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.validation.production import is_production_mode
 
@@ -431,7 +439,8 @@ def register_appsync_routes(
                 capabilities=payload.get("capabilities") or [],
                 public_key=public_key or None,
                 token_hash=payload.get("token_hash"),
-                organization_id=payload.get("organization_id") or "org_default",
+                # The organization is the actor's server-side one; a request body
+                # organization_id is ignored.
                 idempotency_key=idem_key,
                 idempotency_payload=payload,
                 device_signature_verified=device_signature_verified,
@@ -1100,28 +1109,57 @@ def register_appsync_routes(
         decision = await admin(request, "viewer")
         return {"ok": True, **store.sync_state(actor=_actor(decision))}
 
+    app_sync_cfg = getattr(cfg, "app_sync", None)
+    ws_connections = WebSocketConnectionLimiter(
+        max_per_actor=int(getattr(app_sync_cfg, "websocket_max_connections_per_actor", 8)),
+        max_total=int(getattr(app_sync_cfg, "websocket_max_connections", 256)),
+    )
+    app.state.app_ws_connections = ws_connections
+    ws_poll_slots = asyncio.Semaphore(MAX_CONCURRENT_SYNC_POLLS)
+
+    async def _reject_ws(websocket: WebSocket, *, code: int, reason: str) -> None:
+        metrics.inc("omnidesk_app_ws_rejected_total", reason=reason) if metrics else None
+        await websocket.close(code=code, reason=reason)
+
     @app.websocket("/app/ws")
     async def app_ws(websocket: WebSocket):
+        # The HTTP middleware's resource guard never sees WebSocket handshakes.
+        guard = getattr(app.state, "resource_guard", None)
+        try:
+            admit_handshake(guard, websocket)
+        except WebSocketRejected as exc:
+            await _reject_ws(websocket, code=1013, reason=exc.reason)
+            return
         headers = _websocket_headers(websocket, cfg)
         client_host = getattr(getattr(websocket, "client", None), "host", None)
         auth_decision = rt.admin_auth.verify_headers(
             headers, client_host=client_host, required_role="viewer", path="/app/ws"
         )
         if not auth_decision.ok:
-            await websocket.close(code=1008, reason="unauthorized")
+            await _reject_ws(websocket, code=1008, reason="unauthorized")
             return
         actor = _actor(auth_decision)
-        await websocket.accept()
-        since_seq = 0
+        try:
+            admit_authenticated(guard, websocket, actor=actor, role=str(getattr(auth_decision, "role", "viewer")))
+            release = ws_connections.acquire(actor)
+        except WebSocketRejected as exc:
+            await _reject_ws(websocket, code=1013, reason=exc.reason)
+            return
         try:
             try:
-                since_seq = int(websocket.query_params.get("since_seq", "0"))
+                since_seq = max(0, int(websocket.query_params.get("since_seq", "0")))
             except ValueError:
                 since_seq = 0
-            while True:
-                sync = store.sync_since(since_seq, actor=actor)
-                await websocket.send_json({"ok": True, **sync})
-                since_seq = int(sync["sync_seq"])
-                await asyncio.sleep(2)
-        except WebSocketDisconnect:
+            await websocket.accept()
+            await stream_sync_events(
+                websocket,
+                store,
+                actor=actor,
+                since_seq=since_seq,
+                poll_seconds=float(getattr(app_sync_cfg, "websocket_poll_seconds", 2.0)),
+                poll_slots=ws_poll_slots,
+            )
+        except (WebSocketDisconnect, asyncio.TimeoutError):
             return
+        finally:
+            release()

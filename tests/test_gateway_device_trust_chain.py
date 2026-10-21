@@ -496,7 +496,7 @@ def test_postgres_enrollment_is_single_use_and_bound() -> None:
             second.issue_device_challenge(actor=OPERATOR, enrollment_id=pending["enrollment_id"], device_id="dev_attacker")
 
         enrollment = _enroll(first, owner=OWNER, actor=OPERATOR, device_id="dev_phone", device_type="mobile", secret="k")
-        second.sync_since(0, actor=OPERATOR)  # serialized call: reloads shared state
+        second.bootstrap(OPERATOR)  # serialized call: reloads shared state
         assert second.device_enrollments[enrollment["enrollment_id"]].status == "completed"
         second.register_device(actor=OPERATOR, device_id="dev_phone_2", device_type="mobile", name="y", platform="ios", public_key="legacy-hmac:k")
         with pytest.raises(ValueError, match="not awaiting device verification"):

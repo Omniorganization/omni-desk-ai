@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Literal, Optional, cast
+from typing import Any, Callable, Literal, Optional, cast
 
 DeviceType = Literal["desktop", "mobile", "web_admin"]
 # "consumed": the approval authorized a run that a runtime device has claimed.
@@ -78,6 +78,45 @@ def _sha256_hex(payload: bytes) -> str:
 
 def _device_request_message(*, method: str, path: str, body_sha256: str, timestamp: str, nonce: str) -> bytes:
     return f"omnidesk-device-request:v1:{method.upper()}:{path}:{body_sha256}:{timestamp}:{nonce}".encode("utf-8")
+
+
+# Events of these types carry a conversation's chat itself.
+_CHAT_EVENT_PREFIXES = ("conversation.", "message.", "chat.")
+
+
+def scope_sync_event_to_actor(
+    event: dict[str, Any],
+    *,
+    actor: str,
+    conversation_owner: Callable[[str], Optional[str]],
+) -> Optional[dict[str, Any]]:
+    """Return ``event`` as ``actor`` may see it in a sync feed, or ``None``.
+
+    Conversations are private to the actor that created them; there is no
+    membership model. Chat events of another actor's conversation are hidden, and
+    any other event that references one (a task created from it) loses the
+    reference. ``conversation_owner`` returns ``None`` for an unknown id, so an
+    unresolvable ``conversation_id`` is treated as another actor's.
+    """
+    event_type = str(event.get("event_type") or "")
+    chat_event = event_type.startswith(_CHAT_EVENT_PREFIXES)
+    if chat_event and str(event.get("actor") or "") != actor:
+        # Offline uploads may name the conversation under another key, or not at all.
+        return None
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    hidden: set[str] = set()
+    conversation_id = str(payload.get("conversation_id") or "")
+    if conversation_id and conversation_owner(conversation_id) != actor:
+        hidden.add("conversation_id")
+    related_id = str(payload.get("related_id") or "")
+    related_owner = conversation_owner(related_id) if related_id else None
+    if related_owner is not None and related_owner != actor:
+        hidden.add("related_id")
+    if not hidden:
+        return event
+    if chat_event or event_type == "notification.created":
+        return None
+    return {**event, "payload": {key: value for key, value in payload.items() if key not in hidden}}
 
 
 def _verify_device_signature(public_key: str, message: bytes, signature: str) -> bool:
@@ -422,6 +461,8 @@ class AppSyncStore:
         self.sync_cursors: dict[str, SyncCursorRecord] = {}
         self.sync_conflicts: dict[str, SyncConflictRecord] = {}
         self.network_state: dict[str, Any] = {"state": "local_only", "updated_at": _now()}
+        # Server-side organization of each actor on first use (configuration, never a request).
+        self.actor_organizations: dict[str, str] = {}
         self._seq = 0
         self._load()
 
@@ -491,9 +532,21 @@ class AppSyncStore:
     def _normalize_org_id(self, organization_id: Optional[str]) -> str:
         return str(organization_id or self._default_org_id() or "org_default").strip() or "org_default"
 
+    def configure_actor_organizations(self, assignments: Optional[dict[str, str]]) -> None:
+        """Set the server-side organization that each listed actor joins on first use."""
+        with self._lock:
+            self.actor_organizations = {
+                str(actor).strip(): self._normalize_org_id(organization_id)
+                for actor, organization_id in (assignments or {}).items()
+                if str(actor).strip()
+            }
+
+    def organization_for_new_actor(self, actor: Optional[str]) -> str:
+        return self._normalize_org_id(self.actor_organizations.get(actor or ""))
+
     def _organization_for_actor(self, actor: Optional[str]) -> str:
         user = self.users.get(actor or "unknown")
-        return self._normalize_org_id(user.organization_id if user else None)
+        return self._normalize_org_id(user.organization_id) if user else self.organization_for_new_actor(actor)
 
     def _organization_for_device(self, device_id: Optional[str]) -> str:
         device = self.devices.get(device_id or "")
@@ -828,29 +881,40 @@ class AppSyncStore:
             }
 
     def ensure_user(self, actor: str, role: str = "operator", display_name: Optional[str] = None, organization_id: Optional[str] = None) -> dict[str, Any]:
+        """Return the actor's profile, creating it on first use.
+
+        ``organization_id`` comes from a server-side caller, never a request. A new
+        actor joins it, else its configured organization, else the default one; an
+        existing actor never changes organization.
+        """
         actor = actor or "unknown"
-        requested_organization_id = organization_id
-        organization_id = self._normalize_org_id(organization_id)
+        requested = self._normalize_org_id(organization_id) if organization_id is not None else None
         with self._lock:
+            assigned = self.actor_organizations.get(actor)
+            if requested is not None and assigned is not None and requested != assigned:
+                raise PermissionError("organization does not match the server-side assignment for this actor")
             if actor not in self.users:
-                self.users[actor] = UserProfile(user_id=actor, display_name=display_name or actor, role=role, organization_id=organization_id)
-                self._event("user.created", actor, {"user_id": actor, "role": role, "organization_id": organization_id})
+                new_organization_id = requested or self.organization_for_new_actor(actor)
+                self.users[actor] = UserProfile(user_id=actor, display_name=display_name or actor, role=role, organization_id=new_organization_id)
+                self._event("user.created", actor, {"user_id": actor, "role": role, "organization_id": new_organization_id})
                 self._persist()
-            elif requested_organization_id is not None and self._normalize_org_id(self.users[actor].organization_id) != organization_id:
+            elif requested is not None and self._normalize_org_id(self.users[actor].organization_id) != requested:
                 raise PermissionError("actor is already bound to a different organization")
             return self._record(self.users[actor])
 
-    def register_device(self, *, actor: str, device_id: Optional[str], device_type: DeviceType, name: str, platform: str, push_token: Optional[str] = None, capabilities: Optional[list[str]] = None, public_key: Optional[str] = None, token_hash: Optional[str] = None, organization_id: str = "org_default", idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, device_signature_verified: bool = False) -> dict[str, Any]:
+    def register_device(self, *, actor: str, device_id: Optional[str], device_type: DeviceType, name: str, platform: str, push_token: Optional[str] = None, capabilities: Optional[list[str]] = None, public_key: Optional[str] = None, token_hash: Optional[str] = None, organization_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, device_signature_verified: bool = False) -> dict[str, Any]:
         """Register a device or refresh an existing one owned by the same actor.
 
+        The device joins its actor's organization; ``organization_id`` is only a
+        server-side assignment for a new actor (see ``ensure_user``).
         ``device_signature_verified`` must only be set when the request was signed
         by this device's own verified key; it allows a verified device to update
         its push target and capabilities.
         """
         actor = actor or "unknown"
-        organization_id = self._normalize_org_id(organization_id)
         with self._lock:
             self.ensure_user(actor, organization_id=organization_id)
+            organization_id = self._organization_for_actor(actor)
             cached = self._idempotency_get(actor=actor, endpoint="devices.register", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
                 return cached
@@ -962,12 +1026,30 @@ class AppSyncStore:
             self._idempotency_put(actor=actor, endpoint=endpoint, key=key, payload=payload, response=response)
             self._persist()
 
+    def _owned_conversation_locked(self, conversation_id: str, actor: str) -> ConversationRecord:
+        """Conversations are private to the actor that created them."""
+        conversation = self.conversations.get(conversation_id)
+        if not conversation:
+            raise KeyError("conversation not found")
+        self._require_actor_org(actor, conversation.organization_id)
+        if conversation.actor != actor:
+            # The same answer as for a missing conversation.
+            raise KeyError("conversation not found")
+        return conversation
+
+    def _conversation_owner(self, conversation_id: str) -> Optional[str]:
+        conversation = self.conversations.get(conversation_id)
+        return conversation.actor if conversation else None
+
+    def _task_for_actor(self, task: dict[str, Any], actor: Optional[str]) -> dict[str, Any]:
+        """Tasks are organization-wide work items; the conversation they came from is not."""
+        if actor and self._conversation_owner(str(task.get("conversation_id") or "")) != actor:
+            return {key: value for key, value in task.items() if key != "conversation_id"}
+        return task
+
     def add_chat_user_message(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
+            conversation = self._owned_conversation_locked(conversation_id, actor)
             now = _now()
             mid = _id("msg")
             message = MessageRecord(message_id=mid, conversation_id=conversation_id, role="user", content=content, actor=actor, organization_id=conversation.organization_id, source_device_id=source_device_id)
@@ -979,10 +1061,7 @@ class AppSyncStore:
 
     def add_assistant_message(self, *, actor: str, conversation_id: str, content: str, provider: str, model: str, profile: str, usage: Optional[dict[str, Any]] = None, trace_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
+            conversation = self._owned_conversation_locked(conversation_id, actor)
             now = _now()
             mid = _id("msg")
             trace_id = trace_id or _id("trace")
@@ -1011,10 +1090,7 @@ class AppSyncStore:
             cached = self._idempotency_get(actor=actor, endpoint="messages.create", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
                 return cached
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
+            conversation = self._owned_conversation_locked(conversation_id, actor)
             mid = _id("msg")
             task_id = _id("task")
             message = MessageRecord(message_id=mid, conversation_id=conversation_id, role="user", content=content, actor=actor, organization_id=conversation.organization_id, source_device_id=source_device_id, task_id=task_id)
@@ -1136,7 +1212,7 @@ class AppSyncStore:
                 if approval is not None:
                     self._consume_approval_locked(approval, actor=actor, device_id=device_id)
                 self._persist()
-                return self._record(task)
+                return self._task_for_actor(self._record(task), actor)
             return None
 
     @staticmethod
@@ -1211,7 +1287,7 @@ class AppSyncStore:
             self._event("task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.organization_id})
             if status in TERMINAL_TASK_STATUSES:
                 self._notify_locked(audience="all", title=f"Task {status}", body=task.title[:180], event_type="task.status", actor=actor, related_id=task_id)
-            result = self._record(task)
+            result = self._task_for_actor(self._record(task), actor)
             self._idempotency_put(actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload, response=result)
             self._persist()
             return result
@@ -1221,17 +1297,35 @@ class AppSyncStore:
         organization_id = self._organization_for_related(related_id, actor)
         notification = NotificationRecord(notification_id=nid, audience=audience, title=title, body=body, event_type=event_type, actor=actor, organization_id=organization_id, related_id=related_id)
         self.notifications[nid] = notification
+        # A chat reply notification goes to its conversation's actor alone.
+        recipient = self._conversation_owner(related_id or "")
         for device in self.devices.values():
             if self._normalize_org_id(device.organization_id) != organization_id:
                 continue
-            if not device.push_token:
+            if not self._device_receives_push(device):
                 continue
             if audience not in {"all", device.device_type}:
+                continue
+            if recipient is not None and device.actor != recipient:
                 continue
             push_id = _id("push")
             self.push_outbox[push_id] = PushOutboxRecord(push_id=push_id, device_id=device.device_id, platform=device.platform, audience=audience, title=title, body=body, organization_id=organization_id, related_id=related_id)
         self._event("notification.created", actor, {"notification_id": nid, "audience": audience, "event_type": event_type, "related_id": related_id, "organization_id": organization_id})
         return self._record(notification)
+
+    @staticmethod
+    def _device_receives_push(device: DeviceRecord) -> bool:
+        """Pushes carry task and approval text: only challenge-verified, unrevoked devices get them."""
+        return (
+            bool(device.push_token)
+            and not device.revoked_at
+            and device.credential_status == "verified"
+            and device.trust_level == "challenge_verified"
+        )
+
+    def _notification_visible(self, notification: NotificationRecord, actor: str) -> bool:
+        owner = self._conversation_owner(notification.related_id or "")
+        return owner is None or owner == actor
 
     def register_push_token(self, *, actor: str, device_id: str, push_token: str, platform: str = "unknown") -> dict[str, Any]:
         with self._lock:
@@ -1241,6 +1335,8 @@ class AppSyncStore:
             self._require_actor_org(actor, device.organization_id)
             if device.actor != actor:
                 raise PermissionError("device belongs to a different actor")
+            if device.revoked_at or device.credential_status == "revoked":
+                raise PermissionError("device is revoked; enroll a new device")
             device.push_token = push_token
             device.platform = platform or device.platform
             device.last_seen_at = _now()
@@ -1425,6 +1521,13 @@ class AppSyncStore:
             device.revoked_at = _now()
             device.online = False
             device.updated_at = device.revoked_at
+            # A lost or revoked device gets no further pushes, including queued ones.
+            device.push_token = None
+            for item in self.push_outbox.values():
+                if item.device_id == device_id and item.status == "pending":
+                    item.status = "failed"
+                    item.last_error = "device_revoked"
+                    item.updated_at = device.revoked_at
             self._event(
                 "device.revoked",
                 actor,
@@ -1435,7 +1538,22 @@ class AppSyncStore:
 
     def pending_push_outbox(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
-            values = [v for v in self.push_outbox.values() if v.status == "pending"]
+            values: list[PushOutboxRecord] = []
+            dropped = False
+            for item in self.push_outbox.values():
+                if item.status != "pending":
+                    continue
+                device = self.devices.get(item.device_id)
+                if device is None or not self._device_receives_push(device):
+                    # Queued while the device was unverified, or before it was revoked.
+                    item.status = "failed"
+                    item.last_error = "device_not_eligible"
+                    item.updated_at = _now()
+                    dropped = True
+                    continue
+                values.append(item)
+            if dropped:
+                self._persist()
             return [self._record(v) for v in sorted(values, key=lambda item: item.created_at)[: max(1, min(limit, 500))]]
 
     def mark_push_delivery(self, *, push_id: str, status: Literal["sent", "failed"], error: Optional[str] = None) -> dict[str, Any]:
@@ -1620,7 +1738,7 @@ class AppSyncStore:
                 "devices": [self._record(v) for v in self.devices.values() if self._normalize_org_id(v.organization_id) == organization_id and (v.actor == actor or user["role"] in {"owner", "operator"})],
                 "runtime_status": [self._record(v) for v in self.runtimes.values() if self._normalize_org_id(v.organization_id) == organization_id],
                 "pending_approvals": [self._record(v) for v in self.approvals.values() if v.status == "pending" and self._normalize_org_id(v.organization_id) == organization_id],
-                "notifications": [self._record(v) for v in sorted((n for n in self.notifications.values() if self._normalize_org_id(n.organization_id) == organization_id), key=lambda n: n.created_at, reverse=True)[:50]],
+                "notifications": [self._record(v) for v in sorted((n for n in self.notifications.values() if self._normalize_org_id(n.organization_id) == organization_id and self._notification_visible(n, actor)), key=lambda n: n.created_at, reverse=True)[:50]],
                 "sync_seq": self._seq,
             }
 
@@ -1639,11 +1757,7 @@ class AppSyncStore:
         actor: str,
     ) -> dict[str, Any]:
         with self._lock:
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
-            return self._record(conversation)
+            return self._record(self._owned_conversation_locked(conversation_id, actor))
 
     def list_messages(self, conversation_id: str, actor: Optional[str] = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -1652,7 +1766,8 @@ class AppSyncStore:
                 raise KeyError("conversation not found")
             if actor and (conversation.actor != actor or not self._actor_can_access_org(actor, conversation.organization_id)):
                 return []
-            values = [item for item in self.messages.values() if item.conversation_id == conversation_id]
+            # Messages another actor wrote into the conversation are never chat history.
+            values = [item for item in self.messages.values() if item.conversation_id == conversation_id and item.actor == conversation.actor]
             return [self._record(v) for v in sorted(values, key=lambda m: m.created_at)]
 
     def get_task(self, task_id: str, actor: Optional[str] = None) -> dict[str, Any]:
@@ -1662,7 +1777,7 @@ class AppSyncStore:
                 raise KeyError("task not found")
             if actor and not self._actor_can_access_org(actor, task.organization_id):
                 raise KeyError("task not found")
-            return self._record(task)
+            return self._task_for_actor(self._record(task), actor)
 
     def list_approvals(self, status: Optional[str] = None, actor: Optional[str] = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -1679,7 +1794,7 @@ class AppSyncStore:
             values = list(self.notifications.values())
             if actor:
                 organization_id = self._organization_for_actor(actor)
-                values = [v for v in values if self._normalize_org_id(v.organization_id) == organization_id]
+                values = [v for v in values if self._normalize_org_id(v.organization_id) == organization_id and self._notification_visible(v, actor)]
             if audience:
                 values = [v for v in values if v.audience in {audience, "all"}]
             if unread_only:
@@ -1691,5 +1806,10 @@ class AppSyncStore:
             events = [event for event in self.events if int(event.get("seq", 0)) > since_seq]
             if actor:
                 organization_id = self._organization_for_actor(actor)
-                events = [event for event in events if self._organization_for_event(event) == organization_id]
+                scoped = (
+                    scope_sync_event_to_actor(event, actor=actor, conversation_owner=self._conversation_owner)
+                    for event in events
+                    if self._organization_for_event(event) == organization_id
+                )
+                events = [event for event in scoped if event is not None]
             return {"sync_seq": self._seq, "events": events}

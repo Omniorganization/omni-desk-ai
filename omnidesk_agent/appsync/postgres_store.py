@@ -622,7 +622,7 @@ class PostgresAppSyncStore(AppSyncStore):
         if approval is not None:
             self._consume_approval_locked(approval, actor=actor, device_id=device_id)
         self._persist()
-        return task
+        return self._task_for_actor(task, actor)
 
     def update_task_status(self, *, task_id: str, actor: str, status: str, result_summary: str | None = None, assigned_runtime_device_id: str | None = None, device_id: str | None = None, idempotency_key: str | None = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         import time
@@ -650,9 +650,21 @@ class PostgresAppSyncStore(AppSyncStore):
             task = self._row_to_task(row)
             self.tasks[task["task_id"]] = TaskRecord(**task)
             self._event("task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.get("organization_id")})
+            task = self._task_for_actor(task, actor)
             self._idempotency_put(actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload, response=task)
             self._persist()
             return task
+
+    def revoke_device(self, *, actor: str, device_id: str, reason: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            device = super().revoke_device(actor=actor, device_id=device_id, reason=reason)
+            # Outbox rows keep their own copy of the push target; the mirror never
+            # rewrites it, so drop the revoked device's copies explicitly.
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(REVOKED_DEVICE_PUSH_SQL, {"namespace": self.namespace, "device_id": device_id})
+                conn.commit()
+            return device
 
     def renew_task_lease(self, *, actor: str, task_id: str, device_id: str, lease_seconds: int = 60) -> dict[str, Any]:
         import time
@@ -671,7 +683,7 @@ class PostgresAppSyncStore(AppSyncStore):
         self.tasks[task["task_id"]] = TaskRecord(**task)
         self._event("task.lease_renewed", actor, {"task_id": task_id, "device_id": device_id, "lease_expires_at": task.get("lease_expires_at"), "organization_id": task.get("organization_id", organization_id)})
         self._persist()
-        return task
+        return self._task_for_actor(task, actor)
 
 
 # An approval authorizes exactly one claim: only a queued task with an unused
@@ -724,6 +736,14 @@ IDEMPOTENCY_INSERT_SQL = """
 INSERT INTO omnidesk_appsync_idempotency_keys(namespace, organization_id, actor, endpoint, key, payload_hash, response, created_at)
 VALUES (%(namespace)s, %(organization_id)s, %(actor)s, %(endpoint)s, %(key)s, %(payload_hash)s, %(response)s, %(created_at)s)
 ON CONFLICT(namespace, organization_id, actor, endpoint, key) DO NOTHING
+"""
+
+REVOKED_DEVICE_PUSH_SQL = """
+UPDATE omnidesk_appsync_push_outbox
+SET push_token = NULL,
+    status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END,
+    last_error = CASE WHEN status = 'pending' THEN 'device_revoked' ELSE last_error END
+WHERE namespace = %(namespace)s AND device_id = %(device_id)s
 """
 
 LEASE_RENEWAL_SQL = """
