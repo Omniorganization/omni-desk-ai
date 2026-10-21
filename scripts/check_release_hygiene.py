@@ -36,6 +36,25 @@ FORBIDDEN_FILES = {
 }
 FORBIDDEN_RUNTIME_SUFFIXES = {".sqlite", ".sqlite3", ".db", ".pem", ".key"}
 FORBIDDEN_RUNTIME_FILES = {"audit.log", "gmail_token.json", "oauth_token.json", "access_token.json", "refresh_token.json"}
+# The release signature verification key is public by design. It is allowed
+# only at this exact path and only while it contains nothing but one PEM
+# public key block (never a private key).
+PUBLIC_KEY_FILES = {"release/release-signing-public-key.pem"}
+
+
+def _is_allowed_public_key(rel: str, path: Path) -> bool:
+    if rel.replace("\\", "/") not in PUBLIC_KEY_FILES:
+        return False
+    try:
+        text = path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return (
+        text.startswith("-----BEGIN PUBLIC KEY-----")
+        and text.endswith("-----END PUBLIC KEY-----")
+        and text.count("-----BEGIN") == 1
+        and "PRIVATE" not in text
+    )
 
 
 def _is_source_root(base: Path) -> bool:
@@ -80,7 +99,8 @@ def main(*argv: str) -> int:
         if path.is_file() and (path.suffix in FORBIDDEN_SUFFIXES or path.name in FORBIDDEN_FILES):
             violations.append(rel)
         elif path.is_file() and (path.suffix.lower() in FORBIDDEN_RUNTIME_SUFFIXES or path.name.lower() in FORBIDDEN_RUNTIME_FILES):
-            violations.append(rel)
+            if not _is_allowed_public_key(rel, path):
+                violations.append(rel)
     if violations:
         print("Release package contains generated/cache/VCS artifacts:", file=sys.stderr)
         for item in violations[:200]:

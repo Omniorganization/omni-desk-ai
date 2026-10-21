@@ -203,29 +203,37 @@
     },
     {
       "method": "POST",
+      "path": "/app/devices/{device_id}/approval-key",
+      "description": "Register the device's biometric/passcode-gated Ed25519 approval key (write-once); decisions from that device then require its signature.",
+      "role": "operator",
+      "client_surfaces": ["mobile"],
+      "signed_device_required_in_production": ["mobile"]
+    },
+    {
+      "method": "POST",
       "path": "/app/devices/enrollment/start",
       "role": "owner",
-      "client_surfaces": ["web_admin"]
+      "client_surfaces": ["mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/complete",
       "role": "operator",
-      "client_surfaces": ["desktop", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/challenge",
       "description": "Issue a nonce challenge for device credential verification.",
       "role": "operator",
-      "client_surfaces": ["web_admin"]
+      "client_surfaces": ["mobile", "web_admin"]
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/verify",
       "description": "Verify a signed device challenge and mint a device credential.",
       "role": "operator",
-      "client_surfaces": ["web_admin"]
+      "client_surfaces": ["mobile", "web_admin"]
     },
     {
       "method": "POST",

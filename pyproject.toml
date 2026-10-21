@@ -51,6 +51,11 @@ target-version = "py310"
 
 [tool.pytest.ini_options]
 addopts = "-ra"
+# Release jobs download external evidence and release artifacts into release/,
+# dist/, current/ and previous/ before running pytest; collecting from the
+# repository root would import a conftest.py planted in those artifacts.
+testpaths = ["tests"]
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "release", "current", "previous"]
 markers = [
   "live: tests that require live services, credentials, stores, or devices",
   "slow: tests that are intentionally slow or resource-intensive",

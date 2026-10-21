@@ -43,10 +43,14 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RAW_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
-          mkdir -p dist/external-ga-evidence-raw
-          gh run download "$RAW_EVIDENCE_RUN_ID" \
-            --name "$RAW_EVIDENCE_ARTIFACT_NAME" \
-            --dir dist/external-ga-evidence-raw
+          # Only registered producer workflows on main (release/evidence-source-workflows.json);
+          # only the expected evidence files are copied out of the artifact.
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer remote-evidence-pipeline \
+            --run-id "$RAW_EVIDENCE_RUN_ID" \
+            --artifact-name "$RAW_EVIDENCE_ARTIFACT_NAME" \
+            --dest dist/external-ga-evidence-raw \
+            --write-report dist/external-ga-evidence-fetch-report.json
       - name: Preflight complete external evidence bundle
         env:
           EXTERNAL_GA_EVIDENCE_RAW_DIR: dist/external-ga-evidence-raw

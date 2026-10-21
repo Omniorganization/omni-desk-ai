@@ -132,7 +132,10 @@ jobs:
           if-no-files-found: error
 
   mobile-android-release:
+    # The Android upload key lives only in the protected release environment.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 35
     defaults:
       run:
@@ -210,7 +213,10 @@ jobs:
           if-no-files-found: error
 
   mobile-ios-release:
+    # The iOS distribution certificate lives only in the protected release environment.
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
+    environment: release
     defaults:
       run:
         working-directory: apps/mobile-flutter
@@ -321,10 +327,14 @@ jobs:
       - desktop-release
       - mobile-android-release
       - mobile-ios-release
-    # Signing, GHCR publishing and attestation only run from main or a v* release tag;
-    # promotion verifiers pin the signer identity to these refs.
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    # Signing, GHCR publishing and attestation only run from main, in the protected
+    # release environment that holds the signing secrets. Verifiers pin the Sigstore
+    # signer identity and the attestation source ref to release.yml@refs/heads/main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
+    env:
+      OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
     permissions:
       contents: read
       actions: read
@@ -362,10 +372,15 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$EXTERNAL_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
-          mkdir -p release/external-evidence
-          gh run download "$EXTERNAL_EVIDENCE_RUN_ID" \
-            --name "$EXTERNAL_EVIDENCE_ARTIFACT_NAME" \
-            --dir release/external-evidence
+          # Accepts only the bound artifact of a successful Main Verification run for this
+          # exact main commit (release/evidence-source-workflows.json) and copies only the
+          # expected evidence files; pytest and the signing steps below run in this workspace.
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer release \
+            --run-id "$EXTERNAL_EVIDENCE_RUN_ID" \
+            --artifact-name "$EXTERNAL_EVIDENCE_ARTIFACT_NAME" \
+            --dest release/external-evidence \
+            --write-report "$RUNNER_TEMP/external-evidence-fetch-report.json"
       - name: Import complete external GA evidence raw directory
         env:
           EXTERNAL_GA_EVIDENCE_RAW_DIR: ${{ vars.EXTERNAL_GA_EVIDENCE_RAW_DIR }}
@@ -546,17 +561,15 @@ jobs:
           echo "OMNIDESK_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
           echo "Release image: $image_ref@$digest"
 
-      - run: bash scripts/build_release.sh
+      - name: Build release wheel, SBOM and metadata
+        run: bash scripts/build_release.sh
         env:
-          OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          # Signed below, once every file that ships in dist/ exists.
+          OMNIDESK_RELEASE_DEFER_SIGNING: "1"
           OMNIDESK_IMAGE_REF: ${{ env.OMNIDESK_IMAGE_REF }}
           OMNIDESK_IMAGE_DIGEST: ${{ env.OMNIDESK_IMAGE_DIGEST }}
 
-      - name: Bind all native application artifacts into the signed release payload
-        env:
-          OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+      - name: Bind all native application artifacts into the release payload
         run: |
           set -euo pipefail
           native_root="$RUNNER_TEMP/tri-app-native-input"
@@ -569,21 +582,6 @@ jobs:
             --source-commit "$GITHUB_SHA" \
             --output dist/tri-app-native-artifacts.json
           tar -czf dist/tri-app-native-artifacts.tar.gz -C "$native_root" .
-          python - <<'PY'
-          import hashlib
-          from pathlib import Path
-          root = Path("dist")
-          excluded = {"checksums.txt", "release_signatures.json"}
-          artifacts = [
-              path for path in sorted(root.iterdir())
-              if path.is_file() and path.name not in excluded and not path.name.endswith(".sig")
-          ]
-          lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}" for path in artifacts]
-          (root / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
-          python scripts/sign_release.py dist
-          python scripts/verify_release_signatures.py dist
-          python scripts/verify_release_artifact.py dist --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
 
       - name: Render locked Helm production values
         env:
@@ -600,9 +598,7 @@ jobs:
             --output dist/values.production.locked.yaml
           python scripts/check_kubernetes_contract.py . --locked-values dist/values.production.locked.yaml
 
-      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
-
-      - name: Write SLSA provenance before external signing
+      - name: Write SLSA provenance for the release payload
         run: python scripts/write_slsa_provenance.py dist --builder-id "$GITHUB_WORKFLOW@$GITHUB_RUN_ID" --source-ref "$GITHUB_REF" --image-ref "$OMNIDESK_IMAGE_REF" --image-digest "$OMNIDESK_IMAGE_DIGEST"
 
       - name: Install Cosign
@@ -633,12 +629,25 @@ jobs:
           cosign attest-blob --yes --predicate dist/sbom.json --type spdx "$wheel" --output-signature dist/sbom.intoto.sig --output-certificate dist/sbom.intoto.pem
           cosign attest-blob --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$wheel" --output-signature dist/slsa.intoto.sig --output-certificate dist/slsa.intoto.pem
 
+      - name: Sign and verify the complete release payload with Ed25519
+        # Last write to dist/: checksums.txt and the Ed25519 signatures cover every
+        # file above, Cosign certificates included, so --require-signatures holds for
+        # the published artifact. Only this step sees the private key.
+        env:
+          OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
+        run: |
+          set -euo pipefail
+          test -f release/release-signing-public-key.pem || { echo "commit release/release-signing-public-key.pem (scripts/generate_release_signing_key.py) before releasing" >&2; exit 1; }
+          python scripts/finalize_release_payload.py dist --expected-version "$EXPECTED_VERSION" --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+
+      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+
       - name: List release payload for GitHub artifact attestation
         run: |
           set -euo pipefail
           test -f dist/release_metadata.json
           test -f dist/release_signatures.json
-          # Attest every top-level file after the last signing step: promotion,
+          # Attest every top-level file after the Ed25519 signing step: promotion,
           # staging and rollback verify an attestation for each one
           # (find dist -maxdepth 1 -type f). The list lives outside dist/.
           find dist -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/attestation-subjects.sha256"

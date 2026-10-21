@@ -17,8 +17,11 @@ services:
       OMNIDESK_SANDBOX_NONCE_DB: /var/lib/omnidesk-sandbox/nonces.sqlite3
       OMNIDESK_SANDBOX_READY_SMOKE: ${OMNIDESK_SANDBOX_READY_SMOKE:-0}
     volumes:
-      # Dedicated isolated runner node only. Prefer a rootless Podman/Docker API socket.
-      - ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock:ro
+      # Dedicated isolated runner node only.
+      # A read-only bind mount does not restrict the container API; isolation comes
+      # from the socket being rootless (the runner refuses to start on a rootful one
+      # unless OMNIDESK_SANDBOX_ALLOW_ROOTFUL_RUNTIME=1) and from a dedicated host.
+      - ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock
       - omnidesk-sandbox-state:/var/lib/omnidesk-sandbox:rw
     read_only: true
     tmpfs:

@@ -37,9 +37,10 @@ concurrency:
 env:
   EXPECTED_VERSION: ${{ inputs.expected_version }}
   # Signatures and attestations are only trusted when produced by the Release Build
-  # workflow (release.yml) running from main or a v* release tag.
-  RELEASE_SIGNER_IDENTITY_REGEXP: '^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@refs/(heads/main|tags/v.+)$'
+  # workflow (release.yml) running from main; tags are not a trusted release ref.
+  RELEASE_SIGNER_IDENTITY_REGEXP: '^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@refs/heads/main$'
   RELEASE_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+  RELEASE_SOURCE_REF: refs/heads/main
 
 jobs:
   promotion-gate:
@@ -78,9 +79,9 @@ jobs:
           gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist
       - name: Verify immutable release artifact
         env:
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
-          # Set this repository variable to 1 once releases are Ed25519-signed to refuse HMAC manifests.
-          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: ${{ vars.OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES }}
+          # Ed25519 only, against the committed release/release-signing-public-key.pem;
+          # verifiers hold no signing secret, so they cannot forge a release.
+          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
         run: |
           [[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z.+_-]+$ ]] || { echo "invalid version"; exit 1; }
           python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata
@@ -124,7 +125,7 @@ jobs:
           test -f dist/release_metadata.json
           test -f dist/release_signatures.json
           find dist -maxdepth 1 -type f -print0 | sort -z | while IFS= read -r -d '' artifact; do
-            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$RELEASE_SIGNER_WORKFLOW"
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$RELEASE_SIGNER_WORKFLOW" --source-ref "$RELEASE_SOURCE_REF" --deny-self-hosted-runners
           done
       - name: Require complete Real GA evidence before production promotion
         run: python scripts/check_real_ga_complete.py . --evidence-dir dist/external-evidence

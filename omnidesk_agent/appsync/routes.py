@@ -96,6 +96,39 @@ def _device_signature_enforced(cfg: Any) -> bool:
     )
 
 
+def _require_approval_signature(
+    *,
+    cfg: Any,
+    store: AppSyncStore,
+    request: Request,
+    approval_id: str,
+    verdict: str,
+    device_id: str,
+    metrics: Any = None,
+) -> None:
+    """Enforces the device's biometric-gated approval key, when it has one."""
+    required = bool(getattr(getattr(cfg, "app_sync", None), "require_approval_key_for_decisions", False))
+    has_key = bool(device_id) and bool(store.device_approval_key(device_id))
+    if not (has_key or required):
+        return
+    reason = "missing_device_id"
+    if device_id:
+        headers = request.headers
+        ok, reason = store.verify_approval_signature(
+            device_id=device_id,
+            approval_id=approval_id,
+            decision=verdict,
+            timestamp=str(headers.get("x-omnidesk-approval-timestamp") or ""),
+            nonce=str(headers.get("x-omnidesk-approval-nonce") or ""),
+            signature=str(headers.get("x-omnidesk-approval-signature") or ""),
+        )
+        if ok:
+            return
+    if metrics:
+        metrics.inc("omnidesk_approval_signature_failures_total", reason=reason)
+    raise HTTPException(401, f"approval signature rejected: {reason}")
+
+
 def _verify_device_request(
     *,
     cfg: Any,
@@ -681,6 +714,19 @@ def register_appsync_routes(
         verdict = payload.get("decision")
         if verdict not in {"approved", "rejected"}:
             raise HTTPException(422, "decision must be approved or rejected")
+        _require_approval_signature(
+            cfg=cfg,
+            store=store,
+            request=request,
+            approval_id=approval_id,
+            verdict=str(verdict),
+            device_id=str(
+                request.headers.get("x-omnidesk-device-id")
+                or payload.get("source_device_id")
+                or ""
+            ).strip(),
+            metrics=metrics,
+        )
         try:
             approval = store.decide_approval(
                 approval_id=approval_id,
@@ -746,6 +792,34 @@ def register_appsync_routes(
             raise HTTPException(404, str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
+        return {"ok": True, "device": device}
+
+    @app.post("/app/devices/{device_id}/approval-key")
+    async def app_register_approval_key(device_id: str, request: Request):
+        decision = await admin(request, "operator")
+        payload, raw_body = await _json_body_and_raw(request)
+        await _require_signed_device_request(
+            cfg=cfg,
+            store=store,
+            request=request,
+            raw_body=raw_body,
+            actor=_actor(decision),
+            required_device_types={"mobile"},
+            expected_device_id=device_id,
+            metrics=metrics,
+        )
+        try:
+            device = store.register_approval_key(
+                actor=_actor(decision),
+                device_id=device_id,
+                public_key=str(payload.get("public_key") or ""),
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         return {"ok": True, "device": device}
 
     @app.post("/app/devices/enrollment/start")

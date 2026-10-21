@@ -97,33 +97,25 @@ if [[ -z "${OMNIDESK_IMAGE_DIGEST:-}" ]]; then
 fi
 python scripts/write_release_metadata.py dist --build-sha "${GITHUB_SHA:-${OMNIDESK_BUILD_SHA:-unknown}}" --image-ref "${OMNIDESK_IMAGE_REF:-}" --image-digest "${OMNIDESK_IMAGE_DIGEST}"
 
-python - <<'PY_RELEASE_CHECKSUMS'
-from __future__ import annotations
-import hashlib
-from pathlib import Path
-root = Path.cwd()
-checksums = []
-for artifact in sorted((root / "dist").iterdir()):
-    if artifact.is_file() and artifact.name != "checksums.txt":
-        checksums.append(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}")
-(root / "dist" / "checksums.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
-PY_RELEASE_CHECKSUMS
-
 if [[ "${OMNIDESK_RELEASE_SMOKE:-1}" == "1" ]]; then
   bash scripts/release_smoke_locked.sh
 fi
 
-if [[ -z "${OMNIDESK_RELEASE_SIGNING_ED25519_KEY:-}${OMNIDESK_RELEASE_SIGNING_KEY:-}" && "${OMNIDESK_ALLOW_UNSIGNED_RELEASE:-0}" != "1" ]]; then
-  echo "OMNIDESK_RELEASE_SIGNING_ED25519_KEY (preferred) or OMNIDESK_RELEASE_SIGNING_KEY is required for production release artifacts" >&2
-  exit 2
-fi
-if [[ -n "${OMNIDESK_RELEASE_SIGNING_ED25519_KEY:-}${OMNIDESK_RELEASE_SIGNING_KEY:-}" ]]; then
-  python scripts/sign_release.py dist
-  python scripts/verify_release_signatures.py dist
+# checksums.txt and the signatures cover every top-level file in dist/, so they are
+# written last by scripts/finalize_release_payload.py.
+if [[ "${OMNIDESK_RELEASE_DEFER_SIGNING:-0}" == "1" ]]; then
+  # release.yml adds the native bundle, locked Helm values, SLSA provenance and
+  # Cosign material to dist/ first and then runs finalize_release_payload.py itself.
+  echo "Release signing deferred to scripts/finalize_release_payload.py in the release workflow" >&2
+elif [[ -n "${OMNIDESK_RELEASE_SIGNING_ED25519_KEY:-}" || "${OMNIDESK_RELEASE_SIGNATURE_ALGORITHM:-}" == "hmac-sha256" ]]; then
+  python scripts/finalize_release_payload.py dist
   python scripts/verify_release_artifact.py dist --require-signatures --require-metadata
-else
+elif [[ "${OMNIDESK_ALLOW_UNSIGNED_RELEASE:-0}" == "1" ]]; then
   echo "Unsigned release allowed only because OMNIDESK_ALLOW_UNSIGNED_RELEASE=1" >&2
-  python scripts/verify_release_artifact.py dist --require-metadata
+  python scripts/finalize_release_payload.py dist --checksums-only
+else
+  echo "OMNIDESK_RELEASE_SIGNING_ED25519_KEY is required for production release artifacts" >&2
+  exit 2
 fi
 
 echo "Release artifacts written to dist/:"

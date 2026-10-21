@@ -296,6 +296,8 @@ ALTER TABLE omnidesk_appsync_device_enrollments ADD COLUMN IF NOT EXISTS organiz
 ALTER TABLE omnidesk_appsync_sync_events ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
 ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
 ALTER TABLE omnidesk_appsync_device_challenges ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT 'org_default';
+ALTER TABLE omnidesk_appsync_devices ADD COLUMN IF NOT EXISTS approval_public_key TEXT;
+ALTER TABLE omnidesk_appsync_devices ADD COLUMN IF NOT EXISTS approval_key_registered_at DOUBLE PRECISION;
 """
 
 
@@ -386,10 +388,10 @@ class PostgresAppSyncStore(AppSyncStore):
                 self.users = {r[1]: UserProfile(organization_id=r[0], user_id=r[1], display_name=r[2], role=r[3], created_at=float(r[4]), updated_at=float(r[5])) for r in cur.fetchall()}
 
                 cur.execute("""
-                    SELECT organization_id, device_id, device_type, name, platform, actor, push_token, public_key, token_hash, credential_status, trust_level, revoked_at, last_challenge_nonce_hash, last_challenge_expires_at, capabilities, online, last_seen_at, created_at, updated_at
+                    SELECT organization_id, device_id, device_type, name, platform, actor, push_token, public_key, token_hash, credential_status, trust_level, revoked_at, last_challenge_nonce_hash, last_challenge_expires_at, capabilities, online, last_seen_at, created_at, updated_at, approval_public_key, approval_key_registered_at
                     FROM omnidesk_appsync_devices WHERE namespace=%s
                 """, (ns,))
-                self.devices = {r[1]: DeviceRecord(organization_id=r[0], device_id=r[1], device_type=r[2], name=r[3], platform=r[4], actor=r[5], push_token=r[6], public_key=r[7], token_hash=r[8], credential_status=r[9], trust_level=r[10], revoked_at=r[11], last_challenge_nonce_hash=r[12], last_challenge_expires_at=r[13], capabilities=self._json_list(r[14]), online=bool(r[15]), last_seen_at=float(r[16]), created_at=float(r[17]), updated_at=float(r[18])) for r in cur.fetchall()}
+                self.devices = {r[1]: DeviceRecord(organization_id=r[0], device_id=r[1], device_type=r[2], name=r[3], platform=r[4], actor=r[5], push_token=r[6], public_key=r[7], token_hash=r[8], credential_status=r[9], trust_level=r[10], revoked_at=r[11], last_challenge_nonce_hash=r[12], last_challenge_expires_at=r[13], capabilities=self._json_list(r[14]), online=bool(r[15]), last_seen_at=float(r[16]), created_at=float(r[17]), updated_at=float(r[18]), approval_public_key=r[19], approval_key_registered_at=r[20]) for r in cur.fetchall()}
 
                 cur.execute("SELECT organization_id, conversation_id, title, actor, source_device_id, created_at, updated_at FROM omnidesk_appsync_conversations WHERE namespace=%s", (ns,))
                 self.conversations = {r[1]: ConversationRecord(organization_id=r[0], conversation_id=r[1], title=r[2], actor=r[3], source_device_id=r[4], created_at=float(r[5]), updated_at=float(r[6])) for r in cur.fetchall()}
@@ -462,11 +464,11 @@ class PostgresAppSyncStore(AppSyncStore):
             v = asdict(item)
             cur.execute(
                 """
-                INSERT INTO omnidesk_appsync_devices(namespace, organization_id, device_id, device_type, name, platform, actor, push_token, public_key, token_hash, credential_status, trust_level, revoked_at, last_challenge_nonce_hash, last_challenge_expires_at, capabilities, online, last_seen_at, created_at, updated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(namespace, device_id) DO UPDATE SET name=EXCLUDED.name, platform=EXCLUDED.platform, actor=EXCLUDED.actor, push_token=EXCLUDED.push_token, public_key=EXCLUDED.public_key, token_hash=EXCLUDED.token_hash, credential_status=EXCLUDED.credential_status, trust_level=EXCLUDED.trust_level, revoked_at=EXCLUDED.revoked_at, last_challenge_nonce_hash=EXCLUDED.last_challenge_nonce_hash, last_challenge_expires_at=EXCLUDED.last_challenge_expires_at, capabilities=EXCLUDED.capabilities, online=EXCLUDED.online, last_seen_at=EXCLUDED.last_seen_at, updated_at=EXCLUDED.updated_at
+                INSERT INTO omnidesk_appsync_devices(namespace, organization_id, device_id, device_type, name, platform, actor, push_token, public_key, token_hash, credential_status, trust_level, revoked_at, last_challenge_nonce_hash, last_challenge_expires_at, capabilities, online, last_seen_at, created_at, updated_at, approval_public_key, approval_key_registered_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(namespace, device_id) DO UPDATE SET name=EXCLUDED.name, platform=EXCLUDED.platform, actor=EXCLUDED.actor, push_token=EXCLUDED.push_token, public_key=EXCLUDED.public_key, token_hash=EXCLUDED.token_hash, credential_status=EXCLUDED.credential_status, trust_level=EXCLUDED.trust_level, revoked_at=EXCLUDED.revoked_at, last_challenge_nonce_hash=EXCLUDED.last_challenge_nonce_hash, last_challenge_expires_at=EXCLUDED.last_challenge_expires_at, capabilities=EXCLUDED.capabilities, online=EXCLUDED.online, last_seen_at=EXCLUDED.last_seen_at, updated_at=EXCLUDED.updated_at, approval_public_key=EXCLUDED.approval_public_key, approval_key_registered_at=EXCLUDED.approval_key_registered_at
                 """,
-                (ns, v["organization_id"], v["device_id"], v["device_type"], v["name"], v["platform"], v["actor"], v.get("push_token"), v.get("public_key"), v.get("token_hash"), v.get("credential_status", "pending"), v.get("trust_level", "unverified"), v.get("revoked_at"), v.get("last_challenge_nonce_hash"), v.get("last_challenge_expires_at"), Jsonb(v.get("capabilities") or []), v["online"], v["last_seen_at"], v["created_at"], v["updated_at"]),
+                (ns, v["organization_id"], v["device_id"], v["device_type"], v["name"], v["platform"], v["actor"], v.get("push_token"), v.get("public_key"), v.get("token_hash"), v.get("credential_status", "pending"), v.get("trust_level", "unverified"), v.get("revoked_at"), v.get("last_challenge_nonce_hash"), v.get("last_challenge_expires_at"), Jsonb(v.get("capabilities") or []), v["online"], v["last_seen_at"], v["created_at"], v["updated_at"], v.get("approval_public_key"), v.get("approval_key_registered_at")),
             )
         for item in self.conversations.values():
             v = asdict(item)

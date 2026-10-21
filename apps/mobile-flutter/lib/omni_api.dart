@@ -62,13 +62,17 @@ class OmniApiClient {
     String path, [
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    Map<String, String> extraHeaders = const <String, String>{},
   ]) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     late http.Response response;
     final requestBody = method == 'GET' || method == 'DELETE'
         ? ''
         : jsonEncode(body ?? <String, dynamic>{});
-    final headers = await _headers(method, path, requestBody, idempotencyKey);
+    final headers = <String, String>{
+      ...await _headers(method, path, requestBody, idempotencyKey),
+      ...extraHeaders,
+    };
     if (method == 'GET') {
       response = await _httpClient.get(uri, headers: headers);
     } else if (method == 'PATCH') {
@@ -305,12 +309,15 @@ class OmniApiClient {
         idempotencyKey ?? 'mobile-message-$conversationId-${content.hashCode}',
       );
 
+  /// [approvalSignature] carries the biometric-gated approval key headers
+  /// (see ApprovalKeyStore.signDecision).
   Future<Map<String, dynamic>> decideApproval(
     String approvalId,
     String decision, {
     String? reason,
     String? sourceDeviceId,
     String? idempotencyKey,
+    Map<String, String> approvalSignature = const <String, String>{},
   }) =>
       _request(
         'POST',
@@ -322,7 +329,18 @@ class OmniApiClient {
             'source_device_id': sourceDeviceId,
         },
         idempotencyKey ?? 'mobile-approval-$approvalId-$decision',
+        approvalSignature,
       );
+
+  /// Registers the biometric-gated approval key (write-once on the gateway).
+  Future<Map<String, dynamic>> registerApprovalKey(
+    String deviceId,
+    String publicKey,
+  ) => _request(
+    'POST',
+    '/app/devices/${_pathSegment(deviceId)}/approval-key',
+    <String, dynamic>{'public_key': publicKey},
+  );
 
   /// [pushToken] is a Firebase Installation ID by default (firebase_messaging
   /// 17 register()/onRegistered); pass tokenType 'fcm_token' for legacy tokens.
@@ -341,6 +359,53 @@ class OmniApiClient {
           'platform': platform,
         },
       );
+
+  /// Device enrollment (owner token): start, complete with this device's
+  /// public key, then prove possession of the private key via a challenge.
+  Future<Map<String, dynamic>> startDeviceEnrollment(String pairingCode) =>
+      _request('POST', '/app/devices/enrollment/start', <String, dynamic>{
+        'device_type': 'mobile',
+        'pairing_code': pairingCode,
+      });
+
+  Future<Map<String, dynamic>> completeDeviceEnrollment(
+    String enrollmentId,
+    String pairingCode,
+    String deviceId,
+    String publicKey,
+  ) => _request(
+    'POST',
+    '/app/devices/enrollment/${_pathSegment(enrollmentId)}/complete',
+    <String, dynamic>{
+      'pairing_code': pairingCode,
+      'device_id': deviceId,
+      'public_key': publicKey,
+    },
+  );
+
+  Future<Map<String, dynamic>> issueDeviceChallenge(
+    String enrollmentId,
+    String deviceId,
+  ) => _request(
+    'POST',
+    '/app/devices/enrollment/${_pathSegment(enrollmentId)}/challenge',
+    <String, dynamic>{'device_id': deviceId},
+  );
+
+  Future<Map<String, dynamic>> verifyDeviceChallenge(
+    String enrollmentId,
+    String challengeId,
+    String deviceId,
+    String signature,
+  ) => _request(
+    'POST',
+    '/app/devices/enrollment/${_pathSegment(enrollmentId)}/verify',
+    <String, dynamic>{
+      'challenge_id': challengeId,
+      'device_id': deviceId,
+      'signature': signature,
+    },
+  );
 
   Future<Map<String, dynamic>> notifications() =>
       _request('GET', '/app/notifications?audience=mobile');

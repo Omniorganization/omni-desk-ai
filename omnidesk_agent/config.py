@@ -177,6 +177,10 @@ class AppSyncConfig(BaseModel):
     require_device_public_key_in_production: bool = True
     reject_predictable_device_ids_in_production: bool = True
     require_device_signed_requests_in_production: bool = True
+    # Approval decisions from a device that registered a biometric-gated
+    # approval key always require that key's signature; set this to require
+    # an approval-key signature for every decision.
+    require_approval_key_for_decisions: bool = False
     device_signature_max_skew_seconds: int = 300
     device_request_nonce_ttl_seconds: int = 600
     json_path: Optional[Path] = None

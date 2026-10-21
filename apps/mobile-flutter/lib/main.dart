@@ -6,6 +6,7 @@ import 'omni_api.dart';
 import 'device_identity.dart';
 import 'app_models.dart';
 import 'mobile_security_service.dart';
+import 'approval_key_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -51,6 +52,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   bool approvalAutomation = true;
   bool contentAutomation = false;
   bool deviceEnrolled = false;
+  bool deviceVerified = false;
+  bool approvalKeyReady = false;
+  final approvalKeys = ApprovalKeyStore();
   OmniDeviceIdentity? deviceIdentity;
   StreamSubscription<String>? _pushTargetChanges;
 
@@ -119,6 +123,54 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   Future<bool> _confirmSensitiveAction() async {
     try {
       return await securityService.confirmSensitiveAction();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Enrolls and challenge-verifies this device so the gateway accepts its
+  /// signed requests (approval decisions, push-token updates). Needs an owner
+  /// token; returns false instead of failing the connection otherwise.
+  Future<bool> _verifyDevice(OmniDeviceIdentity identity) async {
+    try {
+      final pairingCode = DeviceIdentityStore.newPairingCode();
+      final started = await client.startDeviceEnrollment(pairingCode);
+      final enrollmentId = '${(started['enrollment'] as Map)['enrollment_id']}';
+      await client.completeDeviceEnrollment(
+        enrollmentId,
+        pairingCode,
+        identity.deviceId,
+        identity.publicKey,
+      );
+      final challenged = await client.issueDeviceChallenge(
+        enrollmentId,
+        identity.deviceId,
+      );
+      final challenge = challenged['challenge'] as Map;
+      final signature = await identityStore.signChallenge(
+        '${challenge['signing_message']}',
+      );
+      await client.verifyDeviceChallenge(
+        enrollmentId,
+        '${challenge['challenge_id']}',
+        identity.deviceId,
+        signature,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Creates and registers the biometric-gated approval key once the device
+  /// is verified. Devices without biometrics/passcode keep the in-app check.
+  Future<bool> _ensureApprovalKey(OmniDeviceIdentity identity) async {
+    try {
+      if (await approvalKeys.isRegisteredFor(identity.deviceId)) return true;
+      final publicKey = await approvalKeys.ensurePublicKey();
+      await client.registerApprovalKey(identity.deviceId, publicKey);
+      await approvalKeys.markRegisteredFor(identity.deviceId);
+      return true;
     } catch (_) {
       return false;
     }
@@ -289,12 +341,17 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       final token = await _resolvePushTarget();
       final identity = await identityStore.loadOrCreate();
       deviceIdentity = identity;
-      await client.registerMobile(
+      final registered = await client.registerMobile(
         deviceId: identity.deviceId,
         pushToken: token,
         publicKey: identity.publicKey,
       );
       deviceEnrolled = true;
+      final device = registered['device'];
+      final verified =
+          device is Map && device['credential_status'] == 'verified';
+      deviceVerified = verified || await _verifyDevice(identity);
+      approvalKeyReady = deviceVerified && await _ensureApprovalKey(identity);
       if (token != null) {
         await client.registerPushToken(identity.deviceId, token);
       }
@@ -309,8 +366,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
       await syncProjects();
       if (!mounted) return;
       setState(() {
-        securityState =
-            'session saved in flutter_secure_storage; biometric/PIN required for approval';
+        securityState = deviceVerified
+            ? 'session saved in flutter_secure_storage; device verified; biometric/PIN required for approval'
+            : 'session saved; device not verified (approvals need an owner token to verify this device)';
         pushState = token == null
             ? 'push provider unavailable in this build'
             : 'FCM/APNS token registered';
@@ -363,17 +421,33 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
 
   Future<void> decide(String approvalId, String decision) async {
     try {
-      final confirmed = await _confirmSensitiveAction();
-      if (!mounted) return;
-      if (!confirmed) {
-        setState(() => error = '审批被本机生物识别/PIN取消。');
-        return;
+      var approvalSignature = const <String, String>{};
+      if (approvalKeyReady) {
+        // The OS gates the approval key behind biometrics/passcode, so
+        // signing is the confirmation; a cancelled prompt throws.
+        try {
+          approvalSignature = await approvalKeys.signDecision(
+            approvalId,
+            decision,
+          );
+        } catch (_) {
+          if (mounted) setState(() => error = '审批被本机生物识别/PIN取消。');
+          return;
+        }
+      } else {
+        final confirmed = await _confirmSensitiveAction();
+        if (!mounted) return;
+        if (!confirmed) {
+          setState(() => error = '审批被本机生物识别/PIN取消。');
+          return;
+        }
       }
       await client.decideApproval(
         approvalId,
         decision,
         reason: reasonController.text,
         sourceDeviceId: deviceIdentity?.deviceId,
+        approvalSignature: approvalSignature,
       );
       snapshot = await client.bootstrap();
       if (mounted) setState(() {});

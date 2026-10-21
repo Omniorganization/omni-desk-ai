@@ -67,6 +67,8 @@ jobs:
             echo "Kubernetes/systemd staging operations evidence run id is required." >&2
             exit 1
           fi
+      # Every provider run must be a registered producer workflow that succeeded on main
+      # (release/evidence-source-workflows.json); only expected evidence files are copied.
       - name: Download release artifact evidence
         if: ${{ inputs.release_artifacts_evidence_run_id != '' }}
         env:
@@ -76,10 +78,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
-          mkdir -p dist/provider-evidence/release-artifacts
-          gh run download "$EVIDENCE_RUN_ID" \
-            --name "$EVIDENCE_ARTIFACT_NAME" \
-            --dir dist/provider-evidence/release-artifacts
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer real-ga-evidence-control-plane \
+            --run-id "$EVIDENCE_RUN_ID" \
+            --artifact-name "$EVIDENCE_ARTIFACT_NAME" \
+            --dest dist/provider-evidence/release-artifacts \
+            --write-report dist/provider-evidence-fetch/release-artifacts.json
       - name: Download BrowserStack real-device evidence
         if: ${{ inputs.browserstack_evidence_run_id != '' }}
         env:
@@ -89,10 +93,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
-          mkdir -p dist/provider-evidence/browserstack
-          gh run download "$EVIDENCE_RUN_ID" \
-            --name "$EVIDENCE_ARTIFACT_NAME" \
-            --dir dist/provider-evidence/browserstack
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer real-ga-evidence-control-plane \
+            --run-id "$EVIDENCE_RUN_ID" \
+            --artifact-name "$EVIDENCE_ARTIFACT_NAME" \
+            --dest dist/provider-evidence/browserstack \
+            --write-report dist/provider-evidence-fetch/browserstack.json
       - name: Download AWS Device Farm real-device evidence
         if: ${{ inputs.aws_device_farm_evidence_run_id != '' }}
         env:
@@ -102,10 +108,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
-          mkdir -p dist/provider-evidence/aws-device-farm
-          gh run download "$EVIDENCE_RUN_ID" \
-            --name "$EVIDENCE_ARTIFACT_NAME" \
-            --dir dist/provider-evidence/aws-device-farm
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer real-ga-evidence-control-plane \
+            --run-id "$EVIDENCE_RUN_ID" \
+            --artifact-name "$EVIDENCE_ARTIFACT_NAME" \
+            --dest dist/provider-evidence/aws-device-farm \
+            --write-report dist/provider-evidence-fetch/aws-device-farm.json
       - name: Download live services evidence
         if: ${{ inputs.live_services_evidence_run_id != '' }}
         env:
@@ -115,10 +123,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
-          mkdir -p dist/provider-evidence/live-services
-          gh run download "$EVIDENCE_RUN_ID" \
-            --name "$EVIDENCE_ARTIFACT_NAME" \
-            --dir dist/provider-evidence/live-services
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer real-ga-evidence-control-plane \
+            --run-id "$EVIDENCE_RUN_ID" \
+            --artifact-name "$EVIDENCE_ARTIFACT_NAME" \
+            --dest dist/provider-evidence/live-services \
+            --write-report dist/provider-evidence-fetch/live-services.json
       - name: Download Kubernetes/systemd staging operations evidence
         if: ${{ inputs.staging_operations_evidence_run_id != '' }}
         env:
@@ -128,10 +138,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
-          mkdir -p dist/provider-evidence/staging-operations
-          gh run download "$EVIDENCE_RUN_ID" \
-            --name "$EVIDENCE_ARTIFACT_NAME" \
-            --dir dist/provider-evidence/staging-operations
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer real-ga-evidence-control-plane \
+            --run-id "$EVIDENCE_RUN_ID" \
+            --artifact-name "$EVIDENCE_ARTIFACT_NAME" \
+            --dest dist/provider-evidence/staging-operations \
+            --write-report dist/provider-evidence-fetch/staging-operations.json
       - name: Assemble external evidence bundle
         env:
           EXPECTED_VERSION: ${{ inputs.expected_version }}
