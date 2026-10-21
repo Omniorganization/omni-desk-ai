@@ -351,6 +351,10 @@ class PostgresDualApprovalStore:
         self.state = state
 
     def open(self, approval_id: str, proposal: dict[str, Any]) -> None:
+        from omnidesk_agent.security.dual_approval import proposal_requesters
+
+        if not proposal_requesters(proposal):
+            raise PermissionError("dual approval proposal must record its requester")
         now = time.time()
         self.state.insert_once(
             self.namespace,
@@ -366,17 +370,18 @@ class PostgresDualApprovalStore:
         )
 
     def approve(self, approval_id: str, approver: str) -> DualApprovalDecision:
+        from omnidesk_agent.security.dual_approval import proposal_requesters
+
         approver = str(approver).strip()
         if not approver:
             raise ValueError("approver is required")
 
         def update(row: dict[str, Any]) -> dict[str, Any]:
-            proposer = str((row.get("proposal") or {}).get("created_by") or (row.get("proposal") or {}).get("proposer") or "")
-            if proposer and hmac.compare_digest(proposer, approver):
+            if approver in proposal_requesters(row.get("proposal") or {}):
                 raise PermissionError("proposal creator cannot approve their own critical proposal")
             first = row.get("first_approver")
             second = row.get("second_approver")
-            if first and hmac.compare_digest(str(first), approver):
+            if first and str(first) == approver:
                 raise PermissionError("second approver must be distinct from first approver")
             if not first:
                 row["first_approver"] = approver
@@ -647,6 +652,8 @@ class PostgresRunStore:
         return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)
 
 class PostgresBreakGlassStore:
+    """PostgreSQL twin of security.break_glass.BreakGlassStore; same rules, shared helpers."""
+
     namespace = "break_glass_sessions"
 
     def __init__(self, state: _PostgresJsonState, *, audit_log: Path):
@@ -657,13 +664,9 @@ class PostgresBreakGlassStore:
     def open(
         self, *, session_id: str, actor: str, reason: str, approved_by: str, ttl_seconds: int = 900, metadata: dict[str, Any] | None = None
     ) -> BreakGlassSession:
-        actor = actor.strip()
-        approved_by = approved_by.strip()
-        reason = reason.strip()
-        if not actor or not approved_by or not reason:
-            raise ValueError("actor, approved_by, and reason are required")
-        if ttl_seconds <= 0 or ttl_seconds > 3600:
-            raise ValueError("break-glass ttl must be between 1 and 3600 seconds")
+        from omnidesk_agent.security.break_glass import STATUS_ACTIVE, validate_self_session
+
+        actor, approved_by, reason = validate_self_session(actor, approved_by, reason, ttl_seconds)
         now = time.time()
         expires_at = now + int(ttl_seconds)
         row = {
@@ -675,11 +678,76 @@ class PostgresBreakGlassStore:
             "expires_at": expires_at,
             "revoked_at": None,
             "metadata": metadata or {},
+            "status": STATUS_ACTIVE,
+            "second_approver": None,
+            "approved_at": now,
+            "ttl_seconds": int(ttl_seconds),
         }
         if not self.state.insert_once(self.namespace, session_id, row):
             raise ValueError("break-glass session already exists")
         session = BreakGlassSession(session_id, actor, reason, expires_at, approved_by, True)
         self._audit("break_glass.open", session=session, metadata=metadata or {})
+        return session
+
+    def request_delegated(
+        self,
+        *,
+        session_id: str,
+        actor: str,
+        reason: str,
+        requested_by: str,
+        ttl_seconds: int = 900,
+        metadata: dict[str, Any] | None = None,
+        approval_window_seconds: int | None = None,
+    ) -> BreakGlassSession:
+        from omnidesk_agent.security.break_glass import DEFAULT_APPROVAL_WINDOW_SECONDS, STATUS_PENDING, validate_delegated_request
+
+        window = DEFAULT_APPROVAL_WINDOW_SECONDS if approval_window_seconds is None else approval_window_seconds
+        actor, requested_by, reason = validate_delegated_request(actor, requested_by, reason, ttl_seconds, window)
+        now = time.time()
+        approve_by = now + int(window)
+        row = {
+            "session_id": session_id,
+            "actor": actor,
+            "reason": reason,
+            "approved_by": requested_by,
+            "created_at": now,
+            "expires_at": approve_by,
+            "revoked_at": None,
+            "metadata": metadata or {},
+            "status": STATUS_PENDING,
+            "second_approver": None,
+            "approved_at": None,
+            "ttl_seconds": int(ttl_seconds),
+        }
+        if not self.state.insert_once(self.namespace, session_id, row):
+            raise ValueError("break-glass session already exists")
+        session = BreakGlassSession(session_id, actor, reason, approve_by, requested_by, False, STATUS_PENDING)
+        self._audit("break_glass.request", session=session, metadata=metadata or {})
+        return session
+
+    def approve(self, session_id: str, *, approver: str, metadata: dict[str, Any] | None = None) -> BreakGlassSession:
+        from omnidesk_agent.security.break_glass import STATUS_ACTIVE, check_second_approver
+
+        approver = approver.strip()
+        if not approver:
+            raise ValueError("approver is required")
+
+        def update(row: dict[str, Any]) -> dict[str, Any]:
+            now = time.time()
+            check_second_approver(row, approver, now)
+            row["status"] = STATUS_ACTIVE
+            row["second_approver"] = approver
+            row["approved_at"] = now
+            row["expires_at"] = now + int(row["ttl_seconds"])
+            return row
+
+        try:
+            self.state.update_locked(self.namespace, session_id, update)
+        except KeyError:
+            raise KeyError(f"break-glass session not found: {session_id}") from None
+        session = self.get(session_id)
+        self._audit("break_glass.approve", session=session, second_approver=approver, metadata=metadata or {})
         return session
 
     def revoke(self, session_id: str, *, revoked_by: str) -> None:
@@ -696,21 +764,17 @@ class PostgresBreakGlassStore:
         self._audit("break_glass.revoke", session_id=session_id, revoked_by=revoked_by)
 
     def get(self, session_id: str) -> BreakGlassSession:
+        from omnidesk_agent.security.break_glass import session_from_record
+
         row = self.state.get(self.namespace, session_id)
         if not row:
             raise KeyError(f"break-glass session not found: {session_id}")
-        active = bool(row.get("revoked_at") is None and float(row.get("expires_at") or 0) > time.time())
-        return BreakGlassSession(
-            str(row["session_id"]), str(row["actor"]), str(row["reason"]), float(row["expires_at"]), str(row["approved_by"]), active
-        )
+        return session_from_record(row)
 
     def assert_active(self, session_id: str, *, actor: str) -> BreakGlassSession:
-        session = self.get(session_id)
-        if not session.active:
-            raise PermissionError("break-glass session is not active")
-        if session.actor != actor:
-            raise PermissionError("break-glass session actor mismatch")
-        return session
+        from omnidesk_agent.security.break_glass import require_usable
+
+        return require_usable(self.get(session_id), actor)
 
     def _audit(self, event: str, **fields: Any) -> None:
         record = {"event": event, "ts": time.time(), **fields}
