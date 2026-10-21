@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
-from omnidesk_agent.appsync.push import dispatch_pending_push
+from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.validation.production import is_production_mode
 
@@ -343,13 +343,17 @@ def register_appsync_routes(
                 )
         actor = _actor(decision)
         try:
+            push_target = normalize_push_target(payload.get("push_token"), payload.get("push_token_type") or "fcm_token")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
             device = store.register_device(
                 actor=actor,
                 device_id=supplied_device_id,
                 device_type=device_type,
                 name=payload.get("name") or device_type,
                 platform=payload.get("platform") or "unknown",
-                push_token=payload.get("push_token"),
+                push_token=push_target,
                 capabilities=payload.get("capabilities") or [],
                 public_key=public_key or None,
                 token_hash=payload.get("token_hash"),
@@ -671,7 +675,10 @@ def register_appsync_routes(
             expected_device_id=device_id,
             metrics=metrics,
         )
-        push_token = str(payload.get("push_token") or "").strip()
+        try:
+            push_token = normalize_push_target(payload.get("push_token"), payload.get("token_type") or "fcm_token")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         if not push_token:
             raise HTTPException(422, "push_token is required")
         try:

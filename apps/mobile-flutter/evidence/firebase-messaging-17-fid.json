@@ -1,0 +1,26 @@
+{
+  "schema": "omnidesk-dependency-upgrade-evidence/v1",
+  "scope": [
+    "Firebase Core 5.0.0 and Firebase Messaging 17.0.0 (Firebase Apple SDK 13, Android BoM 35)",
+    "Push target migrated from FCM registration tokens to Firebase Installation IDs (register()/onRegistered)",
+    "Gateway stores FIDs as fid:<FID> and sends with the FCM v1 fid field (token field fallback during the FID transition)"
+  ],
+  "tests": [
+    "flutter pub get",
+    "dart analyze --fatal-infos lib test",
+    "flutter test",
+    "python -m pytest tests/test_push_fid_migration.py",
+    "repository required CI, Security, Tri-App (Android release build and native iOS simulator XCTest), Main Verification, and Release Policy checks"
+  ],
+  "risk_notes": [
+    "Firebase Messaging 17 is a breaking release: Firebase Apple SDK 13 and Android minSdk 24 (already the app's minSdk; iOS target already 15.0).",
+    "Clients on older app versions keep sending registration tokens; the gateway still accepts and sends them unchanged (token_type fcm_token).",
+    "Python firebase_admin releases without the Message fid field fall back to token=<FID>, which FCM v1 accepts only during the FID transition period; pin a firebase_admin release with fid support before that period ends."
+  ],
+  "rollback_steps": [
+    "Revert the pull request commit.",
+    "Restore pubspec.yaml, pubspec.lock, lib/mobile_security_service.dart, lib/push_service.dart, lib/main.dart, lib/omni_api.dart and omnidesk_agent/appsync/push.py/routes.py from the parent main commit.",
+    "Stored fid:<FID> push targets stay sendable by the fallback path; re-registering devices on the old app version replaces them with registration tokens."
+  ],
+  "validation_boundary": "GitHub required checks on the pull-request head are authoritative and fail closed."
+}
