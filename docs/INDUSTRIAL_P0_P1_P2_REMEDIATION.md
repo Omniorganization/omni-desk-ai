@@ -16,7 +16,7 @@ Status: source implementation candidate; customer-distribution GA remains eviden
 ## P1 engineering gates
 
 - Repository governance, Ruff and Pyright run once per revision.
-- Python 3.10-3.13 compatibility contexts remain present, while the full coverage suite runs once on Python 3.11.
+- Python 3.11-3.13 compatibility contexts remain present (3.10 support ended: Pillow 13 security fixes require 3.11+), while the full coverage suite runs once on Python 3.11.
 - A real PostgreSQL service test exercises concurrent reservation, lease fencing, append-only replay and cross-instance visibility.
 - Security aggregates Python, JavaScript/TypeScript, Rust and Flutter dependency scanning plus two-language CodeQL.
 - Desktop checks build Linux, macOS and Windows targets; the required `desktop-tauri` context aggregates all three.

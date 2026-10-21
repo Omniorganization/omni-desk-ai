@@ -79,6 +79,8 @@ jobs:
       - name: Verify immutable release artifact
         env:
           OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          # Set this repository variable to 1 once releases are Ed25519-signed to refuse HMAC manifests.
+          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: ${{ vars.OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES }}
         run: |
           [[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z.+_-]+$ ]] || { echo "invalid version"; exit 1; }
           python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata

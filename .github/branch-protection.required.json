@@ -54,7 +54,6 @@
   "required_jobs": [
     "release-policy",
     "external-ga-evidence-contract",
-    "test (3.10)",
     "test (3.11)",
     "test (3.12)",
     "test (3.13)",
