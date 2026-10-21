@@ -328,7 +328,8 @@ async def _gemini_stream(provider: Any, request: ModelRequest) -> AsyncIterator[
     usage: dict[str, Any] | None = None
     finish_reason: str | None = None
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, read=None)) as client:
-        async with client.stream("POST", url, params={"key": key, "alt": "sse"}, json=body) as response:
+        # Key in a header, never the URL (see GeminiProvider.complete).
+        async with client.stream("POST", url, params={"alt": "sse"}, headers={"x-goog-api-key": key}, json=body) as response:
             response.raise_for_status()
             async for payload in _sse_payloads(response):
                 raw_usage = payload.get("usageMetadata")

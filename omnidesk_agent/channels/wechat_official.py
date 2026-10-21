@@ -63,19 +63,40 @@ class WeChatOfficialChannel:
             raise PermissionError("invalid WeChat webhook signature")
         # The plaintext-mode signature does not cover the body, so a captured
         # signature/timestamp/nonce must not be reusable: enforce freshness and
-        # single use of each nonce within the window.
-        try:
-            sent_at = int(timestamp)
-        except ValueError as exc:
-            raise PermissionError("invalid WeChat webhook timestamp") from exc
+        # single use of each nonce within the window. This in-process cache is
+        # only a first line; the gateway also consumes signed_request_nonce()
+        # in the shared webhook store so other replicas reject the replay too.
+        # Only canonical decimal timestamps: int() would also take "0…", "+…"
+        # or "1_…", and the signature is over the plain concatenation, so such
+        # variants of one signed request could otherwise pass as new ones.
+        if not (timestamp.isascii() and timestamp.isdigit() and timestamp == str(int(timestamp))):
+            raise PermissionError("invalid WeChat webhook timestamp")
+        sent_at = int(timestamp)
         now = time.time()
         if abs(now - sent_at) > WECHAT_SIGNATURE_MAX_AGE_SECONDS:
             raise PermissionError("stale WeChat webhook signature")
-        self._seen_nonces = {key: seen for key, seen in self._seen_nonces.items() if now - seen <= WECHAT_SIGNATURE_MAX_AGE_SECONDS}
-        replay_key = f"{timestamp}:{nonce}"
+        replay_window = 2 * WECHAT_SIGNATURE_MAX_AGE_SECONDS
+        self._seen_nonces = {key: seen for key, seen in self._seen_nonces.items() if now - seen <= replay_window}
+        replay_key = self._replay_key(query_params)
         if replay_key in self._seen_nonces:
             raise PermissionError("replayed WeChat webhook signature")
         self._seen_nonces[replay_key] = now
+
+    @staticmethod
+    def _replay_key(query_params: dict[str, str]) -> str:
+        # The verified signature identifies the signed token/timestamp/nonce
+        # concatenation, so every split of the same string maps to one key.
+        return str(query_params.get("signature", ""))
+
+    def signed_request_nonce(self, query_params: dict[str, str]):
+        """The one-time value the gateway must consume across replicas.
+
+        Only meaningful after verify_request accepted the signature. A
+        timestamp is accepted up to the max age on either side of now, so the
+        claim has to outlive both sides of that window.
+        """
+        from omnidesk_agent.channels.base import SignedRequestNonce
+        return SignedRequestNonce(self._replay_key(query_params), ttl_seconds=2 * WECHAT_SIGNATURE_MAX_AGE_SECONDS)
 
     def parse_xml(self, xml_body: bytes) -> Optional[ChannelMessage]:
         root = ET.fromstring(xml_body)

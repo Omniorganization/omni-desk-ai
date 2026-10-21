@@ -51,6 +51,15 @@ class WebhookSecurity:
                 )
                 """
             )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS webhook_nonce (
+                    digest TEXT PRIMARY KEY,
+                    channel TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                )
+                """
+            )
 
     def guard(
         self,
@@ -68,6 +77,26 @@ class WebhookSecurity:
         if not inserted:
             raise PermissionError(f"duplicate webhook blocked: {channel}")
         return {"ok": True, "digest": digest}
+
+    def claim_nonce(self, *, channel: str, nonce: str, ttl_seconds: float) -> None:
+        """Consume a signed single-use nonce in the shared store.
+
+        Process memory is not enough: every replica and every restart has to see
+        the same claim, otherwise a captured signed query string can be replayed
+        against another instance while the signature is still fresh.
+        """
+        now = time.time()
+        digest = nonce_digest(channel, nonce)
+        with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("DELETE FROM webhook_nonce WHERE expires_at < ?", (now,))
+            try:
+                con.execute(
+                    "INSERT INTO webhook_nonce (digest, channel, expires_at) VALUES (?, ?, ?)",
+                    (digest, channel, now + max(1.0, float(ttl_seconds))),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise PermissionError(f"replayed webhook nonce blocked: {channel}") from exc
 
     def verify_line(self, body: bytes, channel_secret: str, signature: str) -> None:
         if not line_signature_valid(body, channel_secret, signature):
@@ -114,5 +143,14 @@ class WebhookSecurity:
 
     @staticmethod
     def _digest(channel: str, body: bytes, message_id: Optional[str]) -> str:
-        seed = (message_id.encode("utf-8") if message_id else body)
-        return hashlib.sha256(channel.encode("utf-8") + b":" + seed).hexdigest()
+        return webhook_digest(channel, body, message_id)
+
+
+def webhook_digest(channel: str, body: bytes, message_id: Optional[str]) -> str:
+    """Replay digest for a delivery; message_id must be unique per channel, not per chat."""
+    seed = (message_id.encode("utf-8") if message_id else body)
+    return hashlib.sha256(channel.encode("utf-8") + b":" + seed).hexdigest()
+
+
+def nonce_digest(channel: str, nonce: str) -> str:
+    return hashlib.sha256(b"nonce:" + channel.encode("utf-8") + b":" + nonce.encode("utf-8")).hexdigest()

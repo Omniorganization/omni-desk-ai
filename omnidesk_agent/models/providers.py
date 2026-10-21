@@ -380,9 +380,11 @@ class GeminiProvider:
         }
         base = (self.settings.base_url or "https://generativelanguage.googleapis.com").rstrip("/")
         async with httpx.AsyncClient(timeout=120) as c:
+            # Send the key as a header: httpx errors quote the full URL, and a
+            # query-string key would end up in job errors and logs.
             rr = await c.post(
                 f"{base}/v1beta/models/{self.model}:generateContent",
-                params={"key": key},
+                headers={"x-goog-api-key": key},
                 json=body,
             )
             rr.raise_for_status()

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 from typing import Any, Optional
 
 from omnidesk_agent.core.outbound_messages import OutboundMessageStore
 from omnidesk_agent.channels.provider_errors import classify_channel_error
 from omnidesk_agent.channels.idempotency import capability_for
-from omnidesk_agent.tools.channel_send import validate_send_text_options
+from omnidesk_agent.tools.channel_send import content_sha256, validate_send_text_options
 
 
 class OutboundDispatcher:
@@ -115,9 +116,18 @@ class OutboundDispatcher:
         # Re-validate queued options (rows may predate the tool-side allowlist);
         # unsafe keys such as service_url/webhook_url dead-letter the message.
         options = validate_send_text_options(payload.get("options") or {})
+        text = str(payload.get("text", ""))
+        # The approval's scope hash binds the full text and the tool queues that
+        # same text with its digest; refuse a row whose text no longer matches
+        # (payload rewritten on the way). This is a consistency check, not a
+        # defence against someone who can write the outbound table. Rows queued
+        # before the digest was recorded carry none and are delivered as before.
+        approved_digest = payload.get("text_sha256")
+        if approved_digest is not None and not hmac.compare_digest(str(approved_digest), content_sha256(text)):
+            raise ValueError("unsupported outbound payload: text does not match the approved content digest")
         idempotency_key = str(message.get("idempotency_key") or message["id"])
         options["idempotency_key"] = idempotency_key
-        result = await adapter.send_text(recipient, str(payload.get("text", "")), **options)
+        result = await adapter.send_text(recipient, text, **options)
         provider_message_id = None
         provider_request_id = idempotency_key
         if isinstance(result, dict):
