@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
-from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
+from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict, public_device_view
 from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
 from omnidesk_agent.appsync.sync_websocket import (
     MAX_CONCURRENT_SYNC_POLLS,
@@ -374,7 +374,7 @@ def register_appsync_routes(
         metrics.inc(
             "omnidesk_app_requests_total", surface="shared", operation="bootstrap"
         ) if metrics else None
-        return {"ok": True, **store.bootstrap(_actor(decision))}
+        return {"ok": True, **store.bootstrap(_actor(decision), role=getattr(decision, "role", "viewer"))}
 
     @app.post("/app/devices/register")
     async def app_register_device(request: Request):
@@ -452,7 +452,7 @@ def register_appsync_routes(
         ) if metrics else None
         return {
             "ok": True,
-            "device": device,
+            "device": public_device_view(device),
             "sync_seq": store.sync_since(0, actor=actor)["sync_seq"],
         }
 
@@ -801,7 +801,7 @@ def register_appsync_routes(
             raise HTTPException(404, str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/devices/{device_id}/approval-key")
     async def app_register_approval_key(device_id: str, request: Request):
@@ -829,7 +829,7 @@ def register_appsync_routes(
             raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/devices/enrollment/start")
     async def app_start_device_enrollment(request: Request):
@@ -935,7 +935,7 @@ def register_appsync_routes(
             raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/devices/{device_id}/revoke")
     async def app_revoke_device(device_id: str, request: Request):
@@ -961,7 +961,7 @@ def register_appsync_routes(
             raise HTTPException(404, str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/push/dispatch")
     async def app_dispatch_push(request: Request):
