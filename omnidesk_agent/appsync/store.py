@@ -221,6 +221,29 @@ class DeviceRecord:
     approval_key_registered_at: Optional[float] = None
 
 
+# Values that verify a device credential or address the device's push target.
+_DEVICE_CREDENTIAL_FIELDS = frozenset({"push_token", "token_hash", "last_challenge_nonce_hash", "last_challenge_expires_at"})
+
+
+def _push_target_hint(target: Optional[str]) -> Optional[str]:
+    """Masked push target: its kind, plus the last 4 characters of a long value."""
+    if not target:
+        return None
+    kind = "fid" if target.startswith("fid:") else "fcm_token"
+    return f"{kind}:***{target[-4:]}" if len(target) >= 16 else f"{kind}:***"
+
+
+def public_device_view(device: dict[str, Any]) -> dict[str, Any]:
+    """A device record as API responses return it: no credential fields, and the
+    push target only as a masked hint."""
+    view = {key: value for key, value in device.items() if key not in _DEVICE_CREDENTIAL_FIELDS}
+    view["push_target_hint"] = _push_target_hint(device.get("push_token"))
+    if str(view.get("public_key") or "").startswith("legacy-hmac:"):
+        # A legacy "public key" is the device's HMAC secret.
+        view["public_key"] = "legacy-hmac:***"
+    return view
+
+
 @dataclass
 class ConversationRecord:
     conversation_id: str
@@ -762,15 +785,19 @@ class AppSyncStore:
                 max_seq = max(max_seq, remote_seq)
                 payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
                 remote_event_id = str(event.get("event_id") or event.get("operation_id") or f"{remote}:{remote_seq}:{event.get('event_type', 'event')}")
-                if remote_event_id in self.local_inbox:
+                # Event ids and idempotency keys are client-chosen (or predictable),
+                # so dedupe and outbox matching only ever see the caller's own records.
+                inbox_key = self._inbox_key(organization_id, actor, remote_event_id)
+                if inbox_key in self.local_inbox:
                     duplicates += 1
-                    self.local_inbox[remote_event_id].status = "duplicate"
+                    self.local_inbox[inbox_key].status = "duplicate"
                     continue
                 key = str(event.get("idempotency_key") or payload.get("idempotency_key") or "")
                 payload_hash = _fingerprint(payload)
                 matched = [
                     item for item in self.local_outbox.values()
                     if key and item.idempotency_key == key and item.status in {"pending", "failed", "syncing"}
+                    and item.actor == actor and self._normalize_org_id(item.organization_id) == organization_id
                 ]
                 if matched and any(item.payload_hash != payload_hash for item in matched):
                     conflict = self._record_sync_conflict_locked(
@@ -784,10 +811,10 @@ class AppSyncStore:
                         conflict_type="idempotency_payload_mismatch",
                     )
                     conflicts.append(conflict)
-                    self.local_inbox[remote_event_id] = LocalInboxRecord(remote_event_id=remote_event_id, event_type=str(event.get("event_type") or "event"), payload=payload, actor=str(event.get("actor") or actor), organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="conflict")
+                    self.local_inbox[inbox_key] = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="conflict")
                     continue
-                inbox = LocalInboxRecord(remote_event_id=remote_event_id, event_type=str(event.get("event_type") or "event"), payload=payload, actor=str(event.get("actor") or actor), organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied")
-                self.local_inbox[remote_event_id] = inbox
+                inbox = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied")
+                self.local_inbox[inbox_key] = inbox
                 if matched:
                     self.mark_local_operation_synced(matched[0].operation_id, remote_seq=remote_seq)
                 applied += 1
@@ -818,6 +845,11 @@ class AppSyncStore:
                 "payload": payload,
             })
         return self.record_remote_events(actor=actor, events=events, remote=remote, device_id=device_id, conflict_policy=conflict_policy)
+
+    @staticmethod
+    def _inbox_key(organization_id: str, actor: str, remote_event_id: str) -> str:
+        # Also the stored remote_event_id: the Postgres inbox is keyed on it alone.
+        return json.dumps([organization_id, actor, remote_event_id], ensure_ascii=False, separators=(",", ":"))
 
     def _record_sync_conflict_locked(
         self,
@@ -1728,14 +1760,17 @@ class AppSyncStore:
             self._persist()
             return True, "ok"
 
-    def bootstrap(self, actor: str) -> dict[str, Any]:
+    def bootstrap(self, actor: str, *, role: str = "viewer") -> dict[str, Any]:
+        """``role`` is the one the gateway authenticated; the stored profile role is
+        not a credential. Viewers see only their own devices."""
         with self._lock:
             user = self.ensure_user(actor)
             organization_id = self._normalize_org_id(user["organization_id"])
+            sees_organization_devices = role in {"owner", "operator"}
             return {
                 "organization": {**self._record(self.organization), "organization_id": organization_id},
-                "user": user,
-                "devices": [self._record(v) for v in self.devices.values() if self._normalize_org_id(v.organization_id) == organization_id and (v.actor == actor or user["role"] in {"owner", "operator"})],
+                "user": {**user, "role": role},
+                "devices": [public_device_view(self._record(v)) for v in self.devices.values() if self._normalize_org_id(v.organization_id) == organization_id and (v.actor == actor or sees_organization_devices)],
                 "runtime_status": [self._record(v) for v in self.runtimes.values() if self._normalize_org_id(v.organization_id) == organization_id],
                 "pending_approvals": [self._record(v) for v in self.approvals.values() if v.status == "pending" and self._normalize_org_id(v.organization_id) == organization_id],
                 "notifications": [self._record(v) for v in sorted((n for n in self.notifications.values() if self._normalize_org_id(n.organization_id) == organization_id and self._notification_visible(n, actor)), key=lambda n: n.created_at, reverse=True)[:50]],
