@@ -35,6 +35,23 @@ def _hmac_sign(secret: str, message: str | bytes) -> str:
     return hmac.new(secret.encode("utf-8"), data, hashlib.sha256).hexdigest()
 
 
+# A device credential: a legacy-hmac secret, or an Ed25519 key for production-mode
+# tests (production refuses legacy-hmac device keys).
+Credential = str | Ed25519PrivateKey
+
+
+def _sign(credential: Credential, message: str | bytes) -> str:
+    if isinstance(credential, Ed25519PrivateKey):
+        return credential.sign(message.encode("utf-8") if isinstance(message, str) else message).hex()
+    return _hmac_sign(credential, message)
+
+
+def _device_public_key(credential: Credential) -> str:
+    if isinstance(credential, Ed25519PrivateKey):
+        return credential.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
+    return f"legacy-hmac:{credential}"
+
+
 def _signed_request(store: AppSyncStore, *, device_id: str, secret: str, actor: str, path: str, body: bytes, types: set[str] | None = None) -> tuple[bool, str]:
     timestamp, nonce = str(time.time()), uuid.uuid4().hex
     message = _device_request_message(method="POST", path=path, body_sha256=_sha256_hex(body), timestamp=timestamp, nonce=nonce)
@@ -44,15 +61,15 @@ def _signed_request(store: AppSyncStore, *, device_id: str, secret: str, actor: 
     )
 
 
-def _enroll(store: AppSyncStore, *, owner: str, actor: str, device_id: str, device_type: str, secret: str) -> dict:
+def _enroll(store: AppSyncStore, *, owner: str, actor: str, device_id: str, device_type: str, secret: Credential) -> dict:
     """Legitimate flow: owner starts, device holder pairs with the code, then signs the challenge."""
-    public_key = f"legacy-hmac:{secret}"
+    public_key = _device_public_key(secret)
     store.register_device(actor=actor, device_id=device_id, device_type=device_type, name=device_id, platform="test", public_key=public_key)
     enrollment = store.start_device_enrollment(actor=owner, device_type=device_type, pairing_code="pairing-code-123")
     paired = store.complete_device_enrollment(actor=actor, enrollment_id=enrollment["enrollment_id"], pairing_code="pairing-code-123", device_id=device_id, public_key=public_key)
     assert paired["status"] == "paired"
     challenge = store.issue_device_challenge(actor=actor, enrollment_id=enrollment["enrollment_id"], device_id=device_id)
-    store.verify_device_challenge(actor=actor, enrollment_id=enrollment["enrollment_id"], challenge_id=challenge["challenge_id"], device_id=device_id, signature=_hmac_sign(secret, challenge["signing_message"]))
+    store.verify_device_challenge(actor=actor, enrollment_id=enrollment["enrollment_id"], challenge_id=challenge["challenge_id"], device_id=device_id, signature=_sign(secret, challenge["signing_message"]))
     return enrollment
 
 
@@ -374,10 +391,10 @@ def _cfg(tmp_path: Path) -> AppConfig:
     return cfg
 
 
-def _signed_headers(*, device_id: str, secret: str, path: str, body: str) -> dict[str, str]:
+def _signed_headers(*, device_id: str, secret: Credential, path: str, body: str) -> dict[str, str]:
     timestamp, nonce = str(int(time.time() * 1000)), uuid.uuid4().hex
     message = _device_request_message(method="POST", path=path, body_sha256=_sha256_hex(body.encode("utf-8")), timestamp=timestamp, nonce=nonce)
-    return {"x-omnidesk-device-id": device_id, "x-omnidesk-timestamp": timestamp, "x-omnidesk-nonce": nonce, "x-omnidesk-device-signature": _hmac_sign(secret, message)}
+    return {"x-omnidesk-device-id": device_id, "x-omnidesk-timestamp": timestamp, "x-omnidesk-nonce": nonce, "x-omnidesk-device-signature": _sign(secret, message)}
 
 
 @pytest.fixture()
@@ -400,27 +417,31 @@ OPERATOR_AUTH = {"authorization": "Bearer operator-token", "content-type": "appl
 
 def test_route_approval_decision_rejects_another_actors_device(gateway, monkeypatch: pytest.MonkeyPatch) -> None:
     client, store = gateway
-    _enroll(store, owner="olivia", actor="oscar", device_id="dev_oscar_phone", device_type="mobile", secret="oscar-key")
-    _enroll(store, owner="olivia", actor="olivia", device_id="dev_olivia_phone", device_type="mobile", secret="olivia-key")
+    # Production refuses legacy-hmac device keys, so these devices use Ed25519.
+    oscar_key, olivia_key = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    _enroll(store, owner="olivia", actor="oscar", device_id="dev_oscar_phone", device_type="mobile", secret=oscar_key)
+    _enroll(store, owner="olivia", actor="olivia", device_id="dev_olivia_phone", device_type="mobile", secret=olivia_key)
     conversation = store.create_conversation(actor="olivia", title="ops")
     created = store.add_message_and_task(actor="olivia", conversation_id=conversation["conversation_id"], content="desktop action", requires_desktop_runtime=True)
     path = f"/app/approvals/{created['approval']['approval_id']}/decide"
     monkeypatch.setenv("OMNIDESK_ENV", "production")
 
     body = json.dumps({"decision": "approved", "source_device_id": "dev_oscar_phone"})
-    denied = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "d1", **_signed_headers(device_id="dev_oscar_phone", secret="oscar-key", path=path, body=body)}, content=body)
+    denied = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "d1", **_signed_headers(device_id="dev_oscar_phone", secret=oscar_key, path=path, body=body)}, content=body)
     assert denied.status_code == 401 and "device_actor_mismatch" in denied.text
     assert store.approvals[created["approval"]["approval_id"]].status == "pending"
 
     body = json.dumps({"decision": "approved", "source_device_id": "dev_olivia_phone"})
-    accepted = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "d2", **_signed_headers(device_id="dev_olivia_phone", secret="olivia-key", path=path, body=body)}, content=body)
+    accepted = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "d2", **_signed_headers(device_id="dev_olivia_phone", secret=olivia_key, path=path, body=body)}, content=body)
     assert accepted.status_code == 200, accepted.text
 
 
 def test_route_task_status_requires_the_lease_holder(gateway, monkeypatch: pytest.MonkeyPatch) -> None:
     client, store = gateway
-    _enroll(store, owner="olivia", actor="oscar", device_id="dev_oscar_desk", device_type="desktop", secret="oscar-desk")
-    _enroll(store, owner="olivia", actor="olivia", device_id="dev_olivia_desk", device_type="desktop", secret="olivia-desk")
+    # Production refuses legacy-hmac device keys, so these devices use Ed25519.
+    oscar_desk, olivia_desk = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    _enroll(store, owner="olivia", actor="oscar", device_id="dev_oscar_desk", device_type="desktop", secret=oscar_desk)
+    _enroll(store, owner="olivia", actor="olivia", device_id="dev_olivia_desk", device_type="desktop", secret=olivia_desk)
     conversation = store.create_conversation(actor="olivia", title="ops")
     created = store.add_message_and_task(actor="olivia", conversation_id=conversation["conversation_id"], content="desktop action", requires_desktop_runtime=True)
     task_id = created["task"]["task_id"]
@@ -431,18 +452,18 @@ def test_route_task_status_requires_the_lease_holder(gateway, monkeypatch: pytes
 
     # Another actor's verified desktop cannot report on a task it does not hold.
     body = json.dumps({"status": "completed", "result_summary": "FAKE"})
-    rogue = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "s1", **_signed_headers(device_id="dev_olivia_desk", secret="olivia-desk", path=path, body=body)}, content=body)
+    rogue = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "s1", **_signed_headers(device_id="dev_olivia_desk", secret=olivia_desk, path=path, body=body)}, content=body)
     assert rogue.status_code == 403 and "lease" in rogue.text
     # Nor can it sign as the lease holder's device.
     body = json.dumps({"status": "completed", "assigned_runtime_device_id": "dev_oscar_desk"})
-    spoof = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "s2", **_signed_headers(device_id="dev_oscar_desk", secret="oscar-desk", path=path, body=body)}, content=body)
+    spoof = client.post(path, headers={**OWNER_AUTH, "idempotency-key": "s2", **_signed_headers(device_id="dev_oscar_desk", secret=oscar_desk, path=path, body=body)}, content=body)
     assert spoof.status_code == 401 and "device_actor_mismatch" in spoof.text
 
     body = json.dumps({"status": "completed", "result_summary": "done", "assigned_runtime_device_id": "dev_oscar_desk"})
-    done = client.post(path, headers={**OPERATOR_AUTH, "idempotency-key": "s3", **_signed_headers(device_id="dev_oscar_desk", secret="oscar-desk", path=path, body=body)}, content=body)
+    done = client.post(path, headers={**OPERATOR_AUTH, "idempotency-key": "s3", **_signed_headers(device_id="dev_oscar_desk", secret=oscar_desk, path=path, body=body)}, content=body)
     assert done.status_code == 200, done.text
     body = json.dumps({"status": "queued", "assigned_runtime_device_id": "dev_oscar_desk"})
-    requeue = client.post(path, headers={**OPERATOR_AUTH, "idempotency-key": "s4", **_signed_headers(device_id="dev_oscar_desk", secret="oscar-desk", path=path, body=body)}, content=body)
+    requeue = client.post(path, headers={**OPERATOR_AUTH, "idempotency-key": "s4", **_signed_headers(device_id="dev_oscar_desk", secret=oscar_desk, path=path, body=body)}, content=body)
     assert requeue.status_code == 409 and "already completed" in requeue.text
     assert store.tasks[task_id].result_summary == "done"
 

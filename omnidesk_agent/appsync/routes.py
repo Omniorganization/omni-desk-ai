@@ -10,7 +10,13 @@ from fastapi.responses import StreamingResponse
 
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
-from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict, public_device_view
+from omnidesk_agent.appsync.store import (
+    LEGACY_HMAC_KEY_REFUSED,
+    AppSyncStore,
+    IdempotencyConflict,
+    is_legacy_hmac_device_key,
+    public_device_view,
+)
 from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
 from omnidesk_agent.appsync.sync_websocket import (
     MAX_CONCURRENT_SYNC_POLLS,
@@ -168,6 +174,7 @@ def _verify_device_request(
                 getattr(cfg, "app_sync", None), "device_request_nonce_ttl_seconds", 600
             )
         ),
+        allow_legacy_hmac=not _is_production(cfg),
     )
 
 
@@ -398,6 +405,8 @@ def register_appsync_routes(
                     422,
                     "public_key is required for desktop/mobile/web_admin device enrollment in production",
                 )
+            if is_legacy_hmac_device_key(public_key):
+                raise HTTPException(422, LEGACY_HMAC_KEY_REFUSED)
             if (
                 getattr(
                     app_sync_cfg, "reject_predictable_device_ids_in_production", True
@@ -857,13 +866,16 @@ def register_appsync_routes(
     async def app_complete_device_enrollment(enrollment_id: str, request: Request):
         decision = await admin(request, "operator")
         payload = await request.json()
+        public_key = str(payload.get("public_key") or "")
+        if _is_production(cfg) and is_legacy_hmac_device_key(public_key):
+            raise HTTPException(422, LEGACY_HMAC_KEY_REFUSED)
         try:
             enrollment = store.complete_device_enrollment(
                 actor=_actor(decision),
                 enrollment_id=enrollment_id,
                 pairing_code=str(payload.get("pairing_code") or ""),
                 device_id=str(payload.get("device_id") or ""),
-                public_key=str(payload.get("public_key") or ""),
+                public_key=public_key,
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -902,6 +914,7 @@ def register_appsync_routes(
                 challenge_id=str(payload.get("challenge_id") or ""),
                 device_id=str(payload.get("device_id") or ""),
                 signature=str(payload.get("signature") or ""),
+                allow_legacy_hmac=not _is_production(cfg),
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc

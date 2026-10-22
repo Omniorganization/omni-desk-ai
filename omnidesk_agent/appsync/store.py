@@ -63,6 +63,15 @@ def _approval_decision_message(*, approval_id: str, decision: str, timestamp: st
     return f"omnidesk-approval-decision:v1:{approval_id}:{decision}:{timestamp}:{nonce}".encode("utf-8")
 
 
+LEGACY_HMAC_KEY_PREFIX = "legacy-hmac:"
+LEGACY_HMAC_KEY_REFUSED = "legacy-hmac device keys are not accepted in production; enroll the device with an Ed25519 or P-256 public key"
+
+
+def is_legacy_hmac_device_key(public_key: Optional[str]) -> bool:
+    """A ``legacy-hmac:`` device "public key" is the device's HMAC secret, stored as is."""
+    return str(public_key or "").strip().startswith(LEGACY_HMAC_KEY_PREFIX)
+
+
 def _is_ed25519_public_key(value: str) -> bool:
     if not value.startswith("base64:"):
         return False
@@ -124,13 +133,14 @@ def _verify_device_signature(public_key: str, message: bytes, signature: str) ->
 
     Production GA path: Ed25519 or P-256 public key in PEM/base64 plus base64/hex signature.
     Legacy HMAC is accepted only for keys prefixed with ``legacy-hmac:`` so old test
-    fixtures cannot accidentally masquerade as production device credentials.
+    fixtures cannot accidentally masquerade as production device credentials; callers
+    refuse those keys in production first (``AppSyncStore._legacy_hmac_refused``).
     """
     public_key = (public_key or "").strip()
     signature = (signature or "").strip()
     if not public_key or not signature:
         return False
-    if public_key.startswith("legacy-hmac:"):
+    if public_key.startswith(LEGACY_HMAC_KEY_PREFIX):
         secret = public_key.split(":", 1)[1]
         expected = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
         return hmac.compare_digest(signature, expected)
@@ -238,9 +248,9 @@ def public_device_view(device: dict[str, Any]) -> dict[str, Any]:
     push target only as a masked hint."""
     view = {key: value for key, value in device.items() if key not in _DEVICE_CREDENTIAL_FIELDS}
     view["push_target_hint"] = _push_target_hint(device.get("push_token"))
-    if str(view.get("public_key") or "").startswith("legacy-hmac:"):
+    if is_legacy_hmac_device_key(view.get("public_key")):
         # A legacy "public key" is the device's HMAC secret.
-        view["public_key"] = "legacy-hmac:***"
+        view["public_key"] = f"{LEGACY_HMAC_KEY_PREFIX}***"
     return view
 
 
@@ -486,6 +496,8 @@ class AppSyncStore:
         self.network_state: dict[str, Any] = {"state": "local_only", "updated_at": _now()}
         # Server-side organization of each actor on first use (configuration, never a request).
         self.actor_organizations: dict[str, str] = {}
+        # Turned off in production; see configure_device_key_policy.
+        self.allow_legacy_hmac_device_keys = True
         self._seq = 0
         self._load()
 
@@ -554,6 +566,19 @@ class AppSyncStore:
 
     def _normalize_org_id(self, organization_id: Optional[str]) -> str:
         return str(organization_id or self._default_org_id() or "org_default").strip() or "org_default"
+
+    def configure_device_key_policy(self, *, allow_legacy_hmac: bool) -> None:
+        """Whether ``legacy-hmac:`` device keys may be registered, paired or verified.
+
+        The factory turns them off for production stores. Routes also pass their
+        per-request production check to the verify methods; either one refuses.
+        """
+        with self._lock:
+            self.allow_legacy_hmac_device_keys = bool(allow_legacy_hmac)
+
+    def _legacy_hmac_refused(self, public_key: Optional[str], *, allow_legacy_hmac: bool = True) -> bool:
+        allowed = self.allow_legacy_hmac_device_keys and allow_legacy_hmac
+        return not allowed and is_legacy_hmac_device_key(public_key)
 
     def configure_actor_organizations(self, assignments: Optional[dict[str, str]]) -> None:
         """Set the server-side organization that each listed actor joins on first use."""
@@ -944,6 +969,8 @@ class AppSyncStore:
         its push target and capabilities.
         """
         actor = actor or "unknown"
+        if self._legacy_hmac_refused(public_key):
+            raise PermissionError(LEGACY_HMAC_KEY_REFUSED)
         with self._lock:
             self.ensure_user(actor, organization_id=organization_id)
             organization_id = self._organization_for_actor(actor)
@@ -1416,6 +1443,8 @@ class AppSyncStore:
             public_key = (public_key or "").strip()
             if not device_id or not public_key:
                 raise ValueError("device_id and public_key are required")
+            if self._legacy_hmac_refused(public_key):
+                raise ValueError(LEGACY_HMAC_KEY_REFUSED)
             device = self.devices.get(device_id)
             if device:
                 self._check_enrollment_device(record, device, actor=actor)
@@ -1475,7 +1504,7 @@ class AppSyncStore:
             result.pop("nonce_hash", None)
             return result
 
-    def verify_device_challenge(self, *, actor: str, enrollment_id: str, challenge_id: str, device_id: str, signature: str) -> dict[str, Any]:
+    def verify_device_challenge(self, *, actor: str, enrollment_id: str, challenge_id: str, device_id: str, signature: str, allow_legacy_hmac: bool = True) -> dict[str, Any]:
         with self._lock:
             challenge = self.device_challenges.get(challenge_id)
             if not challenge or challenge.enrollment_id != enrollment_id or challenge.device_id != device_id:
@@ -1500,6 +1529,8 @@ class AppSyncStore:
             # Verify against the key bound by the pairing code, never a key the
             # device registered on its own.
             public_key = enrollment.public_key or ""
+            if self._legacy_hmac_refused(public_key, allow_legacy_hmac=allow_legacy_hmac):
+                raise PermissionError(LEGACY_HMAC_KEY_REFUSED)
             message = _device_signing_message(challenge_id=challenge.challenge_id, nonce_hash=challenge.nonce_hash)
             if not _verify_device_signature(public_key, message, signature):
                 raise ValueError("device challenge signature mismatch")
@@ -1672,6 +1703,9 @@ class AppSyncStore:
             device = self.devices.get(device_id)
             if not device or not device.approval_public_key:
                 return False, "approval_key_not_registered"
+            # Approval keys are registered as Ed25519 only; this covers rows written otherwise.
+            if self._legacy_hmac_refused(device.approval_public_key):
+                return False, "legacy_hmac_key_not_allowed"
             nonce_key = f"approval:{device_id}:{nonce}"
             if nonce_key in self.device_request_nonces:
                 return False, "nonce_replay"
@@ -1696,6 +1730,7 @@ class AppSyncStore:
         required_device_types: set[str] | None = None,
         max_skew_seconds: int = 300,
         nonce_ttl_seconds: int = 600,
+        allow_legacy_hmac: bool = True,
     ) -> tuple[bool, str]:
         """Verify a device-signed request made under ``expected_actor``'s credentials.
 
@@ -1742,6 +1777,8 @@ class AppSyncStore:
             public_key = device.public_key or ""
             if not public_key:
                 return False, "missing_public_key"
+            if self._legacy_hmac_refused(public_key, allow_legacy_hmac=allow_legacy_hmac):
+                return False, "legacy_hmac_key_not_allowed"
             # Opportunistically garbage-collect expired nonce records.
             for key, expires_at in list(self.device_request_nonces.items()):
                 if expires_at <= now:
