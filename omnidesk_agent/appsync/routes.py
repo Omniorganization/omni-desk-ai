@@ -10,8 +10,22 @@ from fastapi.responses import StreamingResponse
 
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
-from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
+from omnidesk_agent.appsync.store import (
+    LEGACY_HMAC_KEY_REFUSED,
+    AppSyncStore,
+    IdempotencyConflict,
+    is_legacy_hmac_device_key,
+    public_device_view,
+)
 from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
+from omnidesk_agent.appsync.sync_websocket import (
+    MAX_CONCURRENT_SYNC_POLLS,
+    WebSocketConnectionLimiter,
+    WebSocketRejected,
+    admit_authenticated,
+    admit_handshake,
+    stream_sync_events,
+)
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.validation.production import is_production_mode
 
@@ -160,6 +174,7 @@ def _verify_device_request(
                 getattr(cfg, "app_sync", None), "device_request_nonce_ttl_seconds", 600
             )
         ),
+        allow_legacy_hmac=not _is_production(cfg),
     )
 
 
@@ -366,7 +381,7 @@ def register_appsync_routes(
         metrics.inc(
             "omnidesk_app_requests_total", surface="shared", operation="bootstrap"
         ) if metrics else None
-        return {"ok": True, **store.bootstrap(_actor(decision))}
+        return {"ok": True, **store.bootstrap(_actor(decision), role=getattr(decision, "role", "viewer"))}
 
     @app.post("/app/devices/register")
     async def app_register_device(request: Request):
@@ -390,6 +405,8 @@ def register_appsync_routes(
                     422,
                     "public_key is required for desktop/mobile/web_admin device enrollment in production",
                 )
+            if is_legacy_hmac_device_key(public_key):
+                raise HTTPException(422, LEGACY_HMAC_KEY_REFUSED)
             if (
                 getattr(
                     app_sync_cfg, "reject_predictable_device_ids_in_production", True
@@ -431,7 +448,8 @@ def register_appsync_routes(
                 capabilities=payload.get("capabilities") or [],
                 public_key=public_key or None,
                 token_hash=payload.get("token_hash"),
-                organization_id=payload.get("organization_id") or "org_default",
+                # The organization is the actor's server-side one; a request body
+                # organization_id is ignored.
                 idempotency_key=idem_key,
                 idempotency_payload=payload,
                 device_signature_verified=device_signature_verified,
@@ -443,7 +461,7 @@ def register_appsync_routes(
         ) if metrics else None
         return {
             "ok": True,
-            "device": device,
+            "device": public_device_view(device),
             "sync_seq": store.sync_since(0, actor=actor)["sync_seq"],
         }
 
@@ -792,7 +810,7 @@ def register_appsync_routes(
             raise HTTPException(404, str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/devices/{device_id}/approval-key")
     async def app_register_approval_key(device_id: str, request: Request):
@@ -820,7 +838,7 @@ def register_appsync_routes(
             raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/devices/enrollment/start")
     async def app_start_device_enrollment(request: Request):
@@ -848,13 +866,16 @@ def register_appsync_routes(
     async def app_complete_device_enrollment(enrollment_id: str, request: Request):
         decision = await admin(request, "operator")
         payload = await request.json()
+        public_key = str(payload.get("public_key") or "")
+        if _is_production(cfg) and is_legacy_hmac_device_key(public_key):
+            raise HTTPException(422, LEGACY_HMAC_KEY_REFUSED)
         try:
             enrollment = store.complete_device_enrollment(
                 actor=_actor(decision),
                 enrollment_id=enrollment_id,
                 pairing_code=str(payload.get("pairing_code") or ""),
                 device_id=str(payload.get("device_id") or ""),
-                public_key=str(payload.get("public_key") or ""),
+                public_key=public_key,
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -893,6 +914,7 @@ def register_appsync_routes(
                 challenge_id=str(payload.get("challenge_id") or ""),
                 device_id=str(payload.get("device_id") or ""),
                 signature=str(payload.get("signature") or ""),
+                allow_legacy_hmac=not _is_production(cfg),
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -926,7 +948,7 @@ def register_appsync_routes(
             raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/devices/{device_id}/revoke")
     async def app_revoke_device(device_id: str, request: Request):
@@ -952,7 +974,7 @@ def register_appsync_routes(
             raise HTTPException(404, str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
-        return {"ok": True, "device": device}
+        return {"ok": True, "device": public_device_view(device)}
 
     @app.post("/app/push/dispatch")
     async def app_dispatch_push(request: Request):
@@ -1100,28 +1122,57 @@ def register_appsync_routes(
         decision = await admin(request, "viewer")
         return {"ok": True, **store.sync_state(actor=_actor(decision))}
 
+    app_sync_cfg = getattr(cfg, "app_sync", None)
+    ws_connections = WebSocketConnectionLimiter(
+        max_per_actor=int(getattr(app_sync_cfg, "websocket_max_connections_per_actor", 8)),
+        max_total=int(getattr(app_sync_cfg, "websocket_max_connections", 256)),
+    )
+    app.state.app_ws_connections = ws_connections
+    ws_poll_slots = asyncio.Semaphore(MAX_CONCURRENT_SYNC_POLLS)
+
+    async def _reject_ws(websocket: WebSocket, *, code: int, reason: str) -> None:
+        metrics.inc("omnidesk_app_ws_rejected_total", reason=reason) if metrics else None
+        await websocket.close(code=code, reason=reason)
+
     @app.websocket("/app/ws")
     async def app_ws(websocket: WebSocket):
+        # The HTTP middleware's resource guard never sees WebSocket handshakes.
+        guard = getattr(app.state, "resource_guard", None)
+        try:
+            admit_handshake(guard, websocket)
+        except WebSocketRejected as exc:
+            await _reject_ws(websocket, code=1013, reason=exc.reason)
+            return
         headers = _websocket_headers(websocket, cfg)
         client_host = getattr(getattr(websocket, "client", None), "host", None)
         auth_decision = rt.admin_auth.verify_headers(
             headers, client_host=client_host, required_role="viewer", path="/app/ws"
         )
         if not auth_decision.ok:
-            await websocket.close(code=1008, reason="unauthorized")
+            await _reject_ws(websocket, code=1008, reason="unauthorized")
             return
         actor = _actor(auth_decision)
-        await websocket.accept()
-        since_seq = 0
+        try:
+            admit_authenticated(guard, websocket, actor=actor, role=str(getattr(auth_decision, "role", "viewer")))
+            release = ws_connections.acquire(actor)
+        except WebSocketRejected as exc:
+            await _reject_ws(websocket, code=1013, reason=exc.reason)
+            return
         try:
             try:
-                since_seq = int(websocket.query_params.get("since_seq", "0"))
+                since_seq = max(0, int(websocket.query_params.get("since_seq", "0")))
             except ValueError:
                 since_seq = 0
-            while True:
-                sync = store.sync_since(since_seq, actor=actor)
-                await websocket.send_json({"ok": True, **sync})
-                since_seq = int(sync["sync_seq"])
-                await asyncio.sleep(2)
-        except WebSocketDisconnect:
+            await websocket.accept()
+            await stream_sync_events(
+                websocket,
+                store,
+                actor=actor,
+                since_seq=since_seq,
+                poll_seconds=float(getattr(app_sync_cfg, "websocket_poll_seconds", 2.0)),
+                poll_slots=ws_poll_slots,
+            )
+        except (WebSocketDisconnect, asyncio.TimeoutError):
             return
+        finally:
+            release()

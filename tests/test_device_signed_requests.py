@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import time
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from omnidesk_agent.config import AppConfig
@@ -29,7 +30,7 @@ def _cfg(tmp_path: Path) -> AppConfig:
     return cfg
 
 
-def _signed_headers(*, device_id: str, secret: str, method: str, path: str, body: str, nonce: str = "nonce-1234567890abcdef") -> dict[str, str]:
+def _signed_headers(*, device_id: str, key: Ed25519PrivateKey, method: str, path: str, body: str, nonce: str = "nonce-1234567890abcdef") -> dict[str, str]:
     timestamp = str(int(time.time() * 1000))
     body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
     message = f"omnidesk-device-request:v1:{method.upper()}:{path}:{body_hash}:{timestamp}:{nonce}".encode("utf-8")
@@ -37,7 +38,7 @@ def _signed_headers(*, device_id: str, secret: str, method: str, path: str, body
         "x-omnidesk-device-id": device_id,
         "x-omnidesk-timestamp": timestamp,
         "x-omnidesk-nonce": nonce,
-        "x-omnidesk-device-signature": hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest(),
+        "x-omnidesk-device-signature": key.sign(message).hex(),
     }
 
 
@@ -49,8 +50,10 @@ def test_production_desktop_claim_requires_verified_device_signature(tmp_path, m
     app = create_app(cfg)
     store = app.state.runtime.app_sync
     device_id = "desk_signed_device"
-    secret = "super-secret-device-key"
-    store.register_device(actor="alice", device_id=device_id, device_type="desktop", name="Desktop", platform="macOS", public_key=f"legacy-hmac:{secret}")
+    # Production refuses legacy-hmac device keys.
+    key = Ed25519PrivateKey.generate()
+    public_key = key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
+    store.register_device(actor="alice", device_id=device_id, device_type="desktop", name="Desktop", platform="macOS", public_key=public_key)
     store.devices[device_id].credential_status = "verified"
     store.devices[device_id].trust_level = "challenge_verified"
     store._persist()
@@ -63,7 +66,7 @@ def test_production_desktop_claim_requires_verified_device_signature(tmp_path, m
     with TestClient(app) as client:
         denied = client.post(path, headers=auth, content=body)
         assert denied.status_code == 401
-        headers = {**auth, **_signed_headers(device_id=device_id, secret=secret, method="POST", path=path, body=body)}
+        headers = {**auth, **_signed_headers(device_id=device_id, key=key, method="POST", path=path, body=body)}
         accepted = client.post(path, headers=headers, content=body)
         assert accepted.status_code == 200, accepted.text
         replay = client.post(path, headers=headers, content=body)

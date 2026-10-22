@@ -23,6 +23,16 @@ def _postgres_pool_size(app_sync_cfg: Any) -> int:
 
 
 def create_appsync_store(cfg: Any) -> AppSyncStore:
+    store = _create_store(cfg)
+    store.configure_actor_organizations(
+        dict(getattr(getattr(cfg, "app_sync", None), "actor_organizations", None) or {})
+    )
+    # A legacy-hmac device "public key" is a shared secret held in the store.
+    store.configure_device_key_policy(allow_legacy_hmac=not is_production_mode(cfg))
+    return store
+
+
+def _create_store(cfg: Any) -> AppSyncStore:
     app_sync_cfg = getattr(cfg, "app_sync", None)
     backend = (
         getattr(app_sync_cfg, "backend", "json")
