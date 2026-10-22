@@ -94,7 +94,10 @@ def test_gateway_project_crud_contract_syncs_across_tri_app_surfaces(tmp_path, m
 
 def test_gateway_project_contract_is_organization_scoped(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
-    app = create_app(_cfg(tmp_path))
+    cfg = _cfg(tmp_path)
+    # Organizations are assigned server-side; a request body cannot choose one.
+    cfg.app_sync.actor_organizations = {"alice": "org-a", "bob": "org-b"}
+    app = create_app(cfg)
 
     def headers(idempotency_key: str) -> dict[str, str]:
         return {
@@ -112,7 +115,6 @@ def test_gateway_project_contract_is_organization_scoped(tmp_path, monkeypatch):
                 "device_type": "mobile",
                 "name": "Alice Mobile",
                 "platform": "iOS",
-                "organization_id": "org-a",
             },
         )
         assert alice_device.status_code == 200, alice_device.text
@@ -132,7 +134,6 @@ def test_gateway_project_contract_is_organization_scoped(tmp_path, monkeypatch):
                 "device_type": "mobile",
                 "name": "Bob Mobile",
                 "platform": "Android",
-                "organization_id": "org-b",
             },
         )
         assert bob_device.status_code == 200, bob_device.text
