@@ -5,6 +5,7 @@ import { afterEach, test } from 'node:test';
 import { OmniAdminApi } from '../lib/api';
 import { resolveGatewayBaseUrl } from '../lib/gateway';
 import { normalizeGatewayActor, verifyGatewayIdentity } from '../lib/session-login';
+import { LoginRateLimiter, loginClientKey } from '../lib/login-rate-limit';
 
 const originalFetch = globalThis.fetch;
 
@@ -280,4 +281,21 @@ test('verifyGatewayIdentity derives session actor and role from gateway response
     () => verifyGatewayIdentity('https://gateway.example', 'bad-token', async () => new Response('forbidden', { status: 403 })),
     /gateway identity verification failed: 403/,
   );
+});
+
+test('login rate limiter caps attempts per client and in total', () => {
+  const limiter = new LoginRateLimiter({ windowMs: 60_000, perClient: 3, total: 5 });
+  const t0 = 1_000_000;
+  for (let i = 0; i < 3; i += 1) assert.equal(limiter.allow('203.0.113.7', t0 + i), true);
+  assert.equal(limiter.allow('203.0.113.7', t0 + 4), false, 'per-client cap');
+  assert.equal(limiter.allow('198.51.100.1', t0 + 5), true);
+  assert.equal(limiter.allow('198.51.100.2', t0 + 6), true);
+  assert.equal(limiter.allow('198.51.100.3', t0 + 7), false, 'global cap protects the shared gateway budget');
+  assert.equal(limiter.allow('203.0.113.7', t0 + 60_010), true, 'window expires');
+});
+
+test('login client key uses the nginx-provided forwarded address', () => {
+  assert.equal(loginClientKey(new Headers({ 'x-forwarded-for': '203.0.113.7' })), '203.0.113.7');
+  assert.equal(loginClientKey(new Headers({ 'x-forwarded-for': ' 203.0.113.7 , 10.0.0.1' })), '203.0.113.7');
+  assert.equal(loginClientKey(new Headers()), 'unknown');
 });

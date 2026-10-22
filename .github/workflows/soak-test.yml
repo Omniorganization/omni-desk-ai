@@ -31,8 +31,14 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
       - name: Deterministic soak scenarios
-        run: python scripts/soak_test.py --iterations "${{ github.event.inputs.iterations || '25' }}" --duration-seconds "${{ github.event.inputs.duration_seconds || '0' }}" --json | tee soak-report.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        env:
+          SOAK_ITERATIONS: ${{ github.event.inputs.iterations || '25' }}
+          SOAK_DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '0' }}
+        run: |
+          [[ "$SOAK_ITERATIONS" =~ ^[0-9]+$ ]] || { echo "invalid iterations"; exit 1; }
+          [[ "$SOAK_DURATION_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "invalid duration_seconds"; exit 1; }
+          python scripts/soak_test.py --iterations "$SOAK_ITERATIONS" --duration-seconds "$SOAK_DURATION_SECONDS" --json | tee soak-report.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: soak-report
           path: soak-report.json

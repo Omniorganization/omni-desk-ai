@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
       - run: python scripts/check_observability_contract.py .
       - run: python scripts/check_alert_rules_fire.py deploy/observability/prometheus-rules.yml | tee alert-drill-report.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: alert-drill-report
           path: alert-drill-report.json

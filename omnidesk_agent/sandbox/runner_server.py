@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -22,6 +23,8 @@ from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.security.command_policy import SAFE_CI_ALLOWED_PREFIXES, argv_allowed
 from omnidesk_agent.sandbox.limits import DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_MAX_ARCHIVE_FILE_BYTES, DEFAULT_MAX_ARCHIVE_FILES
+
+LOGGER = logging.getLogger(__name__)
 
 
 ALLOWED_PREFIXES = SAFE_CI_ALLOWED_PREFIXES
@@ -330,13 +333,53 @@ class SandboxRunnerHandler(BaseHTTPRequestHandler):
                     tmp.cleanup()
         except subprocess.TimeoutExpired as exc:
             self._json(200, {"ok": False, "exit_code": 124, "stdout": exc.stdout or "", "stderr": "sandbox timed out"})
-        except Exception as exc:
-            self._json(500, {"ok": False, "exit_code": 1, "stderr": str(exc)})
+        except ValueError as exc:  # includes JSONDecodeError and base64 binascii.Error
+            # Request validation errors carry messages written by this module
+            # (size limits, workspace root checks) and are safe to return.
+            self._json(400, {"ok": False, "exit_code": 1, "stderr": str(exc)})
+        except Exception:
+            # Anything else may include host paths or runtime internals; log it
+            # on the runner and return a generic message to the caller.
+            LOGGER.exception("sandbox runner request failed")
+            self._json(500, {"ok": False, "exit_code": 1, "stderr": "sandbox runner internal error"})
+
+
+ALLOW_ROOTFUL_RUNTIME_ENV = "OMNIDESK_SANDBOX_ALLOW_ROOTFUL_RUNTIME"
+
+
+def runtime_is_rootless(cfg: RunnerConfig) -> bool:
+    """True when the configured container runtime/API socket runs rootless.
+
+    With a rootful Docker/Podman API socket, anyone who compromises the runner
+    effectively has root on the host, so the runner refuses to start on one.
+    """
+    try:
+        if Path(cfg.container_runtime).name == "podman":
+            info = subprocess.run([cfg.container_runtime, "info", "--format", "json"], check=True, capture_output=True, text=True, timeout=10)
+            return json.loads(info.stdout).get("host", {}).get("security", {}).get("rootless") is True
+        info = subprocess.run([cfg.container_runtime, "info", "--format", "{{json .SecurityOptions}}"], check=True, capture_output=True, text=True, timeout=10)
+        options = json.loads(info.stdout or "[]") or []
+        return any("name=rootless" in str(option) for option in options)
+    except Exception:
+        return False
+
+
+def require_rootless_runtime(cfg: RunnerConfig) -> None:
+    if os.getenv(ALLOW_ROOTFUL_RUNTIME_ENV, "0").lower() in {"1", "true", "yes"}:
+        LOGGER.warning("sandbox runner allowing a rootful container runtime (%s=1)", ALLOW_ROOTFUL_RUNTIME_ENV)
+        return
+    if not runtime_is_rootless(cfg):
+        raise SystemExit(
+            f"sandbox runner refuses a rootful container runtime ({cfg.container_runtime}); "
+            f"use a rootless Podman/Docker socket or set {ALLOW_ROOTFUL_RUNTIME_ENV}=1 on a dedicated runner host"
+        )
 
 
 def run_server(host: str = "0.0.0.0", port: int = 18890, cfg: RunnerConfig | None = None) -> None:  # nosec B104
+    cfg = cfg or RunnerConfig()
+    require_rootless_runtime(cfg)
     server = ThreadingHTTPServer((host, port), SandboxRunnerHandler)
-    server.runner_config = cfg or RunnerConfig()  # type: ignore[attr-defined]
+    server.runner_config = cfg  # type: ignore[attr-defined]
     server.serve_forever()
 
 

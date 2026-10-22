@@ -1,0 +1,113 @@
+{
+  "checked_at": "2026-10-12T06:47:01.467044+08:00",
+  "predecessor_commit": "744ba691d6dcdcd829d7f05ded128ac1b33d9b1a",
+  "cli_version": "0.162.0-alpha.17.2",
+  "transport": "official_codex_app_server_stdio_jsonrpc",
+  "gateway_live": {
+    "checked_at": "2026-10-12T06:47:01.467044+08:00",
+    "scope": "local_loopback_gateway_real_codex_subscription_not_hosted_siwc",
+    "success": true,
+    "provider": "codex_cli",
+    "model": "gpt-6.1-sol",
+    "questions": [
+      {
+        "http_status": 200,
+        "provider": "codex_cli",
+        "model": "gpt-6.1-sol",
+        "answer": "5"
+      },
+      {
+        "http_status": 200,
+        "provider": "codex_cli",
+        "model": "gpt-6.1-sol",
+        "answer": "21"
+      },
+      {
+        "endpoint": "/api/chat/stream",
+        "completed_events": 1,
+        "provider": "codex_cli",
+        "model": "gpt-6.1-sol",
+        "answer": "NO_TOOLS",
+        "native_stream": false
+      }
+    ],
+    "anonymous_http": 403,
+    "operator_profile_denied_http": 403,
+    "idempotency_replay_answer": "5",
+    "idempotency_replay_added_calls": 0,
+    "successful_model_calls": 3,
+    "persisted_model_calls": 3,
+    "input_tokens": 15450,
+    "output_tokens": 135,
+    "platform_api_key_used": false,
+    "model_cache_used": false,
+    "accepted_tool_events": 0,
+    "gateway_auth": "fresh_ephemeral_bearer_credentials_not_copied_from_other_services",
+    "background_services_started": false,
+    "business_data_sent": false
+  },
+  "validation": {
+    "related_offline_tests_passed": 283,
+    "codex_cli_provider_tests_passed": 180,
+    "pytest_warnings_as_errors": true,
+    "ruff_passed": true,
+    "pyright_errors": 0,
+    "pyright_warnings": 1005,
+    "pyright_warning_baseline_compared": false,
+    "import_graph_modules": 305,
+    "import_graph_internal_edges": 1656,
+    "diff_check": true
+  },
+  "security_remediation": {
+    "original_codeql_finding": "https://github.com/Omniorganization/omni-desk-ai/security/code-scanning/15",
+    "private_request_instructions_transport": "thread/start.developerInstructions over stdin JSON-RPC, separate from turn/start.input",
+    "model_catalog_file_contents": "public bundled model metadata and public canonical instructions only",
+    "request_content_in_catalog_argv_or_environment": false,
+    "effective_transport": "exact official ChatGPT base URL and fixed alias auth/protocol/retries; extra non-null fields rejected before thread/start",
+    "mcp": "each inherited server disabled in thread/start config; empty map does not remove inherited entries",
+    "global_instruction_sources": "only current owner non-group/world-writable CODEX_HOME and its top-level regular AGENTS.md or AGENTS.override.md; resolved path stays inside that directory",
+    "logging": "RUST_LOG off, no history, analytics disabled, OTel exporters none and prompt logging false",
+    "unsupported_messages": "tools, server requests, warnings, rerouting and unknown notifications rejected"
+  },
+  "predecessor_ci": {
+    "head": "744ba691d6dcdcd829d7f05ded128ac1b33d9b1a",
+    "success": 53,
+    "skipped": 2,
+    "failed": 1,
+    "failure": "CodeQL cleartext request-context catalog storage",
+    "full_postgresql_job": "https://github.com/Omniorganization/omni-desk-ai/actions/runs/38179315912/job/114588304364",
+    "pytest_passed": 1051,
+    "coverage_percent": 80.78
+  },
+  "current_commit_ci": "read all checks on the subsequently pushed exact head; predecessor results do not prove this patch passes",
+  "dependency_patch_evidence": "codex-cli-gateway-20261012.json",
+  "source_sha256": {
+    "omnidesk_agent/models/codex_cli.py": "9cf7237fe8ebfd20d2fd05b1360d9103cfb272ac820bd281ad7d693791faa98a",
+    "omnidesk_agent/models/providers.py": "e561d7cc61ca1aefeebe5c768de6f087b554fd57dd5e376ffca54bf7ed7fdb79",
+    "omnidesk_agent/models/provider_streaming.py": "1b1a3e91df9e1dfd85d34d2d26e20796997a9f38b224d84142922b975072f214",
+    "omnidesk_agent/models/provider_errors.py": "58a5d9c1b99ca5f8b70ce48c1aaf38da75d29d69027004dfd5fb0e8964e9d8f4",
+    "omnidesk_agent/models/pricing.py": "40875d1ece81c9004453e5d9b0b052333066c3db884b2d1c59917b26fad3a167",
+    "omnidesk_agent/models/router.py": "bc89fd5afb95296fa48d61bcde666eff14853cd6c9caebf7946bc8752fd6d45b",
+    "omnidesk_agent/models/router_streaming.py": "c02dd93b25dbb75a85b18162edb7e32ddff7cda3fe24dd89cab734e2b7611c50",
+    "omnidesk_agent/config.py": "99922abc681dedccf18126040e5fbf777fc4f69a2dc48e212eb8c6214ec24837",
+    "omnidesk_agent/appsync/chat_service.py": "1be7702d3503bf11a0bb5ba7bb777e6895bad61d06c2e0f5f972e2b89a56fc7f",
+    "scripts/verify_codex_cli_chat.py": "8ac734bb0c3ceacc0fa24de970b94926fe6deadcf19e1b6f11f1ce37948b02f7",
+    "examples/config.codex-cli.yaml": "3b356956dfd2a8048d95dcb4f47454dddf17560cf37a1f75f17730ed886ab404",
+    "docs/codex-subscription.md": "deb5b178ed3fbfdc6f71dcb2e1867ff354fb522690b9c87ef6cb2635f211294c",
+    "tests/models/test_codex_cli_provider.py": "d304c64ac3c9cf59c1ee0354b03e85cb66520a55399f2a0e7867fcaa5455cf37",
+    "tests/test_codex_cli_gateway.py": "bb6aad97db93b19c78bd9f8ff1bc0f0285bc229c1a29ddc23603382afaa0b7cd",
+    "tests/test_codex_cli_verification.py": "cc341a7e49c3e20d326c2a6d92e8ad5f757fad0fd4f2a452edd8189d9b1c7fae",
+    "apps/web-admin-next/package.json": "bb94c8050bd400b5c2e2253ab555342446c1fe2db29c6df93e0ad1488113d22c",
+    "apps/web-admin-next/package-lock.json": "83a90be55b42db800c97009d46c4f3255f944a68795462a71485b8ff254dc5a3",
+    "apps/desktop-tauri/package.json": "5ba52a6805c095b6102ac5e164ebf6a7cc1133f729f0b0df1c5c92027e4855d0",
+    "apps/desktop-tauri/package-lock.json": "eb3fd508feda0a8b1408f0046a906818d97aa5cb8be686cf6afdd55a43f53d01"
+  },
+  "limits": [
+    "Personal local macOS, exact CLI version and gpt-6.1-sol were live-verified; hosted SIWC, Linux and Windows were not.",
+    "SSE is buffered, native=false; configured output-token budget is an estimate.",
+    "NO_TOOLS is a model self-report and accepted_tool_events=0 is an acceptance policy, not absolute execution or zero host-read proof.",
+    "The official CLI can load trusted global AGENTS user instructions and owns authentication; no credential file was extracted or copied.",
+    "Successful Gateway ledger excludes failed attempts and standalone diagnostics, which may also consume subscription quota.",
+    "No production deployment, main merge, model training, purchase or account-setting change occurred."
+  ]
+}

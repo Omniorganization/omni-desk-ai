@@ -13,14 +13,19 @@ class OmniDeviceIdentity {
 }
 
 class DeviceIdentityStore {
-  DeviceIdentityStore(this.storage);
+  DeviceIdentityStore(this.storage, {this.beforeAccess});
 
   final FlutterSecureStorage storage;
+
+  /// Awaited before reading keys (the keychain migration must run first, or a
+  /// missing identity would be regenerated instead of migrated).
+  final Future<void> Function()? beforeAccess;
   static const _deviceIdKey = 'omni.device_id.v2';
   static const _publicKeyKey = 'omni.device_public_key.v2';
   static const _privateKeyKey = 'omni.device_private_key.v2';
 
   Future<OmniDeviceIdentity> loadOrCreate() async {
+    await beforeAccess?.call();
     final existingId = await storage.read(key: _deviceIdKey);
     final existingPublicKey = await storage.read(key: _publicKeyKey);
     final existingPrivateKey = await storage.read(key: _privateKeyKey);
@@ -53,6 +58,7 @@ class DeviceIdentityStore {
     required String path,
     String body = '',
   }) async {
+    await beforeAccess?.call();
     final deviceId = await storage.read(key: _deviceIdKey);
     final privateKeyEncoded = await storage.read(key: _privateKeyKey);
     if (deviceId == null ||
@@ -81,6 +87,32 @@ class DeviceIdentityStore {
       'x-omnidesk-device-signature': 'base64:${base64Encode(signature.bytes)}',
     };
   }
+
+  /// Signs a gateway enrollment challenge (`signing_message`) with the device
+  /// key. Only challenge messages are accepted, so this cannot be used to
+  /// sign arbitrary payloads.
+  Future<String> signChallenge(String signingMessage) async {
+    if (!signingMessage.startsWith('omnidesk-device-challenge:v2:')) {
+      throw ArgumentError('unexpected device challenge message');
+    }
+    await beforeAccess?.call();
+    final privateKeyEncoded = await storage.read(key: _privateKeyKey);
+    if (privateKeyEncoded == null || privateKeyEncoded.isEmpty) {
+      throw StateError('mobile device private key is not initialized');
+    }
+    final algorithm = Ed25519();
+    final keyPair = await algorithm.newKeyPairFromSeed(
+      base64Decode(privateKeyEncoded),
+    );
+    final signature = await algorithm.sign(
+      utf8.encode(signingMessage),
+      keyPair: keyPair,
+    );
+    return 'base64:${base64Encode(signature.bytes)}';
+  }
+
+  /// 16 random hex characters, used as a one-time enrollment pairing code.
+  static String newPairingCode() => _randomHex(8);
 
   static String _randomHex(int bytes) {
     final random = Random.secure();

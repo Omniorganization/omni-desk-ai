@@ -4,38 +4,121 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use tauri::Manager;
 
+mod device_keys;
+
 const SERVICE: &str = "ai.omnidesk.desktop";
+const DEVICE_ID_KEY: &str = "omni.deviceId.v2";
+const DEVICE_PUBLIC_KEY_KEY: &str = "omni.devicePublicKeyPem.v2";
+const DEVICE_PRIVATE_KEY_KEY: &str = "omni.devicePrivateKeyJwk.v2";
+const SESSION_KEYS: [&str; 3] = ["omni.gateway", "omni.operatorToken", "omni.actor"];
+
+/// Keychain entries the webview may read. The device private key is never
+/// returned: identity creation and signing happen in Rust.
+fn readable_keychain_key(key: &str) -> Result<&str, String> {
+    if SESSION_KEYS.contains(&key) || key == DEVICE_ID_KEY || key == DEVICE_PUBLIC_KEY_KEY {
+        Ok(key)
+    } else {
+        Err("unsupported keychain key".to_string())
+    }
+}
+
+/// Keychain entries the webview may write: session settings only.
+fn writable_keychain_key(key: &str) -> Result<&str, String> {
+    if SESSION_KEYS.contains(&key) {
+        Ok(key)
+    } else {
+        Err("unsupported keychain key".to_string())
+    }
+}
+
+fn keychain_read(key: &str) -> Result<String, String> {
+    let entry = keyring::Entry::new(SERVICE, key).map_err(|error| error.to_string())?;
+    match entry.get_password() {
+        Ok(value) => Ok(value),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn keychain_write(key: &str, value: &str) -> Result<(), String> {
+    keyring::Entry::new(SERVICE, key)
+        .map_err(|error| error.to_string())?
+        .set_password(value)
+        .map_err(|error| error.to_string())
+}
 
 #[tauri::command]
-fn secure_set(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE, &key).map_err(|error| error.to_string())?;
-    if matches!(
-        key.as_str(),
-        "omni.deviceId.v2" | "omni.devicePublicKeyPem.v2" | "omni.devicePrivateKeyJwk.v2"
-    ) {
-        let directory = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|error| error.to_string())?;
-        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-        return write_identity_once(
-            &directory.join("device-identity.lock"),
-            &value,
-            || match entry.get_password() {
-                Ok(value) => Ok(value),
-                Err(keyring::Error::NoEntry) => Ok(String::new()),
-                Err(error) => Err(error.to_string()),
-            },
-            || {
-                entry
-                    .set_password(&value)
-                    .map_err(|error| error.to_string())
-            },
-        );
+fn secure_set(key: String, value: String) -> Result<(), String> {
+    keychain_write(writable_keychain_key(&key)?, &value)
+}
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopIdentityView {
+    device_id: String,
+    public_key_pem: String,
+}
+
+fn load_or_create_identity(
+    lock_path: &Path,
+    read: impl Fn(&str) -> Result<String, String>,
+    write: impl Fn(&str, &str) -> Result<(), String>,
+) -> Result<DesktopIdentityView, String> {
+    with_identity_lock(lock_path, || {
+        let device_id = read(DEVICE_ID_KEY)?;
+        let public_key_pem = read(DEVICE_PUBLIC_KEY_KEY)?;
+        let private_present = !read(DEVICE_PRIVATE_KEY_KEY)?.is_empty();
+        if !device_id.is_empty() && !public_key_pem.is_empty() && private_present {
+            return Ok(DesktopIdentityView {
+                device_id,
+                public_key_pem,
+            });
+        }
+        if !device_id.is_empty() || !public_key_pem.is_empty() || private_present {
+            return Err(
+                "desktop device identity is incomplete; secure-store recovery is required"
+                    .to_string(),
+            );
+        }
+        let generated = device_keys::generate_identity()?;
+        write(DEVICE_ID_KEY, &generated.device_id)?;
+        write(DEVICE_PUBLIC_KEY_KEY, &generated.public_key_pem)?;
+        write(DEVICE_PRIVATE_KEY_KEY, &generated.private_jwk)?;
+        Ok(DesktopIdentityView {
+            device_id: generated.device_id,
+            public_key_pem: generated.public_key_pem,
+        })
+    })
+}
+
+#[tauri::command]
+fn device_identity(app: tauri::AppHandle) -> Result<DesktopIdentityView, String> {
+    let directory = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    load_or_create_identity(
+        &directory.join("device-identity.lock"),
+        keychain_read,
+        keychain_write,
+    )
+}
+
+#[tauri::command]
+fn device_sign_request(
+    method: String,
+    path: String,
+    body_sha256: String,
+    timestamp: String,
+    nonce: String,
+) -> Result<String, String> {
+    let message = device_keys::request_message(&method, &path, &body_sha256, &timestamp, &nonce)?;
+    let private_jwk = keychain_read(DEVICE_PRIVATE_KEY_KEY)?;
+    if private_jwk.is_empty() {
+        return Err("desktop device private key is not initialized".to_string());
     }
-    entry
-        .set_password(&value)
-        .map_err(|error| error.to_string())
+    device_keys::sign(&private_jwk, &message)
 }
 
 struct IdentityStoreLock(fs::File);
@@ -48,12 +131,10 @@ impl Drop for IdentityStoreLock {
     }
 }
 
-fn write_identity_once(
+fn with_identity_lock<T>(
     lock_path: &Path,
-    value: &str,
-    read: impl FnOnce() -> Result<String, String>,
-    write: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
+    guarded: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -64,25 +145,32 @@ fn write_identity_once(
     fs2::FileExt::try_lock_exclusive(&file)
         .map_err(|_| "desktop identity store is busy; retry initialization".to_string())?;
     let _lock = IdentityStoreLock(file);
-    let existing = read()?;
-    if !existing.is_empty() {
-        return if existing == value {
-            Ok(())
-        } else {
-            Err("desktop identity already exists; refusing credential replacement".to_string())
-        };
-    }
-    write()
+    guarded()
+}
+
+#[cfg(test)]
+fn write_identity_once(
+    lock_path: &Path,
+    value: &str,
+    read: impl FnOnce() -> Result<String, String>,
+    write: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    with_identity_lock(lock_path, || {
+        let existing = read()?;
+        if !existing.is_empty() {
+            return if existing == value {
+                Ok(())
+            } else {
+                Err("desktop identity already exists; refusing credential replacement".to_string())
+            };
+        }
+        write()
+    })
 }
 
 #[tauri::command]
 fn secure_get(key: String) -> Result<String, String> {
-    let entry = keyring::Entry::new(SERVICE, &key).map_err(|error| error.to_string())?;
-    match entry.get_password() {
-        Ok(value) => Ok(value),
-        Err(keyring::Error::NoEntry) => Ok(String::new()),
-        Err(error) => Err(error.to_string()),
-    }
+    keychain_read(readable_keychain_key(&key)?)
 }
 
 fn home_directory() -> Result<PathBuf, String> {
@@ -247,6 +335,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             secure_get,
             secure_set,
+            device_identity,
+            device_sign_request,
             read_workspace_file,
             list_workspace_directory
         ])
@@ -259,7 +349,12 @@ mod identity_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::validate_relative_path;
+    use super::{
+        load_or_create_identity, readable_keychain_key, validate_relative_path,
+        writable_keychain_key, DEVICE_ID_KEY, DEVICE_PRIVATE_KEY_KEY, DEVICE_PUBLIC_KEY_KEY,
+    };
+    use std::cell::RefCell;
+    use std::collections::HashMap;
 
     #[test]
     fn accepts_bounded_relative_paths() {
@@ -278,5 +373,63 @@ mod tests {
     fn rejects_control_and_oversized_paths() {
         assert!(validate_relative_path("bad\0path").is_err());
         assert!(validate_relative_path(&"a".repeat(1025)).is_err());
+    }
+
+    #[test]
+    fn webview_cannot_read_private_key_or_write_identity() {
+        assert!(readable_keychain_key("omni.operatorToken").is_ok());
+        assert!(readable_keychain_key(DEVICE_ID_KEY).is_ok());
+        assert!(readable_keychain_key(DEVICE_PUBLIC_KEY_KEY).is_ok());
+        assert!(readable_keychain_key(DEVICE_PRIVATE_KEY_KEY).is_err());
+        assert!(readable_keychain_key("omni.other").is_err());
+        assert!(writable_keychain_key("omni.gateway").is_ok());
+        for key in [
+            DEVICE_ID_KEY,
+            DEVICE_PUBLIC_KEY_KEY,
+            DEVICE_PRIVATE_KEY_KEY,
+            "",
+            "omni.other",
+        ] {
+            assert!(writable_keychain_key(key).is_err(), "{key}");
+        }
+    }
+
+    fn lock_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("omnidesk-{name}-{}.lock", std::process::id()))
+    }
+
+    #[test]
+    fn identity_is_created_once_and_reused() {
+        let store = RefCell::new(HashMap::<String, String>::new());
+        let read = |key: &str| Ok(store.borrow().get(key).cloned().unwrap_or_default());
+        let write = |key: &str, value: &str| {
+            store
+                .borrow_mut()
+                .insert(key.to_string(), value.to_string());
+            Ok(())
+        };
+        let path = lock_path("identity-create");
+        let first = load_or_create_identity(&path, read, write).unwrap();
+        assert!(first.device_id.starts_with("desk_"));
+        assert!(store.borrow().contains_key(DEVICE_PRIVATE_KEY_KEY));
+        let again = load_or_create_identity(&path, read, |_: &str, _: &str| {
+            Err("no writes expected".to_string())
+        })
+        .unwrap();
+        assert_eq!(again, first);
+    }
+
+    #[test]
+    fn incomplete_identity_requires_recovery_instead_of_regeneration() {
+        let store = RefCell::new(HashMap::from([(
+            DEVICE_ID_KEY.to_string(),
+            "desk_x".to_string(),
+        )]));
+        let read = |key: &str| Ok(store.borrow().get(key).cloned().unwrap_or_default());
+        let result =
+            load_or_create_identity(&lock_path("identity-partial"), read, |_: &str, _: &str| {
+                Err("no writes expected".to_string())
+            });
+        assert!(result.unwrap_err().contains("incomplete"));
     }
 }

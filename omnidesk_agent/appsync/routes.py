@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
-from omnidesk_agent.appsync.push import dispatch_pending_push
+from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.validation.production import is_production_mode
 
@@ -94,6 +94,39 @@ def _device_signature_enforced(cfg: Any) -> bool:
     return _is_production(cfg) and bool(
         getattr(app_sync, "require_device_signed_requests_in_production", True)
     )
+
+
+def _require_approval_signature(
+    *,
+    cfg: Any,
+    store: AppSyncStore,
+    request: Request,
+    approval_id: str,
+    verdict: str,
+    device_id: str,
+    metrics: Any = None,
+) -> None:
+    """Enforces the device's biometric-gated approval key, when it has one."""
+    required = bool(getattr(getattr(cfg, "app_sync", None), "require_approval_key_for_decisions", False))
+    has_key = bool(device_id) and bool(store.device_approval_key(device_id))
+    if not (has_key or required):
+        return
+    reason = "missing_device_id"
+    if device_id:
+        headers = request.headers
+        ok, reason = store.verify_approval_signature(
+            device_id=device_id,
+            approval_id=approval_id,
+            decision=verdict,
+            timestamp=str(headers.get("x-omnidesk-approval-timestamp") or ""),
+            nonce=str(headers.get("x-omnidesk-approval-nonce") or ""),
+            signature=str(headers.get("x-omnidesk-approval-signature") or ""),
+        )
+        if ok:
+            return
+    if metrics:
+        metrics.inc("omnidesk_approval_signature_failures_total", reason=reason)
+    raise HTTPException(401, f"approval signature rejected: {reason}")
 
 
 async def _require_signed_device_request(
@@ -343,13 +376,17 @@ def register_appsync_routes(
                 )
         actor = _actor(decision)
         try:
+            push_target = normalize_push_target(payload.get("push_token"), payload.get("push_token_type") or "fcm_token")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
             device = store.register_device(
                 actor=actor,
                 device_id=supplied_device_id,
                 device_type=device_type,
                 name=payload.get("name") or device_type,
                 platform=payload.get("platform") or "unknown",
-                push_token=payload.get("push_token"),
+                push_token=push_target,
                 capabilities=payload.get("capabilities") or [],
                 public_key=public_key or None,
                 token_hash=payload.get("token_hash"),
@@ -624,6 +661,19 @@ def register_appsync_routes(
         verdict = payload.get("decision")
         if verdict not in {"approved", "rejected"}:
             raise HTTPException(422, "decision must be approved or rejected")
+        _require_approval_signature(
+            cfg=cfg,
+            store=store,
+            request=request,
+            approval_id=approval_id,
+            verdict=str(verdict),
+            device_id=str(
+                request.headers.get("x-omnidesk-device-id")
+                or payload.get("source_device_id")
+                or ""
+            ).strip(),
+            metrics=metrics,
+        )
         try:
             approval = store.decide_approval(
                 approval_id=approval_id,
@@ -671,7 +721,10 @@ def register_appsync_routes(
             expected_device_id=device_id,
             metrics=metrics,
         )
-        push_token = str(payload.get("push_token") or "").strip()
+        try:
+            push_token = normalize_push_target(payload.get("push_token"), payload.get("token_type") or "fcm_token")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         if not push_token:
             raise HTTPException(422, "push_token is required")
         try:
@@ -685,6 +738,33 @@ def register_appsync_routes(
             raise HTTPException(404, str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
+        return {"ok": True, "device": device}
+
+    @app.post("/app/devices/{device_id}/approval-key")
+    async def app_register_approval_key(device_id: str, request: Request):
+        decision = await admin(request, "operator")
+        payload, raw_body = await _json_body_and_raw(request)
+        await _require_signed_device_request(
+            cfg=cfg,
+            store=store,
+            request=request,
+            raw_body=raw_body,
+            required_device_types={"mobile"},
+            expected_device_id=device_id,
+            metrics=metrics,
+        )
+        try:
+            device = store.register_approval_key(
+                actor=_actor(decision),
+                device_id=device_id,
+                public_key=str(payload.get("public_key") or ""),
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         return {"ok": True, "device": device}
 
     @app.post("/app/devices/enrollment/start")

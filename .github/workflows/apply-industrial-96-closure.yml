@@ -47,7 +47,7 @@ jobs:
           python-version: "3.11"
 
       - if: steps.detect.outputs.enabled == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "22.17.0"
           cache: npm
@@ -56,7 +56,7 @@ jobs:
             apps/desktop-tauri/package-lock.json
 
       - if: steps.detect.outputs.enabled == 'true'
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: "1.90.0"
           components: rustfmt, clippy
@@ -191,7 +191,7 @@ jobs:
 
       - name: Upload transformed worktree
         if: always() && steps.detect.outputs.enabled == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: industrial-96-worktree-${{ github.run_id }}
           path: |

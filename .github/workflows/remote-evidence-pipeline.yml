@@ -38,12 +38,19 @@ jobs:
       - name: Download raw remote evidence artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          RAW_EVIDENCE_RUN_ID: ${{ inputs.raw_evidence_run_id }}
+          RAW_EVIDENCE_ARTIFACT_NAME: ${{ inputs.raw_evidence_artifact_name }}
         run: |
           set -euo pipefail
-          mkdir -p dist/external-ga-evidence-raw
-          gh run download "${{ inputs.raw_evidence_run_id }}" \
-            --name "${{ inputs.raw_evidence_artifact_name }}" \
-            --dir dist/external-ga-evidence-raw
+          [[ "$RAW_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
+          # Only registered producer workflows on main (release/evidence-source-workflows.json);
+          # only the expected evidence files are copied out of the artifact.
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer remote-evidence-pipeline \
+            --run-id "$RAW_EVIDENCE_RUN_ID" \
+            --artifact-name "$RAW_EVIDENCE_ARTIFACT_NAME" \
+            --dest dist/external-ga-evidence-raw \
+            --write-report dist/external-ga-evidence-fetch-report.json
       - name: Preflight complete external evidence bundle
         env:
           EXTERNAL_GA_EVIDENCE_RAW_DIR: dist/external-ga-evidence-raw
@@ -54,20 +61,24 @@ jobs:
             --format json \
             --report-path dist/external-ga-evidence-preflight.json
       - name: Import complete external evidence bundle
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
+          [[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z.+_-]+$ ]] || { echo "invalid version"; exit 1; }
           python scripts/import_external_ga_evidence.py \
             --raw-dir dist/external-ga-evidence-raw \
-            --expected-version "${{ inputs.expected_version }}" \
+            --expected-version "$EXPECTED_VERSION" \
             --copy \
             --write-report release/external-ga-evidence-import-report.json
       - name: Refresh live GitHub branch and team governance evidence
         env:
           TEAM_GOVERNANCE_TOKEN: ${{ secrets.OMNIDESK_GITHUB_GOVERNANCE_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
         run: |
           set -euo pipefail
           audit_args=()
-          if [[ "${{ inputs.readiness_channel }}" == "candidate" ]]; then
+          if [[ "$READINESS_CHANNEL" == "candidate" ]]; then
             audit_args+=(--audit-only)
           fi
           mkdir -p release/external-evidence/control-plane
@@ -83,9 +94,11 @@ jobs:
             --write-report release/external-evidence/control-plane/github-team-governance-live.json \
             "${audit_args[@]}"
       - name: Validate imported complete Real GA evidence gate
+        env:
+          READINESS_CHANNEL: ${{ inputs.readiness_channel }}
         run: |
           set -euo pipefail
-          if [[ "${{ inputs.readiness_channel }}" == "real-ga" ]]; then
+          if [[ "$READINESS_CHANNEL" == "real-ga" ]]; then
             python scripts/check_real_ga_complete.py . \
               --write-report dist/external-ga-evidence-audit.json
           else
@@ -98,12 +111,12 @@ jobs:
           set -euo pipefail
           mkdir -p dist/external-ga-evidence-bundle
           cp -R release/external-evidence/. dist/external-ga-evidence-bundle/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: external-ga-evidence
           path: dist/external-ga-evidence-bundle
           if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: remote-evidence-pipeline-${{ github.sha }}

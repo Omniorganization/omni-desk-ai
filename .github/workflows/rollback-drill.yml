@@ -30,13 +30,25 @@ on:
       deploy_mode:
         description: Fixed staging deploy adapter mode
         required: true
+        type: choice
         default: noop
+        options:
+          - noop
+          - docker-compose
+          - kubectl
+          - systemd
 
 permissions:
   contents: read
   actions: read
   attestations: read
   id-token: write
+
+env:
+  # Attestations are only trusted when produced by the Release Build workflow
+  # (release.yml) running from main; tags are not a trusted release ref.
+  RELEASE_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+  RELEASE_SOURCE_REF: refs/heads/main
 
 jobs:
   rollback-drill:
@@ -54,21 +66,32 @@ jobs:
       - name: Download current and previous signed artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+          CURRENT_ARTIFACT_RUN_ID: ${{ inputs.current_artifact_run_id }}
+          PREVIOUS_ARTIFACT_RUN_ID: ${{ inputs.previous_artifact_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
         run: |
+          [[ "$CURRENT_ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
+          [[ "$PREVIOUS_ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
           mkdir -p current previous
-          gh run download "${{ inputs.current_artifact_run_id }}" --name "${{ inputs.artifact_name }}" --dir current
-          gh run download "${{ inputs.previous_artifact_run_id }}" --name "${{ inputs.artifact_name }}" --dir previous
+          gh run download "$CURRENT_ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir current
+          gh run download "$PREVIOUS_ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir previous
       - name: Verify release artifacts and attestations
         env:
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          # Ed25519 only, against the committed release/release-signing-public-key.pem;
+          # this job holds no signing secret, so it cannot forge a release.
+          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
           GH_TOKEN: ${{ github.token }}
+          CURRENT_VERSION: ${{ inputs.current_version }}
+          PREVIOUS_VERSION: ${{ inputs.previous_version }}
         run: |
-          python scripts/verify_release_artifact.py current --expected-version "${{ inputs.current_version }}" --require-signatures --require-metadata
+          [[ "$CURRENT_VERSION" =~ ^[0-9A-Za-z.+_-]+$ ]] || { echo "invalid version"; exit 1; }
+          [[ "$PREVIOUS_VERSION" =~ ^[0-9A-Za-z.+_-]+$ ]] || { echo "invalid version"; exit 1; }
+          python scripts/verify_release_artifact.py current --expected-version "$CURRENT_VERSION" --require-signatures --require-metadata
           python scripts/verify_release_signatures.py current
-          python scripts/verify_release_artifact.py previous --expected-version "${{ inputs.previous_version }}" --require-signatures --require-metadata
+          python scripts/verify_release_artifact.py previous --expected-version "$PREVIOUS_VERSION" --require-signatures --require-metadata
           python scripts/verify_release_signatures.py previous
           find current previous -maxdepth 1 -type f -print0 | sort -z | while IFS= read -r -d '' artifact; do
-            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$RELEASE_SIGNER_WORKFLOW" --source-ref "$RELEASE_SOURCE_REF" --deny-self-hosted-runners
           done
           current_wheel="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
           previous_wheel="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"
@@ -99,12 +122,13 @@ jobs:
         run: |
           artifact="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$artifact"
-          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.current_version }}" --artifact-sha256 "$CURRENT_SHA" --image-digest "${{ env.CURRENT_IMAGE_DIGEST }}"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$OMNIDESK_EXPECTED_VERSION" --artifact-sha256 "$CURRENT_SHA" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Current staging smoke
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
           OMNIDESK_SMOKE_ADMIN_TOKEN: ${{ secrets.OMNIDESK_STAGING_ADMIN_TOKEN }}
-        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "${{ inputs.current_version }}" --expected-artifact-sha256 "$CURRENT_SHA"
+          CURRENT_VERSION: ${{ inputs.current_version }}
+        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "$CURRENT_VERSION" --expected-artifact-sha256 "$CURRENT_SHA"
       - name: Roll back to previous artifact
         env:
           OMNIDESK_DEPLOY_MODE: ${{ inputs.deploy_mode }}
@@ -124,9 +148,10 @@ jobs:
         run: |
           artifact="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$artifact"
-          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "${{ inputs.previous_version }}" --artifact-sha256 "$PREVIOUS_SHA" --image-digest "${{ env.PREVIOUS_IMAGE_DIGEST }}"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$OMNIDESK_EXPECTED_VERSION" --artifact-sha256 "$PREVIOUS_SHA" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Rollback staging smoke
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
           OMNIDESK_SMOKE_ADMIN_TOKEN: ${{ secrets.OMNIDESK_STAGING_ADMIN_TOKEN }}
-        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "${{ inputs.previous_version }}" --expected-artifact-sha256 "$PREVIOUS_SHA"
+          PREVIOUS_VERSION: ${{ inputs.previous_version }}
+        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "$PREVIOUS_VERSION" --expected-artifact-sha256 "$PREVIOUS_SHA"

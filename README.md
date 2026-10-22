@@ -66,6 +66,7 @@ tests/                         单元、集成、e2e、load 分层入口与现�
 examples/config.yaml           配置样例
 deploy/systemd                 Linux 后台常驻
 deploy/launchd                 macOS 后台常驻
+docs/history/                  历史版本补丁清单、GA 证据与修复报告
 ```
 
 ## Offline-First / Reconnect Update
@@ -230,7 +231,7 @@ This repository now includes an industrialization baseline:
 - Channel adapters expose `verify_request()` and `extract_envelope()` contracts.
 - Self-upgrade is PR-only and cannot patch `main` directly.
 - Upgrade sandbox supports Docker no-network read-only execution.
-- CI includes Python 3.10-3.13 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.
+- CI includes Python 3.11-3.13 matrix, ruff, blocking pyright, pytest coverage, bandit and pip-audit workflows.
 
 
 ---

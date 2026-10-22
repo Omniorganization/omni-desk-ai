@@ -45,6 +45,7 @@ def test_validate_connectors_and_models_and_live_connectivity(tmp_path):
     model_result = validate_models(runtime)
     assert model_result["ok"] is True
     assert "openai" in model_result["supported_provider_aliases"]
+    assert "chatgpt_plan" in model_result["supported_provider_aliases"]
 
     live = asyncio.run(live_connectivity_test(runtime, profiles=["chat", "missing"]))
     assert live["ok"] is True

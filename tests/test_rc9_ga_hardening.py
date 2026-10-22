@@ -86,6 +86,10 @@ def test_admin_memory_purge_expired_endpoints(tmp_path):
             assert dry["ok"] is True
             assert dry["purge"]["candidate_count"] == 1
             assert dry["purge"]["deleted_count"] == 0
+            # GET must never delete, even if a caller passes dry_run=false.
+            forced = client.get("/admin/memory/purge-expired", params={"dry_run": "false"}).json()
+            assert forced["purge"]["deleted_count"] == 0
+            assert forced["purge"]["candidate_count"] == 1
             executed = client.post("/admin/memory/purge-expired").json()
             assert executed["purge"]["deleted_count"] == 1
     finally:
@@ -207,7 +211,8 @@ def test_attestation_workflow_exists_for_release_artifacts():
     text = Path(".github/workflows/attestation.yml").read_text(encoding="utf-8")
     assert "id-token: write" in text
     assert "attestations: write" in text
-    assert "gh attestation sign" in text
+    assert "actions/attest-build-provenance@" in text
+    assert "gh attestation sign" not in text  # not a real gh subcommand
 
 
 
@@ -272,7 +277,9 @@ def test_release_and_promotion_attestation_gates_are_mandatory():
     assert "inputs.image_digest" not in release
     assert "--build-arg OMNIDESK_IMAGE_DIGEST" not in release
     assert "find dist -maxdepth 1 -type f" in release
-    assert 'gh attestation sign "$artifact"' in release
+    assert "actions/attest-build-provenance@" in release
+    assert "subject-checksums" in release
+    assert "gh attestation sign" not in release  # not a real gh subcommand
     assert "python scripts/verify_release_artifact.py dist --expected-version" in release
     assert "cyclonedx-py environment -o sbom.json" not in release
     assert "gh attestation sign sbom.json" not in release

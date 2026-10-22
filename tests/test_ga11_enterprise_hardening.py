@@ -36,11 +36,17 @@ def test_cosign_payload_artifact_listing_excludes_cosign_sidecars(tmp_path: Path
     names = {path.name for path in list_payload_artifacts(tmp_path)}
     assert 'pkg.whl' in names
     assert 'pkg.tar.gz' in names
-    assert 'release_signatures.json' in names
     assert 'slsa-provenance.json' in names
-    assert 'pkg.whl.sig' in names
+    assert 'release_metadata.json' in names
+    assert 'sbom.json' in names
+    # checksums.txt and the Ed25519 layer are written after Cosign signs the payload.
+    assert 'checksums.txt' not in names
+    assert 'release_signatures.json' not in names
+    assert 'pkg.whl.sig' not in names
     assert 'pkg.whl.cosign.sig' not in names
+    assert 'pkg.whl.cosign.pem' not in names
     assert 'slsa.intoto.sig' not in names
+    assert 'slsa.intoto.pem' not in names
 
 
 def test_otel_traceparent_roundtrip() -> None:

@@ -1,0 +1,71 @@
+# 本地纯文本接入示例；凭据由独立 SIWC 授权宿主注入环境，禁止写入本文件。
+llm:
+  provider: chatgpt_plan
+  model: gpt-6.1-sol
+  api_key_env: CHATGPT_PLAN_ACCESS_TOKEN
+  max_input_chars: 12000
+  max_output_tokens: 1200
+  enable_cache: false
+  per_task_max_llm_calls: 16
+  require_approval_above_estimated_tokens: 20000
+
+models:
+  default: chatgpt_plan
+  budget:
+    daily_usd_limit: 500.0
+    monthly_usd_limit: 5000.0
+    per_actor_daily_usd_limit: 50.0
+    on_exceed: block
+    require_persistent_ledger: true
+  profiles:
+    chatgpt_plan:
+      provider: chatgpt_plan
+      model: gpt-6.1-sol
+      api_key_env: CHATGPT_PLAN_ACCESS_TOKEN
+      # 仅本地预算估算；SIWC 不接受发送 max_output_tokens 硬上限。
+      max_output_tokens: 1200
+    local:
+      provider: ollama
+      model: qwen2.5-coder:7b
+      api_key_env: null
+      base_url: http://127.0.0.1:11434
+  routing:
+    chat: {primary: chatgpt_plan, fallback: [], max_retries: 0}
+    planner: {primary: chatgpt_plan, fallback: [], max_retries: 0}
+    tool_plan: {primary: chatgpt_plan, fallback: [], max_retries: 0}
+    code: {primary: chatgpt_plan, fallback: [], max_retries: 0}
+    upgrade: {primary: chatgpt_plan, fallback: [], max_retries: 0}
+    summarize: {primary: chatgpt_plan, fallback: [], max_retries: 0}
+    vision: {primary: chatgpt_plan, fallback: [], max_retries: 0}
+    private: {primary: local, fallback: [], max_retries: 0}
+    profile_acl:
+      roles:
+        viewer: [local]
+        operator: [local]
+        admin: ["*"]
+        owner: ["*"]
+      high_cost_profiles: [chatgpt_plan]
+      approval_metadata_key: approved_model_profiles
+
+gateway:
+  host: 127.0.0.1
+  allow_local_admin_without_token: false
+  allow_legacy_gateway_secret_auth: false
+
+permissions:
+  default_mode: ask
+  no_tty_mode: deny
+  break_glass_enabled: false
+  audit_log: .omnidesk-chatgpt-plan/audit.log
+
+workspace:
+  root: .omnidesk-chatgpt-plan/workspace
+  memory_db: .omnidesk-chatgpt-plan/memory.sqlite3
+  skills_dirs: []
+  plugins_dirs: []
+
+capabilities:
+  vision: {enabled: false}
+
+updates:
+  enabled: false

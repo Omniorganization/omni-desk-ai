@@ -1,0 +1,63 @@
+{
+  "checked_at": "2026-10-12T04:59:05.808096+08:00",
+  "base_commit": "8f177a1c32b363729fa79f3940d0ecd808b54905",
+  "model": "gpt-6.1-sol",
+  "official_local_cli": {
+    "success": true,
+    "version": "0.162.0-alpha.17.2",
+    "forced_login_method": "chatgpt",
+    "turn_completed": 1,
+    "tool_calls": 0,
+    "exact_response": true,
+    "usage": {
+      "input_tokens": 14704,
+      "cached_input_tokens": 12288,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 18,
+      "reasoning_output_tokens": 0
+    },
+    "scope": "local CLI only; not SIWC or OmniDesk end-to-end"
+  },
+  "subscription_provider": {
+    "implemented": true,
+    "provider": "chatgpt_plan",
+    "separate_siwc_token_configured": false,
+    "live_siwc_inference_run": false,
+    "production_deployed": false,
+    "oauth_registration_and_refresh": "external authorization host; not implemented by provider"
+  },
+  "validation": {
+    "subscription_fixture_tests": 71,
+    "related_regression_tests": 46,
+    "total_tests_passed": 117,
+    "ruff_scope": "omnidesk_agent tests",
+    "ruff_passed": true,
+    "pyright_project": "pyrightconfig.json",
+    "pyright_errors": 0,
+    "pyright_warnings": 521,
+    "example_config_assertions": true,
+    "diff_check": true,
+    "fixture_network_calls": 0
+  },
+  "source_sha256": {
+    "omnidesk_agent/models/pricing.py": "b074c25f8df1e2f93d1aa98f6ad8bd47c09c147b47f2e6515c02d3cc57f59c76",
+    "omnidesk_agent/models/provider_errors.py": "dea4ec430d8a9ba97ea0649a719ab98925551704ffdc41d2f0941613fc32f481",
+    "omnidesk_agent/models/provider_streaming.py": "78009867aa4340fb4d663d51e9699c5a4654e1ee2ccf5ea55bb00de363df6491",
+    "omnidesk_agent/models/providers.py": "d6482a309958e2f32377d06ba3574dbea59991a984e218ed7d19509528c3700d",
+    "omnidesk_agent/models/router.py": "ae870498e2c94f959a36f47f5a742860a7755726bb523a6ef98ae996adf7cc2f",
+    "omnidesk_agent/models/router_streaming.py": "d59339819e1d5464ea67fb300e73fd5f67b6a8fb398f0eaf00a399bee84caf8f",
+    "omnidesk_agent/validation/models.py": "7048f20e33d8e62087283f16228755687394f01bf416eb4fc4229a16625e7731",
+    "tests/test_validation_analyzer_coverage.py": "070299734512de028bfef7a823f9ff5c2e7c60bdd6b0c0b8d02318862e55a468",
+    "docs/codex-subscription.md": "298a759af232cb7b6c5e2307c680294114369b0109118318ed1c13961aaa57d8",
+    "examples/config.chatgpt-plan.yaml": "80a042b443730139f56270bd89e16277dd6714c46d7e0a638c00dd532529587d",
+    "tests/models/test_chatgpt_plan_provider.py": "827e76c33f86a0851f7b7c157bc5ebc57f1d2a516adcf680ea43a6c4d8b1b98f"
+  },
+  "limits": [
+    "No production OAuth grant or application model-entitlement evidence",
+    "Token refresh/revocation and app credits settings are managed externally",
+    "Only text/JSON inputs; images are rejected",
+    "max_output_tokens is a local estimate; SIWC does not accept an output cap",
+    "Successful-result ledger is not a full OpenAI quota/credits accounting record"
+  ],
+  "rollback": "Stop worker, restore prior configuration, restart; revoke SIWC session in authorization host/ChatGPT Settings; retain audit and ledger."
+}

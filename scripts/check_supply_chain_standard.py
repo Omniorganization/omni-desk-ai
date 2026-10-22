@@ -11,11 +11,31 @@ REQUIRED_RELEASE_SNIPPETS = [
     "cosign sign --yes",
     "cosign attest --yes",
     "slsa-provenance",
-    "gh attestation sign",
+    "actions/attest-build-provenance@",
     "docker build",
     "docker push",
     "OMNIDESK_IMAGE_DIGEST",
     "docker buildx imagetools inspect",
+    "scripts/finalize_release_payload.py dist",
+    "environment: release",
+]
+
+# Verifiers trust only release.yml running from main, pin the attestation source
+# ref, and verify Ed25519 signatures with the committed public key.
+MAIN_ONLY_SIGNER_IDENTITY = "release\\.yml@refs/heads/main$'"
+SOURCE_REF_SNIPPETS = [
+    "RELEASE_SOURCE_REF: refs/heads/main",
+    '--source-ref "$RELEASE_SOURCE_REF"',
+]
+ED25519_VERIFIER_SNIPPETS = [
+    "verify_release_signatures.py",
+    'OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"',
+]
+VERIFIER_FORBIDDEN_SNIPPETS = [
+    "refs/tags/",
+    "tags/v",
+    "OMNIDESK_RELEASE_SIGNING_KEY",
+    "OMNIDESK_RELEASE_SIGNING_ED25519_KEY",
 ]
 
 REQUIRED_SUPPLY_CHAIN_SNIPPETS = [
@@ -24,6 +44,8 @@ REQUIRED_SUPPLY_CHAIN_SNIPPETS = [
     "slsa-provenance",
     "in-toto",
     "gh attestation verify",
+    MAIN_ONLY_SIGNER_IDENTITY,
+    *SOURCE_REF_SNIPPETS,
 ]
 
 REQUIRED_PROMOTE_SNIPPETS = [
@@ -32,6 +54,23 @@ REQUIRED_PROMOTE_SNIPPETS = [
     "cosign verify-attestation",
     "gh attestation verify",
     "release_metadata.json",
+    MAIN_ONLY_SIGNER_IDENTITY,
+    *SOURCE_REF_SNIPPETS,
+    *ED25519_VERIFIER_SNIPPETS,
+]
+
+REQUIRED_STAGING_SNIPPETS = [
+    "cosign verify-blob",
+    "gh attestation verify",
+    MAIN_ONLY_SIGNER_IDENTITY,
+    *SOURCE_REF_SNIPPETS,
+    *ED25519_VERIFIER_SNIPPETS,
+]
+
+REQUIRED_ROLLBACK_SNIPPETS = [
+    "gh attestation verify",
+    *SOURCE_REF_SNIPPETS,
+    *ED25519_VERIFIER_SNIPPETS,
 ]
 
 REQUIRED_FILES = [
@@ -87,6 +126,29 @@ def main(argv: list[str] | None = None) -> int:
     promote_missing = _contains_all(root / ".github/workflows/promote-production.yml", REQUIRED_PROMOTE_SNIPPETS)
     if promote_missing:
         failures.append("promote-production.yml missing snippets: " + ", ".join(promote_missing))
+
+    for name, snippets in (
+        ("deploy-staging.yml", REQUIRED_STAGING_SNIPPETS),
+        ("rollback-drill.yml", REQUIRED_ROLLBACK_SNIPPETS),
+    ):
+        missing = _contains_all(root / ".github/workflows" / name, snippets)
+        if missing:
+            failures.append(f"{name} missing snippets: " + ", ".join(missing))
+
+    for name in ("supply-chain.yml", "promote-production.yml", "deploy-staging.yml", "rollback-drill.yml"):
+        path = root / ".github/workflows" / name
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        forbidden = [snippet for snippet in VERIFIER_FORBIDDEN_SNIPPETS if snippet in text]
+        if forbidden:
+            failures.append(f"{name} must not trust release tags or hold release signing secrets: " + ", ".join(forbidden))
+        verify_lines = [line for line in text.splitlines() if "gh attestation verify" in line and not line.strip().startswith("#")]
+        if any("--source-ref" not in line for line in verify_lines):
+            failures.append(f"{name}: every gh attestation verify must pin --source-ref")
+
+    if (root / "release/release-signing-public-key.pem").exists():
+        key_text = (root / "release/release-signing-public-key.pem").read_text(encoding="utf-8")
+        if "PRIVATE KEY" in key_text:
+            failures.append("release/release-signing-public-key.pem must contain only the public key")
 
     dockerfile = root / "Dockerfile"
     if dockerfile.exists():

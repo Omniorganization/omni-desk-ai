@@ -41,6 +41,7 @@ class ModelProfileConfig(BaseModel):
     model: str = "gpt-5.1"
     api_key_env: Optional[str] = "OPENAI_API_KEY"
     base_url: Optional[str] = None
+    codex_cli_path: Optional[str] = None
     api_version: Optional[str] = None
     region: Optional[str] = None
     temperature: float = 0.2
@@ -176,6 +177,10 @@ class AppSyncConfig(BaseModel):
     require_device_public_key_in_production: bool = True
     reject_predictable_device_ids_in_production: bool = True
     require_device_signed_requests_in_production: bool = True
+    # Approval decisions from a device that registered a biometric-gated
+    # approval key always require that key's signature; set this to require
+    # an approval-key signature for every decision.
+    require_approval_key_for_decisions: bool = False
     device_signature_max_skew_seconds: int = 300
     device_request_nonce_ttl_seconds: int = 600
     json_path: Optional[Path] = None
@@ -328,6 +333,16 @@ class GoogleChatConfig(BaseModel):
     webhook_secret_env: str = "GOOGLE_CHAT_WEBHOOK_SECRET"
     allowed_user_names: list[str] = Field(default_factory=list)
     allowed_space_names: list[str] = Field(default_factory=list)
+    # Inbound Google-signed bearer JWT (iss chat@system.gserviceaccount.com,
+    # aud = this Cloud project number). require_google_jwt None means required
+    # in production; a bearer token is verified whenever project_number is set.
+    project_number: Optional[str] = Field(default=None, pattern=r"^[0-9]{1,20}$", coerce_numbers_to_str=True)
+    require_google_jwt: Optional[bool] = None
+    # Legacy ?token= query authentication; never accepted in production.
+    allow_query_token: bool = False
+    # Spaces ("spaces/<id>") send_text may post to when no incoming webhook URL
+    # is configured; any other space is refused.
+    allowed_outbound_spaces: list[str] = Field(default_factory=list)
 
 
 class SignalConfig(BaseModel):
@@ -367,6 +382,9 @@ class MatrixConfig(BaseModel):
     webhook_secret_env: str = "MATRIX_WEBHOOK_SECRET"
     allowed_user_ids: list[str] = Field(default_factory=list)
     allowed_room_ids: list[str] = Field(default_factory=list)
+    # Legacy ?token= / ?access_token= hook authentication; never accepted in
+    # production. Send the token as "Authorization: Bearer" instead.
+    allow_query_token: bool = False
 
 
 class QQConfig(BaseModel):

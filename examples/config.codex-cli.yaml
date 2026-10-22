@@ -1,0 +1,105 @@
+# 本人本机官方 Codex CLI 登录；不填写 API key 或复制桌面 token。
+# 仅接受已验证的精确 CLI 版本 0.162.0-alpha.17.2 / 0.163.0-alpha.10.2；其它版本需独立验证。
+# 仅支持 POSIX 进程组清理；本轮宿主为 macOS，Windows 当前拒绝接入。
+# 上一版本本人 macOS 的真实三题通过，历史摘要保留于 docs/evidence/codex-cli-gateway-20261012.json。
+# 当前使用官方 AppServer stdio JSON-RPC；目录只含公开静态元数据，system/user分开经stdin传递。
+# AppServer不能ignore-user-config；逐名称禁全局MCP、清全局developer instructions、关history/telemetry。
+# 全局AGENTS无关闭入口；仅接受本人CODEX_HOME顶层两类AGENTS、本人UID/安全权限与目录内symlink。
+# 适配器不读取/打印该内容，CLI仍可加载本人常规指令；两版本本机AppServer三题验收已通过。
+# NO_TOOLS 自述与 JSONL 未接受工具事件是有限证据，不能证明绝对零工具执行/宿主零读取。
+# 0.163 本机验收见 docs/evidence/codex-cli-0163-20261019.json；新提交CI须另行核验。
+# 此配置只供本人本地使用，不是托管部署证明。
+# provider 内部临时别名只复用 CLI 的 OpenAI/ChatGPT 认证及官方地址，request/stream retries=0。
+# 从仓库根目录、项目隔离 Python 启动（端口应空闲，先安全设置 Gateway 认证）：
+# python -c 'from omnidesk_agent.cli import main; main()' --config examples/config.codex-cli.yaml serve --host 127.0.0.1 --port 19005
+# 独立真实合成验收（消耗本人已有订阅额度；另建临时认证/loopback Gateway）：
+# python -m scripts.verify_codex_cli_chat --config examples/config.codex-cli.yaml
+# codex_cli 的 SSE 在完整回答后缓冲输出，native=false；图片请求拒绝。
+# 只读沙箱本身不证明工具全禁；工具限制须核验对应 CLI/model 组合。
+# 临时模型目录使用合法 direct 模式并关闭 code_mode/code_mode_only；不改全局配置。
+# 关闭 agents、技能自动目录、内置/cloud skills；host discovery skip 仍有贡献者条件。
+llm:
+  provider: codex_cli
+  model: gpt-6.1-sol
+  api_key_env: ""
+  max_input_chars: 12000
+  max_output_tokens: 1200
+  enable_cache: false
+  per_task_max_llm_calls: 16
+  require_approval_above_estimated_tokens: 20000
+
+models:
+  default: codex_cli
+  budget:
+    daily_usd_limit: 500.0
+    monthly_usd_limit: 5000.0
+    per_actor_daily_usd_limit: 50.0
+    on_exceed: block
+    require_persistent_ledger: true
+  profiles:
+    codex_cli:
+      provider: codex_cli
+      model: gpt-6.1-sol
+      api_key_env: null
+      # 默认优先本机官方应用内置 CLI，再使用 PATH；亦可填可信绝对 codex_cli_path。
+      # 本值仅用于本地预算估算，不构成 CLI 输出 token 硬上限。
+      max_output_tokens: 1200
+    local:
+      provider: ollama
+      model: qwen2.5-coder:7b
+      api_key_env: null
+      base_url: http://127.0.0.1:11434
+  routing:
+    chat: {primary: codex_cli, fallback: [], max_retries: 0}
+    planner: {primary: codex_cli, fallback: [], max_retries: 0}
+    tool_plan: {primary: codex_cli, fallback: [], max_retries: 0}
+    code: {primary: codex_cli, fallback: [], max_retries: 0}
+    upgrade: {primary: codex_cli, fallback: [], max_retries: 0}
+    summarize: {primary: codex_cli, fallback: [], max_retries: 0}
+    vision: {primary: codex_cli, fallback: [], max_retries: 0}
+    private: {primary: local, fallback: [], max_retries: 0}
+    profile_acl:
+      roles:
+        viewer: [local]
+        operator: [local]
+        admin: ["*"]
+        owner: ["*"]
+      high_cost_profiles: [codex_cli]
+      approval_metadata_key: approved_model_profiles
+
+gateway:
+  host: 127.0.0.1
+  allow_local_admin_without_token: false
+  allow_legacy_gateway_secret_auth: false
+
+permissions:
+  default_mode: ask
+  no_tty_mode: deny
+  break_glass_enabled: false
+  audit_log: .omnidesk-codex-cli/audit.log
+
+workspace:
+  root: .omnidesk-codex-cli/workspace
+  memory_db: .omnidesk-codex-cli/memory.sqlite3
+  skills_dirs: []
+  plugins_dirs: []
+
+capabilities:
+  vision: {enabled: false}
+
+updates:
+  enabled: false
+
+plugins:
+  enabled: false
+
+app_sync:
+  json_path: .omnidesk-codex-cli/appsync.json
+
+channels:
+  gmail:
+    credentials_file: .omnidesk-codex-cli/google/credentials.json
+    token_file: .omnidesk-codex-cli/google/gmail_token.json
+
+learning:
+  growth_plan_file: .omnidesk-codex-cli/growth_plan.json
