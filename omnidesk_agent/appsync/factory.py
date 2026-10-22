@@ -27,6 +27,8 @@ def create_appsync_store(cfg: Any) -> AppSyncStore:
     store.configure_actor_organizations(
         dict(getattr(getattr(cfg, "app_sync", None), "actor_organizations", None) or {})
     )
+    # A legacy-hmac device "public key" is a shared secret held in the store.
+    store.configure_device_key_policy(allow_legacy_hmac=not is_production_mode(cfg))
     return store
 
 
