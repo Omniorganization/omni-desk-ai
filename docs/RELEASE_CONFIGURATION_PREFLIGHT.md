@@ -20,7 +20,7 @@ Structured JSON output and artifact reports are supported for every scope:
 python scripts/check_release_configuration.py \
   --scope tri-app \
   --format json \
-  --report-path dist/tri-app-preflight.json
+  --report-path reports/release/tri-app-preflight.json
 ```
 
 The JSON payload contains `scope`, `deploy_mode`, `ok`, `issue_count`, and an array of issues with `severity`, `kind`, `name`, and `message`.
@@ -181,7 +181,7 @@ Rules:
 Run:
 
 ```bash
-python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+python scripts/check_release_configuration.py --scope tri-app --format json --report-path reports/release/tri-app-preflight.json
 ```
 
 Required secrets:
@@ -214,7 +214,7 @@ python scripts/check_release_configuration.py --scope production --deploy-mode k
 python scripts/check_release_configuration.py --scope web-admin
 python scripts/check_release_configuration.py --scope desktop
 python scripts/check_release_configuration.py --scope mobile
-python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+python scripts/check_release_configuration.py --scope tri-app --format json --report-path reports/release/tri-app-preflight.json
 ```
 
 Passing preflight does not prove that credentials are valid; it proves the release pipeline has the minimum real configuration needed to start the relevant release, deployment, or tri-app smoke stage.
@@ -275,7 +275,7 @@ The report path must be a safe relative path such as `dist/tri-app-live-smoke.js
 Run:
 
 ```bash
-python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path reports/release/tri-app-live-smoke-preflight.json
 ```
 
 ---
@@ -285,8 +285,8 @@ python scripts/check_release_configuration.py --scope tri-app-live-smoke --forma
 The following scopes now perform semantic evidence validation rather than configuration-only checks:
 
 ```bash
-python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
-python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path reports/release/ios-evidence-preflight.json
+python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path reports/release/tri-app-live-smoke-preflight.json
 ```
 
 ### iOS Evidence Closure

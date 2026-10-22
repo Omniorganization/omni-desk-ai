@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.check_workflow_governance import main
+from scripts.check_workflow_governance import RELEASE_GATE_REPORTS, main
 
 
 def test_workflow_governance_accepts_patch_contract(tmp_path, capsys) -> None:
@@ -105,14 +105,11 @@ steps:
   - run: python scripts/check_release_configuration.py --scope tri-app-live-smoke
   - run: python scripts/import_ios_real_device_evidence.py --write-report release/real-ga-evidence-audit-1.12.7.json
   - run: python scripts/import_tri_app_live_smoke_evidence.py --write-report release/tri-app-live-smoke-evidence-import-report.json
-  - uses: actions/upload-artifact
-    with:
-      path: |
-        dist/
-        release/real-ga-evidence-audit-1.12.7.json
-        release/external-ga-evidence-import-report.json
-        release/ios-real-device-evidence-import-report.json
-        release/tri-app-live-smoke-evidence-import-report.json
+  - name: Check every Real GA evidence import report was written
+    run: |
+      for report in REPORT_CHECK_LIST; do
+        test -s "$report" || { echo "missing Real GA evidence import report: $report" >&2; exit 1; }
+      done
   - environment: release
     env:
       OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
@@ -130,7 +127,24 @@ steps:
     run: test -f release/release-signing-public-key.pem && python scripts/finalize_release_payload.py dist
   - name: Generate artifact attestations
     uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
-""",
+  - uses: actions/upload-artifact
+    with:
+      name: dist-and-sbom
+      path: dist/**
+  - uses: actions/upload-artifact
+    if: always()
+    with:
+      name: real-ga-evidence-import-reports
+      if-no-files-found: error
+      path: |
+        release/real-ga-evidence-audit-1.12.7.json
+        release/external-ga-evidence-import-report.json
+        release/ios-real-device-evidence-import-report.json
+        release/tri-app-live-smoke-evidence-import-report.json
+REPORT_UPLOAD_LIST
+""".replace("REPORT_CHECK_LIST", " ".join(RELEASE_GATE_REPORTS)).replace(
+            "REPORT_UPLOAD_LIST", "\n".join(f"        {report}" for report in RELEASE_GATE_REPORTS)
+        ),
         encoding="utf-8",
     )
 
