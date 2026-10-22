@@ -348,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--release-run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
     parser.add_argument("--main-verification-run-id", required=True)
     parser.add_argument("--audit-only", action="store_true")
-    parser.add_argument("--write-report", default="dist/current-release-artifact-binding.json")
+    parser.add_argument("--write-report", default="reports/release/current-release-artifact-binding.json")
     args = parser.parse_args(argv)
 
     report = audit(

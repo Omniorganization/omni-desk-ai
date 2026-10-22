@@ -41,6 +41,16 @@ set from the repository.
   plane's `workflow_call`); it still copies only the expected files. pytest
   collects only `tests/`, so nothing in `release/`, `dist/`, `current/` or
   `previous/` is imported.
+- **Gate reports.** Preflight, artifact-binding, Main Verification live and
+  external-evidence audit/summary reports are written to `reports/release/`,
+  never `dist/`: `scripts/build_release.sh` starts with `rm -rf dist`, and
+  `dist/` is the signed, attested payload. The build job checks that every report
+  exists before it publishes anything, and the `real-ga-evidence-import-reports`
+  upload runs `if: always()` (a failed gate keeps its reports) with
+  `if-no-files-found: error`. `check_workflow_governance.py
+  --require-real-workflows` rejects a `dist/` path before `build_release.sh`, an
+  upload without either setting, and a report missing from the check or the
+  upload.
 
 ## Owner actions in GitHub
 
@@ -111,6 +121,19 @@ set from the repository.
 - `--deny-self-hosted-runners` rejects attestations from self-hosted runners;
   moving the release build to a self-hosted runner requires changing the
   verifiers in a reviewed change.
+- A release whose gate steps succeed but leave a report unwritten now fails at
+  "Check every Real GA evidence import report was written", before the image is
+  pushed. Before, the reports written to `dist/` were deleted by
+  `build_release.sh` and the upload only warned. In the
+  `real-ga-evidence-import-reports` artifact the reports are under
+  `reports/release/` instead of `dist/`, and the four preflight reports that were
+  never uploaded, the Main Verification live report and the audit/summary copies
+  are now included.
+- The reports artifact is now also uploaded when the build job fails, with
+  whatever reports exist at that point. It is diagnostic only: no workflow
+  consumes it, and `fetch_ci_evidence_artifact.py` rejects artifacts from runs
+  that did not succeed, so a failed run's reports never count as evidence. After a
+  failure that happens before any report is written, the upload step fails too.
 
 ## Rollback
 
@@ -120,3 +143,9 @@ from arbitrary runs, HMAC downgrade), so prefer finishing the owner actions over
 reverting. After a revert, staging, production and rollback need
 `OMNIDESK_RELEASE_SIGNING_KEY` again in their environments, and the release job
 needs it as a secret it can read.
+
+The gate-report move can be reverted on its own (revert the commit that added
+the "Gate reports" note). Signing and verification are unaffected; the reports
+are then deleted by `build_release.sh` again and missing from the upload.
+Uploading on failure can be reverted separately by removing `if: always()` from
+the upload and the matching check in `check_workflow_governance.py`.
