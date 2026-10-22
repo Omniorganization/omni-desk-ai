@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.observability_otel import AsyncOTLPHttpExporter, span_record_from_context
 from omnidesk_agent.plugins.docker_runner import RemoteDockerPluginTool
+from omnidesk_agent.plugins.manifest import PluginManifest
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.security.approval_store import ApprovalStore
 from omnidesk_agent.security.break_glass import BreakGlassStore
@@ -33,22 +33,9 @@ def _signed_plugin(root: Path, name: str, sandbox: str, secret: str):
     plugin_dir.mkdir(parents=True)
     entrypoint = plugin_dir / "plugin.py"
     entrypoint.write_text("def call(action, args):\n    return {'ok': True}\n", encoding="utf-8")
-    digest = hashlib.sha256(entrypoint.read_bytes()).hexdigest()
-    signature = hmac.new(secret.encode("utf-8"), digest.encode("utf-8"), hashlib.sha256).hexdigest()
-    (plugin_dir / "plugin.yaml").write_text(
-        "\n".join([
-            f"name: {name}",
-            "version: 1.0.0",
-            "enabled: true",
-            "trusted: true",
-            f"sandbox: {sandbox}",
-            "entrypoint: plugin.py",
-            "permissions: [plugin.call]",
-            f"sha256: {digest}",
-            f"signature: {signature}",
-        ]),
-        encoding="utf-8",
-    )
+    manifest = PluginManifest(name=name, version="1.0.0", trusted=True, sandbox=sandbox, entrypoint="plugin.py", permissions=["plugin.call"])
+    manifest.sign_v2(plugin_dir, secret)
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest.model_dump(exclude_none=True)), encoding="utf-8")
 
 
 def test_dual_approval_is_enforced_before_approve_and_consume(tmp_path: Path) -> None:
