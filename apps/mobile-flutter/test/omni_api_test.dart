@@ -117,6 +117,42 @@ const mobileTypedClientContractCases = <TypedClientContractCase>[
     clientPath: '/app/notifications',
     invoke: _invokeNotifications,
   ),
+  TypedClientContractCase(
+    surface: 'mobile',
+    method: 'POST',
+    contractPath: '/app/devices/{device_id}/approval-key',
+    clientPath: '/app/devices/mobile-1/approval-key',
+    signedInProduction: true,
+    invoke: _invokeRegisterApprovalKey,
+  ),
+  TypedClientContractCase(
+    surface: 'mobile',
+    method: 'POST',
+    contractPath: '/app/devices/enrollment/start',
+    clientPath: '/app/devices/enrollment/start',
+    invoke: _invokeStartEnrollment,
+  ),
+  TypedClientContractCase(
+    surface: 'mobile',
+    method: 'POST',
+    contractPath: '/app/devices/enrollment/{enrollment_id}/complete',
+    clientPath: '/app/devices/enrollment/enr-1/complete',
+    invoke: _invokeCompleteEnrollment,
+  ),
+  TypedClientContractCase(
+    surface: 'mobile',
+    method: 'POST',
+    contractPath: '/app/devices/enrollment/{enrollment_id}/challenge',
+    clientPath: '/app/devices/enrollment/enr-1/challenge',
+    invoke: _invokeIssueChallenge,
+  ),
+  TypedClientContractCase(
+    surface: 'mobile',
+    method: 'POST',
+    contractPath: '/app/devices/enrollment/{enrollment_id}/verify',
+    clientPath: '/app/devices/enrollment/enr-1/verify',
+    invoke: _invokeVerifyChallenge,
+  ),
 ];
 
 Future<dynamic> _invokeBootstrap(OmniApiClient client) => client.bootstrap();
@@ -149,6 +185,16 @@ Future<dynamic> _invokeRegisterPushToken(OmniApiClient client) =>
     client.registerPushToken('mobile-1', 'push-token');
 Future<dynamic> _invokeNotifications(OmniApiClient client) =>
     client.notifications();
+Future<dynamic> _invokeRegisterApprovalKey(OmniApiClient client) =>
+    client.registerApprovalKey('mobile-1', 'base64:pk');
+Future<dynamic> _invokeStartEnrollment(OmniApiClient client) =>
+    client.startDeviceEnrollment('0123456789abcdef');
+Future<dynamic> _invokeCompleteEnrollment(OmniApiClient client) => client
+    .completeDeviceEnrollment('enr-1', '0123456789abcdef', 'mobile-1', 'base64:pk');
+Future<dynamic> _invokeIssueChallenge(OmniApiClient client) =>
+    client.issueDeviceChallenge('enr-1', 'mobile-1');
+Future<dynamic> _invokeVerifyChallenge(OmniApiClient client) => client
+    .verifyDeviceChallenge('enr-1', 'chal-1', 'mobile-1', 'base64:sig');
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -159,7 +205,11 @@ void main() {
       if (contractCase.signedInProduction) {
         expect(
           contractCase.contractPath,
-          anyOf(contains('/approvals/'), contains('/push-token')),
+          anyOf(
+            contains('/approvals/'),
+            contains('/push-token'),
+            contains('/approval-key'),
+          ),
         );
       }
 

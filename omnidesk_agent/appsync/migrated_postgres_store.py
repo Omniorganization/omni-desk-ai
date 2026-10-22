@@ -168,6 +168,9 @@ class MigratedMultiInstancePostgresAppSyncStore(
             "rotate_device_token",
             "revoke_device",
             "verify_device_request_signature",
+            "register_approval_key",
+            "device_approval_key",
+            "verify_approval_signature",
             "bootstrap",
             "sync_since",
         }

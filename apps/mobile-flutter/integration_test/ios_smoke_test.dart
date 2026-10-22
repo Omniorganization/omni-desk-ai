@@ -5,7 +5,12 @@ import 'package:integration_test/integration_test.dart';
 import 'package:omnidesk_mobile/main.dart' as app;
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  // XCTest can enable iOS accessibility while the test is running. The binding
+  // then opens its own SemanticsHandle and the end-of-test check fails with
+  // "A SemanticsHandle was active at the end of the test". Pin semantics on
+  // before the test starts so the outstanding handle count stays stable.
+  binding.platformDispatcher.semanticsEnabledTestValue = true;
 
   testWidgets('native Keychain works and offline sync reports enrollment', (
     tester,

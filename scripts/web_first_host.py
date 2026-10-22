@@ -128,7 +128,9 @@ def init(args) -> None:
         raise ValueError("Production policy refused host configuration; inspect on-host diagnostics")
     private_write(destination / "runtime.env", runtime, user_id=account.pw_uid, group_id=account.pw_gid)
     if not args.gateway_only:
-        web = {"NODE_ENV": "production", "HOSTNAME": "127.0.0.1", "PORT": "13000",
+        # 0.0.0.0 is inside the Web container's own network namespace (pasta);
+        # only 127.0.0.1:13000 is published on the host.
+        web = {"NODE_ENV": "production", "HOSTNAME": "0.0.0.0", "PORT": "13000",  # nosec B104
                "OMNI_WEB_PUBLIC_ORIGIN": origin, "OMNI_GATEWAY_URL": "http://127.0.0.1:18789",
                "OMNI_WEB_SESSION_MAX_AGE_SECONDS": "3600", "OMNI_WEB_IMAGE_ID": args.web_image_id}
         private_write(destination / "web.env", "\n".join(f'{name}={value}' for name, value in web.items()) + "\n",

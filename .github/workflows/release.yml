@@ -21,11 +21,7 @@ on:
         default: external-ga-evidence-bound
 
 permissions:
-  contents: write
-  actions: read
-  packages: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   EXPECTED_VERSION: 1.12.7+root-monorepo-production-ga-candidate
@@ -39,6 +35,8 @@ jobs:
         working-directory: apps/web-admin-next
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
@@ -86,6 +84,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
@@ -94,7 +94,7 @@ jobs:
           node-version: "22.17.0"
           cache: npm
           cache-dependency-path: apps/desktop-tauri/package-lock.json
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: "1.90.0"
           components: clippy
@@ -132,13 +132,18 @@ jobs:
           if-no-files-found: error
 
   mobile-android-release:
+    # The Android upload key lives only in the protected release environment.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 35
     defaults:
       run:
         working-directory: apps/mobile-flutter
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
@@ -208,12 +213,17 @@ jobs:
           if-no-files-found: error
 
   mobile-ios-release:
+    # The iOS distribution certificate lives only in the protected release environment.
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
+    environment: release
     defaults:
       run:
         working-directory: apps/mobile-flutter
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
@@ -317,9 +327,24 @@ jobs:
       - desktop-release
       - mobile-android-release
       - mobile-ios-release
+    # Signing, GHCR publishing and attestation only run from main, in the protected
+    # release environment that holds the signing secrets. Verifiers pin the Sigstore
+    # signer identity and the attestation source ref to release.yml@refs/heads/main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
+    env:
+      OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
@@ -333,21 +358,31 @@ jobs:
           path: ${{ runner.temp }}/tri-app-native-input
           merge-multiple: false
       - name: Run tri-app release configuration preflight scopes
+        # Preflight and evidence reports go to reports/release/, never dist/:
+        # build_release.sh starts with rm -rf dist, and dist/ is the signed payload.
         run: |
-          python scripts/check_release_configuration.py --scope web-admin --format json --report-path dist/web-admin-preflight.json
-          python scripts/check_release_configuration.py --scope desktop --format json --report-path dist/desktop-preflight.json
-          python scripts/check_release_configuration.py --scope mobile --format json --report-path dist/mobile-preflight.json
-          python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+          python scripts/check_release_configuration.py --scope web-admin --format json --report-path reports/release/web-admin-preflight.json
+          python scripts/check_release_configuration.py --scope desktop --format json --report-path reports/release/desktop-preflight.json
+          python scripts/check_release_configuration.py --scope mobile --format json --report-path reports/release/mobile-preflight.json
+          python scripts/check_release_configuration.py --scope tri-app --format json --report-path reports/release/tri-app-preflight.json
       - name: Download complete external evidence artifact
         if: ${{ inputs.external_evidence_run_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id }}
+          EXTERNAL_EVIDENCE_ARTIFACT_NAME: ${{ inputs.external_evidence_artifact_name }}
         run: |
           set -euo pipefail
-          mkdir -p release/external-evidence
-          gh run download "${{ inputs.external_evidence_run_id }}" \
-            --name "${{ inputs.external_evidence_artifact_name }}" \
-            --dir release/external-evidence
+          [[ "$EXTERNAL_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
+          # Accepts only the bound artifact of a successful Main Verification run for this
+          # exact main commit (release/evidence-source-workflows.json) and copies only the
+          # expected evidence files; pytest and the signing steps below run in this workspace.
+          python scripts/fetch_ci_evidence_artifact.py \
+            --consumer release \
+            --run-id "$EXTERNAL_EVIDENCE_RUN_ID" \
+            --artifact-name "$EXTERNAL_EVIDENCE_ARTIFACT_NAME" \
+            --dest release/external-evidence \
+            --write-report "$RUNNER_TEMP/external-evidence-fetch-report.json"
       - name: Import complete external GA evidence raw directory
         env:
           EXTERNAL_GA_EVIDENCE_RAW_DIR: ${{ vars.EXTERNAL_GA_EVIDENCE_RAW_DIR }}
@@ -358,14 +393,14 @@ jobs:
             python scripts/check_release_configuration.py \
               --scope external-ga-evidence \
               --format json \
-              --report-path dist/external-ga-evidence-preflight.json
+              --report-path reports/release/external-ga-evidence-preflight.json
             python scripts/import_external_ga_evidence.py \
               --raw-dir "$EXTERNAL_GA_EVIDENCE_RAW_DIR" \
               --expected-version "$EXTERNAL_GA_EVIDENCE_EXPECTED_VERSION" \
               --copy \
               --write-report release/external-ga-evidence-import-report.json
           else
-            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"EXTERNAL_GA_EVIDENCE_RAW_DIR is not set; use external_evidence_run_id or specialized importers"}; Path("dist/external-ga-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/external-ga-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+            python -c 'import json; from pathlib import Path; Path("reports/release").mkdir(parents=True, exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"EXTERNAL_GA_EVIDENCE_RAW_DIR is not set; use external_evidence_run_id or specialized importers"}; Path("reports/release/external-ga-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/external-ga-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
           fi
       - name: Import iOS real-device evidence
         env:
@@ -374,14 +409,14 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${IOS_EVIDENCE_RAW_DIR:-}" ]]; then
-            python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
+            python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path reports/release/ios-evidence-preflight.json
             python scripts/import_ios_real_device_evidence.py \
               --raw-dir "$IOS_EVIDENCE_RAW_DIR" \
               --expected-version "$IOS_EVIDENCE_EXPECTED_VERSION" \
               --copy \
               --write-report release/ios-real-device-evidence-import-report.json
           else
-            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"IOS_EVIDENCE_RAW_DIR is not set"}; Path("dist/ios-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/ios-real-device-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+            python -c 'import json; from pathlib import Path; Path("reports/release").mkdir(parents=True, exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"IOS_EVIDENCE_RAW_DIR is not set"}; Path("reports/release/ios-evidence-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/ios-real-device-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
           fi
       - name: Import tri-app live smoke evidence
         env:
@@ -399,7 +434,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${TRI_APP_LIVE_SMOKE_REPORT_PATH:-}" ]]; then
-            python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+            python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path reports/release/tri-app-live-smoke-preflight.json
             python scripts/import_tri_app_live_smoke_evidence.py \
               --report "$TRI_APP_LIVE_SMOKE_REPORT_PATH" \
               --expected-org-id "$TRI_APP_ORG_ID" \
@@ -407,7 +442,7 @@ jobs:
               --copy \
               --write-report release/tri-app-live-smoke-evidence-import-report.json
           else
-            python -c 'import json; from pathlib import Path; Path("dist").mkdir(exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"TRI_APP_LIVE_SMOKE_REPORT_PATH is not set"}; Path("dist/tri-app-live-smoke-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/tri-app-live-smoke-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
+            python -c 'import json; from pathlib import Path; Path("reports/release").mkdir(parents=True, exist_ok=True); Path("release").mkdir(exist_ok=True); payload={"status":"skipped","reason":"TRI_APP_LIVE_SMOKE_REPORT_PATH is not set"}; Path("reports/release/tri-app-live-smoke-preflight.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8"); Path("release/tri-app-live-smoke-evidence-import-report.json").write_text(json.dumps(payload, indent=2)+"\n", encoding="utf-8")'
           fi
       - run: python scripts/check_workflow_governance.py . --require-real-workflows
       - run: python scripts/check_team_governance_contract.py .
@@ -444,8 +479,11 @@ jobs:
             --write-report release/external-evidence/control-plane/github-team-governance-live.json \
             "${audit_args[@]}"
       - name: Bind current Release-built native files to enforced Main Verification evidence
+        env:
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id }}
         run: |
           set -euo pipefail
+          [[ -z "$EXTERNAL_EVIDENCE_RUN_ID" || "$EXTERNAL_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
           audit_args=()
           if [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
             audit_args+=(--audit-only)
@@ -456,22 +494,23 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --source-commit "$GITHUB_SHA" \
             --release-run-id "$GITHUB_RUN_ID" \
-            --main-verification-run-id "${{ inputs.external_evidence_run_id }}" \
-            --write-report dist/current-release-artifact-binding.json \
+            --main-verification-run-id "$EXTERNAL_EVIDENCE_RUN_ID" \
+            --write-report reports/release/current-release-artifact-binding.json \
             "${audit_args[@]}"
       - name: Run complete Real GA evidence and final Customer GA gate
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          EXTERNAL_EVIDENCE_RUN_ID: ${{ inputs.external_evidence_run_id }}
         run: |
           set -euo pipefail
           if [[ "$RELEASE_CHANNEL" == "real-ga" ]]; then
-            test -n "${{ inputs.external_evidence_run_id }}" || { echo "real-ga release requires an enforced Main Verification evidence run id" >&2; exit 64; }
+            test -n "$EXTERNAL_EVIDENCE_RUN_ID" || { echo "real-ga release requires an enforced Main Verification evidence run id" >&2; exit 64; }
             python scripts/check_real_ga_complete.py . --write-report release/real-ga-evidence-audit-1.12.7.json
             python scripts/check_customer_distribution_ga.py . \
               --repository "$GITHUB_REPOSITORY" \
               --commit "$GITHUB_SHA" \
-              --current-release-binding-report dist/current-release-artifact-binding.json \
-              --write-live-report dist/main-verification-live-artifact.json \
+              --current-release-binding-report reports/release/current-release-artifact-binding.json \
+              --write-live-report reports/release/main-verification-live-artifact.json \
               --write-report release/real-ga-evidence-audit-1.12.7.json
           elif [[ "$RELEASE_CHANNEL" == "candidate" ]]; then
             python scripts/check_real_ga_complete.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json
@@ -479,19 +518,46 @@ jobs:
               --audit-only \
               --repository "$GITHUB_REPOSITORY" \
               --commit "$GITHUB_SHA" \
-              --current-release-binding-report dist/current-release-artifact-binding.json \
-              --write-live-report dist/main-verification-live-artifact.json \
+              --current-release-binding-report reports/release/current-release-artifact-binding.json \
+              --write-live-report reports/release/main-verification-live-artifact.json \
               --write-report release/real-ga-evidence-audit-1.12.7.json
           else
             echo "release_channel must be candidate or real-ga" >&2
             exit 64
           fi
-          cp release/real-ga-evidence-audit-1.12.7.json dist/external-ga-evidence-audit.json
+          cp release/real-ga-evidence-audit-1.12.7.json reports/release/external-ga-evidence-audit.json
           python scripts/write_real_ga_evidence_summary.py . \
             --audit-report release/real-ga-evidence-audit-1.12.7.json \
             --output release/real-ga-evidence-summary-1.12.7.json \
             --source-commit "$GITHUB_SHA"
-          cp release/real-ga-evidence-summary-1.12.7.json dist/external-ga-evidence-summary.json
+          cp release/real-ga-evidence-summary-1.12.7.json reports/release/external-ga-evidence-summary.json
+
+      - name: Check every Real GA evidence import report was written
+        # if-no-files-found on the upload below only fails when none of its files
+        # exist, so check each one before anything is published.
+        run: |
+          set -euo pipefail
+          for report in \
+            release/real-ga-evidence-audit-1.12.7.json \
+            release/real-ga-evidence-summary-1.12.7.json \
+            release/external-ga-evidence-import-report.json \
+            release/ios-real-device-evidence-import-report.json \
+            release/tri-app-live-smoke-evidence-import-report.json \
+            release/external-evidence/control-plane/github-branch-protection-live.json \
+            release/external-evidence/control-plane/github-team-governance-live.json \
+            reports/release/web-admin-preflight.json \
+            reports/release/desktop-preflight.json \
+            reports/release/mobile-preflight.json \
+            reports/release/tri-app-preflight.json \
+            reports/release/external-ga-evidence-preflight.json \
+            reports/release/ios-evidence-preflight.json \
+            reports/release/tri-app-live-smoke-preflight.json \
+            reports/release/current-release-artifact-binding.json \
+            reports/release/main-verification-live-artifact.json \
+            reports/release/external-ga-evidence-audit.json \
+            reports/release/external-ga-evidence-summary.json; do
+            test -s "$report" || { echo "missing Real GA evidence import report: $report" >&2; exit 1; }
+          done
 
       - name: Verify release channel policy after external evidence gate
         run: |
@@ -524,15 +590,15 @@ jobs:
           echo "OMNIDESK_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
           echo "Release image: $image_ref@$digest"
 
-      - run: bash scripts/build_release.sh
+      - name: Build release wheel, SBOM and metadata
+        run: bash scripts/build_release.sh
         env:
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          # Signed below, once every file that ships in dist/ exists.
+          OMNIDESK_RELEASE_DEFER_SIGNING: "1"
           OMNIDESK_IMAGE_REF: ${{ env.OMNIDESK_IMAGE_REF }}
           OMNIDESK_IMAGE_DIGEST: ${{ env.OMNIDESK_IMAGE_DIGEST }}
 
-      - name: Bind all native application artifacts into the signed release payload
-        env:
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+      - name: Bind all native application artifacts into the release payload
         run: |
           set -euo pipefail
           native_root="$RUNNER_TEMP/tri-app-native-input"
@@ -545,21 +611,6 @@ jobs:
             --source-commit "$GITHUB_SHA" \
             --output dist/tri-app-native-artifacts.json
           tar -czf dist/tri-app-native-artifacts.tar.gz -C "$native_root" .
-          python - <<'PY'
-          import hashlib
-          from pathlib import Path
-          root = Path("dist")
-          excluded = {"checksums.txt", "release_signatures.json"}
-          artifacts = [
-              path for path in sorted(root.iterdir())
-              if path.is_file() and path.name not in excluded and not path.name.endswith(".sig")
-          ]
-          lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}" for path in artifacts]
-          (root / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
-          python scripts/sign_release.py dist
-          python scripts/verify_release_signatures.py dist
-          python scripts/verify_release_artifact.py dist --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
 
       - name: Render locked Helm production values
         env:
@@ -576,9 +627,7 @@ jobs:
             --output dist/values.production.locked.yaml
           python scripts/check_kubernetes_contract.py . --locked-values dist/values.production.locked.yaml
 
-      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
-
-      - name: Write SLSA provenance before external signing
+      - name: Write SLSA provenance for the release payload
         run: python scripts/write_slsa_provenance.py dist --builder-id "$GITHUB_WORKFLOW@$GITHUB_RUN_ID" --source-ref "$GITHUB_REF" --image-ref "$OMNIDESK_IMAGE_REF" --image-digest "$OMNIDESK_IMAGE_DIGEST"
 
       - name: Install Cosign
@@ -609,22 +658,46 @@ jobs:
           cosign attest-blob --yes --predicate dist/sbom.json --type spdx "$wheel" --output-signature dist/sbom.intoto.sig --output-certificate dist/sbom.intoto.pem
           cosign attest-blob --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$wheel" --output-signature dist/slsa.intoto.sig --output-certificate dist/slsa.intoto.pem
 
-      - name: Generate artifact attestations
+      - name: Sign and verify the complete release payload with Ed25519
+        # Last write to dist/: checksums.txt and the Ed25519 signatures cover every
+        # file above, Cosign certificates included, so --require-signatures holds for
+        # the published artifact. Only this step sees the private key.
         env:
-          GH_TOKEN: ${{ github.token }}
+          OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
         run: |
+          set -euo pipefail
+          test -f release/release-signing-public-key.pem || { echo "commit release/release-signing-public-key.pem (scripts/generate_release_signing_key.py) before releasing" >&2; exit 1; }
+          python scripts/finalize_release_payload.py dist --expected-version "$EXPECTED_VERSION" --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+
+      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+
+      - name: List release payload for GitHub artifact attestation
+        run: |
+          set -euo pipefail
           test -f dist/release_metadata.json
           test -f dist/release_signatures.json
-          python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
-            gh attestation sign "$artifact" --repo "$GITHUB_REPOSITORY"
-          done
+          # Attest every top-level file after the Ed25519 signing step: promotion,
+          # staging and rollback verify an attestation for each one
+          # (find dist -maxdepth 1 -type f). The list lives outside dist/.
+          find dist -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/attestation-subjects.sha256"
+          test -s "$RUNNER_TEMP/attestation-subjects.sha256"
+      - name: Generate artifact attestations
+        # gh has no subcommand that creates attestations; GitHub's action creates the
+        # Sigstore-signed provenance that `gh attestation verify` checks.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/attestation-subjects.sha256
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: dist-and-sbom
           path: dist/**
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        # Upload the reports of a failed gate too: they say why it failed. A failed
+        # run's artifacts are never accepted as evidence (fetch_ci_evidence_artifact.py).
+        if: always()
         with:
           name: real-ga-evidence-import-reports
+          if-no-files-found: error
           path: |
             release/real-ga-evidence-audit-1.12.7.json
             release/real-ga-evidence-summary-1.12.7.json
@@ -633,7 +706,14 @@ jobs:
             release/tri-app-live-smoke-evidence-import-report.json
             release/external-evidence/control-plane/github-branch-protection-live.json
             release/external-evidence/control-plane/github-team-governance-live.json
-            dist/current-release-artifact-binding.json
-            dist/external-ga-evidence-preflight.json
-            dist/ios-evidence-preflight.json
-            dist/tri-app-live-smoke-preflight.json
+            reports/release/web-admin-preflight.json
+            reports/release/desktop-preflight.json
+            reports/release/mobile-preflight.json
+            reports/release/tri-app-preflight.json
+            reports/release/external-ga-evidence-preflight.json
+            reports/release/ios-evidence-preflight.json
+            reports/release/tri-app-live-smoke-preflight.json
+            reports/release/current-release-artifact-binding.json
+            reports/release/main-verification-live-artifact.json
+            reports/release/external-ga-evidence-audit.json
+            reports/release/external-ga-evidence-summary.json

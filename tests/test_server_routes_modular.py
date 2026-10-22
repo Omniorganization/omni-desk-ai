@@ -313,3 +313,20 @@ def test_webhook_routes_cover_all_channel_enqueue_paths():
         assert client.post("/webhooks/line", json={}).json()["count"] == 1
         assert client.get("/webhooks/x", params={"crc_token": "abc"}).json()["response_token"] == "cba"
         assert client.post("/webhooks/x", json={}).json()["count"] == 1
+
+
+def test_meta_and_whatsapp_verify_fail_closed_without_configured_token(monkeypatch):
+    app = FastAPI()
+    cfg = AppConfig()
+    rt = Runtime()
+    rt.adapters = {}
+    register_webhook_routes(app, cfg, rt, Guard())
+    monkeypatch.delenv(cfg.channels.whatsapp_cloud.verify_token_env, raising=False)
+    monkeypatch.delenv(cfg.channels.meta_graph.verify_token_env, raising=False)
+    params = {"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "echo-me"}
+    with TestClient(app) as client:
+        assert client.get("/webhooks/whatsapp", params=params).status_code == 403
+        assert client.get("/webhooks/meta", params=params).status_code == 403
+        monkeypatch.setenv(cfg.channels.meta_graph.verify_token_env, "meta-token")
+        ok = client.get("/webhooks/meta", params={**params, "hub.verify_token": "meta-token"})
+        assert ok.status_code == 200 and ok.text == "echo-me"

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
-import { OmniApiClient } from '../src/api';
+import { OmniApiClient, normalizeGatewayBaseUrl } from '../src/api';
 
 const originalFetch = globalThis.fetch;
 
@@ -195,4 +195,26 @@ test('gateway errors include the response body', async () => {
   const client = new OmniApiClient({ baseUrl: 'https://gateway.example.test', token: 'bad-token', actor: 'desktop-operator' });
 
   await assert.rejects(() => client.bootstrap(), /401 bad token/);
+});
+
+test('gateway URL must be https or loopback http without credentials, query or fragment', async () => {
+  assert.equal(normalizeGatewayBaseUrl(' https://gateway.example.test/base/ '), 'https://gateway.example.test/base');
+  assert.equal(normalizeGatewayBaseUrl('http://127.0.0.1:18789'), 'http://127.0.0.1:18789');
+  assert.equal(normalizeGatewayBaseUrl('http://localhost:18789/'), 'http://localhost:18789');
+  for (const bad of [
+    'http://gateway.example.test',
+    'ftp://gateway.example.test',
+    'https://user:pass@gateway.example.test',
+    'https://gateway.example.test/?next=1',
+    'https://gateway.example.test/#frag',
+    'gateway.example.test',
+  ]) {
+    assert.throws(() => normalizeGatewayBaseUrl(bad), Error, bad);
+  }
+
+  let called = false;
+  globalThis.fetch = (async () => { called = true; return new Response('{}'); }) as typeof fetch;
+  const client = new OmniApiClient({ baseUrl: 'http://attacker.example.test', token: 'secret-token', actor: 'desktop' });
+  await assert.rejects(() => client.bootstrap(), /https unless it targets loopback/);
+  assert.equal(called, false, 'operator token must not be sent to a plain-http remote gateway');
 });

@@ -1,0 +1,284 @@
+{
+  "checked_at": "2026-10-19T01:49:11.586080+08:00",
+  "base_commit": "8fb391b4ac034c5d51f2254ebd93b6cade592985",
+  "cli_version": "0.163.0-alpha.10.2",
+  "supported_cli_versions": [
+    "0.162.0-alpha.17.2",
+    "0.163.0-alpha.10.2"
+  ],
+  "transport": "official_codex_app_server_stdio_json_rpc",
+  "regression_before_fix": {
+    "old_cli_fixture": "passed",
+    "new_cli_fixture": "failed_at_subscription_cli_version",
+    "inference_attempted": false
+  },
+  "protocol_validation": {
+    "schema_checks": [
+      {
+        "file": "v1/InitializeParams.json",
+        "sha256": "b55124e7c0f36a1789396daa5578217a92be67f053903696236686e59f6f212e",
+        "required": [
+          "clientInfo"
+        ],
+        "used_fields": [
+          "clientInfo",
+          "capabilities"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/ConfigReadParams.json",
+        "sha256": "257c54a423b47c1d209ff1076765a1564d82322fd5161670fd489a2874de1bac",
+        "required": [],
+        "used_fields": [
+          "includeLayers"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/ThreadStartParams.json",
+        "sha256": "80a40a7fac15b4bf70efb7f893fb353acc0a0d30c68f54aee4f01923deca85de",
+        "required": [],
+        "used_fields": [
+          "model",
+          "modelProvider",
+          "cwd",
+          "approvalPolicy",
+          "sandbox",
+          "ephemeral",
+          "baseInstructions",
+          "config",
+          "developerInstructions"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/ThreadStartResponse.json",
+        "sha256": "107fe36c99ebaeb750a371580beec807a28c6451e9c8a02cd7d451a0135f1c91",
+        "required": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "cwd",
+          "model",
+          "modelProvider",
+          "sandbox",
+          "thread"
+        ],
+        "used_fields": [
+          "model",
+          "modelProvider",
+          "cwd",
+          "sandbox",
+          "approvalPolicy",
+          "instructionSources",
+          "thread"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/TurnStartParams.json",
+        "sha256": "abf0d6d29d223b38c650ff1155cb9c9f9b4211e6d0e20c57d750a9e1babfdb41",
+        "required": [
+          "input",
+          "threadId"
+        ],
+        "used_fields": [
+          "threadId",
+          "model",
+          "input"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/TurnStartResponse.json",
+        "sha256": "20e837d07826b9c01578ff40b962ab08f58a355a9984e96226733498514e9bad",
+        "required": [
+          "turn"
+        ],
+        "used_fields": [
+          "turn"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/ThreadTokenUsageUpdatedNotification.json",
+        "sha256": "aba4f6c7e4a19b2b842c08ee793b57000c07dafd57b922ad0d8e7c76609108c2",
+        "required": [
+          "threadId",
+          "tokenUsage",
+          "turnId"
+        ],
+        "used_fields": [
+          "threadId",
+          "turnId",
+          "tokenUsage"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/TurnCompletedNotification.json",
+        "sha256": "69413578ec3ecd02691424bdeb9d640c7244b4ca4c5c3ef26f69a2efe7c37db8",
+        "required": [
+          "threadId",
+          "turn"
+        ],
+        "used_fields": [
+          "threadId",
+          "turn"
+        ],
+        "missing_used_fields": []
+      },
+      {
+        "file": "v2/ItemCompletedNotification.json",
+        "sha256": "940dcfba0740e86a7e62b0eacf1bb53c634fdbe8b75fa3163b6e366a55f85fae",
+        "required": [
+          "completedAtMs",
+          "item",
+          "threadId",
+          "turnId"
+        ],
+        "used_fields": [
+          "threadId",
+          "turnId",
+          "item"
+        ],
+        "missing_used_fields": []
+      }
+    ],
+    "schema_enum_assertions": {
+      "approvalPolicy_on_request": true,
+      "sandbox_read_only": true,
+      "readOnly_response_policy": true,
+      "text_user_input": true,
+      "agentMessage_reasoning_userMessage_items": true,
+      "integer_last_input_output_cached_tokens": true
+    },
+    "isolated_strict_probe": {
+      "CODEX_HOME": "empty_temporary_directory",
+      "credential_files_copied": false,
+      "provider_exec_argv_used": true,
+      "public_bundled_model": "gpt-6.1-sol",
+      "model_metadata_restrictions_same_as_provider": true,
+      "initialize_result": true,
+      "config_read_result": true,
+      "disabled_features_all_false": true,
+      "agents_enabled": false,
+      "history_persistence": "none",
+      "analytics_enabled": false,
+      "forced_login_method": "chatgpt",
+      "provider_request_max_retries": 0,
+      "provider_stream_max_retries": 0,
+      "official_backend_url_verified": true,
+      "explicitGatewayOauth": true
+    },
+    "actual_host_initialize_probe": {
+      "provider_child_environment_used": true,
+      "provider_exec_argv_used": true,
+      "outcome": "eof",
+      "exit_code": 1,
+      "stdout_protocol_messages": 0,
+      "stderr_bytes": 148,
+      "stderr_allowed_vocabulary_matches": [
+        "operation not permitted"
+      ],
+      "did_not_output_stderr_or_config": true
+    },
+    "no_model_requests": true,
+    "turn_start_requests_sent": 0
+  },
+  "initial_sandbox_gateway_attempt": {
+    "success": false,
+    "failure_type": "AssertionError",
+    "failure_check": "Gateway returned HTTP 502",
+    "scope": "local_gateway_synthetic_codex_cli_check"
+  },
+  "gateway_live": {
+    "checked_at": "2026-10-19T01:49:11.586080+08:00",
+    "scope": "local_loopback_gateway_real_codex_subscription_not_hosted_siwc",
+    "success": true,
+    "provider": "codex_cli",
+    "model": "gpt-6.1-sol",
+    "questions": [
+      {
+        "http_status": 200,
+        "provider": "codex_cli",
+        "model": "gpt-6.1-sol",
+        "answer": "5"
+      },
+      {
+        "http_status": 200,
+        "provider": "codex_cli",
+        "model": "gpt-6.1-sol",
+        "answer": "21"
+      },
+      {
+        "endpoint": "/api/chat/stream",
+        "completed_events": 1,
+        "provider": "codex_cli",
+        "model": "gpt-6.1-sol",
+        "answer": "NO_TOOLS",
+        "native_stream": false
+      }
+    ],
+    "anonymous_http": 403,
+    "operator_profile_denied_http": 403,
+    "idempotency_replay_answer": "5",
+    "idempotency_replay_added_calls": 0,
+    "successful_model_calls": 3,
+    "persisted_model_calls": 3,
+    "input_tokens": 15457,
+    "output_tokens": 114,
+    "platform_api_key_used": false,
+    "model_cache_used": false,
+    "accepted_tool_events": 0,
+    "gateway_auth": "fresh_ephemeral_bearer_credentials_not_copied_from_other_services",
+    "background_services_started": false,
+    "business_data_sent": false
+  },
+  "validation": {
+    "related_pytest": {
+      "command": "python -m pytest -q -W error tests/models/test_codex_cli_provider.py tests/test_codex_cli_gateway.py tests/test_codex_cli_verification.py tests/models/test_chatgpt_plan_provider.py tests/models/test_model_router_profile_acl.py tests/test_model_router_fallback.py",
+      "passed": 277,
+      "failed": 0,
+      "duration_seconds": 15.72
+    },
+    "ruff": "passed",
+    "git_diff_check": "passed",
+    "github_ci": "not_yet_run"
+  },
+  "source_sha256": {
+    "omnidesk_agent/models/codex_cli.py": "642f659fdbc696b3d29693f4ae88eeb2ef5be5fabd903b7518e0055acec006f8",
+    "omnidesk_agent/models/providers.py": "e561d7cc61ca1aefeebe5c768de6f087b554fd57dd5e376ffca54bf7ed7fdb79",
+    "omnidesk_agent/models/provider_streaming.py": "1b1a3e91df9e1dfd85d34d2d26e20796997a9f38b224d84142922b975072f214",
+    "omnidesk_agent/models/provider_errors.py": "58a5d9c1b99ca5f8b70ce48c1aaf38da75d29d69027004dfd5fb0e8964e9d8f4",
+    "omnidesk_agent/models/pricing.py": "40875d1ece81c9004453e5d9b0b052333066c3db884b2d1c59917b26fad3a167",
+    "omnidesk_agent/models/router.py": "bc89fd5afb95296fa48d61bcde666eff14853cd6c9caebf7946bc8752fd6d45b",
+    "omnidesk_agent/models/router_streaming.py": "c02dd93b25dbb75a85b18162edb7e32ddff7cda3fe24dd89cab734e2b7611c50",
+    "omnidesk_agent/config.py": "99922abc681dedccf18126040e5fbf777fc4f69a2dc48e212eb8c6214ec24837",
+    "omnidesk_agent/appsync/chat_service.py": "1be7702d3503bf11a0bb5ba7bb777e6895bad61d06c2e0f5f972e2b89a56fc7f",
+    "scripts/verify_codex_cli_chat.py": "8ac734bb0c3ceacc0fa24de970b94926fe6deadcf19e1b6f11f1ce37948b02f7",
+    "examples/config.codex-cli.yaml": "d3c3d1eb9d18f826f846f30f69256a6176e1204c9fc6f5cfd25bd228b2b1ad3f",
+    "docs/codex-subscription.md": "b6ccf5556aab3900f311c32a3a4397dca3ff050aa621ff925911b58bc456a06e",
+    "tests/models/test_codex_cli_provider.py": "ecdd279d93b04300c8590172487ac3ceedcde5bab6eef5e3b11b27ceae0af8fc",
+    "tests/test_codex_cli_gateway.py": "bb6aad97db93b19c78bd9f8ff1bc0f0285bc229c1a29ddc23603382afaa0b7cd",
+    "tests/test_codex_cli_verification.py": "cc341a7e49c3e20d326c2a6d92e8ad5f757fad0fd4f2a452edd8189d9b1c7fae",
+    "apps/web-admin-next/package.json": "ba998bb7d43920cb77129df931bebb2fbbe133805eb8b748e4a65d2658718bb2",
+    "apps/web-admin-next/package-lock.json": "c41e809fda6a811d4120d96b38408bb3fd3cacd7184d6909248b90289bc07351",
+    "apps/desktop-tauri/package.json": "fc663d27d64d2805dcfeb79bb5201fa98a41eb00e1c9ab867063738e89e46dd7",
+    "apps/desktop-tauri/package-lock.json": "846a842e673b0f71b431b1d07411b7d7b0e0cafb6d50da25e979f94d51eb3a44"
+  },
+  "source_binding": "Runtime and verification script were unchanged between successful live verification and these hashes; documentation/comments and test coverage were finalized afterwards.",
+  "limits": [
+    "Only local macOS with the existing official ChatGPT login was verified.",
+    "No Linux/Windows, hosted SIWC authorization, deployment or production validation.",
+    "SSE remains buffered; images and unknown CLI versions remain rejected.",
+    "No accepted tool events and the model NO_TOOLS answer do not prove zero host reads or all possible tool execution.",
+    "Subscription usage is limited by the account plan and existing credits settings; this is not unlimited free usage.",
+    "GitHub CI, PR review and merge are separate acceptance states."
+  ],
+  "rollback": "Restore the previous deployment/configuration with the previously verified old CLI, or disable this profile; preserve usage ledger and audit history.",
+  "official_sources": [
+    "https://learn.chatgpt.com/docs/auth",
+    "https://learn.chatgpt.com/docs/app-server"
+  ]
+}

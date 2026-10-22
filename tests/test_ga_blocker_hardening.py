@@ -216,7 +216,7 @@ def test_github_workflows_pin_actions_and_permissions():
             stripped = line.strip()
             if not stripped.startswith("- uses: "):
                 continue
-            ref = stripped.split("@", 1)[1]
+            ref = stripped.split("@", 1)[1].split("#", 1)[0].strip()
             assert len(ref) == 40 and all(ch in "0123456789abcdef" for ch in ref), f"{workflow}: {stripped}"
 
 
@@ -257,3 +257,17 @@ def test_upgrade_security_checker_rejects_paths_outside_repo(tmp_path):
 
     assert result["ok"] is False
     assert result["issues"][0]["issue"] == "path outside repository"
+
+
+def test_release_hygiene_allows_only_the_public_release_verification_key(tmp_path):
+    from scripts import check_release_hygiene
+
+    (tmp_path / "release").mkdir()
+    key = tmp_path / "release" / "release-signing-public-key.pem"
+    key.write_text("-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAAAAA\n-----END PUBLIC KEY-----\n", encoding="ascii")
+    assert check_release_hygiene.main(str(tmp_path)) == 0
+    key.write_text("-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIE\n-----END PRIVATE KEY-----\n", encoding="ascii")
+    assert check_release_hygiene.main(str(tmp_path)) == 1
+    key.write_text("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n", encoding="ascii")
+    (tmp_path / "release" / "other.pem").write_text(key.read_text(), encoding="ascii")
+    assert check_release_hygiene.main(str(tmp_path)) == 1

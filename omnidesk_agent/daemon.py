@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any, Optional
 
 from omnidesk_agent import __version__
 from omnidesk_agent.appsync.factory import create_appsync_store
+from omnidesk_agent.channels.channel_auth import production_channel_auth_issues
 from omnidesk_agent.channels.dingtalk import DingTalkChannel
 from omnidesk_agent.channels.gmail import GmailChannel
 from omnidesk_agent.channels.lark_feishu import FeishuChannel, LarkChannel
@@ -27,7 +29,7 @@ from omnidesk_agent.channels.wechat_official import WeChatOfficialChannel
 from omnidesk_agent.channels.x_channel import XChannel
 from omnidesk_agent.channels.http_client import set_channel_offline_mode
 from omnidesk_agent.config import AppConfig
-from omnidesk_agent.validation.production import is_production_mode
+from omnidesk_agent.validation.production import ProductionConfigError, is_production_mode
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
 from omnidesk_agent.core.llm import RouterLLMAdapter, RuleBasedLLM
 from omnidesk_agent.core.orchestrator import Orchestrator
@@ -144,7 +146,7 @@ class OmniDeskRuntime:
         self.orchestrator.storage_plan = self.storage_plan
         self.webhook_worker: Optional[WebhookWorker] = WebhookWorker(self.job_queue, self.orchestrator)
         self.outbound_dispatcher: Optional[OutboundDispatcher] = OutboundDispatcher(self.outbound_messages, self.adapters)
-        self.learning_job = DailySelfLearningJob(self.memory, cfg.workspace.root)
+        self.learning_job = DailySelfLearningJob(self.memory, cfg.workspace.root, sandbox_cfg=cfg.sandbox)
         self.governance = GovernedSelfImprovement(cfg.workspace.root, Path.cwd(), sandbox_cfg=cfg.sandbox)
         self.proposal_store = self.governance.proposal_store
         self.reconnect_worker: ReconnectSyncWorker | None = None
@@ -152,6 +154,11 @@ class OmniDeskRuntime:
 
 
     def _build_channel_adapters(self) -> dict:
+        production = is_production_mode(self.cfg)
+        if production:
+            issues = production_channel_auth_issues(self.cfg, os.environ)
+            if issues:
+                raise ProductionConfigError(issues)
         adapters = {
             "telegram": TelegramChannel(self.cfg.channels.telegram),
             "whatsapp_cloud": WhatsAppCloudChannel(self.cfg.channels.whatsapp_cloud),
@@ -164,11 +171,11 @@ class OmniDeskRuntime:
             "x": XChannel(self.cfg.channels.x),
             "slack": SlackChannel(self.cfg.channels.slack),
             "discord": DiscordChannel(self.cfg.channels.discord),
-            "google_chat": GoogleChatChannel(self.cfg.channels.google_chat),
+            "google_chat": GoogleChatChannel(self.cfg.channels.google_chat, production=production),
             "signal": SignalChannel(self.cfg.channels.signal),
             "imessage": IMessageChannel(self.cfg.channels.imessage),
             "microsoft_teams": MicrosoftTeamsChannel(self.cfg.channels.microsoft_teams),
-            "matrix": MatrixChannel(self.cfg.channels.matrix),
+            "matrix": MatrixChannel(self.cfg.channels.matrix, production=production),
             "qq": QQChannel(self.cfg.channels.qq),
             "gmail": GmailChannel(self.cfg.channels.gmail),
         }

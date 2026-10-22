@@ -79,9 +79,9 @@
   },
   "current_release_artifact_binding": {
     "schema": "omnidesk-current-release-artifact-binding/v1",
-    "evidence_file": "dist/current-release-artifact-binding.json",
+    "evidence_file": "reports/release/current-release-artifact-binding.json",
     "workflow": ".github/workflows/release.yml",
-    "contract_check": "scripts/check_current_release_artifact_binding.py --artifact-root $RUNNER_TEMP/tri-app-native-input --evidence-root release/external-evidence --repository $GITHUB_REPOSITORY --source-commit $GITHUB_SHA --release-run-id $GITHUB_RUN_ID --main-verification-run-id $MAIN_VERIFICATION_RUN_ID --write-report dist/current-release-artifact-binding.json",
+    "contract_check": "scripts/check_current_release_artifact_binding.py --artifact-root $RUNNER_TEMP/tri-app-native-input --evidence-root release/external-evidence --repository $GITHUB_REPOSITORY --source-commit $GITHUB_SHA --release-run-id $GITHUB_RUN_ID --main-verification-run-id $MAIN_VERIFICATION_RUN_ID --write-report reports/release/current-release-artifact-binding.json",
     "required_for_customer_distribution_ga": true,
     "digest_equality_policy": "actual_release_file_sha256 == current_native_manifest_sha256 == external_evidence_signed_artifact_sha256 == artifact_attestation_subject_sha256 == main_verification_native_signed_binding_sha256",
     "boundary": "The Release workflow rehashes every distributable Android, iOS, macOS and Windows file from the current run and must pass this gate before Customer GA evaluation and before signing the aggregate release payload. Candidate runs only record blockers."

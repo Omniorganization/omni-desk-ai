@@ -17,7 +17,13 @@ on:
       deploy_mode:
         description: "Fixed deploy adapter mode: noop, docker-compose, kubectl, or systemd"
         required: true
+        type: choice
         default: noop
+        options:
+          - noop
+          - docker-compose
+          - kubectl
+          - systemd
 
 permissions:
   contents: read
@@ -27,6 +33,11 @@ permissions:
 
 env:
   EXPECTED_VERSION: ${{ inputs.expected_version }}
+  # Signatures and attestations are only trusted when produced by the Release Build
+  # workflow (release.yml) running from main; tags are not a trusted release ref.
+  RELEASE_SIGNER_IDENTITY_REGEXP: '^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@refs/heads/main$'
+  RELEASE_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+  RELEASE_SOURCE_REF: refs/heads/main
 
 jobs:
   staging-gate:
@@ -49,13 +60,19 @@ jobs:
       - name: Download signed release artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
         run: |
+          [[ "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "invalid run id"; exit 1; }
           mkdir -p dist
-          gh run download "${{ inputs.artifact_run_id }}" --name "${{ inputs.artifact_name }}" --dir dist
+          gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist
       - name: Verify immutable release artifact
         env:
-          OMNIDESK_RELEASE_SIGNING_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_KEY }}
+          # Ed25519 only, against the committed release/release-signing-public-key.pem;
+          # verifiers hold no signing secret, so they cannot forge a release.
+          OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
         run: |
+          [[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z.+_-]+$ ]] || { echo "invalid version"; exit 1; }
           python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata
           python scripts/verify_release_signatures.py dist
           wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
@@ -74,9 +91,9 @@ jobs:
           test -n "$wheel"
           python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
             test -f "$artifact"
-            cosign verify-blob "$artifact" --certificate "$artifact.cosign.pem" --signature "$artifact.cosign.sig" --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+            cosign verify-blob "$artifact" --certificate "$artifact.cosign.pem" --signature "$artifact.cosign.sig" --certificate-identity-regexp "$RELEASE_SIGNER_IDENTITY_REGEXP" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           done
-          cosign verify-attestation "$wheel" --type slsaprovenance --certificate dist/slsa.intoto.pem --signature dist/slsa.intoto.sig --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify-attestation "$wheel" --type slsaprovenance --certificate dist/slsa.intoto.pem --signature dist/slsa.intoto.sig --certificate-identity-regexp "$RELEASE_SIGNER_IDENTITY_REGEXP" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
       - name: Verify artifact attestation
         env:
@@ -85,7 +102,7 @@ jobs:
           test -f dist/release_metadata.json
           test -f dist/release_signatures.json
           find dist -maxdepth 1 -type f -print0 | sort -z | while IFS= read -r -d '' artifact; do
-            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$RELEASE_SIGNER_WORKFLOW" --source-ref "$RELEASE_SOURCE_REF" --deny-self-hosted-runners
           done
       - name: Require staging target
         run: |
@@ -109,7 +126,7 @@ jobs:
         run: |
           artifact="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$artifact"
-          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$EXPECTED_VERSION" --artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256" --image-digest "${{ env.OMNIDESK_IMAGE_DIGEST }}"
+          bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$EXPECTED_VERSION" --artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Staging smoke
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}

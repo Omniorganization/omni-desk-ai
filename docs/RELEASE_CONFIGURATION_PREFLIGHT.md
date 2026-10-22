@@ -20,14 +20,14 @@ Structured JSON output and artifact reports are supported for every scope:
 python scripts/check_release_configuration.py \
   --scope tri-app \
   --format json \
-  --report-path dist/tri-app-preflight.json
+  --report-path reports/release/tri-app-preflight.json
 ```
 
 The JSON payload contains `scope`, `deploy_mode`, `ok`, `issue_count`, and an array of issues with `severity`, `kind`, `name`, and `message`.
 
 ## Release Build
 
-Set these repository secrets before running `Release Build`:
+Set these secrets in the protected `release` environment (not as repository or organization secrets) before running `Release Build`; see `docs/RELEASE_SIGNING_TRUST.md`:
 
 - `OMNI_ANDROID_KEYSTORE_BASE64`
 - `OMNI_ANDROID_KEYSTORE_PASSWORD`
@@ -38,7 +38,7 @@ Set these repository secrets before running `Release Build`:
 - `OMNI_IOS_CERTIFICATE_PASSWORD`
 - `OMNI_IOS_PROVISIONING_PROFILE_BASE64`
 - `OMNI_IOS_KEYCHAIN_PASSWORD`
-- `OMNIDESK_RELEASE_SIGNING_KEY`
+- `OMNIDESK_RELEASE_SIGNING_ED25519_KEY`
 
 Set these repository variables:
 
@@ -56,9 +56,8 @@ Optional iOS variables:
 
 ## Staging / Production / Rollback
 
-Set these downstream environment secrets before deploy/smoke preflight:
+Downstream jobs verify Ed25519 release signatures with the committed `release/release-signing-public-key.pem` and must not hold any release signing secret. Set these downstream environment secrets before deploy/smoke preflight:
 
-- `OMNIDESK_RELEASE_SIGNING_KEY`
 - `OMNIDESK_SMOKE_ADMIN_TOKEN`
 
 Set these downstream environment variables:
@@ -180,7 +179,7 @@ Rules:
 Run:
 
 ```bash
-python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+python scripts/check_release_configuration.py --scope tri-app --format json --report-path reports/release/tri-app-preflight.json
 ```
 
 Required secrets:
@@ -213,7 +212,7 @@ python scripts/check_release_configuration.py --scope production --deploy-mode k
 python scripts/check_release_configuration.py --scope web-admin
 python scripts/check_release_configuration.py --scope desktop
 python scripts/check_release_configuration.py --scope mobile
-python scripts/check_release_configuration.py --scope tri-app --format json --report-path dist/tri-app-preflight.json
+python scripts/check_release_configuration.py --scope tri-app --format json --report-path reports/release/tri-app-preflight.json
 ```
 
 Passing preflight does not prove that credentials are valid; it proves the release pipeline has the minimum real configuration needed to start the relevant release, deployment, or tri-app smoke stage.
@@ -274,7 +273,7 @@ The report path must be a safe relative path such as `dist/tri-app-live-smoke.js
 Run:
 
 ```bash
-python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path reports/release/tri-app-live-smoke-preflight.json
 ```
 
 ---
@@ -284,8 +283,8 @@ python scripts/check_release_configuration.py --scope tri-app-live-smoke --forma
 The following scopes now perform semantic evidence validation rather than configuration-only checks:
 
 ```bash
-python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path dist/ios-evidence-preflight.json
-python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path dist/tri-app-live-smoke-preflight.json
+python scripts/check_release_configuration.py --scope ios-evidence --format json --report-path reports/release/ios-evidence-preflight.json
+python scripts/check_release_configuration.py --scope tri-app-live-smoke --format json --report-path reports/release/tri-app-live-smoke-preflight.json
 ```
 
 ### iOS Evidence Closure

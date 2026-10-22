@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import time
 from typing import Any, Optional
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from omnidesk_agent.channels.base import WebhookEnvelope
+from omnidesk_agent.channels.channel_auth import CertFetcher, GoogleChatJwtVerifier, bearer_token, google_chat_requires_jwt, secret_equals
 from omnidesk_agent.channels.http_client import ChannelHttpClient
 from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
 from omnidesk_agent.config import (
@@ -192,22 +195,64 @@ class DiscordChannel:
         return {"message_id": data.get("id"), "request_id": result.request_id}
 
 
+GOOGLE_CHAT_WEBHOOK_PREFIX = "https://chat.googleapis.com/v1/spaces/"
+_GOOGLE_CHAT_WEBHOOK_PATH_RE = re.compile(r"/v1/spaces/([A-Za-z0-9_-]{1,128})/messages")
+
+
+def google_chat_webhook_space(url: str) -> str:
+    """Return "spaces/<id>" for a Google Chat incoming-webhook URL, else refuse."""
+    parts = urlsplit(url)
+    match = _GOOGLE_CHAT_WEBHOOK_PATH_RE.fullmatch(parts.path)
+    if parts.scheme != "https" or parts.netloc != "chat.googleapis.com" or parts.fragment or not match:
+        raise PermissionError("Google Chat recipient must be a https://chat.googleapis.com/ incoming webhook URL")
+    return f"spaces/{match.group(1)}"
+
+
 class GoogleChatChannel:
+    """Google Chat HTTP endpoint + incoming-webhook adapter.
+
+    Inbound requests carry a bearer JWT signed by chat@system.gserviceaccount.com
+    for this project number; it is required in production unless
+    ``require_google_jwt`` is explicitly false, in which case only the signed
+    edge-bridge HMAC is accepted. Outside production the channel token header
+    also works, and ``?token=`` only with ``allow_query_token``.
+    """
+
     name = "google_chat"
 
-    def __init__(self, cfg: GoogleChatConfig):
+    def __init__(self, cfg: GoogleChatConfig, *, production: bool = False, cert_fetcher: Optional[CertFetcher] = None):
         self.cfg = cfg
+        self.production = production
+        self.require_jwt = google_chat_requires_jwt(cfg, production=production)
+        self.jwt_verifier = GoogleChatJwtVerifier(cfg.project_number, cert_fetcher=cert_fetcher) if cfg.project_number else None
+        if self.jwt_verifier is not None and cfg.enabled:
+            self.jwt_verifier.prefetch()
         self.webhook_secret = os.getenv(cfg.webhook_secret_env, "")
         self.incoming_webhook_url = os.getenv(cfg.incoming_webhook_url_env, "")
+        self.allowed_outbound_spaces = {
+            space if space.startswith("spaces/") else f"spaces/{space}" for space in (str(item).strip() for item in cfg.allowed_outbound_spaces) if space
+        }
         self.http = ChannelHttpClient()
 
     def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload: Any) -> None:
-        token = header(headers, "x-goog-channel-token") or query_params.get("token", "")
-        expected = os.getenv(self.cfg.channel_token_env, "")
-        if expected and token:
-            if not hmac.compare_digest(token, expected):
-                raise PermissionError("invalid Google Chat channel token")
+        query_token = query_params.get("token", "")
+        if query_token and (self.production or not self.cfg.allow_query_token):
+            raise PermissionError("Google Chat query-string token authentication is disabled; use the Google-signed bearer token")
+        bearer = bearer_token(headers)
+        if bearer and self.jwt_verifier is not None:
+            self.jwt_verifier.verify(bearer)
             return
+        if self.require_jwt:
+            raise PermissionError("Google Chat request has no verifiable Google-signed bearer token")
+        # The static channel token does not cover the body, so production
+        # without the JWT accepts only the signed-bridge HMAC.
+        if not self.production:
+            token = header(headers, "x-goog-channel-token") or query_token
+            expected = os.getenv(self.cfg.channel_token_env, "")
+            if expected and token:
+                if not secret_equals(token, expected):
+                    raise PermissionError("invalid Google Chat channel token")
+                return
         verify_hmac_sha256(body, self.webhook_secret or env_secret(self.cfg.webhook_secret_env, channel=self.name), header(headers, "x-omnidesk-webhook-signature-256"), prefix="sha256=")
 
     def extract_envelope(self, payload: dict[str, Any]) -> WebhookEnvelope:
@@ -233,9 +278,14 @@ class GoogleChatChannel:
         return ChannelMessage(channel=self.name, sender_id=sender or "unknown", thread_id=space or sender, message_id=str(msg.get("name") or ""), text=text, raw=payload)
 
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
-        url = kwargs.get("webhook_url") or self.incoming_webhook_url or recipient
-        if not str(url).startswith("https://"):
+        # Never post to a caller-chosen URL (kwargs or an LLM-chosen recipient):
+        # use the operator-configured webhook, or a recipient that is itself a
+        # Google Chat incoming-webhook URL for an allowlisted space.
+        url = self.incoming_webhook_url or str(recipient or "")
+        if not url.startswith("https://"):
             raise RuntimeError("Google Chat incoming webhook URL is missing")
+        if not self.incoming_webhook_url and google_chat_webhook_space(url) not in self.allowed_outbound_spaces:
+            raise PermissionError("Google Chat space is not in channels.google_chat.allowed_outbound_spaces")
         result = await self.http.post(str(url), json={"text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
         data = result.data or {}
         return {"message_id": data.get("name"), "request_id": result.request_id}
@@ -378,7 +428,9 @@ class MicrosoftTeamsChannel:
 
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
         token = self.bot_token or _require_env(self.cfg.bot_token_env, channel=self.name)
-        service_url = kwargs.get("service_url") or self.cfg.service_url
+        # The bot bearer token is sent to service_url, so it is pinned to the
+        # configured value; a caller-supplied service_url kwarg is ignored.
+        service_url = self.cfg.service_url
         if not service_url:
             raise RuntimeError("Teams service_url is missing")
         url = f"{str(service_url).rstrip('/')}/v3/conversations/{recipient}/activities"
@@ -389,20 +441,31 @@ class MicrosoftTeamsChannel:
 
 
 class MatrixChannel:
+    """Matrix hook adapter.
+
+    The hook token is read from ``Authorization: Bearer`` or
+    ``x-matrix-hook-token``; ``?token=`` / ``?access_token=`` is only honoured
+    outside production with ``allow_query_token``.
+    """
+
     name = "matrix"
 
-    def __init__(self, cfg: MatrixConfig):
+    def __init__(self, cfg: MatrixConfig, *, production: bool = False):
         self.cfg = cfg
+        self.production = production
         self.homeserver_url = cfg.homeserver_url.rstrip("/") if cfg.homeserver_url else ""
         self.access_token = os.getenv(cfg.access_token_env, "")
         self.webhook_secret = os.getenv(cfg.webhook_secret_env, "")
         self.http = ChannelHttpClient()
 
     def verify_request(self, headers: dict[str, str], body: bytes, query_params: dict[str, str], payload: Any) -> None:
-        token = header(headers, "x-matrix-hook-token") or query_params.get("token", "")
+        query_token = query_params.get("token", "") or query_params.get("access_token", "")
+        if query_token and (self.production or not self.cfg.allow_query_token):
+            raise PermissionError("Matrix query-string token authentication is disabled; send Authorization: Bearer")
+        token = bearer_token(headers) or header(headers, "x-matrix-hook-token") or query_token
         expected = os.getenv(self.cfg.webhook_token_env, "")
         if expected and token:
-            if not hmac.compare_digest(token, expected):
+            if not secret_equals(token, expected):
                 raise PermissionError("invalid Matrix hook token")
             return
         verify_hmac_sha256(body, self.webhook_secret or env_secret(self.cfg.webhook_secret_env, channel=self.name), header(headers, "x-omnidesk-webhook-signature-256"), prefix="sha256=")

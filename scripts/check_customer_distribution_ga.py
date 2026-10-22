@@ -84,7 +84,7 @@ def audit(
         "ok": binding_ok,
         "files": [
             {
-                "path": str(current_release_binding_report or "dist/current-release-artifact-binding.json"),
+                "path": str(current_release_binding_report or "reports/release/current-release-artifact-binding.json"),
                 "ok": binding_ok,
                 "issues": binding_failures,
             }
@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-only", action="store_true")
     parser.add_argument("--write-report", default="")
     parser.add_argument("--write-live-report", default="")
-    parser.add_argument("--current-release-binding-report", default="dist/current-release-artifact-binding.json")
+    parser.add_argument("--current-release-binding-report", default="reports/release/current-release-artifact-binding.json")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()

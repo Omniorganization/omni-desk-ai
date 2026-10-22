@@ -68,7 +68,9 @@ def test_release_workflow_separates_candidate_and_real_ga_evidence_gate():
     assert "check_real_ga_complete.py . --write-report release/real-ga-evidence-audit-1.12.7.json" in workflow
     assert "check_real_ga_complete.py . --audit-only --write-report release/real-ga-evidence-audit-1.12.7.json" in workflow
     assert "write_real_ga_evidence_summary.py" in workflow
-    assert "dist/external-ga-evidence-summary.json" in workflow
+    # Gate reports stay out of dist/, the signed payload that build_release.sh recreates.
+    assert "reports/release/external-ga-evidence-summary.json" in workflow
+    assert " dist/external-ga-evidence-summary.json" not in workflow
     assert "scripts/check_production_install_policy.py ." in workflow
 
 

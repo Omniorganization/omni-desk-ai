@@ -58,8 +58,8 @@ class PluginRegistry:
                 if self.trusted_only and not manifest.trusted:
                     continue
                 self._check_manifest_name(manifest.name)
-                manifest.verify(plugin_dir, self.signing_secret)
                 production = bool(app_config is not None and is_production_mode(app_config))
+                manifest.verify(plugin_dir, self.signing_secret, require_manifest_signature=production)
                 if production and self.production_forbid_subprocess and manifest.sandbox != "docker":
                     raise PermissionError(f"production plugins must use docker sandbox: {manifest.name}")
 

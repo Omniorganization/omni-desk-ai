@@ -22,7 +22,6 @@ REQUIRED_STATUS_CHECKS = {
 REQUIRED_JOBS = {
     "release-policy",
     "external-ga-evidence-contract",
-    "test (3.10)",
     "test (3.11)",
     "test (3.12)",
     "test (3.13)",
