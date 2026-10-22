@@ -3,10 +3,27 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 from typing import Any
 from omnidesk_agent.config import XConfig
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.channels.channel_auth import secret_equals
 from omnidesk_agent.channels.http_client import ChannelHttpClient
+
+# X sends a short random base64-style challenge. The CRC responder is
+# unauthenticated and returns HMAC(secret, crc_token), so anything else
+# (JSON, whitespace, long strings) is refused rather than signed.
+X_CRC_TOKEN_MAX_CHARS = 128
+_X_CRC_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_-]{1,%d}" % X_CRC_TOKEN_MAX_CHARS)
+
+
+def _crc_refusal(status_code: int, detail: str) -> Exception:
+    # GET /webhooks/x calls crc_response directly (no WebhookGuard), so a
+    # refusal has to carry its own HTTP status instead of becoming a 500.
+    from fastapi import HTTPException
+
+    return HTTPException(status_code=status_code, detail=detail)
+
 
 class XChannel:
     name = "x"
@@ -23,8 +40,14 @@ class XChannel:
         self.http = ChannelHttpClient()
 
     def crc_response(self, crc_token: str) -> dict[str, str]:
+        if not self.cfg.enabled:
+            raise _crc_refusal(403, "X channel is disabled")
         if not self.crc_token:
-            raise RuntimeError("X webhook CRC secret is missing")
+            raise _crc_refusal(503, "X webhook CRC secret is missing")
+        if secret_equals(self.crc_token, os.getenv(self.cfg.webhook_secret_env, "")):
+            raise _crc_refusal(503, "X webhook CRC secret must differ from the webhook signature secret")
+        if not isinstance(crc_token, str) or not _X_CRC_TOKEN_RE.fullmatch(crc_token):
+            raise _crc_refusal(400, "invalid crc_token")
         digest = hmac.new(self.crc_token.encode("utf-8"), crc_token.encode("utf-8"), hashlib.sha256).digest()
         return {"response_token": "sha256=" + base64.b64encode(digest).decode("ascii")}
 
