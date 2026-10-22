@@ -178,7 +178,7 @@ def test_sign_plugin_script_migrates_v1_to_v2(tmp_path, capsys):
 
     assert main(["sign_plugin.py", str(plugin_dir)]) == 0
     out = capsys.readouterr().out
-    assert "signature v2" in out and "sandbox=docker" in out
+    assert "v2 signature" in out and "sandbox=docker" in out
 
     signed = PluginManifest.load(plugin_dir / "plugin.yaml")
     assert signed.signature_version == 2

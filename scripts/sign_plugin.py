@@ -26,8 +26,8 @@ from omnidesk_agent.plugins.manifest import LEGACY_SIGNATURE_VERSION, PluginMani
 
 def _summary(manifest: PluginManifest) -> str:
     return (
-        f"{manifest.name} {manifest.version}: signature v{manifest.signature_version}, sandbox={manifest.sandbox}, "
-        f"trusted={manifest.trusted}, permissions={sorted(manifest.permissions)}, entrypoint={manifest.entrypoint}"
+        f"{manifest.name} {manifest.version}: sandbox={manifest.sandbox}, trusted={manifest.trusted}, "
+        f"permissions={sorted(manifest.permissions)}, entrypoint={manifest.entrypoint}"
     )
 
 
@@ -65,6 +65,8 @@ def main(argv: list[str]) -> int:
         print(f"no plugin manifest in {plugin_dir}", file=sys.stderr)
         return 66
     manifest = PluginManifest.load(manifest_path)
+    # Built before the secret is used, so nothing printed below derives from it.
+    summary = _summary(manifest)
 
     if mode == "--check":
         if manifest.signature_version == LEGACY_SIGNATURE_VERSION:
@@ -75,7 +77,7 @@ def main(argv: list[str]) -> int:
         except (PermissionError, FileNotFoundError) as exc:
             print(f"{manifest.name}: {exc}", file=sys.stderr)
             return 1
-        print(f"ok {_summary(manifest)}")
+        print(f"ok, v2 signature verifies: {summary}")
         return 0
 
     if manifest.signature and mode != "--force":
@@ -94,7 +96,7 @@ def main(argv: list[str]) -> int:
     # Verify exactly what will be written before replacing the manifest.
     PluginManifest.model_validate(written).verify(plugin_dir, secret)
     manifest_path.write_text(text, encoding="utf-8")
-    print(f"signed {_summary(manifest)} ({manifest_path})")
+    print(f"signed with a v2 signature: {summary} ({manifest_path})")
     return 0
 
 
