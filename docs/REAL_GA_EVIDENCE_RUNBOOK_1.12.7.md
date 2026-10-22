@@ -116,7 +116,7 @@ A release can be called customer-distribution Real GA only when the `Release Bui
 python scripts/check_customer_distribution_ga.py . \
   --repository "$GITHUB_REPOSITORY" \
   --commit "$GITHUB_SHA" \
-  --current-release-binding-report dist/current-release-artifact-binding.json \
+  --current-release-binding-report reports/release/current-release-artifact-binding.json \
   --write-report release/real-ga-evidence-audit-1.12.7.json
 ```
 

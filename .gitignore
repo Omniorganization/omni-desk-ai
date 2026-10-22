@@ -25,6 +25,7 @@ venv/
 # Build
 build/
 dist/
+reports/release/
 Omni-desk-AI-*/
 Omni-desk-AI-*.zip
 OmniDesk-AI-*/
