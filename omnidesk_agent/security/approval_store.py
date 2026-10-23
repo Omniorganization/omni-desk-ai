@@ -5,6 +5,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from omnidesk_agent.security.dual_approval import proposal_requesters
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from typing import Any, Optional
@@ -54,6 +55,7 @@ class ApprovalStore:
                 con.execute(ddl)
 
     def create(self, proposal: dict[str, Any], ttl_seconds: Optional[int] = None) -> str:
+        self._check_dual_approval_prerequisites(proposal)
         aid = str(uuid.uuid4())
         now = time.time()
         ttl = self.ttl_seconds if ttl_seconds is None else ttl_seconds
@@ -174,6 +176,15 @@ class ApprovalStore:
     @staticmethod
     def _requires_dual_approval(proposal: dict[str, Any]) -> bool:
         return bool(proposal.get("requires_dual_approval"))
+
+    def _check_dual_approval_prerequisites(self, proposal: dict[str, Any]) -> None:
+        # Checked before the approval row is written so a refused proposal leaves nothing behind.
+        if not self._requires_dual_approval(proposal):
+            return
+        if getattr(self, "dual_approval_store", None) is None:
+            raise PermissionError("dual approval store is required for critical approval proposals")
+        if not proposal_requesters(proposal):
+            raise PermissionError("dual approval proposal must record its requester")
 
     def _open_dual_approval_if_required(self, approval_id: str, proposal: dict[str, Any]) -> None:
         if not self._requires_dual_approval(proposal):

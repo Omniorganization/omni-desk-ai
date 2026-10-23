@@ -160,6 +160,8 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
     _validate_ui_bridge_policy(cfg, issues)
     _validate_high_risk_approval_policy(cfg, issues)
     _validate_emergency_access_policy(cfg, env, issues)
+    from omnidesk_agent.channels.channel_auth import production_channel_auth_issues
+    issues.extend(production_channel_auth_issues(cfg, env))
 
     return {"ok": not issues, "production": True, "issues": issues}
 

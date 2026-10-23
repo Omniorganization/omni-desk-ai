@@ -24,7 +24,9 @@ Break-glass is now exposed through authenticated admin routes:
 - `GET /admin/break-glass/status/{session_id}`
 - `POST /admin/break-glass/revoke/{session_id}`
 
-The session remains TTL-bound, requires a reason, requires an approver distinct from the actor, and writes an audit trail.
+The session remains TTL-bound, requires a reason, and writes an audit trail.
+
+Since 2026-10-22 a session for another actor is only a pending request until a second, distinct owner approves it through `POST /admin/break-glass/approve/{session_id}`; see `docs/runbooks/BREAK_GLASS_DUAL_CONTROL.md`.
 
 ### Remote Docker plugin sandbox closure
 
