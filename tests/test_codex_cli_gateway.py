@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 from pathlib import Path
 from uuid import uuid4
@@ -13,7 +14,7 @@ from omnidesk_agent.models.base import ModelDelta, ModelRequest, ModelResponse
 from omnidesk_agent.models.providers import PROVIDER_CLASSES
 from omnidesk_agent.server import create_app
 from omnidesk_agent.storage.sqlite import close_all_open_connections
-from scripts.verify_codex_cli_chat import checked_stream, isolated_config
+from scripts.verify_codex_cli_chat import isolated_config
 
 
 class EphemeralTokens(dict):
@@ -21,13 +22,20 @@ class EphemeralTokens(dict):
         return "<ephemeral Gateway credentials>"
 
 
-@pytest.fixture
-def gateway(tmp_path, monkeypatch):
-    """Real Gateway/auth/router/storage; only the Codex model is an offline fixture."""
+@pytest.fixture(params=["codex_cli", "claude_code_cli"])
+def gateway(request, tmp_path, monkeypatch):
+    """Real Gateway/auth/router/storage; only the subscription model is an offline fixture."""
+    provider_name = request.param
     cfg = isolated_config(
         Path(__file__).resolve().parents[1] / "examples/config.codex-cli.yaml",
         tmp_path,
     )
+    profile = cfg.models.profiles.pop("codex_cli")
+    profile.provider = provider_name
+    cfg.models.profiles[provider_name] = profile
+    cfg.llm.provider = cfg.models.default = provider_name
+    cfg.models.routing["chat"]["primary"] = provider_name
+    cfg.models.routing["profile_acl"]["high_cost_profiles"] = [provider_name]
     calls: list[tuple[str, ModelRequest]] = []
     network_attempts: list[str] = []
     tokens = EphemeralTokens({role: secrets.token_urlsafe(32) for role in ("owner", "operator")})
@@ -37,13 +45,12 @@ def gateway(tmp_path, monkeypatch):
         monkeypatch.delenv(f"OMNIDESK_{role}_ACTOR", raising=False)
     cfg.observability.otlp_endpoint_env = f"OMNIDESK_QA_{uuid4().hex}"
 
-    class OfflineCodexProvider:
-        provider_name = "codex_cli"
-
+    class OfflineSubscriptionProvider:
         def __init__(self, settings):
             self.settings = settings
             self.model = settings.model
             self.profile_name = settings.profile_name
+            self.provider_name = settings.provider
 
         async def complete(self, request):
             calls.append(("complete", request))
@@ -71,12 +78,19 @@ def gateway(tmp_path, monkeypatch):
     async def forbid_background(_runtime):
         raise AssertionError("Gateway tests must never start background services")
 
-    monkeypatch.setitem(PROVIDER_CLASSES, "codex_cli", OfflineCodexProvider)
+    def forbid_cache(*_args, **_kwargs):
+        raise AssertionError("Subscription Gateway tests must bypass the response cache")
+
+    monkeypatch.setitem(PROVIDER_CLASSES, provider_name, OfflineSubscriptionProvider)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", forbid_network)
     monkeypatch.setattr(OmniDeskRuntime, "start", forbid_background)
     app = create_app(cfg)
+    monkeypatch.setattr(app.state.runtime.token_budget, "get_cached", forbid_cache)
+    monkeypatch.setattr(app.state.runtime.token_budget, "put_cached", forbid_cache)
     try:
         assert app.state.otel_exporter is None
+        assert cfg.models.budget.require_persistent_ledger is True
+        assert app.state.runtime.model_router.cost_ledger.store is not None
         yield app, cfg, tokens, calls
     finally:
         app.state.runtime.close()
@@ -89,13 +103,17 @@ def headers(tokens, role, *, key=None):
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
-def test_anonymous_codex_chat_is_denied_before_model_call(gateway, endpoint):
-    app, _cfg, _tokens, calls = gateway
+@pytest.mark.parametrize("explicit_profile", [True, False], ids=["explicit", "default-route"])
+def test_anonymous_subscription_chat_is_denied_before_model_call(gateway, endpoint, explicit_profile):
+    app, cfg, _tokens, calls = gateway
+    payload = {"content": "2+3?"}
+    if explicit_profile:
+        payload["model_profile"] = cfg.models.default
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client:
             response = await client.post(
-                endpoint, json={"content": "2+3?", "model_profile": "codex_cli"},
+                endpoint, json=payload,
                 headers={"Idempotency-Key": str(uuid4())},
             )
         assert response.status_code == 403
@@ -108,11 +126,12 @@ def test_anonymous_codex_chat_is_denied_before_model_call(gateway, endpoint):
 
 @pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
 @pytest.mark.parametrize("explicit_profile", [True, False], ids=["explicit", "default-route"])
-def test_operator_codex_acl_returns_403_without_model_call(gateway, endpoint, explicit_profile):
-    app, _cfg, tokens, calls = gateway
-    payload = {"content": "2+3?", "role": "owner", "approved_model_profiles": ["codex_cli"]}
+def test_operator_subscription_acl_returns_403_without_model_call(gateway, endpoint, explicit_profile):
+    app, cfg, tokens, calls = gateway
+    profile = cfg.models.default
+    payload = {"content": "2+3?", "role": "owner", "approved_model_profiles": [profile]}
     if explicit_profile:
-        payload["model_profile"] = "codex_cli"
+        payload["model_profile"] = profile
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client:
@@ -133,11 +152,15 @@ def test_operator_codex_acl_returns_403_without_model_call(gateway, endpoint, ex
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
-def test_owner_codex_chat_replays_without_another_model_call(gateway, endpoint):
+@pytest.mark.parametrize("explicit_profile", [True, False], ids=["explicit", "default-route"])
+def test_owner_subscription_chat_replays_without_another_model_call(gateway, endpoint, explicit_profile):
     app, cfg, tokens, calls = gateway
-    payload = {"content": "2+3?", "model_profile": "codex_cli"}
+    profile = cfg.models.default
+    payload = {"content": "2+3?"}
+    if explicit_profile:
+        payload["model_profile"] = profile
     request_headers = headers(tokens, "owner")
-    model = cfg.models.profiles["codex_cli"].model
+    model = cfg.models.profiles[profile].model
     assert model == "gpt-6.1-sol"
 
     async def run():
@@ -149,11 +172,23 @@ def test_owner_codex_chat_replays_without_another_model_call(gateway, endpoint):
                 assert result["ok"] is True
                 answer = result["assistant_message"]
                 assert answer["content"] == "5"
-                assert answer["model_provider"] == "codex_cli"
+                assert answer["model_provider"] == profile
                 assert answer["model_name"] == model
-                assert answer["model_profile"] == "codex_cli"
+                assert answer["model_profile"] == profile
             else:
-                assert checked_stream(first, "5", model)["native_stream"] is False
+                assert first.status_code == 200
+                events = []
+                for block in first.text.split("\n\n"):
+                    name = next((line[7:] for line in block.splitlines() if line.startswith("event: ")), None)
+                    data = next((line[6:] for line in block.splitlines() if line.startswith("data: ")), None)
+                    if name and data:
+                        events.append((name, json.loads(data)))
+                assert not any(name == "chat.failed" for name, _ in events)
+                assert sum(name == "chat.completed" for name, _ in events) == 1
+                deltas = [data for name, data in events if name == "chat.delta"]
+                assert "".join(data["text"] for data in deltas) == "5"
+                assert all(data["provider"] == profile and data["model"] == model for data in deltas)
+                assert all(data["native"] is False for data in deltas)
             assert len(calls) == 1
             assert calls[0][1].metadata["role"] == "owner"
             assert calls[0][1].metadata["actor"] == f"token:{cfg.gateway.owner_token_env}"
@@ -167,3 +202,4 @@ def test_owner_codex_chat_replays_without_another_model_call(gateway, endpoint):
     assert len(calls) == 1
     ledger = app.state.runtime.model_router.cost_ledger.summary()
     assert ledger["calls"] == ledger["durable"]["calls"] == 1
+    assert ledger["durable"]["cache_hits"] == 0
