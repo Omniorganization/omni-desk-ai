@@ -96,6 +96,8 @@ Optional `systemd` variable:
 
 If omitted, the deploy script uses `/usr/local/bin/omnidesk-deploy-artifact`. If set, it must be a canonical absolute path under `/usr/local/bin` and must not contain `.` or `..` path segments.
 
+The deploy script uploads the wheel, under its own wheel file name, into a fresh `mktemp -d` directory (mode 0700) on the host and removes that directory afterwards. The root helper (install `deploy/systemd/omnidesk-deploy-artifact` from the same release) copies the upload into a root-only staging directory under `/opt/omnidesk`, refuses symlinks and non-regular files, and hashes and installs only that copy. Verified wheels are kept as `/opt/omnidesk/artifacts/<version>-<sha256>/<wheel>` for rollback.
+
 Production promotion forbids `noop` deploy mode.
 
 ## Web Admin Scope
