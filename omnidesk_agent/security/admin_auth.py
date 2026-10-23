@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.security.break_glass import has_required_approvals
+
 
 @dataclass
 class AdminAuthDecision:
@@ -16,6 +18,9 @@ class AdminAuthDecision:
     reason: str
     actor: str = "admin"
     role: str = "viewer"
+    # Set when the role was raised by a break-glass session. Routes that need a
+    # real owner (dual approval, approving or opening break-glass) refuse it.
+    break_glass_session_id: Optional[str] = None
 
 
 class AdminAuth:
@@ -180,10 +185,18 @@ class AdminAuth:
         actor = decision.actor
         try:
             session = self.break_glass_store.assert_active(session_id, actor=actor)
+            if not has_required_approvals(session):
+                raise PermissionError("break-glass session for another actor lacks a second owner approval")
         except Exception as exc:
             return AdminAuthDecision(False, f"break-glass denied: {exc}", actor=actor, role=decision.role)
         self._audit_break_glass_use(session.session_id, actor, required_role, path)
-        return AdminAuthDecision(True, f"break-glass session accepted for {required_role}", actor=actor, role=required_role)
+        return AdminAuthDecision(
+            True,
+            f"break-glass session accepted for {required_role}",
+            actor=actor,
+            role=required_role,
+            break_glass_session_id=session.session_id,
+        )
 
     def _audit_break_glass_use(self, session_id: str, actor: str, required_role: str, path: str) -> None:
         if not self.audit_log:

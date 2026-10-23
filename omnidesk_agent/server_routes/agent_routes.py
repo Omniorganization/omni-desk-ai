@@ -10,6 +10,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.security.agent_run_idempotency import AgentRunIdempotencyConflict, AgentRunIdempotencyInProgress
+from omnidesk_agent.security.dual_approval import stamp_requester
 from omnidesk_agent.security.idempotency import (
     SideEffectIdempotencyConflict,
     SideEffectIdempotencyInProgress,
@@ -89,11 +90,30 @@ class BreakGlassOpenRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class BreakGlassApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+
 class BreakGlassRevokeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     revoked_by: Optional[str] = Field(default=None, max_length=128)
     reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+def _reject_break_glass_elevation(decision: object, purpose: str) -> None:
+    """Owner-only controls that must not be satisfied by a break-glass elevated session."""
+    if getattr(decision, "break_glass_session_id", None):
+        raise HTTPException(403, f"a break-glass elevated session cannot {purpose}")
+
+
+def _authenticated_actor(decision: object) -> str:
+    actor = str(getattr(decision, "actor", "") or "").strip()
+    if not actor:
+        raise HTTPException(403, "an authenticated owner identity is required")
+    return actor
 
 
 def _require_idempotency_key(request: Request, body_key: Optional[str] = None) -> str:
@@ -268,9 +288,7 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
         key = _require_idempotency_key(request)
 
         async def call_create_approval():
-            proposal = body.model_dump(exclude_none=True)
-            proposal.setdefault("created_by", actor)
-            proposal.setdefault("proposer", actor)
+            proposal = stamp_requester(body.model_dump(exclude_none=True), str(actor))
             approval_id = approvals.create(proposal)
             return {"ok": True, "id": approval_id, "requires_dual_approval": bool(proposal.get("requires_dual_approval")), "created_by": actor}
 
@@ -303,11 +321,12 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
     @app.post("/approvals/{approval_id}/dual-approve")
     async def dual_approve_request(approval_id: str, request: Request, body: DualApproveRequest | None = None):
         decision = await admin(request, "owner")
+        _reject_break_glass_elevation(decision, "provide a dual approval")
         key = _require_idempotency_key(request)
         store = getattr(rt, "dual_approval_store", None)
         if store is None:
             raise HTTPException(404, "dual approval store not available")
-        approver = str(getattr(decision, "actor", "") or request.headers.get("x-omnidesk-actor") or "owner")
+        approver = _authenticated_actor(decision)
 
         async def call_dual_approve():
             try:
@@ -382,6 +401,7 @@ def register_break_glass_routes(app: FastAPI, cfg, rt, admin: AdminVerifier) -> 
     @app.post("/admin/break-glass/open")
     async def open_break_glass(request: Request, body: BreakGlassOpenRequest):
         decision = await admin(request, "owner")
+        _reject_break_glass_elevation(decision, "open break-glass")
         key = _require_idempotency_key(request)
         if not getattr(cfg.permissions, "break_glass_enabled", False):
             raise HTTPException(403, "break-glass is disabled")
@@ -389,31 +409,51 @@ def register_break_glass_routes(app: FastAPI, cfg, rt, admin: AdminVerifier) -> 
         if store is None:
             raise HTTPException(404, "break-glass store not available")
         session_id = str(body.session_id or uuid.uuid4())
-        approved_by = str(getattr(decision, "actor", "") or request.headers.get("x-omnidesk-actor") or "")
+        approved_by = _authenticated_actor(decision)
         target_actor = str(body.target_actor or approved_by)
-        if target_actor != approved_by and not body.requires_dual_approval:
+        delegated = target_actor != approved_by
+        if delegated and not body.requires_dual_approval:
             raise HTTPException(409, "delegated break-glass requires dual approval")
+        if delegated and not callable(getattr(store, "request_delegated", None)):
+            raise HTTPException(409, "delegated break-glass is not supported by this break-glass store")
 
         async def call_open_break_glass():
             metadata = {
                 **body.metadata,
                 "approved_by": approved_by,
                 "target_actor": target_actor,
-                "requires_dual_approval": bool(body.requires_dual_approval),
+                "requires_dual_approval": delegated,
                 "source_ip": request.client.host if request.client else None,
             }
             try:
-                session = store.open(
-                    session_id=session_id,
-                    actor=target_actor,
-                    approved_by=approved_by,
-                    reason=body.reason,
-                    ttl_seconds=body.ttl_seconds,
-                    metadata=metadata,
-                )
+                if delegated:
+                    # Pending until a second, distinct owner calls /admin/break-glass/approve.
+                    session = store.request_delegated(
+                        session_id=session_id,
+                        actor=target_actor,
+                        requested_by=approved_by,
+                        reason=body.reason,
+                        ttl_seconds=body.ttl_seconds,
+                        metadata=metadata,
+                    )
+                else:
+                    session = store.open(
+                        session_id=session_id,
+                        actor=target_actor,
+                        approved_by=approved_by,
+                        reason=body.reason,
+                        ttl_seconds=body.ttl_seconds,
+                        metadata=metadata,
+                    )
             except (ValueError, PermissionError) as exc:
                 raise HTTPException(400, str(exc)) from exc
-            return {"ok": True, "session": session.__dict__, "approved_by": approved_by, "target_actor": target_actor}
+            return {
+                "ok": True,
+                "session": session.__dict__,
+                "approved_by": approved_by,
+                "target_actor": target_actor,
+                "requires_second_approval": delegated,
+            }
 
         return await _idempotent_side_effect(
             rt,
@@ -423,6 +463,43 @@ def register_break_glass_routes(app: FastAPI, cfg, rt, admin: AdminVerifier) -> 
             resource_id=session_id if body.session_id else None,
             payload={"session_id": body.session_id, "target_actor": target_actor, "reason": body.reason, "ttl_seconds": body.ttl_seconds, "requires_dual_approval": body.requires_dual_approval, "metadata": body.metadata},
             call=call_open_break_glass,
+        )
+
+    @app.post("/admin/break-glass/approve/{session_id}")
+    async def approve_break_glass(session_id: str, request: Request, body: BreakGlassApproveRequest | None = None):
+        decision = await admin(request, "owner")
+        _reject_break_glass_elevation(decision, "approve break-glass")
+        body = body or BreakGlassApproveRequest()
+        key = _require_idempotency_key(request)
+        if not getattr(cfg.permissions, "break_glass_enabled", False):
+            raise HTTPException(403, "break-glass is disabled")
+        store = getattr(rt, "break_glass_store", None)
+        if store is None:
+            raise HTTPException(404, "break-glass store not available")
+        if not callable(getattr(store, "approve", None)):
+            raise HTTPException(409, "delegated break-glass is not supported by this break-glass store")
+        approver = _authenticated_actor(decision)
+
+        async def call_approve_break_glass():
+            metadata = {"reason": body.reason, "source_ip": request.client.host if request.client else None}
+            try:
+                session = store.approve(session_id, approver=approver, metadata=metadata)
+            except KeyError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            except PermissionError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return {"ok": True, "session": session.__dict__, "second_approver": approver}
+
+        return await _idempotent_side_effect(
+            rt,
+            route="/admin/break-glass/approve/{session_id}",
+            actor=approver,
+            key=key,
+            resource_id=session_id,
+            payload={"session_id": session_id, "body": body.model_dump(mode="json", exclude_none=True)},
+            call=call_approve_break_glass,
         )
 
     @app.get("/admin/break-glass/status/{session_id}")

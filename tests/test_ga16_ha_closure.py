@@ -42,7 +42,8 @@ def test_break_glass_elevates_authenticated_actor_only(tmp_path, monkeypatch):
     monkeypatch.setenv("VIEWER_TOKEN", "viewer-token-value")
     monkeypatch.setenv("VIEWER_ACTOR", "alice")
     store = BreakGlassStore(tmp_path / "break.sqlite3", audit_log=tmp_path / "audit.jsonl")
-    store.open(session_id="s1", actor="alice", approved_by="bob", reason="production incident", ttl_seconds=60)
+    store.request_delegated(session_id="s1", actor="alice", requested_by="bob", reason="production incident", ttl_seconds=60)
+    store.approve("s1", approver="carol")
     auth = AdminAuth(
         viewer_token_env="VIEWER_TOKEN",
         viewer_actor_env="VIEWER_ACTOR",
@@ -60,6 +61,7 @@ def test_break_glass_elevates_authenticated_actor_only(tmp_path, monkeypatch):
     assert decision.ok is True
     assert decision.actor == "alice"
     assert decision.role == "owner"
+    assert decision.break_glass_session_id == "s1"
 
     monkeypatch.setenv("VIEWER_ACTOR", "mallory")
     wrong_actor = Headers({
