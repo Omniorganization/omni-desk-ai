@@ -162,8 +162,8 @@ class FakeRouter:
 @pytest.mark.asyncio
 async def test_vision_grounding_tool_success_and_errors(tmp_path):
     img = tmp_path / "screen.png"
-    img.write_bytes(b"png")
-    tool = VisionGroundingTool(FakeRouter())
+    img.write_bytes(b"\x89PNG\r\n\x1a\npng")
+    tool = VisionGroundingTool(FakeRouter(), tmp_path)
     with pytest.raises(ValueError):
         await tool.call("bad", {}, ctx())
     missing = await tool.call("ground", {"image_path": tmp_path / "missing.png"}, ctx())
