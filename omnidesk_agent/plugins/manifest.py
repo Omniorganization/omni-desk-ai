@@ -18,6 +18,22 @@ MANIFEST_FILE_ORDER: tuple[str, ...] = ("plugin.yaml", "plugin.yml", "plugin.jso
 MANIFEST_FILE_NAMES = frozenset(MANIFEST_FILE_ORDER)
 LEGACY_SIGNATURE_VERSION = 1
 CURRENT_SIGNATURE_VERSION = 2
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+
+
+def reject_bytecode(plugin_dir: Path, name: str) -> None:
+    """Refuse compiled bytecode in a plugin directory.
+
+    Python imports a sibling module from a matching __pycache__ entry or a
+    bare .pyc without reading the signed source, so bytecode could change
+    what a signed plugin runs.
+    """
+    for path in plugin_dir.rglob("*"):
+        rel = path.relative_to(plugin_dir)
+        if "__pycache__" in rel.parts or path.suffix.lower() in _BYTECODE_SUFFIXES:
+            raise PermissionError(
+                f"plugin may not contain compiled bytecode (delete __pycache__ and .pyc files): {name}: {rel.as_posix()}"
+            )
 
 
 def find_manifest(plugin_dir: Path) -> Optional[Path]:
@@ -55,12 +71,14 @@ class PluginManifest(BaseModel):
             data = json.loads(path.read_text(encoding="utf-8"))
         return cls.model_validate(data)
 
-    def signing_payload_v2(self, plugin_dir: Path) -> bytes:
+    def plugin_files(self, plugin_dir: Path) -> dict[str, str]:
+        """sha256 of every file a v2 signature binds, keyed by relative path."""
+        reject_bytecode(plugin_dir, self.name)
         files: dict[str, str] = {}
         root = plugin_dir.resolve()
         for path in sorted(plugin_dir.rglob("*")):
             rel = path.relative_to(plugin_dir).as_posix()
-            if "__pycache__" in path.parts or rel in MANIFEST_FILE_NAMES:
+            if rel in MANIFEST_FILE_NAMES:
                 continue
             if path.is_symlink():
                 raise PermissionError(f"plugin may not contain symlinks: {self.name}: {rel}")
@@ -68,6 +86,10 @@ class PluginManifest(BaseModel):
                 if root not in path.resolve().parents:
                     raise PermissionError(f"plugin file escapes plugin directory: {self.name}: {rel}")
                 files[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return files
+
+    def signing_payload_v2(self, plugin_dir: Path) -> bytes:
+        files = self.plugin_files(plugin_dir)
         payload = {
             "v": 2,
             "name": self.name,
@@ -87,6 +109,32 @@ class PluginManifest(BaseModel):
         self.signature_version = CURRENT_SIGNATURE_VERSION
         self.signature = hmac.new(signing_secret.encode("utf-8"), self.signing_payload_v2(plugin_dir), hashlib.sha256).hexdigest()
 
+    def copy_verified(self, plugin_dir: Path, dest: Path, signing_secret: Optional[str], *, allow_legacy_v1: bool = False) -> None:
+        """Copy the plugin directory to ``dest`` (which must not exist) and verify the copy.
+
+        Run the plugin from the copy: what runs is exactly what was verified,
+        whatever happens to the original directory afterwards.
+        """
+        reject_bytecode(plugin_dir, self.name)
+        dest.mkdir()
+        dest.chmod(0o755)
+        for path in sorted(plugin_dir.rglob("*")):
+            rel = path.relative_to(plugin_dir)
+            target = dest / rel
+            if path.is_symlink():
+                raise PermissionError(f"plugin may not contain symlinks: {self.name}: {rel.as_posix()}")
+            if path.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                target.chmod(0o755)
+            elif path.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(path.read_bytes())
+                # Readable by the sandbox user, which is not the gateway user.
+                target.chmod(0o644)
+            else:
+                raise PermissionError(f"plugin may not contain special files: {self.name}: {rel.as_posix()}")
+        self.verify(dest, signing_secret, allow_legacy_v1=allow_legacy_v1)
+
     def verify(self, plugin_dir: Path, signing_secret: Optional[str] = None, *, allow_legacy_v1: bool = False) -> None:
         """Check the entrypoint digest and the HMAC signature.
 
@@ -97,6 +145,7 @@ class PluginManifest(BaseModel):
         entry = (plugin_dir / self.entrypoint).resolve()
         if not entry.exists():
             raise FileNotFoundError(entry)
+        reject_bytecode(plugin_dir, self.name)
         digest = hashlib.sha256(entry.read_bytes()).hexdigest()
         if not self.sha256:
             raise PermissionError(f"plugin sha256 is required: {self.name}")
@@ -110,7 +159,7 @@ class PluginManifest(BaseModel):
             message = self.signing_payload_v2(plugin_dir)
         elif self.signature_version == LEGACY_SIGNATURE_VERSION:
             if not allow_legacy_v1:
-                raise PermissionError(f"plugin requires a v2 manifest signature (re-sign with scripts/sign_plugin.py): {self.name}")
+                raise PermissionError(f"plugin requires a v2 manifest signature (re-sign with scripts/sign_plugin.py --migrate): {self.name}")
             message = digest.encode("utf-8")
         else:
             raise PermissionError(f"unsupported plugin signature_version {self.signature_version}: {self.name}")

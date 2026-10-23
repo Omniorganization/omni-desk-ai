@@ -18,6 +18,10 @@ Shell, plugin, and self-upgrade Docker execution use a restrictive profile:
 
 Read-only shell commands mount the workspace read-only. Write-capable commands require the upgrade shell profile and remain subject to approval.
 
+A workspace or plugin directory whose path contains a comma, `=`, a quote or a control character is refused instead of being passed to `--mount type=bind,src=...`, where Docker would read those characters as extra mount fields. This applies to the shell tool, plugins, the self-upgrade runner and the remote sandbox runner.
+
+With the host `argv` backend (development only; production requires `docker` or `remote_docker`), the shell tool and the self-upgrade test runner start commands with a minimal environment, because those commands run workspace code such as `conftest.py`: `PATH`, `HOME`, locale and temp-dir variables, `VIRTUAL_ENV`, `PYTHONPATH`, CA bundle paths (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`), git author/committer identity, `NO_PROXY`, and the Windows system and user-profile variables. `git pull`/`push`/`commit` also get `SSH_AUTH_SOCK`, `GIT_SSH` and `GIT_SSH_COMMAND`; `git pull`/`push` and `pip install` also get the proxy variables, which can embed credentials. Gateway tokens, API keys and everything else (including other `PIP_*` settings such as index URLs) are not passed; configure those tools through their own config files instead.
+
 ## Docker socket warning
 
 Do not expose `/var/run/docker.sock` to the OmniDesk application container. A container with Docker socket access can usually escape to host-level control. Use a dedicated rootless sandbox runner when containerized OmniDesk must launch Docker sandboxes.
@@ -28,7 +32,11 @@ Production plugin execution must use `sandbox: docker`. `subprocess` is retained
 
 ## Plugin signatures
 
-Every environment requires a v2 manifest signature. v2 is an HMAC (key: `OMNIDESK_PLUGIN_SIGNING_SECRET`) over the name, version, entrypoint, `sandbox`, `permissions`, `trusted` and the SHA-256 of every file in the plugin directory, so editing the manifest or any sibling module invalidates it. A plugin directory may contain only one of `plugin.yaml`, `plugin.yml` or `plugin.json`, and a plugin may not use the name of a built-in tool or of another plugin.
+Every environment requires a v2 manifest signature. v2 is an HMAC (key: `OMNIDESK_PLUGIN_SIGNING_SECRET`) over the name, version, entrypoint, `sandbox`, `permissions`, `trusted` and the SHA-256 of every file in the plugin directory, so editing the manifest or any sibling module invalidates it. A plugin directory may contain only one of `plugin.yaml`, `plugin.yml` or `plugin.json`, and a plugin may not use the name of a built-in tool or of another plugin. Names are compared ignoring case and treating `-`, `.` and `_` alike, and every built-in tool name (`files`, `shell`, `gmail`, `pull_request`, ...) is reserved even while that tool is disabled.
+
+A plugin directory may not contain `__pycache__` directories or `.pyc`/`.pyo` files: Python would import a sibling module from bytecode without reading the signed source. Delete them. `__pycache__` was never part of the signature, so removing it needs no re-signing; a bare `.pyc` was hashed into an existing v2 signature, so re-sign (`--force`, after review) once it is removed. The subprocess runner starts plugins with `python3 -I -B`.
+
+The plugin directory is resolved once at load and its signature checked there. Every call then copies that directory into a private temporary directory, verifies the copy and runs the copy (subprocess, local docker mount or remote runner archive), so a plugin whose files changed (or gained bytecode) after loading is refused, and files changed while a call starts never run. Plugin call approvals include `plugin_args` and their SHA-256.
 
 Sign or re-sign a plugin after reviewing its manifest fields and files (the signature vouches for whatever is there):
 
@@ -36,7 +44,14 @@ Sign or re-sign a plugin after reviewing its manifest fields and files (the sign
 OMNIDESK_PLUGIN_SIGNING_SECRET=... python scripts/sign_plugin.py PLUGIN_DIR
 ```
 
-If the manifest already carries a signature, the script re-signs only when that signature still verifies (for v1: the entrypoint digest), so migrating a plugin that was modified after signing fails with exit 1. Review the change, then re-sign with `--force`. The same applies after you edit a v2 plugin yourself.
+Every signing run prints the manifest fields and every file with its SHA-256. A v1 signature covers only the entrypoint digest, so moving a v1 manifest that was ever signed (it has a `signature` or `sha256`) to v2 signs the manifest fields and the other files for the first time, whatever they contain now. The script therefore refuses it unless `--migrate` is given; without it, it prints that list for review and exits 1:
+
+```bash
+OMNIDESK_PLUGIN_SIGNING_SECRET=... python scripts/sign_plugin.py PLUGIN_DIR            # lists what migration would sign
+OMNIDESK_PLUGIN_SIGNING_SECRET=... python scripts/sign_plugin.py --migrate PLUGIN_DIR  # after reviewing that list
+```
+
+If the manifest already carries a signature, the script re-signs only when that signature still verifies (for v1: the entrypoint digest), so migrating a plugin that was modified after signing fails with exit 1. Review the change, then re-sign with `--force` (`--migrate --force` for a v1 manifest). The same applies after you edit a v2 plugin yourself.
 
 `python scripts/sign_plugin.py --check PLUGIN_DIR` verifies without writing and exits 1 while the manifest is still v1 or does not verify, so it can be run over existing plugin directories before upgrading.
 
@@ -62,7 +77,7 @@ Remove the key from the config before rolling back to a release that does not kn
 
 ## Vision tool
 
-`vision.ground` only reads `image_path` inside the workspace root. Relative paths are resolved against the process directory as before (this is how the computer tool reports screenshots when `workspace.root` is relative); the resolved path must stay inside the workspace, so symlinks leaving it are refused. The file must be a regular `.png`, `.jpg`/`.jpeg`, `.gif` or `.webp` file of at most 10 MiB whose content matches its type. The checks run before the approval request and again after it, and the approved path must not have changed. Images from other locations (for example a UI bridge that saves screenshots elsewhere) must be copied into the workspace first.
+`vision.ground` only reads `image_path` inside the workspace root. Relative paths are resolved against the process directory as before (this is how the computer tool reports screenshots when `workspace.root` is relative); the resolved path must stay inside the workspace, so symlinks leaving it are refused. The file must be a regular `.png`, `.jpg`/`.jpeg`, `.gif` or `.webp` file of at most 10 MiB whose content matches its type. The checks run before the approval request and again after it, and the approved path must not have changed. The approval carries the full instruction and the image's SHA-256, and the image content must still match that digest after approval. Images from other locations (for example a UI bridge that saves screenshots elsewhere) must be copied into the workspace first.
 
 ## Browser control policy
 

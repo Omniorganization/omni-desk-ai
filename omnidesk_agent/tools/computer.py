@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
 
 
 class ComputerTool:
@@ -169,7 +169,8 @@ class ComputerTool:
     async def type_text(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         expected = self._require_expected_result(args, "type_text")
         text = str(args.get("text", ""))
-        decision = ctx.permissions.verify(proposal("computer", "type_text", {"text_preview": text[:200], "length": len(text), "expected_result": expected}, "high", "即将向当前焦点窗口输入文本", ctx))
+        approved: dict[str, Any] = {**bound_content("text", text), "expected_result": expected}
+        decision = ctx.permissions.verify(proposal("computer", "type_text", approved, "high", "即将向当前焦点窗口输入文本", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: type {len(text)} chars")
         if not decision.allowed:

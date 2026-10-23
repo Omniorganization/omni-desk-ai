@@ -210,7 +210,7 @@ class _Proc:
 def test_shell_argv_backend_spawns_hardened_git_but_approves_plain_argv(monkeypatch, tmp_path: Path):
     created = []
 
-    async def fake_exec(*argv, cwd, stdout, stderr):
+    async def fake_exec(*argv, cwd, stdout, stderr, env=None):
         created.append(list(argv))
         return _Proc()
 
