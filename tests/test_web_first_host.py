@@ -55,6 +55,10 @@ def test_host_generates_only_requested_services_with_matching_model(isolated_hos
     assert config["gateway"]["host"] == "127.0.0.1"
     assert config["gateway"]["allow_local_admin_without_token"] is False
     assert config["gateway"]["admin_allowed_ips"] == ["127.0.0.1"]
+    # Pre-auth quotas key on the address the loopback proxy (nginx or the Web container) forwards.
+    assert config["api_resource_guard"]["trusted_client_ip_header"] == "x-omnidesk-client-ip"
+    assert config["api_resource_guard"]["trusted_client_ip_header_peers"] == ["127.0.0.1"]
+    assert config["api_resource_guard"]["trusted_proxy_ips"] == []  # Nothing sends X-Forwarded-For to it.
     assert config["app_sync"]["require_device_signed_requests_in_production"] is True
     assert config["sandbox"]["runner_url"] == "http://127.0.0.1:18890"
     assert config["sandbox"]["docker_network"] == "none"
@@ -64,8 +68,11 @@ def test_host_generates_only_requested_services_with_matching_model(isolated_hos
     assert (destination / "web.env").exists() is not gateway_only
     if not gateway_only:
         assert "OMNI_WEB_IMAGE_ID=" + args.web_image_id in (destination / "web.env").read_text()
+        assert "OMNI_WEB_SESSION_SECRET=" + fixture_secret in (destination / "web.env").read_text()
     nginx = (destination / "nginx.conf").read_text()
     assert "proxy_pass http://127.0.0.1:" + ("18789;" if gateway_only else "13000;") in nginx
+    client_ip = "proxy_set_header X-OmniDesk-Client-IP " + ("$remote_addr;" if gateway_only else '"";')
+    assert client_ip in nginx  # nginx always overwrites the client-supplied value.
     assert "@" not in nginx
     assert state.stat().st_mode & 0o777 == 0o700
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in destination.iterdir())

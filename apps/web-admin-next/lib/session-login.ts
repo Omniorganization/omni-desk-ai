@@ -1,3 +1,5 @@
+import { CLIENT_IP_HEADER } from './rate-limit';
+
 export type SessionRole = 'viewer' | 'operator' | 'owner';
 
 const ROLES = new Set<SessionRole>(['viewer', 'operator', 'owner']);
@@ -18,14 +20,22 @@ export function normalizeGatewayRole(value: unknown): SessionRole {
   return ROLES.has(role) ? role : 'viewer';
 }
 
+/** Rejects values no gateway token can have (and that cannot form a header) without a gateway call. */
+export function isPlausibleGatewayToken(token: string): boolean {
+  return /^[\x21-\x7e]{1,1024}$/.test(token);
+}
+
 export async function verifyGatewayIdentity(
   gatewayUrl: string,
   token: string,
   fetchImpl: typeof fetch = fetch,
+  clientIp: string | null = null,
 ): Promise<GatewayIdentity> {
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  if (clientIp) headers[CLIENT_IP_HEADER] = clientIp;
   const response = await fetchImpl(`${gatewayUrl.replace(/\/$/, '')}/admin/session/identity`, {
     method: 'GET',
-    headers: { authorization: `Bearer ${token}` },
+    headers,
     cache: 'no-store',
   });
   if (!response.ok) {

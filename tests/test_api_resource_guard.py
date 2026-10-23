@@ -171,8 +171,11 @@ def test_client_key_only_trusts_forwarded_for_from_configured_proxy():
     request = _request("/api/chat", headers={"x-forwarded-for": "198.51.100.77, 10.0.0.1"})
 
     assert _client_key(request, ApiResourceGuardConfig()) == "203.0.113.10"
-    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["203.0.113.10"])) == "198.51.100.77"
-    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["203.0.113.0/24"])) == "198.51.100.77"
+    # The trusted peer vouches only for the hop it appended (10.0.0.1); the
+    # left entry was supplied by that untrusted hop and must not be used.
+    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["203.0.113.10"])) == "10.0.0.1"
+    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["203.0.113.0/24"])) == "10.0.0.1"
+    assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["203.0.113.10", "10.0.0.0/8"])) == "198.51.100.77"
     assert _client_key(request, ApiResourceGuardConfig(trusted_proxy_ips=["198.51.100.0/24"])) == "203.0.113.10"
 
 
