@@ -321,7 +321,7 @@ def test_shell_call_success_failure_timeout_and_arg_parsing(monkeypatch, tmp_pat
         procs = [FakeProc(0, b"ok", b""), FakeProc(2, b"", b"boom"), FakeProc(0, b"", b"", hang=True)]
         created = []
 
-        async def fake_exec(*argv, cwd, stdout, stderr):
+        async def fake_exec(*argv, cwd, stdout, stderr, env=None):
             created.append(argv)
             return procs.pop(0)
 

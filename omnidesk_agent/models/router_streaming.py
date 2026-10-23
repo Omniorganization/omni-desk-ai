@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, AsyncIterator
 
 from omnidesk_agent.models.base import ModelDelta, ModelRequest, ModelResponse
-from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error
+from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error, safe_error_text
 from omnidesk_agent.models.provider_streaming import stream_provider
 from omnidesk_agent.models.router import ModelRouter
 
@@ -107,7 +107,7 @@ class GovernedStreamingRouter:
             raise RuntimeError(
                 "All model profiles failed for streaming "
                 f"task={request.task}; tried={tried}; "
-                f"native_error={last_error}; fallback_error={exc}"
+                f"native_error={safe_error_text(last_error)}; fallback_error={safe_error_text(exc)}"
             ) from exc
         yield ModelDelta(
             sequence=1,

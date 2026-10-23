@@ -17,6 +17,19 @@ class WebhookEnvelope:
     raw: Optional[dict[str, Any]] = None
 
 
+@dataclass(frozen=True)
+class SignedRequestNonce:
+    """A signature-covered one-time value the gateway consumes in shared storage.
+
+    Adapters whose signature does not cover the body return one from
+    ``signed_request_nonce`` so a captured signed request cannot be replayed on
+    another replica or after a restart.
+    """
+
+    value: str
+    ttl_seconds: float
+
+
 class Channel(Protocol):
     name: str
 

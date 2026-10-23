@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 from omnidesk_agent.config import UIBridgeConfig
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
 from omnidesk_agent.tools.registry import ToolRegistry
 
 class UIBridgeTool:
@@ -47,7 +47,8 @@ class UIBridgeTool:
         if action == "type_visible_reply":
             text = str(args["text"])
             expected = str(args.get("expected_result") or f"Type visible reply in {app}")
-            ctx.permissions.verify(proposal("ui_bridge", "type_visible_reply", {"app": app, "text_preview": text[:200], "length": len(text), "expected_result": expected}, "high", "通过可见 UI Bridge 输入文字", ctx))
+            approved: dict[str, Any] = {"app": app, **bound_content("text", text), "expected_result": expected}
+            ctx.permissions.verify(proposal("ui_bridge", "type_visible_reply", approved, "high", "通过可见 UI Bridge 输入文字", ctx))
             return await self.tools.call("computer", "type_text", {"text": text, "expected_result": expected}, ctx)
         if action == "press_send":
             expected = str(args.get("expected_result") or f"Send currently visible composed message in {app}")
