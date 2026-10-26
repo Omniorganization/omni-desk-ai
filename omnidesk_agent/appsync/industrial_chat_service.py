@@ -114,11 +114,16 @@ class IndustrialChatTurnService(ChatTurnService):
         repository = self.atomic_repository
         if repository is None:
             return
-        organization_id = (
-            str(repository.get_conversation(actor, conversation_id)["organization_id"])
-            if conversation_id
-            else repository.organization_for_actor(actor)
-        )
+        try:
+            organization_id = (
+                str(repository.get_conversation(actor, conversation_id)["organization_id"])
+                if conversation_id
+                else repository.organization_for_actor(actor)
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         metadata: dict[str, Any] = {
             "actor": actor,
             "role": role,

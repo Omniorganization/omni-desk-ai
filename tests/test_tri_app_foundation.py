@@ -664,7 +664,8 @@ def test_device_enrollment_and_push_registration(tmp_path):
         device_id="mobile-1",
         public_key="pk",
     )
-    assert completed["status"] == "completed"
+    # Pairing binds the device and key; only a verified challenge completes it.
+    assert completed["status"] == "paired"
     store.register_device(
         actor="alice",
         device_id="mobile-1",
