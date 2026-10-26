@@ -1,14 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
-import { OmniApiClient, normalizeGatewayBaseUrl } from './api';
+import { OmniApiClient } from './api';
 import { buildControlHubPanels } from './controlHub';
 import { advertisedRuntimeCapabilities, executeRuntimeTask } from './executor';
 import { createDesktopDeviceRequestSigner, loadOrCreateDesktopIdentity, DesktopDeviceIdentity } from './deviceIdentity';
+import { GatewayTarget, gatewayDraftState, startGatewayBackgroundLoop } from './gatewayConnection';
 
 const DEFAULT_GATEWAY = 'http://127.0.0.1:18789';
 const VERSION = '1.12.7';
 const CAPABILITIES = advertisedRuntimeCapabilities();
+const NOT_CONNECTED_MESSAGE = '请先点击「连接 Gateway」确认网关地址。';
+const PENDING_CHANGES_MESSAGE = '连接配置已修改但尚未确认：后台心跳、同步与任务领取已暂停。点击「连接 Gateway」确认新配置（会在该网关重新注册本机设备），或改回已连接的配置。';
+const PENDING_ACTION_MESSAGE = '连接配置有未确认的修改，请先点击「连接 Gateway」确认。';
 
 type ProjectItem = {
   id: string;
@@ -100,6 +104,21 @@ async function keychainSet(key: string, value: string): Promise<void> {
   await invoke('secure_set', { key, value });
 }
 
+/**
+ * Saved only after the gateway accepted this device. The URL is cleared first and written last,
+ * so a write that fails part-way leaves no saved gateway to resume rather than a mixed set.
+ */
+async function persistConfirmedGateway(gateway: GatewayTarget): Promise<void> {
+  await keychainSet('omni.gateway', '');
+  await keychainSet('omni.operatorToken', gateway.token);
+  await keychainSet('omni.actor', gateway.actor);
+  await keychainSet('omni.gateway', gateway.baseUrl);
+}
+
+function gatewayClient(gateway: GatewayTarget, identity: DesktopDeviceIdentity | null): OmniApiClient {
+  return gateway.client(identity ? createDesktopDeviceRequestSigner(identity.deviceId) : undefined);
+}
+
 function projectInitials(name: string) {
   return name.trim().slice(0, 2).toUpperCase() || 'P';
 }
@@ -146,26 +165,57 @@ function App() {
   const [newProjectName, setNewProjectName] = useState('');
   const [projectError, setProjectError] = useState('');
   const [showAccountSettings, setShowAccountSettings] = useState(true);
+  // Requests only ever go to the confirmed gateway; the form fields above are a draft until "connect" succeeds.
+  const [confirmedGateway, setConfirmedGateway] = useState<GatewayTarget | null>(null);
+  // Read by async work to drop results that arrive after the operator switched gateways.
+  const confirmedRef = useRef<GatewayTarget | null>(null);
+  const connectAttempt = useRef(0);
+  const keychainWrites = useRef<Promise<void>>(Promise.resolve());
+  const draftState = gatewayDraftState(confirmedGateway, { gatewayUrl, token, actor });
   const controlHubPanels = useMemo(() => buildControlHubPanels(snapshot, null), [snapshot]);
-  const client = useMemo(() => new OmniApiClient({
-    baseUrl: gatewayUrl.replace(/\/$/, ''),
-    token,
-    actor,
-    deviceSigner: deviceIdentity ? createDesktopDeviceRequestSigner(deviceIdentity.deviceId) : undefined,
-  }), [gatewayUrl, token, actor, deviceIdentity]);
+
+  function confirmGateway(gateway: GatewayTarget) {
+    confirmedRef.current = gateway;
+    setConfirmedGateway(gateway);
+  }
 
   useEffect(() => {
-    keychainGet('omni.gateway').then(v => v && setGatewayUrl(v));
-    keychainGet('omni.operatorToken').then(v => v && setToken(v));
-    keychainGet('omni.actor').then(v => v && setActor(v));
+    Promise.all([keychainGet('omni.gateway'), keychainGet('omni.operatorToken'), keychainGet('omni.actor')]).then(([savedGateway, savedToken, savedActor]) => {
+      // The operator connected while the keychain was still being read: keep what they confirmed.
+      if (confirmedRef.current) return;
+      // Only a complete, still-valid saved connection resumes; anything else only fills the form and waits for "connect".
+      const restored = GatewayTarget.restore({ gatewayUrl: savedGateway, token: savedToken, actor: savedActor });
+      if (restored) {
+        setGatewayUrl(savedGateway);
+        setToken(savedToken);
+        setActor(savedActor);
+        confirmGateway(restored);
+        return;
+      }
+      if (savedGateway) setGatewayUrl(savedGateway);
+      if (savedToken) setToken(savedToken);
+      if (savedActor) setActor(savedActor);
+    });
   }, []);
 
-  async function refreshProjects(activeClient = client): Promise<ProjectItem[]> {
+  useEffect(() => {
+    if (draftState !== 'pending') setError(current => current === PENDING_ACTION_MESSAGE ? '' : current);
+  }, [draftState]);
+
+  /** Client for user actions: the confirmed gateway, and only while the form still shows it. */
+  function confirmedClient(identity: DesktopDeviceIdentity | null = deviceIdentity): OmniApiClient {
+    if (!confirmedGateway) throw new Error(NOT_CONNECTED_MESSAGE);
+    if (draftState === 'pending') throw new Error(PENDING_ACTION_MESSAGE);
+    return gatewayClient(confirmedGateway, identity);
+  }
+
+  async function refreshProjects(activeClient: OmniApiClient, isCurrent: () => boolean = () => true): Promise<ProjectItem[]> {
     const result = await activeClient.projects();
     const rawProjects: unknown[] = Array.isArray(result.projects) ? result.projects : [];
     const loaded: ProjectItem[] = rawProjects
       .map((project: unknown) => projectFromGateway(project && typeof project === 'object' ? project as GatewayProject : {}))
       .filter((project: ProjectItem) => project.id);
+    if (!isCurrent()) return loaded;
     setProjects(loaded);
     setActiveProjectId(current => current && loaded.some(project => project.id === current) ? current : (loaded[0]?.id || ''));
     return loaded;
@@ -173,26 +223,40 @@ function App() {
 
   async function connect() {
     setError('');
+    const attempt = ++connectAttempt.current;
     try {
-      // Validate before persisting so a bad URL never reaches the keychain.
-      normalizeGatewayBaseUrl(gatewayUrl);
-      await keychainSet('omni.gateway', gatewayUrl);
-      await keychainSet('omni.operatorToken', token);
-      await keychainSet('omni.actor', actor);
+      // Validate before anything is sent or persisted so a bad URL never reaches the keychain.
+      const target = GatewayTarget.fromSettings({ gatewayUrl, token, actor });
       const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
       setDeviceIdentity(identity);
-      const signedClient = new OmniApiClient({
-        baseUrl: gatewayUrl.replace(/\/$/, ''),
-        token,
-        actor,
-        deviceSigner: createDesktopDeviceRequestSigner(identity.deviceId),
-      });
+      const switching = confirmedGateway !== null && !target.sameGatewayAs(confirmedGateway);
+      const signedClient = gatewayClient(target, identity);
+      // Every confirm registers this device with the gateway, so a changed address goes through device verification again.
       await signedClient.registerDesktop(identity.deviceId, navigator.platform, CAPABILITIES, identity.publicKeyPem);
-      await signedClient.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
-      setSnapshot(await signedClient.bootstrap());
-      await refreshProjects(signedClient);
+      await signedClient.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, switching ? undefined : claimedTask?.task_id);
+      if (attempt !== connectAttempt.current) return;
+      if (switching) {
+        // Nothing from the previous gateway carries over, and the auto worker has to be turned on again for the new one.
+        setAutoWorkerEnabled(false);
+        setClaimedTask(null);
+        setSnapshot(null);
+        setProjects([]);
+        setActiveProjectId('');
+        setChatConversationId('');
+        setChatMessages([]);
+      }
+      confirmGateway(target);
+      const isCurrent = () => confirmedRef.current === target;
+      // Queued so two quick connects cannot interleave their keychain writes.
+      const saved = keychainWrites.current.then(() => persistConfirmedGateway(target));
+      keychainWrites.current = saved.catch(() => undefined);
+      await saved;
+      const latest = await signedClient.bootstrap();
+      if (!isCurrent()) return;
+      setSnapshot(latest);
+      await refreshProjects(signedClient, isCurrent);
     } catch (e: any) {
-      setError(e.message || String(e));
+      if (attempt === connectAttempt.current) setError(e.message || String(e));
     }
   }
 
@@ -201,6 +265,7 @@ function App() {
     try {
       const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
       setDeviceIdentity(identity);
+      const client = confirmedClient(identity);
       const result = await client.claimTask(identity.deviceId, CAPABILITIES, 60);
       setClaimedTask(result.task || null);
       if (result.task) {
@@ -214,31 +279,42 @@ function App() {
 
   async function complete(status: 'completed' | 'failed') {
     if (!claimedTask?.task_id) return;
-    await client.updateTaskStatus(claimedTask.task_id, status, status === 'completed' ? 'Completed by Omni Desktop Runtime' : 'Failed by Omni Desktop Runtime', deviceIdentity?.deviceId);
-    setWorkerLog(items => [`${new Date().toISOString()} ${status}: ${claimedTask.task_id}`, ...items].slice(0, 20));
-    setClaimedTask(null);
-    setSnapshot(await client.bootstrap());
+    setError('');
+    try {
+      const client = confirmedClient();
+      await client.updateTaskStatus(claimedTask.task_id, status, status === 'completed' ? 'Completed by Omni Desktop Runtime' : 'Failed by Omni Desktop Runtime', deviceIdentity?.deviceId);
+      setWorkerLog(items => [`${new Date().toISOString()} ${status}: ${claimedTask.task_id}`, ...items].slice(0, 20));
+      setClaimedTask(null);
+      setSnapshot(await client.bootstrap());
+    } catch (e: any) {
+      setError(e.message || String(e));
+    }
   }
 
-  async function runSafeWorkerCycle() {
+  async function runSafeWorkerCycle(gateway: GatewayTarget) {
     if (workerBusy.current) return;
     workerBusy.current = true;
     try {
     const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
     setDeviceIdentity(identity);
+    const client = gatewayClient(gateway, identity);
+    // A cycle still running when the operator switches gateways finishes against its own gateway without touching the new one's state.
+    const isCurrent = () => confirmedRef.current === gateway;
     const result = await client.claimTask(identity.deviceId, CAPABILITIES, 120);
     const task = result.task || null;
     if (!task) {
       await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES);
       return;
     }
-    setClaimedTask(task);
+    if (isCurrent()) setClaimedTask(task);
     await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, task.task_id);
     const execution = await executeRuntimeTask(task);
     await client.updateTaskStatus(task.task_id, execution.status, execution.summary, identity.deviceId);
     setWorkerLog(items => [`${new Date().toISOString()} ${execution.status}: ${execution.summary}`, ...items].slice(0, 20));
+    if (!isCurrent()) return;
     setClaimedTask(null);
-    setSnapshot(await client.bootstrap());
+    const latest = await client.bootstrap();
+    if (isCurrent()) setSnapshot(latest);
     } finally {
       workerBusy.current = false;
     }
@@ -249,6 +325,7 @@ function App() {
     try {
       const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
       setDeviceIdentity(identity);
+      const client = confirmedClient(identity);
       let conversationId = chatConversationId;
       if (!conversationId) {
         const created = await client.createConversation('Desktop Ask Mode', identity.deviceId);
@@ -276,6 +353,7 @@ function App() {
     }
     setProjectError('');
     try {
+      const client = confirmedClient();
       const result = await client.createProject(name, '', {}, deviceIdentity?.deviceId, operationKey('desktop-project-create'));
       const project = projectFromGateway(result.project);
       setProjects(current => [project, ...current.filter(item => item.id !== project.id)]);
@@ -292,6 +370,7 @@ function App() {
     if (!project) return;
     setProjectError('');
     try {
+      const client = confirmedClient();
       if (action === 'delete') {
         await client.deleteProject(project.id, operationKey('desktop-project-delete'));
       } else {
@@ -301,30 +380,30 @@ function App() {
         if (action === 'rename' && !payload.name) return;
         await client.updateProject(project.id, payload, operationKey(`desktop-project-${action}`));
       }
-      await refreshProjects();
+      await refreshProjects(client);
     } catch (e: any) {
       setProjectError(e.message || String(e));
     }
   }
 
-  useEffect(() => {
-    if (!token) return;
-    const timer = window.setInterval(async () => {
-      try {
-        if (autoWorkerEnabled) {
-          await runSafeWorkerCycle();
-        } else {
-          const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
-          setDeviceIdentity(identity);
-          await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
-          setSnapshot(await client.bootstrap());
-        }
-      } catch (e: any) {
-        setError(e.message || String(e));
+  useEffect(() => startGatewayBackgroundLoop({
+    confirmed: confirmedGateway,
+    draft: () => ({ gatewayUrl, token, actor }),
+    intervalMs: autoWorkerEnabled ? 5000 : 15000,
+    tick: async gateway => {
+      if (autoWorkerEnabled) {
+        await runSafeWorkerCycle(gateway);
+        return;
       }
-    }, autoWorkerEnabled ? 5000 : 15000);
-    return () => window.clearInterval(timer);
-  }, [client, token, claimedTask, autoWorkerEnabled]);
+      const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
+      setDeviceIdentity(identity);
+      const client = gatewayClient(gateway, identity);
+      await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, claimedTask?.task_id);
+      const latest = await client.bootstrap();
+      if (confirmedRef.current === gateway) setSnapshot(latest);
+    },
+    onError: (e: any) => setError(e?.message || String(e)),
+  }), [confirmedGateway, gatewayUrl, token, actor, claimedTask, autoWorkerEnabled, deviceIdentity]);
 
   const activeProject = projects.find(project => project.id === activeProjectId) || null;
   const activeProjectName = activeProject?.name || '未选择项目';
@@ -377,6 +456,7 @@ function App() {
           <div className="composer-actions"><button type="button">＋ 附件</button><select value={chatProfile} onChange={event => setChatProfile(event.target.value)}><option value="fast">快速</option><option value="planner">规划</option><option value="local">本地</option></select><button type="button" className="send" onClick={askAssistant}>↑</button></div>
         </section>
         {error && <p className="error">{error}</p>}
+        {draftState === 'pending' && <p className="notice">{PENDING_CHANGES_MESSAGE}</p>}
       </section>
 
       <section className="quick-grid">
@@ -397,7 +477,7 @@ function App() {
     <aside className="desktop-rightbar">
       {showAccountSettings && <section className="panel account-panel"><div className="panel-title"><h2>账户设置</h2><span>Codex-style</span></div>{ACCOUNT_SETTINGS.map(setting => <button className="setting-row" key={setting.title} type="button"><span><strong>{setting.title}</strong><small>{setting.detail}</small></span><em>{setting.action}</em></button>)}</section>}
       <section className="panel"><div className="panel-title"><h2>当前项目</h2><span>{activeProject ? (activeProject.archived ? 'archived' : 'ready') : '待创建'}</span></div><p>{activeProject ? `${activeProject.name} 已从 Gateway 同步到 Desktop Runtime。` : '请先连接 Gateway 并创建或选择项目。'}</p>{activeProject && <p><button type="button" onClick={() => void mutateProject('rename')}>重命名</button>{' '}<button type="button" onClick={() => void mutateProject('archive')}>{activeProject.archived ? '恢复' : '归档'}</button>{' '}<button type="button" onClick={() => void mutateProject('delete')}>删除</button></p>}<p>Device: {deviceIdentity?.deviceId || 'not enrolled'}</p></section>
-      <section className="panel"><h2>连接配置</h2><label>Gateway URL<input value={gatewayUrl} onChange={e => setGatewayUrl(e.target.value)} /></label><label>Operator Token<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" /></label><label>Actor<input value={actor} onChange={e => setActor(e.target.value)} /></label></section>
+      <section className="panel"><h2>连接配置</h2><p className={`connection-status ${draftState}`}>{confirmedGateway ? `已确认：${confirmedGateway.baseUrl}${draftState === 'pending' ? '（有未确认的修改，后台已暂停）' : ''}` : '未连接：确认网关前不发送心跳，也不领取任务。'}</p><label>Gateway URL<input value={gatewayUrl} onChange={e => setGatewayUrl(e.target.value)} /></label><label>Operator Token<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" /></label><label>Actor<input value={actor} onChange={e => setActor(e.target.value)} /></label></section>
       <section className="panel"><h2>审批状态</h2><p>待审批：{pendingApprovals.length}</p><pre>{JSON.stringify(pendingApprovals.slice(0, 3), null, 2)}</pre></section>
       <section className="panel"><h2>通知</h2><p>{notifications.length} 条</p><pre>{JSON.stringify(notifications.slice(0, 5), null, 2)}</pre></section>
     </aside>
@@ -461,6 +541,8 @@ function App() {
       .setting-row em { font-style: normal; border: 1px solid rgba(150,168,205,.16); border-radius: 999px; padding: 4px 8px; color: #c4cfe2; font-size: 12px; }
       pre { overflow: auto; max-height: 320px; color: #d8dee9; }
       .error { color: #ff9aad; } .small-error { margin: 0 0 8px; font-size: 12px; }
+      .notice, .connection-status.pending { color: #ffd38a; }
+      .connection-status { font-size: 12px; color: #93a1b5; overflow-wrap: anywhere; }
     `}</style>
   </main>;
 }
