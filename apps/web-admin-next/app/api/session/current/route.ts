@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { gatewayBaseUrl, getCsrfToken, getSessionToken } from '@/lib/session';
+import { gatewayBaseUrl, gatewayClientIp, getCsrfToken, getSessionToken } from '@/lib/session';
 import { verifyGatewayIdentity } from '@/lib/session-login';
 
 export async function GET() {
   try {
-    const identity = await verifyGatewayIdentity(await gatewayBaseUrl(), await getSessionToken());
+    const identity = await verifyGatewayIdentity(await gatewayBaseUrl(), await getSessionToken(), fetch, await gatewayClientIp());
     return NextResponse.json({ ok: true, ...identity, csrfToken: await getCsrfToken() }, {
       headers: { 'cache-control': 'no-store' },
     });
