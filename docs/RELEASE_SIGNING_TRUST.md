@@ -15,6 +15,35 @@ set from the repository.
   `--source-ref refs/heads/main` and `--deny-self-hosted-runners`. Release tags
   are not a trusted ref: anyone with push access can create a tag on an
   unreviewed commit.
+- **Attestation signers.** On `main`, only the `build` job of `release.yml`
+  (every file in `dist/`) and the `release` job of `web-first-release.yml` (the
+  checked Web candidate, see `docs/WEB_FIRST_RELEASE.md`) are meant to mint
+  GitHub artifact attestations or keyless Sigstore signatures. Both run only
+  from `main` in the `release` environment and are dispatched by hand; Web
+  First Release looks up the candidate run (workflow path, `main`, exact
+  commit, success, push/dispatch event) before downloading it.
+  `check_security_workflow_policy.py` lists these jobs in
+  `ATTESTATION_SIGNER_JOBS`. It is a static check of workflow YAML and step
+  text: it rejects workflow-wide `attestations: write`, and any other job that
+  requests `attestations: write`, uses an attest or Sigstore signing action, or
+  runs `cosign`/`sigstore` sign or attest commands; it requires signer jobs to
+  stay main-only, in `release`, on `workflow_dispatch`/`push`; and in a signer
+  workflow it rejects downloads by run id unless the same step first contains
+  a run lookup naming those fields and a producer registered for the job (other
+  imports go through `scripts/fetch_ci_evidence_artifact.py`). It does not see
+  into local composite actions, and it only governs workflows on `main`. The
+  former `attestation.yml` re-attested the files of any run id with a `main`
+  identity without checking the run, so it was removed.
+- **Verifying outside this repository.** Anyone with push access can run a
+  workflow from a non-`main` branch and mint attestations or Sigstore
+  signatures for this repository, so checking only the repository or owner
+  proves nothing about a release. Pin the signer workflow and the ref:
+  `gh attestation verify <file> --repo <owner>/<repo> --signer-workflow
+  <owner>/<repo>/.github/workflows/release.yml --source-ref refs/heads/main
+  --deny-self-hosted-runners` (use `web-first-release.yml` for Web candidate
+  files), and for Cosign `--certificate-identity
+  https://github.com/<owner>/<repo>/.github/workflows/release.yml@refs/heads/main
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 - **Signing secrets.** The `build`, `mobile-android-release` and
   `mobile-ios-release` jobs of `release.yml` run only on `refs/heads/main` and
   in the `release` environment, which holds the Ed25519 release key and the
@@ -134,6 +163,16 @@ set from the repository.
   consumes it, and `fetch_ci_evidence_artifact.py` rejects artifacts from runs
   that did not succeed, so a failed run's reports never count as evidence. After a
   failure that happens before any report is written, the upload step fails too.
+- The "Artifact Attestation" workflow (`attestation.yml`) is gone, so a release
+  can no longer be re-attested by hand. Nothing in the repository verified its
+  attestations (every verifier pins `release.yml`), and GitHub listed no run of
+  it on 2026-10-22 (deleted runs would not be listed). A release whose
+  attestation step failed is rebuilt with `release.yml`.
+- `deploy-staging.yml`, `promote-production.yml`, `rollback-drill.yml` and
+  `supply-chain.yml` still grant `id-token: write` workflow-wide although no
+  step in them signs. The signer check does not cover that permission;
+  narrowing it is a separate change, because their deploy commands come from
+  environment variables and may rely on OIDC.
 
 ## Rollback
 
@@ -149,3 +188,11 @@ the "Gate reports" note). Signing and verification are unaffected; the reports
 are then deleted by `build_release.sh` again and missing from the upload.
 Uploading on failure can be reverted separately by removing `if: always()` from
 the upload and the matching check in `check_workflow_governance.py`.
+
+The `attestation.yml` removal and the attestation signer rule are one commit;
+reverting it restores the workflow with its unchecked run id and drops the rule,
+which re-opens that finding. Restoring only the workflow fails
+`check_security_workflow_policy.py` until `attestations: write` moves from the
+workflow to its job, the job is registered in `ATTESTATION_SIGNER_JOBS`, runs
+in the `release` environment and checks the source run. Prefer rebuilding with
+`release.yml` over restoring it.
