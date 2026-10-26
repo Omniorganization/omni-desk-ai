@@ -139,6 +139,7 @@ class ModelRouter:
             extra_headers=p.extra_headers,
             extra_body=p.extra_body,
             codex_cli_path=p.codex_cli_path,
+            claude_code_cli_path=p.claude_code_cli_path,
         ))
         provider.provider_name = p.provider
         return provider

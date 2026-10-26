@@ -1,0 +1,67 @@
+{
+  "checked_at": "2026-10-19T11:10:33.173670+08:00",
+  "scope": "source_review_and_offline_cli_gateway_fixtures_only",
+  "repository": "Omniorganization/omni-desk-ai",
+  "base_commit": "8fb391b4ac034c5d51f2254ebd93b6cade592985",
+  "branch": "ai/claude-code-cli-provider-20261019",
+  "input_patch": {
+    "filename": "0001-Add-Claude-Code-CLI-provider.patch",
+    "sha256": "258cb47d35e05d9dcb65ca6176b34e737463b8da7ebf8f2b4294bb4a5d3e35f0",
+    "source_commit": "6b72acee4cd54eab93f0c2393b690fcabfd20aa5"
+  },
+  "validation": [
+    {
+      "scope": "models plus gateway, codex verification, validation analyzer",
+      "result": "364 passed",
+      "flags": "-W error -p no:cacheprovider"
+    },
+    {
+      "scope": "router fallback, native streaming, streaming core, budgets, config, workflow governance, config validation",
+      "result": "62 passed",
+      "flags": "-W error -p no:cacheprovider"
+    },
+    {
+      "scope": "final Claude provider and parameterized subscription Gateway",
+      "result": "93 passed",
+      "flags": "-W error -p no:cacheprovider"
+    },
+    {
+      "scope": "Ruff omnidesk_agent tests and git diff --check",
+      "result": "passed"
+    },
+    {
+      "scope": "pyright --project pyrightconfig.json",
+      "result": "0 errors, 1014 warnings; optional typing warnings retained"
+    }
+  ],
+  "regression_before_fix": "6 failed/5 passed: system/user separation, oversized private system and four malformed or third-party authentication combinations",
+  "activation": {
+    "example_enabled": false,
+    "pull_request_draft": true,
+    "real_claude_calls": 0,
+    "credentials_copied": false,
+    "production_deployed": false
+  },
+  "unverified": [
+    "real CLI 2.1.302 flags/FD compatibility",
+    "actual personal subscription auth status and model aliases",
+    "CLI hooks/settings and transport behavior on a real unmanaged host",
+    "managed host safety (unsupported; managed hooks are not blocked by ordinary disableAllHooks)",
+    "Linux/Windows/cloud/production"
+  ],
+  "risk": "Do not enable on managed hosts. Safe mode and user disableAllHooks cannot disable managed hooks. Offline fixtures do not prove real CLI behavior.",
+  "rollback": "Keep profile disabled or restore previous configuration/deployment; retain audit and ledger. Revert code through a new ai/* PR.",
+  "source_sha256": {
+    "docs/claude-code-subscription.md": "1c2f218b24893faed992dff77759b8e170f6727740dfb3e45808cbea3b97babe",
+    "examples/config.claude-code-cli.yaml": "ead31cacec12007621c71e98d6913f7d34837784e7f52f67d6285a883fc3e959",
+    "omnidesk_agent/config.py": "b4a86d57e4ac88959dd0d5722e37638562b71adae08dc5e8b0724c1d989fe172",
+    "omnidesk_agent/models/claude_code_cli.py": "8395a6bd14fd741751f823a3c879cc9067e42bec0148ecce16014852b937c1da",
+    "omnidesk_agent/models/pricing.py": "5865b7b6d1f6facbfeb263ab28192420c330ba0b28da6855ecd15bdd22d2223e",
+    "omnidesk_agent/models/provider_errors.py": "78ec5f98e0fa199e4a5dd45a77620263a46fcd89796142954391726137ab324f",
+    "omnidesk_agent/models/provider_streaming.py": "7fedb5c40bf6876dc9ecedbf3a0375a1adf4be4cfc547c133b0b7d3b90a00196",
+    "omnidesk_agent/models/providers.py": "6f1090a82f67aff9784c954a3fabf90077d1df5fe12197f861c39431601c9e93",
+    "omnidesk_agent/models/router.py": "8677952571d0c35e984d8b302338bfe5c132da7f24508e7fa08f41a0006ff53a",
+    "tests/models/test_claude_code_cli_provider.py": "21f4df06ace3cc87b531bb683d9c4318425b88df0b21e5f298eb6717a0624ac7",
+    "tests/test_codex_cli_gateway.py": "1dfa6342beeff6225da900de9d8b983a882dc04c2a9011964015c4340969280a"
+  }
+}
