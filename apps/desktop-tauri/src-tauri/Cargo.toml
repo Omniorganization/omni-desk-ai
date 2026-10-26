@@ -12,7 +12,7 @@ keyring = { version = "4", default-features = true }
 fs2 = "0.4.3"
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "jwk", "pem", "pkcs8", "std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
