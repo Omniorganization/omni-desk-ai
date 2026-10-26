@@ -122,6 +122,18 @@ class WebhookGuard:
         secret = self.require_secret(secret_env, channel)
         self.verify_hmac_header(body, secret, headers.get("x-omnidesk-webhook-signature-256", ""), prefix="sha256=")
 
+    def _claim_signed_nonce(self, channel: str, adapter, request: Request) -> None:
+        # Call only after the signature was verified: an unverified nonce is not worth recording.
+        if not hasattr(self.runtime, "webhook_security"):
+            return
+        extract = getattr(adapter, "signed_request_nonce", None)
+        nonce = extract(dict(request.query_params)) if callable(extract) else None
+        # Duck-typed (see channels.base.SignedRequestNonce) so adapters without
+        # the hook, or returning None, are simply not nonce-based.
+        value = getattr(nonce, "value", None)
+        if isinstance(value, str) and value:
+            self.runtime.webhook_security.claim_nonce(channel=channel, nonce=value, ttl_seconds=float(nonce.ttl_seconds))
+
     @staticmethod
     def envelope(adapter, payload):
         if hasattr(adapter, "extract_envelope"):
@@ -141,6 +153,10 @@ class WebhookGuard:
             actual_payload = payload if payload is not None else self.json_body(body)
             self.verify_required_signature(channel, adapter, request, body, actual_payload)
             envelope = self.envelope(adapter, actual_payload)
+            if getattr(self.cfg.gateway, "require_webhook_signatures", True):
+                # Consume the signed nonce before recording the message digest so
+                # a rejected replay cannot burn the id of a later real message.
+                self._claim_signed_nonce(channel, adapter, request)
             if hasattr(self.runtime, "webhook_security"):
                 self.runtime.webhook_security.guard(
                     channel=channel,
@@ -155,6 +171,21 @@ class WebhookGuard:
             inc = getattr(metrics, "inc", None)
             if callable(inc):
                 inc("omnidesk_webhook_signature_failures_total", channel=channel, reason=str(exc)[:80])
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+    async def verify_signed_handshake(self, channel: str, adapter, request: Request) -> None:
+        """Verify a signed GET handshake (e.g. WeChat echostr) and consume its nonce.
+
+        The handshake carries the same kind of signed timestamp/nonce as a
+        delivery; left unconsumed, a captured handshake query could be reused
+        to sign a forged POST.
+        """
+        try:
+            self.require_enabled_channel(channel)
+            adapter.verify_request(dict(request.headers), b"", dict(request.query_params), None)
+            self._claim_signed_nonce(channel, adapter, request)
+        except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 

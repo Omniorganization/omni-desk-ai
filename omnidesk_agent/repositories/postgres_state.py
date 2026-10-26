@@ -14,7 +14,7 @@ from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
 from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
-from omnidesk_agent.security.webhook_security import WebhookSecurityConfig
+from omnidesk_agent.security.webhook_security import WebhookSecurityConfig, nonce_digest, webhook_digest
 from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
 from omnidesk_agent.memory.retrieval import known_memory_identity, matches_memory_query, planner_memory_visible
 
@@ -137,6 +137,49 @@ class _PostgresJsonState:
                     (namespace, key, json.dumps(value, ensure_ascii=False, default=str), now, now),
                 )
                 return int(cur.rowcount or 0) == 1
+
+    def insert_once_or_replace_stale(self, namespace: str, key: str, value: dict[str, Any], *, stale_before: float) -> bool:
+        """Insert a row, or take over one last written before stale_before.
+
+        Returns False only while a fresh row with the same key exists, so rows
+        that act as time-limited claims expire even before they are purged.
+        """
+        now = time.time()
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO omnidesk_core_state(namespace, key, value_json, created_at, updated_at)
+                    VALUES (%s, %s, %s::jsonb, %s, %s)
+                    ON CONFLICT(namespace, key) DO UPDATE
+                    SET value_json=EXCLUDED.value_json, created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at
+                    WHERE omnidesk_core_state.updated_at < %s
+                    """,
+                    (namespace, key, json.dumps(value, ensure_ascii=False, default=str), now, now, float(stale_before)),
+                )
+                return int(cur.rowcount or 0) == 1
+
+    def delete_stale(self, namespace: str, *, stale_before: float, limit: int = 1000) -> int:
+        """Delete at most ``limit`` rows last written before stale_before.
+
+        Bounded so a large backlog is drained over several calls instead of one
+        long statement on a request path; rows another instance is already
+        deleting or re-claiming are skipped.
+        """
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM omnidesk_core_state
+                    WHERE (namespace, key) IN (
+                      SELECT namespace, key FROM omnidesk_core_state
+                      WHERE namespace=%s AND updated_at < %s
+                      LIMIT %s FOR UPDATE SKIP LOCKED
+                    )
+                    """,
+                    (namespace, float(stale_before), max(1, int(limit))),
+                )
+                return int(cur.rowcount or 0)
 
     def get(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
         with self._connect() as con:
@@ -783,22 +826,61 @@ class PostgresBreakGlassStore:
 
 
 class PostgresWebhookSecurity:
+    # Expired rows are also ignored on insert; the periodic, batch-limited
+    # purge only bounds table size (a pre-existing backlog drains gradually).
+    purge_interval_seconds = 60.0
+    purge_batch_rows = 1000
+
     def __init__(self, state: _PostgresJsonState, cfg: Optional[WebhookSecurityConfig] = None):
         self.state = state
         self.cfg = cfg or WebhookSecurityConfig()
+        self._next_purge_at = 0.0
 
     def guard(
         self, *, channel: str, body: bytes, source_key: str, message_id: Optional[str] = None, timestamp: Optional[float] = None
     ) -> dict[str, Any]:
         self._check_timestamp(timestamp)
+        self._purge_expired()
         self._check_rate(channel, source_key)
-        digest = hashlib.sha256(channel.encode("utf-8") + b":" + (message_id.encode("utf-8") if message_id else body)).hexdigest()
-        inserted = self.state.insert_once(
-            "webhook_seen", digest, {"digest": digest, "channel": channel, "created_at": time.time(), "status": "seen"}
+        digest = webhook_digest(channel, body, message_id)
+        now = time.time()
+        inserted = self.state.insert_once_or_replace_stale(
+            "webhook_seen",
+            digest,
+            {"digest": digest, "channel": channel, "created_at": now, "status": "seen"},
+            stale_before=now - self._seen_retention_seconds(),
         )
         if not inserted:
             raise PermissionError(f"duplicate webhook blocked: {channel}")
         return {"ok": True, "digest": digest}
+
+    def claim_nonce(self, *, channel: str, nonce: str, ttl_seconds: float) -> None:
+        """Consume a signed single-use nonce; shared by every replica using this database."""
+        ttl = max(1.0, float(ttl_seconds))
+        now = time.time()
+        digest = nonce_digest(channel, nonce)
+        claimed = self.state.insert_once_or_replace_stale(
+            "webhook_nonce",
+            digest,
+            {"digest": digest, "channel": channel, "created_at": now, "expires_at": now + ttl, "status": "claimed"},
+            stale_before=now - ttl,
+        )
+        if not claimed:
+            raise PermissionError(f"replayed webhook nonce blocked: {channel}")
+
+    def _seen_retention_seconds(self) -> float:
+        return float(max(self.cfg.replay_ttl_seconds, self.cfg.seen_retention_seconds))
+
+    def _purge_expired(self) -> None:
+        now = time.time()
+        if now < self._next_purge_at:
+            return
+        self._next_purge_at = now + self.purge_interval_seconds
+        batch = self.purge_batch_rows
+        self.state.delete_stale("webhook_seen", stale_before=now - self._seen_retention_seconds(), limit=batch)
+        self.state.delete_stale("webhook_rate", stale_before=now - 2 * self.cfg.rate_limit_window_seconds, limit=batch)
+        # Nonce TTLs are short and per channel; anything older than the seen retention is long expired.
+        self.state.delete_stale("webhook_nonce", stale_before=now - self._seen_retention_seconds(), limit=batch)
 
     def _check_timestamp(self, timestamp: Optional[float]) -> None:
         if timestamp is not None and abs(time.time() - timestamp) > self.cfg.replay_ttl_seconds:
