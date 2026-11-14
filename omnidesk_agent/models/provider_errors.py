@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter, strip_url_query
+
+_REDACTOR = MemoryPrivacyFilter()
+
 
 @dataclass(frozen=True)
 class ProviderErrorInfo:
@@ -38,3 +42,8 @@ def classify_provider_error(exc: BaseException) -> ProviderErrorInfo:
     if status_code and 400 <= int(status_code) < 500:
         return ProviderErrorInfo("bad_request", False, True, status_code)
     return ProviderErrorInfo("unknown", True, True, status_code)
+
+
+def safe_error_text(exc: Optional[BaseException]) -> str:
+    """Provider error text for messages that end up in logs, job rows or APIs."""
+    return _REDACTOR.redact_secrets(strip_url_query(str(exc)))
