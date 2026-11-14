@@ -46,7 +46,10 @@ def test_break_glass_is_time_boxed_targeted_and_audited(tmp_path: Path) -> None:
     audit = tmp_path / "audit.jsonl"
     store = BreakGlassStore(tmp_path / "breakglass.sqlite3", audit_log=audit)
     assert store.open(session_id="s0", actor="owner", approved_by="owner", reason="outage", ttl_seconds=60).active is True
-    session = store.open(session_id="s1", actor="operator", approved_by="owner", reason="restore production", ttl_seconds=60)
+    with pytest.raises(PermissionError):
+        store.open(session_id="s1", actor="operator", approved_by="owner", reason="restore production", ttl_seconds=60)
+    assert store.request_delegated(session_id="s1", actor="operator", requested_by="owner", reason="restore production", ttl_seconds=60).active is False
+    session = store.approve("s1", approver="second-owner")
     assert session.active is True
     assert store.assert_active("s1", actor="operator").session_id == "s1"
     store.revoke("s1", revoked_by="owner")

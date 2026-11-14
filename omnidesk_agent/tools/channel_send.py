@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 from typing import Any
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
@@ -47,6 +48,11 @@ def validate_send_text_options(options: Any) -> dict[str, Any]:
                 raise ValueError(f"unsupported channels.send_text option value: {key} must be one of {', '.join(schema['enum'])}")
         clean[key] = value
     return clean
+
+
+def content_sha256(text: str) -> str:
+    """Digest of approved outbound content, re-checked by the dispatcher before sending."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class ChannelSendTool:
@@ -109,8 +115,12 @@ class ChannelSendTool:
             except ValueError as exc:
                 return ToolResult(False, error=str(exc), summary="channels.send_text options rejected")
             expected = str(args.get("expected_result") or f"Send text to {recipient} via {channel}")
-            # options are part of the approval payload (and therefore the scope hash).
-            decision = ctx.permissions.verify(proposal("channels", "send_text", {"channel": channel, "recipient": recipient, "text_preview": text[:200], "length": len(text), "options": options, "expected_result": expected}, "high", "发送外部渠道消息前必须确认", ctx))
+            text_sha256 = content_sha256(text)
+            # The approver sees, and the scope hash binds, every character that
+            # will be sent: with only a preview, a payload hidden past the cut
+            # (or swapped after approval) would ride on the approval. options
+            # are part of the approval payload too.
+            decision = ctx.permissions.verify(proposal("channels", "send_text", {"channel": channel, "recipient": recipient, "text": text, "text_sha256": text_sha256, "length": len(text), "options": options, "expected_result": expected}, "high", "发送外部渠道消息前必须确认", ctx))
             if decision.mode == "dry_run":
                 return ToolResult(False, summary=f"dry-run: send {len(text)} chars via {channel}")
             adapter = self.adapters.get(channel)
@@ -120,7 +130,8 @@ class ChannelSendTool:
                 return ToolResult(False, error=f"Channel {channel} does not support send_text")
             self._require_channel_enabled(adapter, channel)
             if self.outbound_store:
-                outbound_id = self.outbound_store.create(channel=channel, recipient=recipient, payload={"type": "text", "text": text, "options": options})
+                # The dispatcher refuses a queued row whose text no longer matches this digest.
+                outbound_id = self.outbound_store.create(channel=channel, recipient=recipient, payload={"type": "text", "text": text, "text_sha256": text_sha256, "options": options})
                 return ToolResult(True, data={"outbound_id": outbound_id, "status": "pending"}, summary=f"queued text via {channel} to {recipient}")
             await adapter.send_text(recipient, text, **options)
             return ToolResult(True, data={"outbound_id": None, "status": "sent"}, summary=f"sent text via {channel} to {recipient}")
@@ -135,7 +146,7 @@ class ChannelSendTool:
             to = str(args["to"])
             subject = str(args.get("subject", ""))
             body = str(args.get("body", ""))
-            decision = ctx.permissions.verify(proposal("channels", "send_email", {"to": to, "subject": subject, "body_preview": body[:200], "length": len(body)}, "high", "发送邮件前必须确认", ctx))
+            decision = ctx.permissions.verify(proposal("channels", "send_email", {"to": to, "subject": subject, "body": body, "body_sha256": content_sha256(body), "length": len(body)}, "high", "发送邮件前必须确认", ctx))
             if decision.mode == "dry_run":
                 return ToolResult(False, summary=f"dry-run: email to {to}")
             return ToolResult(True, data=adapter.build_raw_email(to, subject, body), summary=f"built Gmail raw payload for {to}; execute send with configured Gmail client")

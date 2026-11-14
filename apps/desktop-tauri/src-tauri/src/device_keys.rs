@@ -11,6 +11,7 @@ use base64::{
     Engine,
 };
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+use p256::elliptic_curve::{sec1::ToSec1Point, Generate};
 use p256::pkcs8::{EncodePublicKey, LineEnding};
 use p256::SecretKey;
 use rand_core::{OsRng, RngCore};
@@ -22,7 +23,8 @@ pub struct GeneratedIdentity {
 }
 
 pub fn generate_identity() -> Result<GeneratedIdentity, String> {
-    let secret = SecretKey::random(&mut OsRng);
+    let secret =
+        SecretKey::try_generate().map_err(|_| "could not generate device key".to_string())?;
     let public_key_pem = secret
         .public_key()
         .to_public_key_pem(LineEnding::LF)
@@ -41,8 +43,24 @@ pub fn generate_identity() -> Result<GeneratedIdentity, String> {
     Ok(GeneratedIdentity {
         device_id,
         public_key_pem,
-        private_jwk: secret.to_jwk_string().to_string(),
+        private_jwk: private_jwk(&secret)?,
     })
+}
+
+/// Private EC JWK (RFC 7518 section 6.2) with the same members and order the
+/// p256 0.13 `jwk` feature emitted; p256 0.14 no longer ships a JWK encoder.
+fn private_jwk(secret: &SecretKey) -> Result<String, String> {
+    let point = secret.public_key().to_sec1_point(false);
+    let (x, y) = point
+        .x()
+        .zip(point.y())
+        .ok_or_else(|| "could not encode device public key".to_string())?;
+    Ok(format!(
+        r#"{{"kty":"EC","crv":"P-256","x":"{}","y":"{}","d":"{}"}}"#,
+        URL_SAFE_NO_PAD.encode(x),
+        URL_SAFE_NO_PAD.encode(y),
+        URL_SAFE_NO_PAD.encode(secret.to_bytes()),
+    ))
 }
 
 fn is_hex(value: &str, len: usize) -> bool {
@@ -133,6 +151,23 @@ mod tests {
         let signature = sign(&identity.private_jwk, &message).unwrap();
         assert_eq!(STANDARD.decode(&signature).unwrap().len(), 64);
         assert!(verify(&identity.public_key_pem, &message, &signature));
+    }
+
+    /// The keychain entry must stay a self-consistent standard EC JWK: other
+    /// JWK readers validate `x`/`y` against `d`, not just the scalar we parse.
+    #[test]
+    fn generated_private_jwk_carries_the_matching_public_point() {
+        let identity = generate_identity().unwrap();
+        let jwk: serde_json::Value = serde_json::from_str(&identity.private_jwk).unwrap();
+        assert_eq!(jwk["kty"], "EC");
+        assert_eq!(jwk["crv"], "P-256");
+        let coordinate = |name: &str| URL_SAFE_NO_PAD.decode(jwk[name].as_str().unwrap()).unwrap();
+        let mut point = vec![0x04];
+        point.extend(coordinate("x"));
+        point.extend(coordinate("y"));
+        let public = VerifyingKey::from_public_key_pem(&identity.public_key_pem).unwrap();
+        assert_eq!(point, public.to_sec1_point(false).as_bytes());
+        assert_eq!(coordinate("d").len(), 32);
     }
 
     #[test]

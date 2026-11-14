@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.security.break_glass import has_required_approvals
+
 
 @dataclass
 class AdminAuthDecision:
@@ -16,6 +18,9 @@ class AdminAuthDecision:
     reason: str
     actor: str = "admin"
     role: str = "viewer"
+    # Set when the role was raised by a break-glass session. Routes that need a
+    # real owner (dual approval, approving or opening break-glass) refuse it.
+    break_glass_session_id: Optional[str] = None
 
 
 class AdminAuth:
@@ -93,7 +98,7 @@ class AdminAuth:
 
         configured_tokens = self._configured_role_tokens()
         if configured_tokens:
-            matching = [(role, env_name) for token, role, env_name in configured_tokens if provided and hmac.compare_digest(provided, token)]
+            matching = [(role, env_name) for token, role, env_name in configured_tokens if provided and self._secret_matches(provided, token)]
             matching_roles = {role for role, _ in matching}
             if len(matching_roles) > 1:
                 decision = AdminAuthDecision(False, "ambiguous admin token configuration", actor="unknown", role="unknown")
@@ -107,7 +112,7 @@ class AdminAuth:
                 self._audit(decision, client_host, required_role, path)
                 return decision
 
-            if not legacy or not (legacy_provided and hmac.compare_digest(legacy_provided, legacy)):
+            if not legacy or not (legacy_provided and self._secret_matches(legacy_provided, legacy)):
                 decision = AdminAuthDecision(False, "missing or invalid admin token", actor="unknown", role="unknown")
                 self._audit(decision, client_host, required_role, path)
                 return decision
@@ -118,7 +123,7 @@ class AdminAuth:
             return decision
 
         if legacy:
-            if legacy_provided and hmac.compare_digest(legacy_provided, legacy):
+            if legacy_provided and self._secret_matches(legacy_provided, legacy):
                 decision = self._role_decision(True, "legacy gateway secret accepted", self._actor_for_legacy_secret(), "owner", required_role)
                 decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
                 self._audit(decision, client_host, required_role, path)
@@ -160,6 +165,12 @@ class AdminAuth:
         safe = "".join(ch for ch in raw if ch.isalnum() or ch in {"@", ".", "_", "-", ":"})
         return safe[:128]
 
+    @staticmethod
+    def _secret_matches(provided: str, expected: str) -> bool:
+        # compare_digest raises TypeError for non-ASCII str, which turned a bad
+        # header into an unaudited 500. Byte equality matches str equality.
+        return hmac.compare_digest(provided.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass"))
+
     def _actor_for_token(self, role: str, env_name: str) -> str:
         actor_env = self.admin_actor_env if env_name == self.admin_token_env else self.role_actor_envs.get(role, "")
         configured = self._sanitize_actor(os.getenv(actor_env, "")) if actor_env else ""
@@ -180,10 +191,18 @@ class AdminAuth:
         actor = decision.actor
         try:
             session = self.break_glass_store.assert_active(session_id, actor=actor)
+            if not has_required_approvals(session):
+                raise PermissionError("break-glass session for another actor lacks a second owner approval")
         except Exception as exc:
             return AdminAuthDecision(False, f"break-glass denied: {exc}", actor=actor, role=decision.role)
         self._audit_break_glass_use(session.session_id, actor, required_role, path)
-        return AdminAuthDecision(True, f"break-glass session accepted for {required_role}", actor=actor, role=required_role)
+        return AdminAuthDecision(
+            True,
+            f"break-glass session accepted for {required_role}",
+            actor=actor,
+            role=required_role,
+            break_glass_session_id=session.session_id,
+        )
 
     def _audit_break_glass_use(self, session_id: str, actor: str, required_role: str, path: str) -> None:
         if not self.audit_log:

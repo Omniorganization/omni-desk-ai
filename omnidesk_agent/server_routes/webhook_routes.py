@@ -72,10 +72,8 @@ def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
 
     @app.get("/webhooks/wechat")
     async def wechat_verify(request: Request):
-        q = request.query_params
-        if rt.adapters["wechat_official"].verify_signature(q.get("signature", ""), q.get("timestamp", ""), q.get("nonce", "")):
-            return Response(content=q.get("echostr", ""), media_type="text/plain")
-        raise HTTPException(403, "verification failed")
+        await guard.verify_signed_handshake("wechat", rt.adapters["wechat_official"], request)
+        return Response(content=request.query_params.get("echostr", ""), media_type="text/plain")
 
     @app.post("/webhooks/wechat")
     async def wechat_webhook(request: Request):

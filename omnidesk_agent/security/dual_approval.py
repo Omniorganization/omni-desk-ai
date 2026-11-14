@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import json
 import time
 from dataclasses import dataclass
@@ -8,6 +7,26 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.storage.sqlite import connect_sqlite
+
+# Proposal fields that name who asked for the action. `created_by` and
+# `proposer` are written server-side from the authenticated caller (see
+# `stamp_requester`); `actor` is the identity the action runs as, which is the
+# requester for orchestrator proposals. None of them may count as an approver.
+REQUESTER_FIELDS = ("created_by", "proposer", "actor")
+
+
+def proposal_requesters(proposal: dict[str, Any]) -> set[str]:
+    return {str(proposal.get(field) or "").strip() for field in REQUESTER_FIELDS} - {""}
+
+
+def stamp_requester(proposal: dict[str, Any], requester: str) -> dict[str, Any]:
+    """Record the server-authenticated requester, replacing any caller-supplied value."""
+    requester = str(requester or "").strip()
+    if not requester:
+        raise PermissionError("an authenticated requester is required to create an approval")
+    proposal["created_by"] = requester
+    proposal["proposer"] = requester
+    return proposal
 
 
 @dataclass(frozen=True)
@@ -45,6 +64,8 @@ class DualApprovalStore:
             )
 
     def open(self, approval_id: str, proposal: dict[str, Any]) -> None:
+        if not proposal_requesters(proposal):
+            raise PermissionError("dual approval proposal must record its requester")
         now = time.time()
         with connect_sqlite(self.db_path) as con:
             con.execute(
@@ -67,10 +88,9 @@ class DualApprovalStore:
                 raise KeyError(f"dual approval not found: {approval_id}")
             first, second = row[0], row[1]
             proposal = json.loads(row[2] or "{}")
-            proposer = str(proposal.get("created_by") or proposal.get("proposer") or "")
-            if proposer and hmac.compare_digest(proposer, approver):
+            if approver in proposal_requesters(proposal):
                 raise PermissionError("proposal creator cannot approve their own critical proposal")
-            if first and hmac.compare_digest(first, approver):
+            if first and first == approver:
                 raise PermissionError("second approver must be distinct from first approver")
             if not first:
                 first = approver
