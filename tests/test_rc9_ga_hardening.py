@@ -207,8 +207,11 @@ def test_staging_and_production_workflows_promote_signed_artifacts():
         assert "bash -lc" not in text
 
 
-def test_attestation_workflow_exists_for_release_artifacts():
-    text = Path(".github/workflows/attestation.yml").read_text(encoding="utf-8")
+def test_release_workflow_attests_release_artifacts():
+    # release.yml attests every dist/ file itself; the separate attestation.yml,
+    # which re-attested any run's artifact, was removed.
+    assert not Path(".github/workflows/attestation.yml").exists()
+    text = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
     assert "id-token: write" in text
     assert "attestations: write" in text
     assert "actions/attest-build-provenance@" in text
