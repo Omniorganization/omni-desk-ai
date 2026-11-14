@@ -191,7 +191,10 @@ def test_postgres_approval_run_breakglass_and_webhook_contracts(tmp_path: Path) 
 
     breakglass = PostgresBreakGlassStore(state, audit_log=tmp_path / "audit.jsonl")
     assert breakglass.open(session_id="bg0", actor="alice", approved_by="alice", reason="self emergency", ttl_seconds=60).active is True
-    session = breakglass.open(session_id="bg1", actor="alice", approved_by="bob", reason="restore", ttl_seconds=60)
+    with pytest.raises(PermissionError):
+        breakglass.open(session_id="bg1", actor="alice", approved_by="bob", reason="restore", ttl_seconds=60)
+    assert breakglass.request_delegated(session_id="bg1", actor="alice", requested_by="bob", reason="restore", ttl_seconds=60).active is False
+    session = breakglass.approve("bg1", approver="carol")
     assert session.active is True
     with pytest.raises(PermissionError):
         breakglass.assert_active("bg1", actor="mallory")
