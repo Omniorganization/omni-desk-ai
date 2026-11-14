@@ -163,9 +163,31 @@ case "$MODE" in
       echo "unsafe systemd deploy target or script" >&2
       exit 64
     fi
-    remote_artifact="/tmp/omnidesk-release-artifact-${actual_sha}.whl"
-    scp "$ARTIFACT" "$OMNIDESK_DEPLOY_USER@$OMNIDESK_DEPLOY_HOST:$remote_artifact"
-    ssh "$OMNIDESK_DEPLOY_USER@$OMNIDESK_DEPLOY_HOST" \
+    wheel_name="$(basename -- "$ARTIFACT")"
+    if [[ ! "$wheel_name" =~ ^[A-Za-z0-9][A-Za-z0-9_.+!-]{0,199}\.whl$ ]]; then
+      # pip installs only wheel file names; the name is also part of the remote command.
+      echo "systemd deploy artifact must be a wheel file name: $wheel_name" >&2
+      exit 64
+    fi
+    remote="$OMNIDESK_DEPLOY_USER@$OMNIDESK_DEPLOY_HOST"
+    # A fresh random directory only the deploy user can open, instead of a
+    # predictable /tmp path other local users could pre-create or swap. The
+    # root helper copies the wheel out of it before hashing and installing.
+    remote_dir="$(ssh "$remote" 'umask 077 && mktemp -d /tmp/omnidesk-deploy.XXXXXXXXXX')"
+    if [[ ! "$remote_dir" =~ ^/tmp/omnidesk-deploy\.[A-Za-z0-9]{10}$ ]]; then
+      echo "unexpected remote staging directory: $remote_dir" >&2
+      exit 65
+    fi
+    # Remote commands below expand validated values on this side on purpose.
+    cleanup_remote_dir() {
+      # shellcheck disable=SC2029
+      ssh "$remote" "rm -rf -- '$remote_dir'" || echo "warning: could not remove remote staging directory $remote_dir" >&2
+    }
+    trap cleanup_remote_dir EXIT
+    remote_artifact="$remote_dir/$wheel_name"
+    scp "$ARTIFACT" "$remote:$remote_artifact"
+    # shellcheck disable=SC2029
+    ssh "$remote" \
       "sudo '$REMOTE_SCRIPT' --artifact '$remote_artifact' --sha256 '$actual_sha' --expected-version '$EXPECTED_VERSION' --image-digest '$IMAGE_DIGEST'"
     ;;
   *)

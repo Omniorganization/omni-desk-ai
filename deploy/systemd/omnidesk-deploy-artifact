@@ -5,10 +5,11 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: omnidesk-deploy-artifact --artifact PATH --sha256 SHA256 --expected-version VERSION [--image-digest sha256:DIGEST]
 
-Fixed remote systemd deploy helper for OmniDesk artifacts. It verifies the
-uploaded artifact, installs it into a dedicated virtualenv, writes runtime
-identity environment variables, restarts the systemd service, runs a local
-health check, and rolls back to the previous wheel on failure.
+Fixed remote systemd deploy helper for OmniDesk artifacts. It copies the
+uploaded wheel into a root-only staging directory, verifies the copy, installs
+that copy into a dedicated virtualenv, writes runtime identity environment
+variables, restarts the systemd service, runs a local health check, and rolls
+back to the previous wheel on failure.
 
 Environment:
   OMNIDESK_SYSTEMD_SERVICE        default: omnidesk-agent
@@ -20,6 +21,8 @@ USAGE
 
 is_sha256() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
 is_image_digest() { [[ -z "$1" || "$1" =~ ^sha256:[0-9a-f]{64}$ ]]; }
+# pip only installs files named like a wheel (name-version-py-abi-platform.whl).
+is_wheel_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.+!-]{0,199}\.whl$ ]]; }
 
 ARTIFACT=""
 EXPECTED_SHA=""
@@ -47,9 +50,18 @@ if [[ -z "$ARTIFACT" || -z "$EXPECTED_SHA" || -z "$EXPECTED_VERSION" ]]; then
   usage
   exit 64
 fi
-if [[ ! -f "$ARTIFACT" ]]; then
-  echo "artifact not found: $ARTIFACT" >&2
+if [[ -L "$ARTIFACT" ]]; then
+  echo "artifact must not be a symlink: $ARTIFACT" >&2
   exit 66
+fi
+if [[ ! -f "$ARTIFACT" ]]; then
+  echo "artifact not found or not a regular file: $ARTIFACT" >&2
+  exit 66
+fi
+WHEEL_NAME="$(basename -- "$ARTIFACT")"
+if ! is_wheel_name "$WHEEL_NAME"; then
+  echo "artifact file name must be a wheel file name: $WHEEL_NAME" >&2
+  exit 64
 fi
 # The version ends up in a file name and in $RUNTIME_ENV_FILE (read by systemd),
 # so a newline or path separator here could inject service environment.
@@ -66,16 +78,42 @@ if ! is_image_digest "$IMAGE_DIGEST"; then
   exit 64
 fi
 
-actual_sha="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
+# Copy the upload into a root-only directory first, then hash and install that
+# copy. Hashing the upload path and copying it afterwards let anyone who could
+# still change that path swap the wheel between the check and the install.
+# INSTALL_DIR already holds the venv root runs, so it is root-controlled.
+mkdir -p "$INSTALL_DIR"
+STAGE_DIR="$(mktemp -d "$INSTALL_DIR/.deploy-staging.XXXXXXXXXX")"
+chmod 700 "$STAGE_DIR"
+cleanup_stage() { rm -rf -- "$STAGE_DIR"; }
+trap cleanup_stage EXIT
+STAGED_WHEEL="$STAGE_DIR/$WHEEL_NAME"
+# -P: if the path was swapped for a symlink after the checks above, copy the
+# link itself (rejected below) instead of the file it points to.
+cp -P -- "$ARTIFACT" "$STAGED_WHEEL"
+if [[ -L "$STAGED_WHEEL" || ! -f "$STAGED_WHEEL" ]]; then
+  echo "artifact changed into a symlink or non-regular file while it was copied: $ARTIFACT" >&2
+  exit 66
+fi
+
+actual_sha="$(sha256sum "$STAGED_WHEEL" | awk '{print $1}')"
 if [[ "$actual_sha" != "$EXPECTED_SHA" ]]; then
   echo "artifact sha256 mismatch: expected $EXPECTED_SHA got $actual_sha" >&2
   exit 65
 fi
 
-mkdir -p "$ARTIFACT_DIR" "$(dirname "$RUNTIME_ENV_FILE")"
-cp "$ARTIFACT" "$ARTIFACT_DIR/omnidesk-$EXPECTED_VERSION-$actual_sha.whl"
-PREVIOUS_WHEEL="$(readlink -f "$ARTIFACT_DIR/current.whl" 2>/dev/null || true)"
-ln -sfn "$ARTIFACT_DIR/omnidesk-$EXPECTED_VERSION-$actual_sha.whl" "$ARTIFACT_DIR/current.whl"
+# Keep the verified copy under its wheel file name (pip rejects other names)
+# so a later deploy can roll back to it.
+RELEASE_WHEEL="$ARTIFACT_DIR/$EXPECTED_VERSION-$actual_sha/$WHEEL_NAME"
+mkdir -p "$(dirname "$RELEASE_WHEEL")" "$(dirname "$RUNTIME_ENV_FILE")"
+cp -- "$STAGED_WHEEL" "$RELEASE_WHEEL"
+# GNU readlink -f also resolves a missing current.whl to its own path, which
+# made a failed first deploy "roll back" to a symlink pointing at itself.
+PREVIOUS_WHEEL=""
+if [[ -e "$ARTIFACT_DIR/current.whl" ]]; then
+  PREVIOUS_WHEEL="$(readlink -f "$ARTIFACT_DIR/current.whl" 2>/dev/null || true)"
+fi
+ln -sfn "$RELEASE_WHEEL" "$ARTIFACT_DIR/current.whl"
 
 rollback() {
   code=$?
@@ -85,6 +123,7 @@ rollback() {
     "$VENV_DIR/bin/python" -m pip install --no-deps --force-reinstall "$PREVIOUS_WHEEL" || true
     systemctl restart "$SERVICE" || true
   fi
+  cleanup_stage
   exit $code
 }
 trap rollback EXIT
@@ -92,7 +131,7 @@ trap rollback EXIT
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   python3 -m venv "$VENV_DIR"
 fi
-"$VENV_DIR/bin/python" -m pip install --no-deps --force-reinstall "$ARTIFACT_DIR/current.whl"
+"$VENV_DIR/bin/python" -m pip install --no-deps --force-reinstall "$STAGED_WHEEL"
 
 cat > "$RUNTIME_ENV_FILE" <<ENV
 OMNIDESK_VERSION=$EXPECTED_VERSION
@@ -119,3 +158,4 @@ print('systemd artifact deploy verified')
 PY
 
 trap - EXIT
+cleanup_stage
