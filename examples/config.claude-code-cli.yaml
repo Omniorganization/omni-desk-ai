@@ -1,0 +1,96 @@
+# 本人本机官方 Claude Code CLI 订阅登录；不填写 API key，不复制 OAuth token。
+# 兼容目标固定2.1.302，尚未真实CLI验收；profile默认禁用，验收前不要启用。
+# 仅支持 POSIX 进程组清理；Windows 当前拒绝接入。
+# 每次调用：--tools "" 去掉全部内置工具，--strict-mcp-config 且不给 --mcp-config 去掉 MCP，
+# --disable-slash-commands 关闭 skills，--no-session-persistence 不落盘会话。
+# system经独立匿名管道交给--system-prompt-file，user仅stdin；私有内容不进argv。
+# safe-mode/disableAllHooks不保证禁managed hooks；企业/受管理宿主当前不支持启用。
+# 子进程环境不含 ANTHROPIC_*、CLAUDE_CODE_OAUTH_TOKEN、OPENAI_*；CLI 自行管理已保存登录。
+# 此配置只供本人本地使用，不是托管部署证明；真实订阅调用尚未在本配置下验收。
+# 本值仅用于本地预算估算，不构成 CLI 输出 token 硬上限。
+llm:
+  provider: claude_code_cli
+  model: opus
+  api_key_env: ""
+  max_input_chars: 12000
+  max_output_tokens: 1200
+  enable_cache: false
+  per_task_max_llm_calls: 16
+  require_approval_above_estimated_tokens: 20000
+
+models:
+  default: claude_code_cli
+  budget:
+    daily_usd_limit: 500.0
+    monthly_usd_limit: 5000.0
+    per_actor_daily_usd_limit: 50.0
+    on_exceed: block
+    require_persistent_ledger: true
+  profiles:
+    claude_code_cli:
+      enabled: false
+      provider: claude_code_cli
+      model: opus
+      api_key_env: null
+      # 需PATH中有官方claude，或填写已核可信绝对claude_code_cli_path；不自动安装/搜索应用内置CLI。
+      # 本值仅用于本地预算估算，不构成 CLI 输出 token 硬上限。
+      max_output_tokens: 1200
+    local:
+      provider: ollama
+      model: qwen2.5-coder:7b
+      api_key_env: null
+      base_url: http://127.0.0.1:11434
+  routing:
+    chat: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    planner: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    tool_plan: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    code: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    upgrade: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    summarize: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    vision: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    private: {primary: local, fallback: [], max_retries: 0}
+    profile_acl:
+      roles:
+        viewer: [local]
+        operator: [local]
+        admin: ["*"]
+        owner: ["*"]
+      high_cost_profiles: [claude_code_cli]
+      approval_metadata_key: approved_model_profiles
+
+gateway:
+  host: 127.0.0.1
+  allow_local_admin_without_token: false
+  allow_legacy_gateway_secret_auth: false
+
+permissions:
+  default_mode: ask
+  no_tty_mode: deny
+  break_glass_enabled: false
+  audit_log: .omnidesk-claude-code-cli/audit.log
+
+workspace:
+  root: .omnidesk-claude-code-cli/workspace
+  memory_db: .omnidesk-claude-code-cli/memory.sqlite3
+  skills_dirs: []
+  plugins_dirs: []
+
+capabilities:
+  vision: {enabled: false}
+
+updates:
+  enabled: false
+
+plugins:
+  enabled: false
+
+app_sync:
+  json_path: .omnidesk-claude-code-cli/appsync.json
+
+channels:
+  gmail:
+    credentials_file: .omnidesk-claude-code-cli/google/credentials.json
+    token_file: .omnidesk-claude-code-cli/google/gmail_token.json
+
+learning:
+  growth_plan_file: .omnidesk-claude-code-cli/growth_plan.json

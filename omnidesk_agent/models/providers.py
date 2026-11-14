@@ -11,6 +11,7 @@ from typing import Any, Optional
 import httpx
 
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
+from omnidesk_agent.models.claude_code_cli import ClaudeCodeCLIProvider
 from omnidesk_agent.models.codex_cli import CodexCLIProvider
 from omnidesk_agent.models.provider_errors import ChatGPTPlanError
 
@@ -46,6 +47,7 @@ class ProviderSettings:
     extra_headers: Optional[dict[str, str]] = None
     extra_body: Optional[dict[str, Any]] = None
     codex_cli_path: Optional[str] = None
+    claude_code_cli_path: Optional[str] = None
 
 
 def env(name: Optional[str]) -> str:
@@ -525,6 +527,7 @@ class BedrockProvider:
 
 PROVIDER_CLASSES = {
     "codex_cli": CodexCLIProvider,
+    "claude_code_cli": ClaudeCodeCLIProvider,
     "chatgpt_plan": ChatGPTPlanProvider,
     "openai": OpenAIResponsesProvider,
     "openai_responses": OpenAIResponsesProvider,
