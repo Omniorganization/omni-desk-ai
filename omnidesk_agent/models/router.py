@@ -13,7 +13,7 @@ from omnidesk_agent.models.cost_ledger import ModelCostLedger
 from omnidesk_agent.models.cost_store import ModelCostStore
 from omnidesk_agent.models.budget_policy import ModelBudgetEnforcer, ModelBudgetPolicy
 from omnidesk_agent.models.pricing import ModelPricingTable
-from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error
+from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error, safe_error_text
 from omnidesk_agent.models.schema_retry import StructuredOutputError, build_repair_prompt, validate_json_text
 
 
@@ -266,7 +266,7 @@ class ModelRouter:
                         continue
                     break
         tried = ", ".join(attempted or plan.profiles)
-        raise RuntimeError(f"All model profiles failed for task={request.task}; tried={tried}; last_error={last_error}") from last_error
+        raise RuntimeError(f"All model profiles failed for task={request.task}; tried={tried}; last_error={safe_error_text(last_error)}") from last_error
 
     async def _complete_with_provider(self, request: ModelRequest, profile: str, provider: Any) -> ModelResponse:
         subscription = getattr(provider, "provider_name", "") in SUBSCRIPTION_PROVIDERS

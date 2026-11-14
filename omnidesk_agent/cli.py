@@ -12,6 +12,7 @@ import uvicorn
 from omnidesk_agent.config import AppConfig, load_config
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
+from omnidesk_agent.observability.access_log import uvicorn_log_config
 from omnidesk_agent.server import create_app
 from omnidesk_agent.storage.sqlite import close_all_open_connections
 from omnidesk_agent.validation.production import assert_production_config_safe, validate_production_config
@@ -302,5 +303,5 @@ def main() -> None:
         if args.port:
             cfg.gateway.port = args.port
         app = create_app(cfg)
-        uvicorn.run(app, host=cfg.gateway.host, port=cfg.gateway.port)
+        uvicorn.run(app, host=cfg.gateway.host, port=cfg.gateway.port, log_config=uvicorn_log_config())
         return
