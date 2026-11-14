@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
+import ipaddress
 import os
 try:
     import yaml
 except ModuleNotFoundError:  # allow config models to import before optional deps are installed
     yaml = None
 try:
-    from pydantic import BaseModel as PydanticBaseModel, ConfigDict, Field
+    from pydantic import BaseModel as PydanticBaseModel, ConfigDict, Field, field_validator
 except ModuleNotFoundError as exc:
     raise ModuleNotFoundError("pydantic is required. Install with: python3 -m pip install pydantic") from exc
 
@@ -489,6 +490,11 @@ class ApiResourceGuardConfig(BaseModel):
     sqlite_path: Path = Path("~/.omnidesk/api_resource_guard.sqlite3").expanduser()
     postgres_dsn_env: str = "OMNIDESK_POSTGRES_DSN"
     trusted_proxy_ips: list[str] = Field(default_factory=list)
+    # Lower-case name of a single-address header (e.g. the web admin's
+    # x-omnidesk-client-ip), honored only from trusted_client_ip_header_peers.
+    # Every such peer must overwrite the header with its own peer address.
+    trusted_client_ip_header: str = Field(default="", pattern=r"^[a-z0-9-]{0,64}$")
+    trusted_client_ip_header_peers: list[str] = Field(default_factory=list)
     window_seconds: int = 60
     max_body_bytes: int = 1_048_576
     body_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -502,6 +508,23 @@ class ApiResourceGuardConfig(BaseModel):
     max_inflight_requests: int = 64
     max_inflight_agent_runs: int = 4
     max_inflight_chat_requests: int = 8
+
+    @field_validator("trusted_client_ip_header")
+    @classmethod
+    def _single_address_header(cls, value: str) -> str:
+        # Multi-hop headers have their own right-to-left handling.
+        if value in {"x-forwarded-for", "forwarded"}:
+            raise ValueError("trusted_client_ip_header must name a single-address header")
+        return value
+
+    @field_validator("trusted_client_ip_header_peers")
+    @classmethod
+    def _explicit_header_peers(cls, values: list[str]) -> list[str]:
+        for value in values:
+            network = ipaddress.ip_network(str(value).strip(), strict=False)
+            if network.prefixlen == 0:
+                raise ValueError("trusted_client_ip_header_peers must not trust all clients")
+        return values
 
 
 class StorageConfig(BaseModel):

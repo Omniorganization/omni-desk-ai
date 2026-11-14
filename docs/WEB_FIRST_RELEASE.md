@@ -63,7 +63,7 @@ sudo --preserve-env=OMNIDESK_POSTGRES_DSN ./venv/bin/python scripts/web_first_ho
 
 独立的 `nginx.gateway-only.conf.template` 仅将 `/admin/session/identity`、`/api/chat/stream` 及 MONICO 当前使用的项目、会话问答/消息、审批、通知、设备注册/入网和单任务读取路径反代至 `127.0.0.1:18789`，其他路径返回404。它不开放通配的 `/app/`、管理状态、WebSocket、desktop claim、push dispatch 或任务执行接口。请求方法、RBAC、组织权限、设备签名、幂等和审批仍由后端校验；无 URI 重写以保留签名路径，SSE 关闭响应缓冲和缓存。仅443可公开，runner18890、Ollama11434、PostgreSQL及Gateway18789均保持私有。
 
-Gateway-only 模板明确清空 `X-Forwarded-For`，避免 Uvicorn 信任 loopback 代理后用公网地址替换 socket peer、使原 `admin_allowed_ips=[127.0.0.1]` 拒绝身份请求。令牌仍必需，IP白名单和本地免令牌禁用保持原样。实际 peer 留在 nginx access log；后端按代理共享 IP 限额，另有 actor/role/org 配额。不可扩大 IP 白名单或直接信任用户传入的代理头。
+Gateway-only 模板明确清空 `X-Forwarded-For`，避免 Uvicorn 信任 loopback 代理后用公网地址替换 socket peer、使原 `admin_allowed_ips=[127.0.0.1]` 拒绝身份请求。令牌仍必需，IP白名单和本地免令牌禁用保持原样。实际 peer 留在 nginx access log；nginx 另用 `$remote_addr` 覆盖 `X-OmniDesk-Client-IP`，Gateway 只在配置了 `trusted_client_ip_header: x-omnidesk-client-ip` 且 peer 属于 `trusted_client_ip_header_peers=[127.0.0.1]` 时采信它（与 `trusted_proxy_ips` 分开，后者仍为空），预认证 IP 限额因此按真实客户端计；actor/role/org 配额的组织取 Gateway 自己为该 actor 认定的组织，不读 `x-omnidesk-org`。不可扩大 IP 白名单或直接信任用户传入的代理头。
 
 激活前仍需数据库备份/迁移4检查、独立批准、安装仅两份生成的单元、设置审核槽位 `current`、实际 `nginx -t` 及防火墙/云安全组读回。通过真实 HTTPS 端到端身份、错误令牌、角色、设备入网/签名重放、持久化、SSE、重启和恢复验证后，才可配置 MONICO 的实际 Gateway 地址。当前本地测试只证明配置生成、有限路由和代理鉴权边界，未创建服务器、DNS、TLS或凭据，未证明模型/任务执行、长期可用性或生产上线。
 
@@ -74,6 +74,24 @@ Gateway-only 模板明确清空 `X-Forwarded-For`，避免 Uvicorn 信任 loopba
 ```sh
 /private/tmp/omnidesk-ios-20261007/checks-venv311/bin/python -m pytest tests/test_web_first_host.py tests/test_web_first_release.py tests/test_production_config_validator.py tests/test_admin_auth_production_default.py tests/test_api_resource_guard.py -q --tb=short
 ```
+
+### 预认证限额与 Web 会话（2026-10-22）
+
+此前 Next 服务端调用 Gateway 时不带客户端地址，所有用户共用 Gateway 的 `ip:127.0.0.1` 和 `/admin/session/identity` 预认证桶；匿名客户端带任意 cookie 约每秒 2 次即可让所有管理员的会话校验失败。现在：
+
+- Web 只把本服务登录时签发了会话印章（`__Host-omni_session_seal`，HMAC，绑定令牌、Gateway 地址、actor、role 和签发时间，按 `OMNI_WEB_SESSION_MAX_AGE_SECONDS` 过期）的 cookie 转发给 Gateway。`proxy.ts`（按 Next 路由用的解码后路径判断）和每个调用 Gateway 的处理函数（`getSessionToken`）都会校验；任意 cookie 在 Web 本地返回 401，不产生 Gateway 调用。
+- Web 按 nginx 写入的 `X-Forwarded-For` 最右一项对每个客户端限额：登录 10 次/分钟（在登录 POST 处理函数内计数），会话路由 120 次/分钟，IPv6 按 /64 计；不再有可被少数 IP 占满的全局登录桶，限流表有上限，被拒请求不建状态。
+- Web 调 Gateway 时带 `X-OmniDesk-Client-IP`。Gateway 只在 peer 属于 `trusted_client_ip_header_peers` 时采信该头（单值、合法 IP，否则忽略）；`X-Forwarded-For` 仍只从 `trusted_proxy_ips` 采信，并改为从右往左跳过可信代理。IPv6 客户端在 Gateway 也按 /64 计。组织配额键改为 Gateway 为该 actor 认定的组织，不再读 `x-omnidesk-org`。
+
+`init` 会为新主机写入上述 Gateway 配置和 `web.env` 中的 `OMNI_WEB_SESSION_SECRET`。已部署主机（`init` 不覆盖已有配置）升级时需手动：
+
+1. 在 `/etc/omnidesk/web-first/config.yaml` 的 `api_resource_guard` 下设 `trusted_client_ip_header: x-omnidesk-client-ip` 与 `trusted_client_ip_header_peers: ["127.0.0.1"]`。只能列 loopback：Gateway 只监听 127.0.0.1，能连它的只有 nginx 与 Web 容器（pasta），二者都会覆盖该头。`trusted_proxy_ips` 保持 `[]`。
+2. 完整模式：在 `web.env` 加 `OMNI_WEB_SESSION_SECRET=<至少 32 字符随机值>`（如 `python3 -c 'import secrets;print(secrets.token_urlsafe(48))'`），权限保持 0600。未设置时 Web 每次启动随机生成密钥并在日志告警，重启后所有人需重新登录；多副本必须设置同一值。少于 32 字符时登录与会话请求直接失败（fail closed）。
+3. Gateway-only：用新模板重新生成 nginx 配置（多了 `X-OmniDesk-Client-IP $remote_addr`），`nginx -t` 后重载。
+4. 升级后已登录用户的旧 cookie 没有印章，需要重新登录一次。
+5. Web 前面若不止 nginx 一跳（例如云负载均衡 → nginx），nginx 需先用 `real_ip` 模块还原真实客户端再写 `$remote_addr`，否则所有人共用负载均衡器的地址额度（登录 10 次/分钟会被一人占满）。
+
+配置错误的影响：未配置第 1 步时，Gateway 忽略该头，所有经 Web 的请求回到共享 loopback 桶；Web 侧印章仍挡住匿名的会话请求，剩下的共享面是多个 IP 的登录尝试（每 IP 10 次/分钟）和已登录用户的流量。若把会透传客户端头的代理（例如默认配置的 ingress）或公网地址列入 `trusted_client_ip_header_peers`，客户端可自选限额键，既能绕过每 IP 限额也能耗尽他人地址的额度；配置校验拒绝 `0.0.0.0/0`、`::/0` 与非法地址，以及 `x-forwarded-for`/`forwarded` 作头名。回滚：恢复上一槽位与旧 Web 镜像；旧版本的配置模型禁止未知键（`extra=forbid`），因此回滚旧 Gateway 前需同时删去 `trusted_client_ip_header` 与 `trusted_client_ip_header_peers`；`OMNI_WEB_SESSION_SECRET` 与印章 cookie 对旧 Web 无影响，nginx 新增的头对旧 Gateway 无影响。
 
 ## 备份、恢复和回滚
 

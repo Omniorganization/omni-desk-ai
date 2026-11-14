@@ -125,7 +125,10 @@ http {{
             cookie_metadata = [{key: cookie[key] for key in ("name", "httpOnly", "secure", "sameSite")}
                                for cookie in context.cookies()]
             report["cookie_metadata"] = cookie_metadata
-            check("all session cookies are HttpOnly Secure SameSite Strict", len(cookie_metadata) == 5
+            session_cookies = {"__Host-omni_" + name for name in ("session_token", "session_seal", "gateway_url",
+                                                                   "actor", "role", "csrf_token")}
+            check("all session cookies are HttpOnly Secure SameSite Strict",
+                  sorted(c["name"] for c in cookie_metadata) == sorted(session_cookies)
                   and all(c["httpOnly"] and c["secure"] and c["sameSite"] == "Strict" for c in cookie_metadata))
             check("session token inaccessible to page JavaScript", page.evaluate("document.cookie") == "")
             check("login token removed from form memory", page.get_by_label("Session Token", exact=True).input_value() == "")
