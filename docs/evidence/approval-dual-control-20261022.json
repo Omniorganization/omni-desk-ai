@@ -1,0 +1,64 @@
+{
+  "checked_at": "2026-10-22",
+  "scope": "local_source_and_tests_only_no_live_gateway_no_real_postgres",
+  "base_commit": "c89f6d119c7451cd3b8cf1e70d94022099e8c05e",
+  "branch": "ai/approval-dual-control-20261022",
+  "findings": {
+    "M2": "requester of an orchestrator-created critical approval could be one of the two dual approvers",
+    "M3": "delegated break-glass needed only a request-body flag, so one owner could elevate a viewer token and use it as the second dual approver"
+  },
+  "proof_of_concept": {
+    "dual_self": {
+      "base_result": "first approver = requester accepted; ready after one other owner: True",
+      "branch_result": "PermissionError: proposal creator cannot approve their own critical proposal"
+    },
+    "breakglass": {
+      "base_result": "viewer elevated to owner; dual ready with single owner + viewer token: True",
+      "branch_result": "PermissionError: break-glass for another actor needs a second owner"
+    }
+  },
+  "regression_tests": {
+    "file": "tests/test_approval_dual_control.py",
+    "backends": ["sqlite", "postgres_in_memory_state"],
+    "base_commit_result": {"failed": 29, "skipped": 2},
+    "branch_result": {"passed": 29, "skipped": 2},
+    "skipped_reason": "test_postgres_database_* need OMNIDESK_TEST_POSTGRES_DSN; run in the CI PostgreSQL job"
+  },
+  "full_suite": {
+    "command": "PYTHONPATH=. python -m pytest -q -W error -p no:cacheprovider --timeout=120",
+    "python": "3.11.15 (requirements.dev.lock)",
+    "passed": 1529,
+    "skipped": 16,
+    "failed": 1,
+    "failures": [
+      {
+        "test": "tests/test_ga14_production_closure.py::test_otlp_probe_uses_runtime_exporter_wire_format",
+        "cause": "local sandbox refuses binding a local port (PermissionError: [Errno 1] Operation not permitted); fails the same way on the base commit"
+      }
+    ],
+    "intermittent": [
+      {
+        "test": "tests/models/test_codex_cli_provider.py::test_unknown_or_mismatched_app_server_notifications_fail_closed[notification0]",
+        "cause": "os.killpg EPERM inside the local sandbox in one earlier full run; passed 3/3 when run alone; module not touched by this change"
+      }
+    ]
+  },
+  "static_checks": {
+    "ruff check omnidesk_agent tests": "pass",
+    "bandit -r omnidesk_agent -ll": "0 medium/high results",
+    "pyright --project pyrightconfig.json": "0 errors (base commit: 0 errors)",
+    "git diff --check": "clean"
+  },
+  "concurrency_checks": {
+    "sqlite_schema_migration_6_threads_30_rounds": {"without_begin_immediate": "30/30 rounds failed with duplicate column name", "with_begin_immediate": "0/90 rounds failed"}
+  },
+  "not_verified": [
+    "PostgreSQL stores against a real database (covered by test_postgres_database_* in CI)",
+    "the PostgreSQL SELECT in docs/runbooks/BREAK_GLASS_DUAL_CONTROL.md",
+    "multi-instance rolling deploy and rollback",
+    "a live gateway with real admin tokens"
+  ],
+  "residual_risk": [
+    "requests sent through a channel record the channel sender id; there is no mapping from channel identities to admin token actors, so the same person can be the channel requester and an owner dual approver"
+  ]
+}

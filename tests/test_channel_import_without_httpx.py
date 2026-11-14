@@ -27,4 +27,4 @@ def test_channel_envelope_import_without_httpx(monkeypatch):
         "message": {"message_id": 5, "from": {"id": 9}, "chat": {"id": 1}}
     })
     assert env.sender_id == "9"
-    assert env.message_id == "5"
+    assert env.message_id == "chat:1:5"
