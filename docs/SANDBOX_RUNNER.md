@@ -50,6 +50,7 @@ cd ../sandbox-runner && docker compose config
 The runner enforces:
 
 ```text
+bearer token required (refuses to start without OMNIDESK_SANDBOX_RUNNER_TOKEN)
 no network
 read-only container rootfs
 tmpfs /tmp

@@ -173,8 +173,8 @@ def test_gmail_oauth_success_paths_with_fake_google_sdks(tmp_path, monkeypatch):
 def test_runner_server_low_level_error_paths(tmp_path, monkeypatch):
     cfg = RunnerConfig(nonce_ttl_seconds=1, allow_workspace_paths=True, allowed_workspace_root=tmp_path, default_image="python:test")
     runner_server._NONCES.clear()
-    assert runner_server._constant_time_ok("Bearer token", "Bearer token")
-    assert not runner_server._constant_time_ok("", "")
+    assert runner_server._bearer_token_ok("token", "Bearer token")
+    assert not runner_server._bearer_token_ok("", "")
     assert runner_server._consume_nonce("old", 10.0, cfg)
     assert runner_server._consume_nonce("new", 12.0, cfg)
     assert "old" not in runner_server._NONCES

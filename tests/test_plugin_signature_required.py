@@ -23,7 +23,7 @@ def test_plugin_requires_sha256_and_signature(tmp_path, monkeypatch):
     with pytest.raises(PermissionError, match="signature is required"):
         manifest.verify(plugin_dir, "secret")
 
-    manifest.signature = hmac.new(b"secret", digest.encode("utf-8"), hashlib.sha256).hexdigest()
+    manifest.sign_v2(plugin_dir, "secret")
     manifest.verify(plugin_dir, "secret")
 
 
@@ -39,7 +39,7 @@ def _signed_v2_plugin(tmp_path):
 
 def test_v2_signature_binds_manifest_fields_and_all_files(tmp_path):
     plugin_dir, manifest = _signed_v2_plugin(tmp_path)
-    manifest.verify(plugin_dir, "secret", require_manifest_signature=True)
+    manifest.verify(plugin_dir, "secret")
 
     downgraded = manifest.model_copy(update={"sandbox": "subprocess"})
     with pytest.raises(PermissionError, match="signature mismatch"):
@@ -54,13 +54,13 @@ def test_v2_signature_binds_manifest_fields_and_all_files(tmp_path):
         manifest.verify(plugin_dir, "secret")
 
 
-def test_production_requires_v2_manifest_signature(tmp_path):
+def test_v1_manifest_signature_requires_explicit_legacy_opt_in(tmp_path):
     plugin_dir = tmp_path / "p"
     plugin_dir.mkdir()
     entry = plugin_dir / "plugin.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
     digest = hashlib.sha256(entry.read_bytes()).hexdigest()
     legacy = PluginManifest(name="p", sha256=digest, signature=hmac.new(b"secret", digest.encode("utf-8"), hashlib.sha256).hexdigest())
-    legacy.verify(plugin_dir, "secret")
     with pytest.raises(PermissionError, match="v2 manifest signature"):
-        legacy.verify(plugin_dir, "secret", require_manifest_signature=True)
+        legacy.verify(plugin_dir, "secret")
+    legacy.verify(plugin_dir, "secret", allow_legacy_v1=True)

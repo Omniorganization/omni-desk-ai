@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
 
 
 class PullRequestTool:
@@ -32,11 +32,9 @@ class PullRequestTool:
         if not head.startswith("ai/"):
             return ToolResult(False, error="AI-created PR head branch must start with ai/")
 
-        ctx.permissions.verify(proposal(
-            "pull_request", "create",
-            {"title": title, "base": base, "head": head, "draft": draft, "body_preview": body[:300]},
-            "high", "创建 PR，但不自动合并", ctx
-        ))
+        # The approver sees, and the scope hash binds, the whole PR body.
+        approved: dict[str, Any] = {"title": title, "base": base, "head": head, "draft": draft, **bound_content("body", body)}
+        ctx.permissions.verify(proposal("pull_request", "create", approved, "high", "创建 PR，但不自动合并", ctx))
 
         cmd = ["pr", "create", "--title", title, "--body", body, "--base", base, "--head", head]
         if draft:

@@ -5,7 +5,7 @@ import hashlib
 
 from omnidesk_agent.channels.gmail import GmailChannel
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
 
 
 class GmailTool:
@@ -81,7 +81,8 @@ class GmailTool:
             to = str(args["to"])
             subject = str(args.get("subject", ""))
             body = str(args.get("body", ""))
-            ctx.permissions.verify(proposal("gmail", "build_raw_email", {"to": to, "subject": subject, "body_preview": body[:200], "length": len(body)}, "medium", "生成 Gmail API raw email 载荷", ctx))
+            approved: dict[str, Any] = {"to": to, "subject": subject, **bound_content("body", body)}
+            ctx.permissions.verify(proposal("gmail", "build_raw_email", approved, "medium", "生成 Gmail API raw email 载荷", ctx))
             return ToolResult(True, data=self.adapter.build_raw_email(to, subject, body), summary=f"built raw email to {to}")
 
         if action == "send_email":
@@ -89,7 +90,9 @@ class GmailTool:
             to = str(args["to"])
             subject = str(args.get("subject", ""))
             body = str(args.get("body", ""))
-            ctx.permissions.verify(proposal("gmail", "send_email", {"to": to, "subject": subject, "body_preview": body[:200], "length": len(body)}, "high", "通过 Gmail API 发送邮件", ctx))
+            # The approver sees, and the scope hash binds, the whole body.
+            approved: dict[str, Any] = {"to": to, "subject": subject, **bound_content("body", body)}
+            ctx.permissions.verify(proposal("gmail", "send_email", approved, "high", "通过 Gmail API 发送邮件", ctx))
             result = await self.adapter.send_email(to, subject, body)
             return ToolResult(True, data=result, summary=f"sent gmail email to {to}")
 

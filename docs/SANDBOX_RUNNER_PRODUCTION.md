@@ -5,7 +5,7 @@ Run the sandbox runner outside the main OmniDesk application container. The app 
 ## Required Boundary
 
 - `sandbox.backend=remote_docker` in the application config.
-- `OMNIDESK_SANDBOX_RUNNER_TOKEN` set to a random secret of at least 32 characters.
+- `OMNIDESK_SANDBOX_RUNNER_TOKEN` set to a random secret of at least 32 characters. The runner refuses to start when it is unset or blank, and answers `POST /v1/run` with 503 if it is missing at request time; there is no unauthenticated mode.
 - `OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET` set and shared only with the app.
 - `OMNIDESK_SANDBOX_IMAGE` and `OMNIDESK_SANDBOX_IMAGE_ALLOWLIST` set to digest-pinned images.
 - `OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS=0` unless the runner and workspace volume are on a dedicated isolated node.
