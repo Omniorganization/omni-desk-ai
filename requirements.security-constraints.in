@@ -2,16 +2,16 @@
 #
 # Keep this file small and explicit: it is used by uv lock generation to
 # prevent dependency resolution from drifting back onto vulnerable releases.
-click>=8.5.0
-anyio>=4.15.1
-certifi>=2026.10.19
+click>=8.5.1
+anyio>=4.16.0
+certifi>=2026.10.23
 cryptography>=50
-filelock>=4.2.1
+filelock>=4.2.10
 httpx2>=2.12.0
 jsonschema>=4.26.0
 msgpack>=1.2.3
 pillow>=13.0.0
-pip>=26.2.1
+pip>=26.3
 pytest>=9.0.3
 requests>=2.34.2
 setuptools>=84.1.0
