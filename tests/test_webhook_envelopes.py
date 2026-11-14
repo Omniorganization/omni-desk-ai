@@ -6,9 +6,13 @@ from omnidesk_agent.config import TelegramConfig, WhatsAppCloudConfig, LineConfi
 
 
 def test_telegram_extract_envelope():
-    env = TelegramChannel(TelegramConfig()).extract_envelope({"message": {"message_id": 5, "from": {"id": 9}, "chat": {"id": 1}}})
+    channel = TelegramChannel(TelegramConfig())
+    env = channel.extract_envelope({"update_id": 700, "message": {"message_id": 5, "from": {"id": 9}, "chat": {"id": 1}}})
     assert env.sender_id == "9"
-    assert env.message_id == "5"
+    assert env.message_id == "update:700"
+    # Without update_id the key is still scoped to the chat, never the bare per-chat message_id.
+    env = channel.extract_envelope({"message": {"message_id": 5, "from": {"id": 9}, "chat": {"id": 1}}})
+    assert env.message_id == "chat:1:5"
 
 
 def test_whatsapp_extract_envelope():

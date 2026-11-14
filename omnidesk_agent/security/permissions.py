@@ -10,6 +10,7 @@ from typing import Any
 
 from omnidesk_agent.config import PermissionConfig
 from omnidesk_agent.security.approval_required import ApprovalRequired
+from omnidesk_agent.security.dual_approval import stamp_requester
 
 
 class PermissionDecision:
@@ -134,6 +135,14 @@ class PermissionManager:
         if self.approval_store is None:
             self._audit("denied_no_approval_store", proposal_dict)
             raise PermissionError("remote_approval requires ApprovalStore")
+        # The proposal actor comes from the authenticated message sender (ToolContext),
+        # so it is the trusted requester; record it the same way POST /approvals does.
+        requester = str(proposal_dict.get("actor") or "").strip()
+        if requester:
+            stamp_requester(proposal_dict, requester)
+        elif proposal_dict.get("requires_dual_approval"):
+            self._audit("denied_no_requester", proposal_dict)
+            raise PermissionError("dual approval requires an authenticated requester")
         approval_id = self.approval_store.create(proposal_dict)
         self._audit("approval_required", {"approval_id": approval_id, **proposal_dict})
         self._metric("omnidesk_approval_required_total", tool=str(proposal_dict.get("tool", "")), risk=str(proposal_dict.get("risk", "medium")))

