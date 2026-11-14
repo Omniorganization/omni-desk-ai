@@ -11,12 +11,32 @@ class TelegramChannel:
     name = "telegram"
     def extract_envelope(self, payload: dict[str, Any]):
         from omnidesk_agent.channels.base import WebhookEnvelope
-        msg = payload.get("message") or payload.get("edited_message") or payload.get("channel_post") or {}
+        msg = (
+            payload.get("message")
+            or payload.get("edited_message")
+            or payload.get("channel_post")
+            or payload.get("business_message")
+            or {}
+        )
         chat = msg.get("chat") or {}
         user = msg.get("from") or {}
         sender = str(user.get("id") or chat.get("id") or "unknown")
-        mid = str(msg.get("message_id") or payload.get("update_id") or "")
-        return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=mid or None, raw=payload)
+        return WebhookEnvelope(source_key=sender, sender_id=sender, message_id=self._replay_key(payload, msg, chat), raw=payload)
+
+    @staticmethod
+    def _replay_key(payload: dict[str, Any], msg: dict[str, Any], chat: dict[str, Any]) -> Optional[str]:
+        # message_id is only unique inside one chat, so keying replay protection
+        # on it lets any user burn the ids another chat will use. update_id is
+        # assigned by Telegram and unique per bot; the prefixes keep these keys
+        # apart from digests stored under the old message_id-only scheme.
+        update_id = payload.get("update_id")
+        if isinstance(update_id, int) and not isinstance(update_id, bool):
+            return f"update:{update_id}"
+        message_id = msg.get("message_id")
+        chat_id = chat.get("id")
+        if message_id is not None and chat_id is not None:
+            return f"chat:{chat_id}:{message_id}"
+        return None
 
     def __init__(self, cfg: TelegramConfig):
         self.cfg = cfg

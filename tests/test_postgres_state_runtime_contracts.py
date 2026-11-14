@@ -46,6 +46,21 @@ class MemoryJsonState:
         bucket[key] = dict(value)
         return True
 
+    def insert_once_or_replace_stale(self, namespace: str, key: str, value: dict[str, Any], *, stale_before: float) -> bool:
+        bucket = self.rows.setdefault(namespace, {})
+        current = bucket.get(str(key))
+        if current is not None and float(current.get("_updated_at", 0)) >= stale_before:
+            return False
+        bucket[str(key)] = {**value, "_updated_at": time.time()}
+        return True
+
+    def delete_stale(self, namespace: str, *, stale_before: float, limit: int = 1000) -> int:
+        bucket = self.rows.get(namespace, {})
+        stale = [key for key, row in bucket.items() if "_updated_at" in row and float(row["_updated_at"]) < stale_before][:limit]
+        for key in stale:
+            del bucket[key]
+        return len(stale)
+
     def get(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
         row = self.rows.get(namespace, {}).get(str(key))
         return dict(row) if row is not None else None
@@ -176,7 +191,10 @@ def test_postgres_approval_run_breakglass_and_webhook_contracts(tmp_path: Path) 
 
     breakglass = PostgresBreakGlassStore(state, audit_log=tmp_path / "audit.jsonl")
     assert breakglass.open(session_id="bg0", actor="alice", approved_by="alice", reason="self emergency", ttl_seconds=60).active is True
-    session = breakglass.open(session_id="bg1", actor="alice", approved_by="bob", reason="restore", ttl_seconds=60)
+    with pytest.raises(PermissionError):
+        breakglass.open(session_id="bg1", actor="alice", approved_by="bob", reason="restore", ttl_seconds=60)
+    assert breakglass.request_delegated(session_id="bg1", actor="alice", requested_by="bob", reason="restore", ttl_seconds=60).active is False
+    session = breakglass.approve("bg1", approver="carol")
     assert session.active is True
     with pytest.raises(PermissionError):
         breakglass.assert_active("bg1", actor="mallory")

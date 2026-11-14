@@ -22,7 +22,9 @@ def isolated_host(tmp_path, monkeypatch):
     monkeypatch.setattr(host.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=1001, pw_gid=1001))
     monkeypatch.setenv("HOST_TEST_DSN", "postgresql://fixture:fixture@127.0.0.1/host_test")
     fixture_secret = "test-fixture-not-a-real-secret-" + "x" * 48
-    monkeypatch.setattr(host.secrets, "token_urlsafe", lambda _: fixture_secret)
+    # Distinct per call, like the real generator: production policy rejects role tokens that share a value.
+    issued = iter(range(1, 1000))
+    monkeypatch.setattr(host.secrets, "token_urlsafe", lambda _: f"{fixture_secret}-{next(issued)}")
     monkeypatch.setattr(host.Fernet, "generate_key", lambda: fixture_secret.encode())
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization
