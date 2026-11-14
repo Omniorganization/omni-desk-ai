@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
-
 import pytest
+import yaml
 
 from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.plugins.docker_runner import DockerPluginTool
+from omnidesk_agent.plugins.manifest import PluginManifest
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
 
@@ -24,22 +23,9 @@ def _signed_plugin(root, name: str, sandbox: str, secret: str):
     plugin_dir.mkdir(parents=True)
     entrypoint = plugin_dir / "plugin.py"
     entrypoint.write_text("def call(action, args):\n    return {'ok': True}\n", encoding="utf-8")
-    digest = hashlib.sha256(entrypoint.read_bytes()).hexdigest()
-    signature = hmac.new(secret.encode("utf-8"), digest.encode("utf-8"), hashlib.sha256).hexdigest()
-    (plugin_dir / "plugin.yaml").write_text(
-        "\n".join([
-            f"name: {name}",
-            "version: 1.0.0",
-            "enabled: true",
-            "trusted: true",
-            f"sandbox: {sandbox}",
-            "entrypoint: plugin.py",
-            "permissions: [plugin.call]",
-            f"sha256: {digest}",
-            f"signature: {signature}",
-        ]),
-        encoding="utf-8",
-    )
+    manifest = PluginManifest(name=name, version="1.0.0", trusted=True, sandbox=sandbox, entrypoint="plugin.py", permissions=["plugin.call"])
+    manifest.sign_v2(plugin_dir, secret)
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest.model_dump(exclude_none=True)), encoding="utf-8")
 
 
 def test_plugin_registry_loads_docker_sandbox(tmp_path, monkeypatch):

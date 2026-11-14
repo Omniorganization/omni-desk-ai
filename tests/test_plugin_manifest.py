@@ -18,6 +18,10 @@ def test_plugin_manifest_hash_and_signature_verification(tmp_path):
         manifest.verify(tmp_path)
 
     manifest.signature = hmac.new(b"secret", digest.encode("utf-8"), hashlib.sha256).hexdigest()
+    with pytest.raises(PermissionError, match="v2 manifest signature"):
+        manifest.verify(tmp_path, "secret")
+
+    manifest.sign_v2(tmp_path, "secret")
     manifest.verify(tmp_path, "secret")
 
 

@@ -257,8 +257,8 @@ async def test_direct_tools_do_not_execute_false_decisions(kind, mode, tmp_path)
         action, args = "click", {"x": 1, "y": 2}
     else:
         image = tmp_path / "image.png"
-        image.write_bytes(b"test")
-        tool = VisionGroundingTool(SimpleNamespace(complete=tripwire))
+        image.write_bytes(b"\x89PNG\r\n\x1a\ntest")
+        tool = VisionGroundingTool(SimpleNamespace(complete=tripwire), tmp_path)
         action, args = "ground", {"image_path": str(image)}
     if mode == "dry_run":
         result = await tool.call(action, args, ctx)

@@ -203,7 +203,7 @@ class OmniDeskRuntime:
         if caps.computer.enabled:
             self.tools.register(ComputerTool(self.cfg.workspace.root / "screenshots"))
         if caps.vision.enabled:
-            self.tools.register(VisionGroundingTool(self.model_router))
+            self.tools.register(VisionGroundingTool(self.model_router, self.cfg.workspace.root))
         if caps.pull_request.enabled:
             self.tools.register(PullRequestTool(Path.cwd()))
 
