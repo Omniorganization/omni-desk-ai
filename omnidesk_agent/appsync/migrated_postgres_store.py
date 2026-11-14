@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import queue
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, TypeVar
+from typing import Any, Optional, TypeVar
 
 from omnidesk_agent.appsync.postgres_applying_sync import (
     ApplyingDurablePostgresAppSyncStore,
@@ -14,8 +15,50 @@ from omnidesk_agent.appsync.postgres_applying_sync import (
 from omnidesk_agent.appsync.postgres_migrations import (
     assert_appsync_schema_current,
 )
+from omnidesk_agent.appsync.store import scope_sync_event_to_actor
 
 T = TypeVar("T")
+
+# Like the in-memory store, a sync call returns at most the newest 1000 events
+# after the cursor and moves the cursor to the head.
+SYNC_EVENT_WINDOW = 1000
+
+# One statement, one snapshot: the head and the window are read together. Event
+# sequence numbers are assigned and committed under the namespace advisory lock,
+# so no uncommitted event can later appear below a committed head.
+SYNC_WINDOW_SQL = """
+WITH head AS (
+    SELECT COALESCE(MAX(seq), 0) AS seq FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s
+), page AS (
+    SELECT seq, organization_id, event_type, actor, payload, created_at
+    FROM omnidesk_appsync_sync_events
+    WHERE namespace = %(namespace)s AND seq > %(since)s
+    ORDER BY seq DESC
+    LIMIT %(limit)s
+)
+SELECT head.seq, page.seq, page.organization_id, page.event_type, page.actor, page.payload, page.created_at
+FROM head LEFT JOIN page ON true
+ORDER BY page.seq
+"""
+
+SYNC_ORGANIZATION_WINDOW_SQL = """
+WITH head AS (
+    SELECT COALESCE(MAX(seq), 0) AS seq FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s
+), page AS (
+    SELECT seq, organization_id, event_type, actor, payload, created_at
+    FROM omnidesk_appsync_sync_events
+    WHERE namespace = %(namespace)s AND seq > %(since)s AND organization_id = %(organization_id)s
+    ORDER BY seq DESC
+    LIMIT %(limit)s
+)
+SELECT head.seq, page.seq, page.organization_id, page.event_type, page.actor, page.payload, page.created_at
+FROM head LEFT JOIN page ON true
+ORDER BY page.seq
+"""
+
+ACTOR_ORGANIZATION_SQL = "SELECT organization_id FROM omnidesk_appsync_users WHERE namespace = %s AND user_id = %s"
+
+CONVERSATION_OWNERS_SQL = "SELECT conversation_id, actor FROM omnidesk_appsync_conversations WHERE namespace = %s AND conversation_id = ANY(%s)"
 
 
 class PsycopgConnectionPool:
@@ -172,7 +215,7 @@ class MigratedMultiInstancePostgresAppSyncStore(
             "device_approval_key",
             "verify_approval_signature",
             "bootstrap",
-            "sync_since",
+            "record_event",
         }
     )
 
@@ -218,6 +261,14 @@ class MigratedMultiInstancePostgresAppSyncStore(
                 (self.namespace, time.time()),
             )
             self.device_request_nonces = {str(key): float(expires_at) for key, expires_at in cur.fetchall()}
+
+    def _persist(self) -> None:
+        # Mirroring upserts this instance's whole cache. Outside the advisory lock and
+        # a fresh reload it would roll back other instances' writes, such as device
+        # revocations, consumed approvals and completed enrollments.
+        if int(getattr(self._operation_state, "depth", 0)) <= 0:
+            raise RuntimeError("AppSync state can only be persisted inside a serialized operation")
+        super()._persist()
 
     def _mirror_normalized(self, cur: Any, Jsonb: Any) -> None:
         super()._mirror_normalized(cur, Jsonb)
@@ -274,6 +325,43 @@ class MigratedMultiInstancePostgresAppSyncStore(
         guarded.__name__ = getattr(attribute, "__name__", name)
         guarded.__doc__ = getattr(attribute, "__doc__", None)
         return guarded
+
+    def sync_since(self, since_seq: int, actor: Optional[str] = None) -> dict[str, Any]:
+        """Read the sync feed straight from PostgreSQL.
+
+        Clients poll this (``/app/ws`` every few seconds per connection), so it does
+        not take the namespace advisory lock and reload every table the way the
+        serialized operations do.
+        """
+        since = max(0, int(since_seq or 0))
+        params: dict[str, Any] = {"namespace": self.namespace, "since": since, "limit": SYNC_EVENT_WINDOW}
+        owners: dict[str, str] = {}
+        with self._connect() as conn, conn.cursor() as cur:
+            if actor:
+                cur.execute(ACTOR_ORGANIZATION_SQL, (self.namespace, actor))
+                row = cur.fetchone()
+                params["organization_id"] = self._normalize_org_id(row[0]) if row else self.organization_for_new_actor(actor)
+                cur.execute(SYNC_ORGANIZATION_WINDOW_SQL, params)
+            else:
+                cur.execute(SYNC_WINDOW_SQL, params)
+            rows: list[tuple[Any, ...]] = cur.fetchall()
+            head = int(rows[0][0]) if rows else since
+            events: list[dict[str, Any]] = []
+            references: set[str] = set()
+            for r in rows:
+                if r[1] is None:
+                    continue
+                payload: dict[str, Any] = r[5] if isinstance(r[5], dict) else json.loads(r[5] or "{}")
+                references.update(str(payload.get(key) or "") for key in ("conversation_id", "related_id"))
+                events.append({"seq": int(r[1]), "organization_id": r[2], "event_type": r[3], "actor": r[4], "payload": payload, "ts": float(r[6])})
+            references.discard("")
+            if actor and references:
+                cur.execute(CONVERSATION_OWNERS_SQL, (self.namespace, sorted(references)))
+                owners = {str(r[0]): str(r[1]) for r in cur.fetchall()}
+        if actor:
+            scoped = (scope_sync_event_to_actor(event, actor=actor, conversation_owner=owners.get) for event in events)
+            events = [event for event in scoped if event is not None]
+        return {"sync_seq": head, "events": events}
 
     def close(self) -> None:
         self._connection_pool.close()

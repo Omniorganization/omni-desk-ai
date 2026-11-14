@@ -7,6 +7,7 @@ This pass implements the production-grade requirements raised in the industrial 
 - AdminAuth is role-aware and protects `/agent/run`, `/agent/resume/*`, `/approvals/*`, `/validate/*`, `/oauth/*`, `/self-upgrade/*`, `/admin/*`.
 - AdminAuth supports Bearer token, `x-omnidesk-admin-token`, local-only development mode, IP allowlist, and JSONL audit. Legacy gateway-secret auth is disabled by default and production validation rejects `gateway.allow_legacy_gateway_secret_auth=true`; use role-bound viewer/operator/owner tokens instead.
 - AppSync device pairing codes, challenge nonces, and device tokens are stored with purpose-separated HMAC-SHA256 using `OMNIDESK_APPSYNC_SECRET_PEPPER`; old SHA256 hashes are read only for compatibility with in-flight enrollments.
+- Device keys are Ed25519 or P-256 public keys. A `legacy-hmac:` device key is a shared HMAC secret kept by the gateway; it remains for tests and local development only. In production mode, device registration and pairing reject it with 422, challenge verification with 403, and device-signed requests with 401 (`legacy_hmac_key_not_allowed`); devices verified with such a key must be re-enrolled with an asymmetric key.
 - Web Admin approval decisions use per-install WebCrypto device identity and signed `x-omnidesk-device-*` headers. The fixed `web-admin-console` device id is not valid for production approval.
 - `server.py` reuses `rt.approval_store`.
 - Webhook routes flow through `_guard_webhook()` and translate `PermissionError` to HTTP 403.

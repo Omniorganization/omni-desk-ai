@@ -589,20 +589,17 @@ class GatewayProjectStore:
             }
 
     def _event(self, event_type: str, actor: str, project: dict[str, Any]) -> None:
-        event = getattr(self.app_sync, "_event", None)
-        persist = getattr(self.app_sync, "_persist", None)
-        if callable(event):
-            event(
-                event_type,
-                actor,
-                {
-                    "project_id": project["project_id"],
-                    "name": project.get("name"),
-                    "organization_id": project.get("organization_id"),
-                },
-            )
-        if callable(persist):
-            persist()
+        # The public method runs under the store's serialization, so a PostgreSQL
+        # instance reloads shared state before persisting instead of overwriting it.
+        self.app_sync.record_event(
+            event_type,
+            actor,
+            {
+                "project_id": project["project_id"],
+                "name": project.get("name"),
+                "organization_id": project.get("organization_id"),
+            },
+        )
 
     def _remember_idempotency(
         self,
@@ -613,17 +610,14 @@ class GatewayProjectStore:
         payload: dict[str, Any] | None,
         response: dict[str, Any],
     ) -> None:
-        self.app_sync._idempotency_put(  # noqa: SLF001
-            actor=actor,
-            endpoint=endpoint,
-            key=key,
-            payload=payload,
-            response=response,
-        )
         if key:
-            persist = getattr(self.app_sync, "_persist", None)
-            if callable(persist):
-                persist()
+            self.app_sync.put_idempotency_response(
+                actor=actor,
+                endpoint=endpoint,
+                key=key,
+                payload=payload,
+                response=response,
+            )
 
     def list_projects(self, *, actor: str, include_deleted: bool = False) -> list[dict[str, Any]]:
         if self._postgres_enabled:

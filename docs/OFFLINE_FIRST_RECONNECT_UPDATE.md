@@ -76,6 +76,8 @@ When the JSON AppSync store is created with `local_outbox_enabled=True` or the r
 
 `POST /app/sync` accepts uploaded `operations` and downloaded `remote_events`, records inbox/outbox dedupe, updates cursors, and opens conflicts for idempotency payload mismatches. Conflicts require manual review unless a reviewed merge strategy is implemented.
 
+Inbox dedupe and outbox matching only consider the caller's own records: a remote event id or idempotency key is matched within the authenticated actor and its organization, never against another actor's queued operations.
+
 The reconnect worker always syncs outbox first and only then calls the update checker. If upload fails or conflicts remain open, update checking is skipped.
 
 ## Signed Runtime Updates

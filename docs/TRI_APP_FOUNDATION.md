@@ -63,6 +63,8 @@ The V1 shared objects are:
 | GET | `/app/sync` | viewer | all clients |
 | WS | `/app/ws` | gateway-protected | all clients |
 
+The `devices` list of `/app/bootstrap` holds every device of the organization for operator and owner tokens, and only the caller's own devices for viewer tokens; the role is the one the gateway authenticated. Device objects in responses never include the push target (only a masked `push_target_hint`), the token hash, challenge state or a legacy HMAC key.
+
 ## Client folders
 
 ```text

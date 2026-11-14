@@ -91,6 +91,10 @@ class PostgresChatRepository:
     def _connect(self) -> Any:
         return self.store._connect()
 
+    def _new_actor_organization(self, actor: str) -> str:
+        assign = getattr(self.store, "organization_for_new_actor", None)
+        return str(assign(actor)) if callable(assign) else "org_default"
+
     def organization_for_actor(self, actor: str) -> str:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -102,9 +106,10 @@ class PostgresChatRepository:
                 return str(row[0])
             if not self.allow_implicit_provisioning:
                 raise PermissionError("identity_not_provisioned")
-            return "org_default"
+            return self._new_actor_organization(actor)
 
     def get_conversation(self, actor: str, conversation_id: str) -> dict[str, Any]:
+        """Return one of ``actor``'s conversations; another actor's reads as missing."""
         organization_id = self.organization_for_actor(actor)
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -112,8 +117,8 @@ class PostgresChatRepository:
                 "source_device_id,created_at,updated_at "
                 "FROM omnidesk_appsync_conversations "
                 "WHERE namespace=%s AND organization_id=%s "
-                "AND conversation_id=%s",
-                (self.namespace, organization_id, conversation_id),
+                "AND conversation_id=%s AND actor=%s",
+                (self.namespace, organization_id, conversation_id, actor),
             )
             row = cur.fetchone()
             if not row:
@@ -134,16 +139,20 @@ class PostgresChatRepository:
             )
 
     def list_messages(self, actor: str, conversation_id: str) -> list[dict[str, Any]]:
+        """History of one of ``actor``'s conversations, written by that actor only."""
         organization_id = self.organization_for_actor(actor)
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT message_id,conversation_id,role,content,actor,"
-                "organization_id,source_device_id,task_id,model_provider,"
-                "model_name,model_profile,usage,trace_id,created_at "
-                "FROM omnidesk_appsync_messages "
-                "WHERE namespace=%s AND organization_id=%s "
-                "AND conversation_id=%s ORDER BY created_at,message_id",
-                (self.namespace, organization_id, conversation_id),
+                "SELECT m.message_id,m.conversation_id,m.role,m.content,m.actor,"
+                "m.organization_id,m.source_device_id,m.task_id,m.model_provider,"
+                "m.model_name,m.model_profile,m.usage,m.trace_id,m.created_at "
+                "FROM omnidesk_appsync_messages m "
+                "JOIN omnidesk_appsync_conversations c "
+                "ON c.namespace=m.namespace AND c.conversation_id=m.conversation_id "
+                "WHERE m.namespace=%s AND m.organization_id=%s "
+                "AND m.conversation_id=%s AND c.actor=%s AND m.actor=c.actor "
+                "ORDER BY m.created_at,m.message_id",
+                (self.namespace, organization_id, conversation_id, actor),
             )
             keys = (
                 "message_id",
@@ -193,22 +202,25 @@ class PostgresChatRepository:
                 (self.namespace, actor),
             )
             row = cur.fetchone()
-            organization_id = str(row[0] if row else "org_default")
+            organization_id = str(row[0]) if row else self._new_actor_organization(actor)
             if not row and not self.allow_implicit_provisioning:
                 raise PermissionError("identity_not_provisioned")
             if not row:
-                cur.execute(
-                    "INSERT INTO omnidesk_appsync_organizations"
-                    "(organization_id,namespace,name,created_at) "
-                    "VALUES(%s,%s,%s,%s) "
-                    "ON CONFLICT(organization_id) DO NOTHING",
-                    (
-                        organization_id,
-                        self.namespace,
-                        "Default Organization",
-                        now,
-                    ),
-                )
+                # The store treats the namespace's oldest organization row as its
+                # default, so a configured organization is never created here.
+                if actor not in (getattr(self.store, "actor_organizations", None) or {}):
+                    cur.execute(
+                        "INSERT INTO omnidesk_appsync_organizations"
+                        "(organization_id,namespace,name,created_at) "
+                        "VALUES(%s,%s,%s,%s) "
+                        "ON CONFLICT(organization_id) DO NOTHING",
+                        (
+                            organization_id,
+                            self.namespace,
+                            "Default Organization",
+                            now,
+                        ),
+                    )
                 cur.execute(
                     "INSERT INTO omnidesk_appsync_users"
                     "(namespace,organization_id,user_id,display_name,role,"
@@ -261,7 +273,7 @@ class PostgresChatRepository:
                 raise ChatResumeStateMissing("No durable stream state exists for Last-Event-ID")
             if conversation_id:
                 cur.execute(
-                    "SELECT organization_id FROM omnidesk_appsync_conversations WHERE namespace=%s AND conversation_id=%s FOR SHARE",
+                    "SELECT organization_id,actor FROM omnidesk_appsync_conversations WHERE namespace=%s AND conversation_id=%s FOR SHARE",
                     (self.namespace, conversation_id),
                 )
                 conversation = cur.fetchone()
@@ -269,6 +281,9 @@ class PostgresChatRepository:
                     raise KeyError("conversation not found")
                 if str(conversation[0]) != organization_id:
                     raise PermissionError("organization scope mismatch")
+                if str(conversation[1]) != actor:
+                    # Conversations are private to their creator; same answer as a missing one.
+                    raise KeyError("conversation not found")
             else:
                 conversation_id = _id("conv")
                 cur.execute(

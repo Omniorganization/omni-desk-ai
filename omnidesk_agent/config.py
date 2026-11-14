@@ -189,6 +189,13 @@ class AppSyncConfig(BaseModel):
     namespace: str = "default"
     require_idempotency: bool = True
     task_lease_seconds: int = 60
+    # actor -> organization for actors seen for the first time. Requests cannot
+    # pick an organization, and an existing actor never moves.
+    actor_organizations: dict[str, str] = Field(default_factory=dict)
+    # /app/ws bypasses the HTTP middleware, so it carries its own connection caps.
+    websocket_max_connections_per_actor: int = Field(default=8, ge=1)
+    websocket_max_connections: int = Field(default=256, ge=1)
+    websocket_poll_seconds: float = Field(default=2.0, ge=0.5, le=60)
 
 class WorkspaceConfig(BaseModel):
     root: Path = Path("~/.omnidesk/workspace").expanduser()
