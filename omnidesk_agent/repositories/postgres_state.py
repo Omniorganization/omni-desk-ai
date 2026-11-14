@@ -14,7 +14,7 @@ from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
 from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
-from omnidesk_agent.security.webhook_security import WebhookSecurityConfig
+from omnidesk_agent.security.webhook_security import WebhookSecurityConfig, nonce_digest, webhook_digest
 from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
 from omnidesk_agent.memory.retrieval import known_memory_identity, matches_memory_query, planner_memory_visible
 
@@ -137,6 +137,49 @@ class _PostgresJsonState:
                     (namespace, key, json.dumps(value, ensure_ascii=False, default=str), now, now),
                 )
                 return int(cur.rowcount or 0) == 1
+
+    def insert_once_or_replace_stale(self, namespace: str, key: str, value: dict[str, Any], *, stale_before: float) -> bool:
+        """Insert a row, or take over one last written before stale_before.
+
+        Returns False only while a fresh row with the same key exists, so rows
+        that act as time-limited claims expire even before they are purged.
+        """
+        now = time.time()
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO omnidesk_core_state(namespace, key, value_json, created_at, updated_at)
+                    VALUES (%s, %s, %s::jsonb, %s, %s)
+                    ON CONFLICT(namespace, key) DO UPDATE
+                    SET value_json=EXCLUDED.value_json, created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at
+                    WHERE omnidesk_core_state.updated_at < %s
+                    """,
+                    (namespace, key, json.dumps(value, ensure_ascii=False, default=str), now, now, float(stale_before)),
+                )
+                return int(cur.rowcount or 0) == 1
+
+    def delete_stale(self, namespace: str, *, stale_before: float, limit: int = 1000) -> int:
+        """Delete at most ``limit`` rows last written before stale_before.
+
+        Bounded so a large backlog is drained over several calls instead of one
+        long statement on a request path; rows another instance is already
+        deleting or re-claiming are skipped.
+        """
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM omnidesk_core_state
+                    WHERE (namespace, key) IN (
+                      SELECT namespace, key FROM omnidesk_core_state
+                      WHERE namespace=%s AND updated_at < %s
+                      LIMIT %s FOR UPDATE SKIP LOCKED
+                    )
+                    """,
+                    (namespace, float(stale_before), max(1, int(limit))),
+                )
+                return int(cur.rowcount or 0)
 
     def get(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
         with self._connect() as con:
@@ -351,6 +394,10 @@ class PostgresDualApprovalStore:
         self.state = state
 
     def open(self, approval_id: str, proposal: dict[str, Any]) -> None:
+        from omnidesk_agent.security.dual_approval import proposal_requesters
+
+        if not proposal_requesters(proposal):
+            raise PermissionError("dual approval proposal must record its requester")
         now = time.time()
         self.state.insert_once(
             self.namespace,
@@ -366,17 +413,18 @@ class PostgresDualApprovalStore:
         )
 
     def approve(self, approval_id: str, approver: str) -> DualApprovalDecision:
+        from omnidesk_agent.security.dual_approval import proposal_requesters
+
         approver = str(approver).strip()
         if not approver:
             raise ValueError("approver is required")
 
         def update(row: dict[str, Any]) -> dict[str, Any]:
-            proposer = str((row.get("proposal") or {}).get("created_by") or (row.get("proposal") or {}).get("proposer") or "")
-            if proposer and hmac.compare_digest(proposer, approver):
+            if approver in proposal_requesters(row.get("proposal") or {}):
                 raise PermissionError("proposal creator cannot approve their own critical proposal")
             first = row.get("first_approver")
             second = row.get("second_approver")
-            if first and hmac.compare_digest(str(first), approver):
+            if first and str(first) == approver:
                 raise PermissionError("second approver must be distinct from first approver")
             if not first:
                 row["first_approver"] = approver
@@ -647,6 +695,8 @@ class PostgresRunStore:
         return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)
 
 class PostgresBreakGlassStore:
+    """PostgreSQL twin of security.break_glass.BreakGlassStore; same rules, shared helpers."""
+
     namespace = "break_glass_sessions"
 
     def __init__(self, state: _PostgresJsonState, *, audit_log: Path):
@@ -657,13 +707,9 @@ class PostgresBreakGlassStore:
     def open(
         self, *, session_id: str, actor: str, reason: str, approved_by: str, ttl_seconds: int = 900, metadata: dict[str, Any] | None = None
     ) -> BreakGlassSession:
-        actor = actor.strip()
-        approved_by = approved_by.strip()
-        reason = reason.strip()
-        if not actor or not approved_by or not reason:
-            raise ValueError("actor, approved_by, and reason are required")
-        if ttl_seconds <= 0 or ttl_seconds > 3600:
-            raise ValueError("break-glass ttl must be between 1 and 3600 seconds")
+        from omnidesk_agent.security.break_glass import STATUS_ACTIVE, validate_self_session
+
+        actor, approved_by, reason = validate_self_session(actor, approved_by, reason, ttl_seconds)
         now = time.time()
         expires_at = now + int(ttl_seconds)
         row = {
@@ -675,11 +721,76 @@ class PostgresBreakGlassStore:
             "expires_at": expires_at,
             "revoked_at": None,
             "metadata": metadata or {},
+            "status": STATUS_ACTIVE,
+            "second_approver": None,
+            "approved_at": now,
+            "ttl_seconds": int(ttl_seconds),
         }
         if not self.state.insert_once(self.namespace, session_id, row):
             raise ValueError("break-glass session already exists")
         session = BreakGlassSession(session_id, actor, reason, expires_at, approved_by, True)
         self._audit("break_glass.open", session=session, metadata=metadata or {})
+        return session
+
+    def request_delegated(
+        self,
+        *,
+        session_id: str,
+        actor: str,
+        reason: str,
+        requested_by: str,
+        ttl_seconds: int = 900,
+        metadata: dict[str, Any] | None = None,
+        approval_window_seconds: int | None = None,
+    ) -> BreakGlassSession:
+        from omnidesk_agent.security.break_glass import DEFAULT_APPROVAL_WINDOW_SECONDS, STATUS_PENDING, validate_delegated_request
+
+        window = DEFAULT_APPROVAL_WINDOW_SECONDS if approval_window_seconds is None else approval_window_seconds
+        actor, requested_by, reason = validate_delegated_request(actor, requested_by, reason, ttl_seconds, window)
+        now = time.time()
+        approve_by = now + int(window)
+        row = {
+            "session_id": session_id,
+            "actor": actor,
+            "reason": reason,
+            "approved_by": requested_by,
+            "created_at": now,
+            "expires_at": approve_by,
+            "revoked_at": None,
+            "metadata": metadata or {},
+            "status": STATUS_PENDING,
+            "second_approver": None,
+            "approved_at": None,
+            "ttl_seconds": int(ttl_seconds),
+        }
+        if not self.state.insert_once(self.namespace, session_id, row):
+            raise ValueError("break-glass session already exists")
+        session = BreakGlassSession(session_id, actor, reason, approve_by, requested_by, False, STATUS_PENDING)
+        self._audit("break_glass.request", session=session, metadata=metadata or {})
+        return session
+
+    def approve(self, session_id: str, *, approver: str, metadata: dict[str, Any] | None = None) -> BreakGlassSession:
+        from omnidesk_agent.security.break_glass import STATUS_ACTIVE, check_second_approver
+
+        approver = approver.strip()
+        if not approver:
+            raise ValueError("approver is required")
+
+        def update(row: dict[str, Any]) -> dict[str, Any]:
+            now = time.time()
+            check_second_approver(row, approver, now)
+            row["status"] = STATUS_ACTIVE
+            row["second_approver"] = approver
+            row["approved_at"] = now
+            row["expires_at"] = now + int(row["ttl_seconds"])
+            return row
+
+        try:
+            self.state.update_locked(self.namespace, session_id, update)
+        except KeyError:
+            raise KeyError(f"break-glass session not found: {session_id}") from None
+        session = self.get(session_id)
+        self._audit("break_glass.approve", session=session, second_approver=approver, metadata=metadata or {})
         return session
 
     def revoke(self, session_id: str, *, revoked_by: str) -> None:
@@ -696,21 +807,17 @@ class PostgresBreakGlassStore:
         self._audit("break_glass.revoke", session_id=session_id, revoked_by=revoked_by)
 
     def get(self, session_id: str) -> BreakGlassSession:
+        from omnidesk_agent.security.break_glass import session_from_record
+
         row = self.state.get(self.namespace, session_id)
         if not row:
             raise KeyError(f"break-glass session not found: {session_id}")
-        active = bool(row.get("revoked_at") is None and float(row.get("expires_at") or 0) > time.time())
-        return BreakGlassSession(
-            str(row["session_id"]), str(row["actor"]), str(row["reason"]), float(row["expires_at"]), str(row["approved_by"]), active
-        )
+        return session_from_record(row)
 
     def assert_active(self, session_id: str, *, actor: str) -> BreakGlassSession:
-        session = self.get(session_id)
-        if not session.active:
-            raise PermissionError("break-glass session is not active")
-        if session.actor != actor:
-            raise PermissionError("break-glass session actor mismatch")
-        return session
+        from omnidesk_agent.security.break_glass import require_usable
+
+        return require_usable(self.get(session_id), actor)
 
     def _audit(self, event: str, **fields: Any) -> None:
         record = {"event": event, "ts": time.time(), **fields}
@@ -719,22 +826,61 @@ class PostgresBreakGlassStore:
 
 
 class PostgresWebhookSecurity:
+    # Expired rows are also ignored on insert; the periodic, batch-limited
+    # purge only bounds table size (a pre-existing backlog drains gradually).
+    purge_interval_seconds = 60.0
+    purge_batch_rows = 1000
+
     def __init__(self, state: _PostgresJsonState, cfg: Optional[WebhookSecurityConfig] = None):
         self.state = state
         self.cfg = cfg or WebhookSecurityConfig()
+        self._next_purge_at = 0.0
 
     def guard(
         self, *, channel: str, body: bytes, source_key: str, message_id: Optional[str] = None, timestamp: Optional[float] = None
     ) -> dict[str, Any]:
         self._check_timestamp(timestamp)
+        self._purge_expired()
         self._check_rate(channel, source_key)
-        digest = hashlib.sha256(channel.encode("utf-8") + b":" + (message_id.encode("utf-8") if message_id else body)).hexdigest()
-        inserted = self.state.insert_once(
-            "webhook_seen", digest, {"digest": digest, "channel": channel, "created_at": time.time(), "status": "seen"}
+        digest = webhook_digest(channel, body, message_id)
+        now = time.time()
+        inserted = self.state.insert_once_or_replace_stale(
+            "webhook_seen",
+            digest,
+            {"digest": digest, "channel": channel, "created_at": now, "status": "seen"},
+            stale_before=now - self._seen_retention_seconds(),
         )
         if not inserted:
             raise PermissionError(f"duplicate webhook blocked: {channel}")
         return {"ok": True, "digest": digest}
+
+    def claim_nonce(self, *, channel: str, nonce: str, ttl_seconds: float) -> None:
+        """Consume a signed single-use nonce; shared by every replica using this database."""
+        ttl = max(1.0, float(ttl_seconds))
+        now = time.time()
+        digest = nonce_digest(channel, nonce)
+        claimed = self.state.insert_once_or_replace_stale(
+            "webhook_nonce",
+            digest,
+            {"digest": digest, "channel": channel, "created_at": now, "expires_at": now + ttl, "status": "claimed"},
+            stale_before=now - ttl,
+        )
+        if not claimed:
+            raise PermissionError(f"replayed webhook nonce blocked: {channel}")
+
+    def _seen_retention_seconds(self) -> float:
+        return float(max(self.cfg.replay_ttl_seconds, self.cfg.seen_retention_seconds))
+
+    def _purge_expired(self) -> None:
+        now = time.time()
+        if now < self._next_purge_at:
+            return
+        self._next_purge_at = now + self.purge_interval_seconds
+        batch = self.purge_batch_rows
+        self.state.delete_stale("webhook_seen", stale_before=now - self._seen_retention_seconds(), limit=batch)
+        self.state.delete_stale("webhook_rate", stale_before=now - 2 * self.cfg.rate_limit_window_seconds, limit=batch)
+        # Nonce TTLs are short and per channel; anything older than the seen retention is long expired.
+        self.state.delete_stale("webhook_nonce", stale_before=now - self._seen_retention_seconds(), limit=batch)
 
     def _check_timestamp(self, timestamp: Optional[float]) -> None:
         if timestamp is not None and abs(time.time() - timestamp) > self.cfg.replay_ttl_seconds:
