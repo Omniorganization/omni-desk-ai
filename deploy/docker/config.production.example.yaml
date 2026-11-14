@@ -211,6 +211,12 @@ channels:
     webhook_secret_env: GOOGLE_CHAT_WEBHOOK_SECRET
     allowed_user_names: []
     allowed_space_names: []
+    # Cloud project number of the Chat app (authentication audience "Project number").
+    # Required in production: inbound requests must carry Google's signed bearer JWT.
+    project_number: null
+    allow_query_token: false
+    # Spaces ("spaces/<id>") send_text may post to when GOOGLE_CHAT_WEBHOOK_URL is unset.
+    allowed_outbound_spaces: []
   signal:
     enabled: false
     rest_url: null
@@ -241,6 +247,8 @@ channels:
     webhook_secret_env: MATRIX_WEBHOOK_SECRET
     allowed_user_ids: []
     allowed_room_ids: []
+    # Send the hook token as "Authorization: Bearer"; query tokens are refused in production.
+    allow_query_token: false
   line:
     enabled: false
     channel_access_token_env: LINE_CHANNEL_ACCESS_TOKEN

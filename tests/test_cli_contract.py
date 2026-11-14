@@ -140,8 +140,9 @@ def test_cli_serve_applies_host_and_port_before_creating_app(monkeypatch):
         captured["port"] = cfg.gateway.port
         return object()
 
-    def fake_run(app, host, port):
+    def fake_run(app, host, port, log_config):
         captured["run"] = (host, port)
+        captured["log_filters"] = sorted({name for handler in log_config["handlers"].values() for name in handler.get("filters", [])})
 
     monkeypatch.setattr(cli, "load_config", lambda path: AppConfig())
     monkeypatch.setattr(cli, "create_app", fake_create_app)
@@ -150,4 +151,4 @@ def test_cli_serve_applies_host_and_port_before_creating_app(monkeypatch):
 
     cli.main()
 
-    assert captured == {"host": "0.0.0.0", "port": 18888, "run": ("0.0.0.0", 18888)}
+    assert captured == {"host": "0.0.0.0", "port": 18888, "run": ("0.0.0.0", 18888), "log_filters": ["redact_query_secrets"]}

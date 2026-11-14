@@ -333,6 +333,16 @@ class GoogleChatConfig(BaseModel):
     webhook_secret_env: str = "GOOGLE_CHAT_WEBHOOK_SECRET"
     allowed_user_names: list[str] = Field(default_factory=list)
     allowed_space_names: list[str] = Field(default_factory=list)
+    # Inbound Google-signed bearer JWT (iss chat@system.gserviceaccount.com,
+    # aud = this Cloud project number). require_google_jwt None means required
+    # in production; a bearer token is verified whenever project_number is set.
+    project_number: Optional[str] = Field(default=None, pattern=r"^[0-9]{1,20}$", coerce_numbers_to_str=True)
+    require_google_jwt: Optional[bool] = None
+    # Legacy ?token= query authentication; never accepted in production.
+    allow_query_token: bool = False
+    # Spaces ("spaces/<id>") send_text may post to when no incoming webhook URL
+    # is configured; any other space is refused.
+    allowed_outbound_spaces: list[str] = Field(default_factory=list)
 
 
 class SignalConfig(BaseModel):
@@ -372,6 +382,9 @@ class MatrixConfig(BaseModel):
     webhook_secret_env: str = "MATRIX_WEBHOOK_SECRET"
     allowed_user_ids: list[str] = Field(default_factory=list)
     allowed_room_ids: list[str] = Field(default_factory=list)
+    # Legacy ?token= / ?access_token= hook authentication; never accepted in
+    # production. Send the token as "Authorization: Bearer" instead.
+    allow_query_token: bool = False
 
 
 class QQConfig(BaseModel):

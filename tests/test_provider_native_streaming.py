@@ -213,7 +213,9 @@ async def test_gemini_sse_stream(monkeypatch) -> None:
     assert deltas[0].text == "gemini"
     assert deltas[-1].finish_reason == "STOP"
     assert deltas[-1].usage["promptTokenCount"] == 2
-    assert captured["kwargs"]["params"] == {"key": "secret", "alt": "sse"}
+    assert captured["kwargs"]["params"] == {"alt": "sse"}
+    assert captured["kwargs"]["headers"] == {"x-goog-api-key": "secret"}
+    assert "secret" not in captured["url"]
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, Request
@@ -54,7 +55,7 @@ def _signed_plugin(root: Path, name: str, sandbox: str, secret: str):
 def test_dual_approval_is_enforced_before_approve_and_consume(tmp_path: Path) -> None:
     dual = DualApprovalStore(tmp_path / "dual.sqlite3")
     approvals = ApprovalStore(tmp_path / "approvals.sqlite3", dual_approval_store=dual)
-    approval_id = approvals.create({"tool": "shell", "risk": "critical", "requires_dual_approval": True, "scope_hash": "abc"})
+    approval_id = approvals.create({"tool": "shell", "risk": "critical", "requires_dual_approval": True, "scope_hash": "abc", "created_by": "requester"})
 
     with pytest.raises(PermissionError, match="dual approval is not satisfied"):
         approvals.decide(approval_id, "approved", {"actor": "owner-a"})
@@ -79,8 +80,8 @@ def test_break_glass_routes_require_enabled_policy_and_delegated_dual_approval(t
     class RT:
         break_glass_store = BreakGlassStore(tmp_path / "break.sqlite3", audit_log=tmp_path / "audit.jsonl")
 
-    async def admin(_request: Request, _role: str = "viewer") -> None:
-        return None
+    async def admin(request: Request, _role: str = "viewer") -> SimpleNamespace:
+        return SimpleNamespace(actor=request.headers.get("x-omnidesk-actor", "viewer"), role="owner")
 
     app = FastAPI()
     register_break_glass_routes(app, cfg, RT(), admin)
@@ -95,7 +96,13 @@ def test_break_glass_routes_require_enabled_policy_and_delegated_dual_approval(t
     assert opened.status_code == 200
     assert opened.json()["approved_by"] == "owner"
     assert opened.json()["target_actor"] == "operator"
+    assert opened.json()["requires_second_approval"] is True
     session_id = opened.json()["session"]["session_id"]
+    assert client.get(f"/admin/break-glass/status/{session_id}").json()["session"]["active"] is False
+    self_approved = client.post(f"/admin/break-glass/approve/{session_id}", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-approve-self"}, json={})
+    assert self_approved.status_code == 409
+    approved = client.post(f"/admin/break-glass/approve/{session_id}", headers={"x-omnidesk-actor": "second-owner", "idempotency-key": "break-glass-approve"}, json={})
+    assert approved.status_code == 200
     assert client.get(f"/admin/break-glass/status/{session_id}").json()["session"]["active"] is True
     revoked = client.post(f"/admin/break-glass/revoke/{session_id}", headers={"x-omnidesk-actor": "owner", "idempotency-key": "break-glass-revoke"}, json={})
     assert revoked.status_code == 200
