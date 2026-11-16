@@ -17,8 +17,8 @@ void main() {
     ) as Map<String, dynamic>;
 
     expect(pubspec, contains('local_auth: ^3.0.2'));
-    expect(pubspec, contains('firebase_core: ^5.0.0'));
-    expect(pubspec, contains('firebase_messaging: ^17.0.0'));
+    expect(pubspec, contains('firebase_core: ^5.1.0'));
+    expect(pubspec, contains('firebase_messaging: ^17.0.1'));
     // firebase_messaging 17: FID registration replaces registration tokens.
     expect(securitySource, contains('messaging.register()'));
     expect(securitySource, isNot(contains('getToken(')));
