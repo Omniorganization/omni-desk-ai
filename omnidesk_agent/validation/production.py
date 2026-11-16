@@ -53,6 +53,7 @@ def validate_production_config(cfg: AppConfig, environ: Optional[Mapping[str, st
 
     _require_env(env, cfg.gateway.admin_token_env, "gateway admin token", issues, min_length=STRONG_SECRET_MIN_LENGTH)
     _require_env(env, cfg.gateway.shared_secret_env, "gateway shared secret", issues, min_length=STRONG_SECRET_MIN_LENGTH)
+    _validate_role_tokens(cfg, env, issues)
 
     if getattr(cfg.gateway, "allow_legacy_gateway_secret_auth", False):
         issues.append("gateway.allow_legacy_gateway_secret_auth must be false in production; use role-bound admin tokens")
@@ -172,7 +173,30 @@ def assert_production_config_safe(cfg: AppConfig, environ: Optional[Mapping[str,
         raise ProductionConfigError(list(result["issues"]))
 
 
-
+def _validate_role_tokens(cfg: AppConfig, env: Mapping[str, str], issues: list[str]) -> None:
+    # Role tokens are optional, but any that is set authenticates admin requests
+    # and must meet the admin token's bar. The admin token is checked above.
+    slots = [
+        ("admin", cfg.gateway.admin_token_env),
+        ("viewer", cfg.gateway.viewer_token_env),
+        ("operator", cfg.gateway.operator_token_env),
+        ("owner", cfg.gateway.owner_token_env),
+    ]
+    checked = {cfg.gateway.admin_token_env}
+    for role, env_name in slots[1:]:
+        if env_name and env_name not in checked and env.get(env_name, ""):
+            checked.add(env_name)
+            _require_env(env, env_name, f"gateway {role} token", issues, min_length=STRONG_SECRET_MIN_LENGTH)
+    first_slot: dict[str, tuple[str, str]] = {}
+    for role, env_name in slots:
+        value = env.get(env_name, "").strip() if env_name else ""
+        if not value:
+            continue
+        if value in first_slot:
+            first_role, first_env = first_slot[value]
+            issues.append(f"gateway {first_role} and {role} tokens must be different: {first_env}, {env_name}")
+        else:
+            first_slot[value] = (role, env_name)
 
 
 def _validate_storage_policy(cfg: AppConfig, env: Mapping[str, str], issues: list[str]) -> None:
