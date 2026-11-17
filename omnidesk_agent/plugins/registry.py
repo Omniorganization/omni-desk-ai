@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any, Optional
 
-from omnidesk_agent.plugins.manifest import PluginManifest
+from omnidesk_agent.config import AppConfig
+from omnidesk_agent.plugins.manifest import LEGACY_SIGNATURE_VERSION, PluginManifest, find_manifest
 from omnidesk_agent.plugins.docker_runner import DockerPluginTool, RemoteDockerPluginTool
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
 from omnidesk_agent.validation.production import is_production_mode
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PluginRegistry:
@@ -35,6 +39,7 @@ class PluginRegistry:
         self.plugin_timeout_seconds = int(getattr(config, "plugin_timeout_seconds", 30)) if config is not None and not isinstance(config, bool) else 30
         self.default_sandbox = str(getattr(config, "default_sandbox", "docker")) if config is not None and not isinstance(config, bool) else "docker"
         self.production_forbid_subprocess = bool(getattr(config, "production_forbid_subprocess", True)) if config is not None and not isinstance(config, bool) else True
+        self.allow_legacy_v1_signatures = bool(getattr(config, "allow_legacy_v1_signatures", False)) if config is not None and not isinstance(config, bool) else False
         self.loaded: dict[str, PluginManifest] = {}
 
     @property
@@ -58,8 +63,15 @@ class PluginRegistry:
                 if self.trusted_only and not manifest.trusted:
                     continue
                 self._check_manifest_name(manifest.name)
-                production = bool(app_config is not None and is_production_mode(app_config))
-                manifest.verify(plugin_dir, self.signing_secret, require_manifest_signature=production)
+                self._check_name_unused(manifest.name, tool_registry)
+                # Without a runtime config the environment still decides.
+                production = is_production_mode(app_config if app_config is not None else AppConfig())
+                legacy = manifest.signature_version == LEGACY_SIGNATURE_VERSION
+                if legacy and production and self.allow_legacy_v1_signatures:
+                    LOGGER.warning("plugins.allow_legacy_v1_signatures is ignored in production: %s", manifest.name)
+                manifest.verify(plugin_dir, self.signing_secret, allow_legacy_v1=self.allow_legacy_v1_signatures and not production)
+                if legacy:
+                    manifest = self._restrict_legacy(manifest)
                 if production and self.production_forbid_subprocess and manifest.sandbox != "docker":
                     raise PermissionError(f"production plugins must use docker sandbox: {manifest.name}")
 
@@ -106,6 +118,28 @@ class PluginRegistry:
         result = module.register(tool_registry, app_config=app_config)
         return list(result or [])
 
+    def _restrict_legacy(self, manifest: PluginManifest) -> PluginManifest:
+        # A v1 signature covers only the entrypoint digest, so trusted, sandbox
+        # and permissions in the manifest are unsigned: never trust them.
+        if self.trusted_only:
+            raise PermissionError(
+                f"legacy v1 plugin signature cannot establish trust (re-sign with scripts/sign_plugin.py): {manifest.name}"
+            )
+        LOGGER.warning(
+            "loading plugin %s with a legacy v1 signature: manifest fields are unsigned, so it runs untrusted "
+            "in the docker sandbox with no permissions; re-sign it with scripts/sign_plugin.py",
+            manifest.name,
+        )
+        return manifest.model_copy(update={"trusted": False, "sandbox": "docker", "permissions": []})
+
+    def _check_name_unused(self, name: str, tool_registry) -> None:
+        # ToolRegistry.register replaces a tool of the same name, so a plugin
+        # must never shadow a built-in tool or another plugin.
+        names = getattr(tool_registry, "names", None)
+        registered = set(names()) if callable(names) else set(getattr(tool_registry, "tools", {}) or {})
+        if name in self.loaded or name in registered:
+            raise PermissionError(f"plugin name is already registered: {name}")
+
     @staticmethod
     def _check_manifest_name(name: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name or ""):
@@ -113,8 +147,4 @@ class PluginRegistry:
 
     @staticmethod
     def _manifest_path(plugin_dir: Path) -> Optional[Path]:
-        for name in ("plugin.yaml", "plugin.yml", "plugin.json"):
-            p = plugin_dir / name
-            if p.exists():
-                return p
-        return None
+        return find_manifest(plugin_dir)

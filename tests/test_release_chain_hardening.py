@@ -400,6 +400,264 @@ def test_release_chain_policy_rejects_pull_request_evidence_sources(tmp_path: Pa
     assert any("exact release commit" in issue for issue in issues), issues
 
 
+# --- attestation signers (L14) -------------------------------------------------
+
+# The removed attestation.yml: re-attested the files of any run id with its own
+# main-branch identity, without checking which workflow, branch or fork made them.
+UNCHECKED_REATTESTATION_WORKFLOW = """\
+name: Artifact Attestation
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        required: true
+      artifact_name:
+        required: true
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  attestations: write
+jobs:
+  attest:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        run: gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: dist/*
+"""
+
+DOWNLOAD_BY_RUN_ID_STEP = """\
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: anything
+          run-id: ${{ inputs.external_evidence_run_id }}
+"""
+
+
+def _signer_policy_issues(tmp_path: Path, workflow: str, old: str, new: str) -> list[str]:
+    root = _copy_release_tree(tmp_path)
+    assert check_security_workflow_policy.release_chain_issues(root) == []
+    _edit(root / ".github" / "workflows" / workflow, old, new)
+    return check_security_workflow_policy.release_chain_issues(root)
+
+
+def test_release_artifacts_are_attested_only_by_registered_signer_jobs() -> None:
+    assert not (ROOT / ".github" / "workflows" / "attestation.yml").exists()
+    for name, signer_jobs in check_security_workflow_policy.ATTESTATION_SIGNER_JOBS.items():
+        jobs = check_security_workflow_policy._load_workflow(ROOT / ".github" / "workflows" / name)["jobs"]
+        for job_id in signer_jobs:
+            assert check_security_workflow_policy._mints_attestations(jobs[job_id]), (name, job_id)
+
+
+def test_release_chain_policy_rejects_unchecked_reattestation_workflow(tmp_path: Path) -> None:
+    root = _copy_release_tree(tmp_path)
+    (root / ".github" / "workflows" / "attestation.yml").write_text(UNCHECKED_REATTESTATION_WORKFLOW, encoding="utf-8")
+    issues = check_security_workflow_policy.release_chain_issues(root)
+    assert any("attestation.yml: job attest mints artifact attestations" in issue for issue in issues), issues
+    assert any("attestation.yml: attestations: write must be granted only" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    "download",
+    [
+        'gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist',
+        # Naming the evidence fetcher is not a check of this run.
+        'echo scripts/fetch_ci_evidence_artifact.py; gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist',
+    ],
+)
+def test_release_chain_policy_rejects_reattestation_even_when_registered(
+    tmp_path: Path, monkeypatch, download: str
+) -> None:
+    # Registering the job is not enough: it would still need the release
+    # environment and a source-run check before the download.
+    monkeypatch.setitem(check_security_workflow_policy.ATTESTATION_SIGNER_JOBS, "attestation.yml", {"attest": ()})
+    root = _copy_release_tree(tmp_path)
+    workflow = UNCHECKED_REATTESTATION_WORKFLOW.replace(
+        'run: gh run download "$ARTIFACT_RUN_ID" --name "$ARTIFACT_NAME" --dir dist', f"run: {download}"
+    )
+    (root / ".github" / "workflows" / "attestation.yml").write_text(workflow, encoding="utf-8")
+    issues = check_security_workflow_policy.release_chain_issues(root)
+    assert any("attestation.yml: signer job attest must run in the protected release environment" in issue for issue in issues), issues
+    assert any("attestation.yml: job attest downloads artifacts from a run id without first checking" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("workflow", "old", "new", "expected"),
+    [
+        (
+            "deploy-staging.yml",
+            "  attestations: read\n",
+            "  attestations: write\n",
+            "deploy-staging.yml: attestations: write must be granted only to a registered signer job",
+        ),
+        (
+            "promote-production.yml",
+            '          cosign verify "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"',
+            '          cosign sign --yes "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"\n          cosign verify "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"',
+            "promote-production.yml: job promotion-gate mints",
+        ),
+        (
+            "web-first-release.yml",
+            "    if: github.ref == 'refs/heads/main'\n    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n",
+            "web-first-release.yml: signer job release must run only if",
+        ),
+        (
+            "web-first-release.yml",
+            "    environment: release\n",
+            "",
+            "web-first-release.yml: signer job release must run in the protected release environment",
+        ),
+        (
+            "web-first-release.yml",
+            "on:\n  workflow_dispatch:\n",
+            "on:\n  workflow_run:\n    workflows: [Web First Candidate]\n    types: [completed]\n  workflow_dispatch:\n",
+            "web-first-release.yml: signer workflow may only be triggered by",
+        ),
+        (
+            "web-first-release.yml",
+            "'head_branch': 'main',",
+            "",
+            "web-first-release.yml: job release downloads artifacts from a run id without first checking",
+        ),
+        (
+            "web-first-release.yml",
+            "'conclusion': 'success',",
+            "",
+            "web-first-release.yml: job release downloads artifacts from a run id without first checking",
+        ),
+        (
+            "web-first-release.yml",
+            "'path': '.github/workflows/web-first-candidate.yml'",
+            "'path': '.github/workflows/ci.yml'",
+            "web-first-release.yml: job release downloads artifacts from a run id without first checking",
+        ),
+        (
+            # A second download needs its own check, also in a later step.
+            "web-first-release.yml",
+            "      - name: Attest exact scoped artifact digests with GitHub OIDC\n",
+            '      - run: gh run download "$CANDIDATE_RUN_ID" --name other --dir reports/web-first\n'
+            "      - name: Attest exact scoped artifact digests with GitHub OIDC\n",
+            "web-first-release.yml: job release downloads artifacts from a run id without first checking",
+        ),
+        (
+            "release.yml",
+            "on:\n  workflow_dispatch:\n",
+            "on:\n  pull_request:\n  workflow_dispatch:\n",
+            "release.yml: signer workflow may only be triggered by",
+        ),
+        (
+            "release.yml",
+            "          pattern: release-*\n",
+            "          pattern: release-*\n          run-id: ${{ inputs.external_evidence_run_id }}\n",
+            "release.yml: job build downloads artifacts from a run id without first checking",
+        ),
+        (
+            # After the checked evidence fetch, another run's artifact is still unchecked.
+            "release.yml",
+            "      - name: List release payload for GitHub artifact attestation\n",
+            DOWNLOAD_BY_RUN_ID_STEP + "      - name: List release payload for GitHub artifact attestation\n",
+            "release.yml: job build downloads artifacts from a run id without first checking",
+        ),
+        (
+            # Sibling jobs feed the signer job through needs and artifacts.
+            "release.yml",
+            "      - run: npm ci\n",
+            "      - run: npm ci\n" + DOWNLOAD_BY_RUN_ID_STEP,
+            "release.yml: job web-admin-release downloads artifacts from a run id without first checking",
+        ),
+    ],
+)
+def test_release_chain_policy_rejects_attestation_signer_regressions(
+    tmp_path: Path, workflow: str, old: str, new: str, expected: str
+) -> None:
+    issues = _signer_policy_issues(tmp_path, workflow, old, new)
+    assert any(expected in issue for issue in issues), issues
+
+
+def test_release_chain_policy_requires_the_run_check_before_the_download(tmp_path: Path) -> None:
+    root = _copy_release_tree(tmp_path)
+    path = root / ".github" / "workflows" / "web-first-release.yml"
+    text = path.read_text(encoding="utf-8")
+    download = '          gh run download "$CANDIDATE_RUN_ID" --name web-first-candidate --dir reports/web-first\n'
+    _edit(path, download, "")
+    _edit(path, "          mkdir -p reports/web-first\n", "          mkdir -p reports/web-first\n" + download)
+    assert path.read_text(encoding="utf-8") != text
+    issues = check_security_workflow_policy.release_chain_issues(root)
+    assert any("web-first-release.yml: job release downloads artifacts from a run id without first checking" in issue for issue in issues), issues
+
+
+def _extra_workflow(job: str, permissions: str = "permissions:\n  contents: read\n") -> str:
+    return "name: Extra\non:\n  workflow_dispatch:\n" + permissions + "jobs:\n  extra:\n" + job
+
+
+@pytest.mark.parametrize(
+    ("workflow", "expected"),
+    [
+        (
+            _extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/attest@1c608d11d69870c2092266b3f9a6f3abbf17002c\n"),
+            "job extra mints",
+        ),
+        (
+            _extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b\n"),
+            "job extra mints",
+        ),
+        (
+            _extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - uses: Actions/Attest-Build-Provenance@4d101475d8b20a2381f78447822ac1eab6504dd8\n"),
+            "job extra mints",
+        ),
+        (
+            _extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - uses: sigstore/gh-action-sigstore-python@f7ad0af51a5648d09a20d00370f0a91c3bdf8f84\n"),
+            "job extra mints",
+        ),
+        (
+            _extra_workflow(
+                "    permissions:\n      id-token: write\n"
+                "    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0\n"
+            ),
+            "job extra mints",
+        ),
+        (_extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - run: cosign attest-blob --yes --predicate p.json f\n"), "job extra mints"),
+        (_extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - run: cosign --verbose sign-blob --yes f\n"), "job extra mints"),
+        (_extra_workflow('    runs-on: ubuntu-latest\n    steps:\n      - run: \'"$(command -v cosign)" sign --yes img\'\n'), "job extra mints"),
+        (_extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - run: python -m sigstore sign f\n"), "job extra mints"),
+        (_extra_workflow("    runs-on: ubuntu-latest\n    permissions: write-all\n    steps:\n      - run: true\n"), "job extra mints"),
+        (
+            _extra_workflow("    runs-on: ubuntu-latest\n    steps:\n      - run: true\n", permissions="permissions: write-all\n"),
+            "attestations: write must be granted only to a registered signer job, not workflow-wide",
+        ),
+    ],
+)
+@pytest.mark.parametrize("filename", ["extra.yml", "extra.yaml"])
+def test_release_chain_policy_rejects_unregistered_signers(tmp_path: Path, filename: str, workflow: str, expected: str) -> None:
+    root = _copy_release_tree(tmp_path)
+    (root / ".github" / "workflows" / filename).write_text(workflow, encoding="utf-8")
+    issues = check_security_workflow_policy.release_chain_issues(root)
+    assert any(issue.startswith(f"{filename}: ") and expected in issue for issue in issues), issues
+
+
+def test_release_chain_policy_allows_verification_outside_signer_jobs(tmp_path: Path) -> None:
+    root = _copy_release_tree(tmp_path)
+    workflow = _extra_workflow(
+        "    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: |\n"
+        '          cosign verify-blob --certificate-identity-regexp "$ID" f\n'
+        '          cosign verify-attestation --type spdx "$IMG"\n'
+        "          gh attestation verify f --repo o/r --signer-workflow o/r/.github/workflows/release.yml --source-ref refs/heads/main\n",
+        permissions="permissions:\n  contents: read\n  attestations: read\n  id-token: write\n",
+    )
+    (root / ".github" / "workflows" / "extra.yml").write_text(workflow, encoding="utf-8")
+    assert check_security_workflow_policy.release_chain_issues(root) == []
+
+
 def _release_governance_issues(tmp_path: Path, old: str, new: str) -> list[str]:
     root = _copy_release_tree(tmp_path)
     _edit(root / ".github" / "workflows" / "release.yml", old, new)

@@ -246,7 +246,9 @@ def test_sandbox_runner_applies_shared_arg_policy(tmp_path: Path):
     result = asyncio.run(runner.run(["pytest", "-p", "evil_plugin"]))
     assert result.ok is False and result.exit_code == 126
     cmd = runner._docker_command(["git", "diff"])
-    assert cmd[-len(GIT_EXEC_HARDENING_ARGS) - 2:] == ["git", *GIT_EXEC_HARDENING_ARGS, "diff"]
+    expected = harden_exec_argv(["git", "diff"])
+    assert expected[:len(GIT_EXEC_HARDENING_ARGS) + 1] == ["git", *GIT_EXEC_HARDENING_ARGS]
+    assert cmd[-len(expected):] == expected
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git binary not available")
