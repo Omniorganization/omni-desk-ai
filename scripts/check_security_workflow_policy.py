@@ -116,6 +116,34 @@ EVIDENCE_CONSUMER_WORKFLOWS = {
 SAME_RUN_EVIDENCE_CONSUMERS = ("real-ga-readiness",)
 EVIDENCE_SOURCE_POLICY = "release/evidence-source-workflows.json"
 SIGNER_IDENTITY_RE = re.compile(r"RELEASE_SIGNER_IDENTITY_REGEXP:\s*'([^']*)'")
+# The only jobs on main that may mint GitHub artifact attestations or keyless
+# Sigstore signatures, each with the producer workflows whose runs it may take
+# artifacts from by run id. A verifier that pins only the repository or owner
+# accepts any of them, so each runs only from main in the release environment,
+# is never triggered by a pull request or another run, and checks the source run
+# before downloading from it.
+ATTESTATION_SIGNER_JOBS: dict[str, dict[str, tuple[str, ...]]] = {
+    "release.yml": {"build": ()},
+    "web-first-release.yml": {"release": (".github/workflows/web-first-candidate.yml",)},
+}
+ATTESTATION_SIGNER_EVENTS = ("workflow_dispatch", "push")
+SIGNING_ACTION_RE = re.compile(
+    r"^(?:actions/attest(?:-build-provenance|-sbom)?@|sigstore/gh-action-sigstore-python@|slsa-framework/slsa-github-generator/)",
+    re.IGNORECASE,
+)
+SIGNING_COMMAND_RE = re.compile(
+    r"\b(?:cosign|sigstore)\b[\"')]*(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+(?:sign|sign-blob|attest|attest-blob)\b"
+)
+# Before each `gh run download` in a signer workflow, the same step must look the
+# run up and pin all of these fields plus a producer registered for the job.
+# Other downloads by run id go through scripts/fetch_ci_evidence_artifact.py.
+SOURCE_RUN_CHECK_SNIPPETS = (
+    "actions/runs/",
+    "'head_branch': 'main'",
+    "'head_sha'",
+    "'conclusion': 'success'",
+    "'event'",
+)
 
 
 def _pytest_collection_issues(root: Path) -> list[str]:
@@ -219,6 +247,80 @@ def _attestation_ref_issues(name: str, text: str, workflow: dict[str, Any]) -> l
     return issues
 
 
+def _grants_attestation_write(permissions: Any) -> bool:
+    if isinstance(permissions, str):
+        return permissions.strip() == "write-all"
+    return isinstance(permissions, dict) and str(permissions.get("attestations") or "") == "write"
+
+
+def _job_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
+    return [step for step in job.get("steps") or [] if isinstance(step, dict)]
+
+
+def _mints_attestations(job: dict[str, Any]) -> bool:
+    if _grants_attestation_write(job.get("permissions")) or SIGNING_ACTION_RE.match(str(job.get("uses") or "")):
+        return True
+    for step in _job_steps(job):
+        if SIGNING_ACTION_RE.match(str(step.get("uses") or "")) or SIGNING_COMMAND_RE.search(str(step.get("run") or "")):
+            return True
+    return False
+
+
+def _workflow_events(workflow: dict[Any, Any]) -> set[str]:
+    # PyYAML reads the bare key `on` as True.
+    on = workflow.get("on", workflow.get(True))
+    if isinstance(on, str):
+        return {on}
+    if isinstance(on, (list, dict)):
+        return {str(event) for event in on}
+    return set()
+
+
+def _unchecked_run_download(step: dict[str, Any], producers: tuple[str, ...]) -> bool:
+    with_ = step.get("with") if isinstance(step.get("with"), dict) else {}
+    if str(step.get("uses") or "").lower().startswith("actions/download-artifact@") and "run-id" in with_:
+        return True
+    # Each download needs its own run check earlier in the same step.
+    chunks = str(step.get("run") or "").split("gh run download")
+    return any(
+        not all(snippet in before for snippet in SOURCE_RUN_CHECK_SNIPPETS)
+        or not any(f"'path': '{producer}'" in before for producer in producers)
+        for before in chunks[:-1]
+    )
+
+
+def _attestation_signer_issues(name: str, workflow: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    if _grants_attestation_write(workflow.get("permissions")):
+        issues.append(f"{name}: attestations: write must be granted only to a registered signer job, not workflow-wide")
+    signer_jobs = ATTESTATION_SIGNER_JOBS.get(name, {})
+    events = _workflow_events(workflow)
+    for job_id, job in (workflow.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        if _mints_attestations(job) and job_id not in signer_jobs:
+            issues.append(
+                f"{name}: job {job_id} mints artifact attestations or Sigstore signatures but is not a registered "
+                "signer job (ATTESTATION_SIGNER_JOBS in scripts/check_security_workflow_policy.py)"
+            )
+        elif job_id in signer_jobs:
+            if str(job.get("if") or "").strip() != MAIN_ONLY_IF:
+                issues.append(f"{name}: signer job {job_id} must run only if: {MAIN_ONLY_IF}")
+            if _job_environment(job) != "release":
+                issues.append(f"{name}: signer job {job_id} must run in the protected release environment")
+            if not events or not events <= set(ATTESTATION_SIGNER_EVENTS):
+                issues.append(
+                    f"{name}: signer workflow may only be triggered by {', '.join(ATTESTATION_SIGNER_EVENTS)}, not {sorted(events)}"
+                )
+        # Any job of a signer workflow can feed the signer job (needs + artifacts).
+        if signer_jobs and any(_unchecked_run_download(step, signer_jobs.get(job_id, ())) for step in _job_steps(job)):
+            issues.append(
+                f"{name}: job {job_id} downloads artifacts from a run id without first checking that run "
+                "(head_branch main, head_sha, success, event, registered producer path)"
+            )
+    return issues
+
+
 def _evidence_source_issues(root: Path) -> list[str]:
     issues: list[str] = []
     policy_path = root / EVIDENCE_SOURCE_POLICY
@@ -263,7 +365,7 @@ def release_chain_issues(root: Path) -> list[str]:
     """Release signing, attestation and evidence-import rules across all workflows."""
     issues = _pytest_collection_issues(root)
     workflow_dir = root / ".github" / "workflows"
-    for path in sorted(workflow_dir.glob("*.yml")) if workflow_dir.exists() else []:
+    for path in sorted(workflow_dir.glob("*.yml")) + sorted(workflow_dir.glob("*.yaml")):
         text = path.read_text(encoding="utf-8")
         workflow = _load_workflow(path)
         for snippet in FORBIDDEN_WORKFLOW_SNIPPETS:
@@ -271,6 +373,7 @@ def release_chain_issues(root: Path) -> list[str]:
                 issues.append(f"{path.name}: must not use {snippet}")
         issues.extend(_signing_job_scope_issues(path.name, workflow))
         issues.extend(_attestation_ref_issues(path.name, text, workflow))
+        issues.extend(_attestation_signer_issues(path.name, workflow))
         if path.name in RELEASE_VERIFIER_WORKFLOWS:
             issues.extend(_verifier_issues(path.name, text, workflow))
     release = workflow_dir / "release.yml"
