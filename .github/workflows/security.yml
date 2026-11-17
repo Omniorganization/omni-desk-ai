@@ -134,7 +134,10 @@ jobs:
         working-directory: apps/desktop-tauri
         run: |
           npm ci
-          npm audit --audit-level=high
+          # npm audit exits non-zero on any finding; check_npm_audit.py is the gate and
+          # accepts only governed exceptions in release/security-exceptions (AGENTS.md).
+          npm audit --json > ../../reports/ecosystem-security/desktop-npm-audit.json || true
+          python ../../scripts/check_npm_audit.py ../../reports/ecosystem-security/desktop-npm-audit.json --project apps/desktop-tauri --exceptions ../../release/security-exceptions
       - name: Audit Rust dependency graph
         id: rust_audit
         run: |
