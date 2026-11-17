@@ -204,6 +204,10 @@ class PluginConfig(BaseModel):
     default_sandbox: Literal["docker", "subprocess"] = "docker"
     plugin_timeout_seconds: int = 30
     production_forbid_subprocess: bool = True
+    # Migration-only escape hatch for manifests still signed with v1 (entrypoint
+    # digest only). Ignored in production; such plugins load untrusted, in the
+    # docker sandbox, with no permissions, and only when trusted_only is false.
+    allow_legacy_v1_signatures: bool = False
 
 
 class CapabilityToggleConfig(BaseModel):
