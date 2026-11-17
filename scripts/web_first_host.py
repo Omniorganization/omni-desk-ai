@@ -112,6 +112,11 @@ def init(args) -> None:
 
     config = relocate(config)
     config["gateway"].update(host="127.0.0.1", public_base_url=origin, admin_allowed_ips=["127.0.0.1"])
+    # Only nginx (gateway-only) or the Web container (via pasta) reach the
+    # loopback Gateway; both overwrite this header with the real client so
+    # pre-auth quotas are per client instead of one shared loopback bucket.
+    config["api_resource_guard"].update(trusted_client_ip_header="x-omnidesk-client-ip",
+                                        trusted_client_ip_header_peers=["127.0.0.1"])
     config["sandbox"]["runner_url"] = "http://127.0.0.1:18890"
     config["models"]["default"] = "local"
     profile = {"provider": "ollama", "model": args.model, "api_key_env": None,
@@ -132,7 +137,8 @@ def init(args) -> None:
         # only 127.0.0.1:13000 is published on the host.
         web = {"NODE_ENV": "production", "HOSTNAME": "0.0.0.0", "PORT": "13000",  # nosec B104
                "OMNI_WEB_PUBLIC_ORIGIN": origin, "OMNI_GATEWAY_URL": "http://127.0.0.1:18789",
-               "OMNI_WEB_SESSION_MAX_AGE_SECONDS": "3600", "OMNI_WEB_IMAGE_ID": args.web_image_id}
+               "OMNI_WEB_SESSION_MAX_AGE_SECONDS": "3600", "OMNI_WEB_IMAGE_ID": args.web_image_id,
+               "OMNI_WEB_SESSION_SECRET": secrets.token_urlsafe(48)}
         private_write(destination / "web.env", "\n".join(f'{name}={value}' for name, value in web.items()) + "\n",
                       user_id=account.pw_uid, group_id=account.pw_gid)
     private_write(destination / "config.yaml", yaml.safe_dump(config), user_id=account.pw_uid, group_id=account.pw_gid)

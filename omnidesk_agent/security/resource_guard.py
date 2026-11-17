@@ -217,7 +217,7 @@ class ApiResourceGuard:
             raise
         return release
 
-    def check_authenticated(self, request: Request, *, actor: str, role: str) -> None:
+    def check_authenticated(self, request: Request, *, actor: str, role: str, organization: str | None = None) -> None:
         if not self._enabled():
             return
         path = _path_key(request.url.path)
@@ -225,7 +225,8 @@ class ApiResourceGuard:
         window = int(getattr(self.cfg, "window_seconds", 60))
         actor_key = _clean(actor or "unknown")
         role_key = _clean(role or "unknown")
-        org_key = _clean(request.headers.get("x-omnidesk-org") or request.headers.get("x-omnidesk-organization") or "org_default")
+        # Server-resolved organization only; x-omnidesk-org is client-controlled.
+        org_key = _clean(organization or "org_default")
         self._check_rate(f"actor:{actor_key}", int(getattr(self.cfg, "max_requests_per_actor", 120)), window, "actor")
         self._check_rate(f"role:{role_key}", int(getattr(self.cfg, "max_requests_per_role", 600)), window, "role")
         self._check_rate(f"org:{org_key}:{path}", int(getattr(self.cfg, "max_requests_per_org_endpoint", 600)), window, "organization")
@@ -327,11 +328,53 @@ def _build_rate_limiter(cfg):
 
 
 def _client_key(request: Request, cfg=None) -> str:
-    host = getattr(getattr(request, "client", None), "host", None) or "unknown"
-    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-    if forwarded and _is_trusted_proxy(host, getattr(cfg, "trusted_proxy_ips", []) if cfg is not None else []):
-        host = forwarded
-    return _clean(host)
+    peer = getattr(getattr(request, "client", None), "host", None) or "unknown"
+    header = str(getattr(cfg, "trusted_client_ip_header", "") or "").strip().lower() if cfg is not None else ""
+    if header and _is_trusted_proxy(peer, list(getattr(cfg, "trusted_client_ip_header_peers", []) or [])):
+        stated = request.headers.getlist(header)
+        address = _ip_or_none(stated[0]) if len(stated) == 1 else None
+        if address:
+            return _rate_key(address)
+    trusted = list(getattr(cfg, "trusted_proxy_ips", []) or []) if cfg is not None else []
+    if not _is_trusted_proxy(peer, trusted):
+        return _rate_key(peer)
+    return _rate_key(_forwarded_client(request.headers.getlist("x-forwarded-for"), peer, trusted))
+
+
+def _rate_key(host: str) -> str:
+    # One IPv6 subscriber usually controls a whole /64, so per-address keys
+    # would let a single client rotate around its quota.
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return _clean(host)
+    if address.version == 6:
+        if address.ipv4_mapped:
+            return str(address.ipv4_mapped)
+        return str(ip_network(f"{address}/64", strict=False))
+    return str(address)
+
+
+def _forwarded_client(values: list[str], peer: str, trusted_proxy_ips: list[str]) -> str:
+    # Each trusted proxy only vouches for the hop it appended, so walk from the
+    # right and stop at the first address that is not a trusted proxy. Entries
+    # left of it were supplied by the client and are never used.
+    client = peer
+    for hop in reversed([hop for value in values for hop in value.split(",")]):
+        address = _ip_or_none(hop)
+        if address is None:
+            break
+        client = address
+        if not _is_trusted_proxy(address, trusted_proxy_ips):
+            break
+    return client
+
+
+def _ip_or_none(value: str) -> str | None:
+    try:
+        return str(ip_address(str(value or "").strip()))
+    except ValueError:
+        return None
 
 
 def _is_trusted_proxy(host: str, trusted_proxy_ips: list[str]) -> bool:

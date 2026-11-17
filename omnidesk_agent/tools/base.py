@@ -82,6 +82,26 @@ def _scope_hash(tool: str, action: str, args: dict[str, Any], ctx: ToolContext) 
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
+def content_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def json_sha256(value: Any) -> str:
+    """Digest of a JSON-serialisable value in the canonical form the scope hash uses."""
+    return content_sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str))
+
+
+def bound_content(name: str, value: str) -> dict[str, Any]:
+    """Proposal fields that show the approver, and bind into the scope hash,
+    every character of a side effect's content.
+
+    Never put a preview (``value[:N]``) in a proposal instead: the approver
+    would not see the rest, and the scope hash would accept any content with
+    the same prefix, so a payload hidden past the cut rides on the approval.
+    """
+    return {name: value, f"{name}_sha256": content_sha256(value), f"{name}_length": len(value)}
+
+
 def proposal(tool: str, action: str, args: dict[str, Any], risk: RiskLevel, reason: str, ctx: ToolContext) -> ActionProposal:
     return ActionProposal(
         tool=tool,

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from omnidesk_agent.config import AppConfig, DEFAULT_SANDBOX_IMAGE, SandboxConfig
 from omnidesk_agent.validation.production import is_production_mode
+from omnidesk_agent.sandbox.isolation import bind_mount_source, minimal_host_env
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.security.command_policy import argv_allowed, harden_exec_argv
 from omnidesk_agent.self_upgrade.models import TestResult
@@ -79,12 +80,17 @@ class SandboxRunner:
             output = (result.stdout + ("\n" + result.stderr if result.stderr else ""))[-12000:]
             return TestResult(result.ok, "remote_docker " + " ".join(argv), output, int(result.exit_code))
 
-        exec_argv = self._docker_command(argv) if self.backend == "docker" else harden_exec_argv(argv)
+        try:
+            exec_argv = self._docker_command(argv) if self.backend == "docker" else harden_exec_argv(argv)
+        except ValueError as exc:  # repo path unusable as a --mount source
+            return TestResult(False, " ".join(argv), str(exc), 126)
         proc = await asyncio.create_subprocess_exec(
             *exec_argv,
             cwd=str(self.repo_root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            # On the host, workspace code runs without the gateway's secrets.
+            env=None if self.backend == "docker" else minimal_host_env(argv),
         )
         try:
             output, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -111,7 +117,7 @@ class SandboxRunner:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--read-only",
             "--tmpfs", str(getattr(self.sandbox_cfg, "tmpfs", "/tmp:rw,noexec,nosuid,size=128m")),  # nosec B108
-            "--mount", f"type=bind,src={self.repo_root},dst=/workspace,readonly",
+            "--mount", f"type=bind,src={bind_mount_source(self.repo_root)},dst=/workspace,readonly",
             "-w", "/workspace",
             "--env", "PYTHONDONTWRITEBYTECODE=1",
             str(self.docker_image),
