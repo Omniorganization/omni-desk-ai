@@ -54,6 +54,7 @@ postgresConnectionBudget:
 config:
   publicBaseUrl: https://omnidesk.ai.internal
   sandboxRunnerUrl: http://sandbox-runner:18890
+  # Ingress/proxy pod IPs or CIDRs whose X-Forwarded-For is honored (read right to left).
   trustedProxyIps: []
 sandboxRunner:
   repository: ghcr.io/omniorganization/omni-desk-ai/omnidesk-sandbox-runner

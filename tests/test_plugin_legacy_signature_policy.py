@@ -91,7 +91,7 @@ def test_plugin_cannot_shadow_a_registered_tool(tmp_path):
     tools = ToolRegistry()
     builtin = type("Builtin", (), {"name": "vision"})()
     tools.register(builtin)
-    with pytest.raises(PermissionError, match="already registered: vision"):
+    with pytest.raises(PermissionError, match="reserved for a built-in tool: vision"):
         PluginRegistry(tmp_path, PluginConfig()).load_into(tools, AppConfig())
     assert tools.get("vision") is builtin
 
@@ -176,7 +176,12 @@ def test_sign_plugin_script_migrates_v1_to_v2(tmp_path, capsys):
     assert main(["sign_plugin.py", "--check", str(plugin_dir)]) == 1
     assert "legacy v1 signature" in capsys.readouterr().err
 
-    assert main(["sign_plugin.py", str(plugin_dir)]) == 0
+    # Migration newly signs unsigned fields and files: it needs --migrate.
+    assert main(["sign_plugin.py", str(plugin_dir)]) == 1
+    assert "--migrate" in capsys.readouterr().err
+    assert PluginManifest.load(plugin_dir / "plugin.yaml").signature_version == 1
+
+    assert main(["sign_plugin.py", "--migrate", str(plugin_dir)]) == 0
     out = capsys.readouterr().out
     assert "v2 signature" in out and "sandbox=docker, trusted," in out
 
@@ -206,11 +211,13 @@ def test_sign_plugin_script_refuses_to_bless_a_modified_plugin(tmp_path, capsys)
     (plugin_dir / "plugin.py").write_text("import os\n", encoding="utf-8")
     before = (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
-    assert main(["sign_plugin.py", str(plugin_dir)]) == 1
+    assert main(["sign_plugin.py", "--migrate", str(plugin_dir)]) == 1
     assert "existing signature does not verify" in capsys.readouterr().err
     assert (plugin_dir / "plugin.yaml").read_text(encoding="utf-8") == before
 
-    assert main(["sign_plugin.py", "--force", str(plugin_dir)]) == 0
+    assert main(["sign_plugin.py", "--force", str(plugin_dir)]) == 1
+    assert (plugin_dir / "plugin.yaml").read_text(encoding="utf-8") == before
+    assert main(["sign_plugin.py", "--migrate", "--force", str(plugin_dir)]) == 0
     PluginManifest.load(plugin_dir / "plugin.yaml").verify(plugin_dir, SECRET)
 
     # Same for a v2 plugin whose files changed since signing.

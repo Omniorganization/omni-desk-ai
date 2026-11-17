@@ -5,15 +5,25 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from omnidesk_agent.config import AppConfig
+from omnidesk_agent.config import AppConfig, CapabilitiesConfig
 from omnidesk_agent.plugins.manifest import LEGACY_SIGNATURE_VERSION, PluginManifest, find_manifest
 from omnidesk_agent.plugins.docker_runner import DockerPluginTool, RemoteDockerPluginTool
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool
 from omnidesk_agent.validation.production import is_production_mode
 
 LOGGER = logging.getLogger(__name__)
+
+# Built-in tool names (one capability each), reserved whether or not the
+# capability is enabled: a plugin must never look like, or later collide
+# with, a built-in tool in plans, approvals or tool policy.
+RESERVED_TOOL_NAMES = frozenset(CapabilitiesConfig.model_fields)
+
+
+def _name_key(name: str) -> str:
+    # Names that differ only in case or in -/./_ read the same to an approver.
+    return re.sub(r"[-.]", "_", name).lower()
 
 
 class PluginRegistry:
@@ -69,17 +79,24 @@ class PluginRegistry:
                 legacy = manifest.signature_version == LEGACY_SIGNATURE_VERSION
                 if legacy and production and self.allow_legacy_v1_signatures:
                     LOGGER.warning("plugins.allow_legacy_v1_signatures is ignored in production: %s", manifest.name)
-                manifest.verify(plugin_dir, self.signing_secret, allow_legacy_v1=self.allow_legacy_v1_signatures and not production)
+                allow_legacy_v1 = self.allow_legacy_v1_signatures and not production
+                # Resolve once: verification and every later copy read this
+                # directory, so retargeting a symlink on the way to it later
+                # cannot point the checks somewhere else.
+                real_dir = plugin_dir.resolve()
+                manifest.verify(real_dir, self.signing_secret, allow_legacy_v1=allow_legacy_v1)
+                signed = manifest
                 if legacy:
                     manifest = self._restrict_legacy(manifest)
                 if production and self.production_forbid_subprocess and manifest.sandbox != "docker":
                     raise PermissionError(f"production plugins must use docker sandbox: {manifest.name}")
 
-                entrypoint = (plugin_dir / manifest.entrypoint).resolve()
-                if not entrypoint.is_file() or plugin_dir.resolve() not in entrypoint.parents:
+                entrypoint = (real_dir / manifest.entrypoint).resolve()
+                if not entrypoint.is_file() or real_dir not in entrypoint.parents:
                     raise PermissionError(f"plugin entrypoint escapes plugin directory: {manifest.name}")
+                prepare_files = self._verified_copier(signed, real_dir, entrypoint.relative_to(real_dir), allow_legacy_v1)
                 if manifest.sandbox == "subprocess":
-                    tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds))
+                    tool_registry.register(SubprocessPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds, prepare_files=prepare_files))
                     self.loaded[manifest.name] = manifest
                     results[manifest.name] = [manifest.name]
                 elif manifest.sandbox == "docker":
@@ -96,9 +113,10 @@ class PluginRegistry:
                             runner_hmac_secret_env=str(getattr(sandbox_cfg, "runner_hmac_secret_env", "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET")),
                             timeout_seconds=self.plugin_timeout_seconds,
                             image=str(getattr(sandbox_cfg, "docker_image", "python:3.11-slim")),
+                            prepare_files=prepare_files,
                         ))
                     else:
-                        tool_registry.register(DockerPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds))
+                        tool_registry.register(DockerPluginTool(manifest.name, entrypoint, manifest.permissions, timeout_seconds=self.plugin_timeout_seconds, prepare_files=prepare_files))
                     self.loaded[manifest.name] = manifest
                     results[manifest.name] = [manifest.name]
                 elif manifest.sandbox == "in_process":
@@ -123,7 +141,7 @@ class PluginRegistry:
         # and permissions in the manifest are unsigned: never trust them.
         if self.trusted_only:
             raise PermissionError(
-                f"legacy v1 plugin signature cannot establish trust (re-sign with scripts/sign_plugin.py): {manifest.name}"
+                f"legacy v1 plugin signature cannot establish trust (re-sign with scripts/sign_plugin.py --migrate): {manifest.name}"
             )
         LOGGER.warning(
             "loading plugin %s with a legacy v1 signature: manifest fields are unsigned, so it runs untrusted "
@@ -132,12 +150,29 @@ class PluginRegistry:
         )
         return manifest.model_copy(update={"trusted": False, "sandbox": "docker", "permissions": []})
 
+    def _verified_copier(self, manifest: PluginManifest, real_dir: Path, entry_rel: Path, allow_legacy_v1: bool) -> Callable[[Path], Path]:
+        # The signature was checked against the files on disk at load. Each
+        # call copies the directory, verifies the copy and runs the copy, so
+        # files changed (or bytecode added) after loading never run.
+        secret = self.signing_secret
+
+        def prepare_files(workdir: Path) -> Path:
+            copy = workdir / "plugin"
+            manifest.copy_verified(real_dir, copy, secret, allow_legacy_v1=allow_legacy_v1)
+            return copy / entry_rel
+
+        return prepare_files
+
     def _check_name_unused(self, name: str, tool_registry) -> None:
         # ToolRegistry.register replaces a tool of the same name, so a plugin
-        # must never shadow a built-in tool or another plugin.
+        # must never shadow a built-in tool or another plugin, and must not
+        # take a built-in name that is merely disabled right now.
+        key = _name_key(name)
+        if key in RESERVED_TOOL_NAMES:
+            raise PermissionError(f"plugin name is reserved for a built-in tool: {name}")
         names = getattr(tool_registry, "names", None)
         registered = set(names()) if callable(names) else set(getattr(tool_registry, "tools", {}) or {})
-        if name in self.loaded or name in registered:
+        if key in {_name_key(other) for other in (*self.loaded, *registered)}:
             raise PermissionError(f"plugin name is already registered: {name}")
 
     @staticmethod

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -10,7 +11,7 @@ from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.models.providers import ALLOWED_IMAGE_SUFFIXES
 from omnidesk_agent.models.router import ModelRouter
-from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
 
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
@@ -79,7 +80,8 @@ class VisionGroundingTool:
             raise PermissionError(f"image_path type is not allowed: {resolved.name}")
         return resolved
 
-    def _check_image_file(self, path: Path) -> None:
+    def _check_image_file(self, path: Path) -> str:
+        """Validate the image file and return the sha256 of its content."""
         if not stat.S_ISREG(path.stat().st_mode):
             raise PermissionError(f"image_path is not a regular file: {path.name}")
         # Re-check on the opened file: no symlink swapped in, still a regular
@@ -92,8 +94,14 @@ class VisionGroundingTool:
             if info.st_size <= 0 or info.st_size > self.max_image_bytes:
                 raise PermissionError(f"image_path size {info.st_size} is outside 1..{self.max_image_bytes} bytes: {path.name}")
             header = handle.read(12)
+            digest = hashlib.sha256(header)
+            rest = handle.read(self.max_image_bytes + 1 - len(header))
+            if len(header) + len(rest) > self.max_image_bytes:
+                raise PermissionError(f"image_path grew past {self.max_image_bytes} bytes: {path.name}")
+            digest.update(rest)
         if not _looks_like_image(path.suffix.lower(), header):
             raise PermissionError(f"image_path content does not match its image type: {path.name}")
+        return digest.hexdigest()
 
     @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -104,18 +112,18 @@ class VisionGroundingTool:
         instruction = str(args.get("instruction") or args.get("expected_result") or "Analyze UI screenshot")
         if not image_path.exists():
             return ToolResult(False, error=f"image_path does not exist: {image_path}")
-        self._check_image_file(image_path)
+        image_sha256 = self._check_image_file(image_path)
 
-        ctx.permissions.verify(proposal(
-            "vision", "ground",
-            {"image_path": str(image_path), "instruction": instruction[:500]},
-            "medium", "使用视觉模型分析截图并定位 UI 元素", ctx
-        ))
+        # The image and the whole instruction go to the model provider: the
+        # approval binds both.
+        approved: dict[str, Any] = {"image_path": str(image_path), "image_sha256": image_sha256, **bound_content("instruction", instruction)}
+        ctx.permissions.verify(proposal("vision", "ground", approved, "medium", "使用视觉模型分析截图并定位 UI 元素", ctx))
         # The approval can take a while: the path and file must still be what
         # was approved.
         if self._workspace_image(raw_path) != image_path:
             raise PermissionError(f"image_path changed while awaiting approval: {raw_path}")
-        self._check_image_file(image_path)
+        if self._check_image_file(image_path) != image_sha256:
+            raise PermissionError(f"image_path content changed while awaiting approval: {raw_path}")
 
         system = (
             "You are a UI grounding model. Return strict JSON with keys: "

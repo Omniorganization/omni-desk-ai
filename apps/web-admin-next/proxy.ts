@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { CSRF_COOKIE, SESSION_COOKIE } from './lib/session-names';
+import { routedPath, SessionAdmission } from './lib/api-admission';
+import { ACTOR_COOKIE, CSRF_COOKIE, GATEWAY_COOKIE, ROLE_COOKIE, SESSION_COOKIE, SESSION_SEAL_COOKIE } from './lib/session-names';
 
-export function proxy(request: NextRequest) {
-  const path = request.nextUrl.pathname;
+// One instance per server process: gateway-bound session requests are
+// admitted here before any route handler can call the gateway.
+const admission = new SessionAdmission();
+
+export async function proxy(request: NextRequest) {
+  const path = routedPath(request.nextUrl.pathname);
+  if (path === null) return NextResponse.json({ ok: false, error: 'invalid path' }, { status: 400 });
   const mutation = !['GET', 'HEAD', 'OPTIONS'].includes(request.method);
   if (path.startsWith('/api/')) {
     if (mutation) {
@@ -11,6 +17,15 @@ export function proxy(request: NextRequest) {
       if (!origin || origin !== expected) {
         return NextResponse.json({ ok: false, error: 'origin rejected' }, { status: 403 });
       }
+    }
+    const cookie = (name: string) => request.cookies.get(name)?.value;
+    const rejection = await admission.admit(path, request.headers, {
+      token: cookie(SESSION_COOKIE), gateway: cookie(GATEWAY_COOKIE), actor: cookie(ACTOR_COOKIE), role: cookie(ROLE_COOKIE),
+    }, cookie(SESSION_SEAL_COOKIE));
+    if (rejection) {
+      const headers: Record<string, string> = { 'cache-control': 'no-store' };
+      if (rejection.retryAfterSeconds) headers['retry-after'] = String(rejection.retryAfterSeconds);
+      return NextResponse.json({ ok: false, error: rejection.error }, { status: rejection.status, headers });
     }
     const protectedRoute = path.startsWith('/api/omni/') || path === '/api/session/logout';
     if (protectedRoute && !request.cookies.get(SESSION_COOKIE)?.value) {
