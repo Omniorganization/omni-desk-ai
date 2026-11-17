@@ -22,6 +22,7 @@ from typing import Any
 from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.security.command_policy import SAFE_CI_ALLOWED_PREFIXES, argv_allowed
+from omnidesk_agent.sandbox.isolation import bind_mount_source
 from omnidesk_agent.sandbox.limits import DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_MAX_ARCHIVE_FILE_BYTES, DEFAULT_MAX_ARCHIVE_FILES
 
 LOGGER = logging.getLogger(__name__)
@@ -187,7 +188,7 @@ def _build_docker_command(payload: dict[str, Any], workspace: Path, cfg: RunnerC
         "--pids-limit", "128", "--user", "65534:65534", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m",  # nosec B108
         *mappings,
-        "--mount", f"type=bind,src={workspace},dst=/workspace,{ 'readonly' if readonly else 'rw' }",
+        "--mount", f"type=bind,src={bind_mount_source(workspace)},dst=/workspace,{ 'readonly' if readonly else 'rw' }",
         "-w", "/workspace", "--env", "PYTHONDONTWRITEBYTECODE=1",
         "--env", "PYTHONPYCACHEPREFIX=/tmp/omnidesk-pycache", image, *argv,
     ]

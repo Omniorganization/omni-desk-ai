@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
 
 
@@ -69,10 +69,15 @@ class FilesTool:
             path = self._writable_path(str(args["path"]))
             text = str(args.get("text", ""))
             expected = str(args.get("expected_result") or f"Write {path.name}")
-            ctx.permissions.verify(proposal("files", "write_text", {"path": str(path), "length": len(text), "expected_result": expected}, "high", "写入工作区文件", ctx))
+            # The approver sees, and the scope hash binds, the whole file content.
+            approved: dict[str, Any] = {"path": str(path), **bound_content("text", text), "expected_result": expected}
+            ctx.permissions.verify(proposal("files", "write_text", approved, "high", "写入工作区文件", ctx))
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-            return ToolResult(True, data={"path": str(path), "bytes": len(text.encode("utf-8"))}, summary=f"wrote {path}")
+            # Bytes, not write_text: no newline translation, so the file holds
+            # exactly the approved characters on every platform.
+            data = text.encode("utf-8")
+            path.write_bytes(data)
+            return ToolResult(True, data={"path": str(path), "bytes": len(data)}, summary=f"wrote {path}")
 
         if action == "list":
             path = self._safe_path(str(args.get("path", ".")))

@@ -10,6 +10,7 @@ from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE, PermissionConfig, Sandb
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
+from omnidesk_agent.sandbox.isolation import bind_mount_source, minimal_host_env
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.security.command_policy import (
     SAFE_CI_ALLOWED_PREFIXES,
@@ -103,7 +104,7 @@ class ShellTool:
             docker_args.extend(["--security-opt", str(opt)])
         mount_mode = "ro" if self._is_readonly_command(argv) else "rw"
         docker_args.extend([
-            "--mount", f"type=bind,src={self.cwd},dst=/workspace,{'readonly' if mount_mode == 'ro' else 'rw'}",
+            "--mount", f"type=bind,src={bind_mount_source(self.cwd)},dst=/workspace,{'readonly' if mount_mode == 'ro' else 'rw'}",
             "-w", "/workspace",
             str(image),
             *harden_exec_argv(argv),
@@ -171,6 +172,9 @@ class ShellTool:
             cwd=str(self.cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # On the host, workspace code runs without the gateway's secrets.
+            # The docker CLI keeps its environment; the container gets none of it.
+            env=None if self.backend == "docker" else minimal_host_env(argv),
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
