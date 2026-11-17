@@ -231,12 +231,20 @@ def create_app(cfg: AppConfig) -> FastAPI:
         decision = await rt.admin_auth.verify_request(request, required_role=role)
         if not decision.ok:
             raise HTTPException(status_code=403, detail=decision.reason)
+        actor = getattr(decision, "actor", "unknown")
         resource_guard.check_authenticated(
             request,
-            actor=getattr(decision, "actor", "unknown"),
+            actor=actor,
             role=getattr(decision, "role", role),
+            organization=_actor_organization(actor),
         )
         return decision
+
+    def _actor_organization(actor: str) -> str:
+        # Quota keys use the organization the gateway itself assigns to the
+        # authenticated actor, never a client-supplied header.
+        resolve = getattr(getattr(rt, "app_sync", None), "_organization_for_actor", None)
+        return str(resolve(actor)) if callable(resolve) else "org_default"
 
 
     readiness_cache: _ReadinessCache = {"expires_at": 0.0, "snapshot": None}
