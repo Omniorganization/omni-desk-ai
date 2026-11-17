@@ -1,8 +1,9 @@
 {
-  "checked_at": "2026-10-19T11:10:33.173670+08:00",
+  "checked_at": "2026-11-17T18:42:22+00:00",
+  "previous_checked_at": "2026-10-19T11:10:33.173670+08:00",
   "scope": "source_review_and_offline_cli_gateway_fixtures_only",
   "repository": "Omniorganization/omni-desk-ai",
-  "base_commit": "8fb391b4ac034c5d51f2254ebd93b6cade592985",
+  "base_commit": "b66a916465f8985b9a13e92dde60d92f1f9f627b",
   "branch": "ai/claude-code-cli-provider-20261019",
   "input_patch": {
     "filename": "0001-Add-Claude-Code-CLI-provider.patch",
@@ -11,19 +12,14 @@
   },
   "validation": [
     {
-      "scope": "models plus gateway, codex verification, validation analyzer",
-      "result": "364 passed",
+      "scope": "tests/models and tests/test_codex_cli_gateway.py",
+      "result": "381 passed",
       "flags": "-W error -p no:cacheprovider"
     },
     {
-      "scope": "router fallback, native streaming, streaming core, budgets, config, workflow governance, config validation",
-      "result": "62 passed",
-      "flags": "-W error -p no:cacheprovider"
-    },
-    {
-      "scope": "final Claude provider and parameterized subscription Gateway",
-      "result": "93 passed",
-      "flags": "-W error -p no:cacheprovider"
+      "scope": "full Python suite on Python 3.11 with requirements.dev.lock",
+      "result": "2112 passed, 17 skipped (PostgreSQL DSN not configured)",
+      "flags": "-p no:cacheprovider"
     },
     {
       "scope": "Ruff omnidesk_agent tests and git diff --check",
@@ -31,13 +27,13 @@
     },
     {
       "scope": "pyright --project pyrightconfig.json",
-      "result": "0 errors, 1014 warnings; optional typing warnings retained"
+      "result": "not re-run for this revision"
     }
   ],
   "regression_before_fix": "6 failed/5 passed: system/user separation, oversized private system and four malformed or third-party authentication combinations",
   "activation": {
     "example_enabled": false,
-    "pull_request_draft": true,
+    "pull_request_draft": false,
     "real_claude_calls": 0,
     "credentials_copied": false,
     "production_deployed": false
@@ -52,16 +48,16 @@
   "risk": "Do not enable on managed hosts. Safe mode and user disableAllHooks cannot disable managed hooks. Offline fixtures do not prove real CLI behavior.",
   "rollback": "Keep profile disabled or restore previous configuration/deployment; retain audit and ledger. Revert code through a new ai/* PR.",
   "source_sha256": {
-    "docs/claude-code-subscription.md": "1c2f218b24893faed992dff77759b8e170f6727740dfb3e45808cbea3b97babe",
-    "examples/config.claude-code-cli.yaml": "ead31cacec12007621c71e98d6913f7d34837784e7f52f67d6285a883fc3e959",
-    "omnidesk_agent/config.py": "b4a86d57e4ac88959dd0d5722e37638562b71adae08dc5e8b0724c1d989fe172",
-    "omnidesk_agent/models/claude_code_cli.py": "8395a6bd14fd741751f823a3c879cc9067e42bec0148ecce16014852b937c1da",
+    "docs/claude-code-subscription.md": "febb570051bffe76cb35761307dabd9dfe621c5e2d18a9f09736ca62b68dec9a",
+    "examples/config.claude-code-cli.yaml": "42d13c31ceb8c91569c7917e735267b50ae44743e92ad25a5dfe9692baa524ae",
+    "omnidesk_agent/config.py": "829c0a362f312cee5b687d780b2e428ea91ca6370341feba432b82adaea517e8",
+    "omnidesk_agent/models/claude_code_cli.py": "462098cce8133d3bf07b5b18820c3308f439b455c096c2c48c8a7dfa7d810d1f",
     "omnidesk_agent/models/pricing.py": "5865b7b6d1f6facbfeb263ab28192420c330ba0b28da6855ecd15bdd22d2223e",
-    "omnidesk_agent/models/provider_errors.py": "78ec5f98e0fa199e4a5dd45a77620263a46fcd89796142954391726137ab324f",
-    "omnidesk_agent/models/provider_streaming.py": "7fedb5c40bf6876dc9ecedbf3a0375a1adf4be4cfc547c133b0b7d3b90a00196",
-    "omnidesk_agent/models/providers.py": "6f1090a82f67aff9784c954a3fabf90077d1df5fe12197f861c39431601c9e93",
-    "omnidesk_agent/models/router.py": "8677952571d0c35e984d8b302338bfe5c132da7f24508e7fa08f41a0006ff53a",
-    "tests/models/test_claude_code_cli_provider.py": "21f4df06ace3cc87b531bb683d9c4318425b88df0b21e5f298eb6717a0624ac7",
+    "omnidesk_agent/models/provider_errors.py": "a5f034ea2837a5c55666766a741f321b504920e327a99895bc314be8e5486f7e",
+    "omnidesk_agent/models/provider_streaming.py": "3d2583f79bcbde267f5a5b275dcd94fdaf94853eb9cea5234220897a0b22c0c6",
+    "omnidesk_agent/models/providers.py": "8f4e9e513939b010b0cc538e5d7d6c61af4c99ddd28d4a56c63beb9276b4d63e",
+    "omnidesk_agent/models/router.py": "ca3a08edbd589795e0e673678c70aa7758486e876eafe64146ad1e01979e2f48",
+    "tests/models/test_claude_code_cli_provider.py": "cef9268d8b785ae36e677801bbdaf191b0bf7598e15e45caebcabecd9076272f",
     "tests/test_codex_cli_gateway.py": "1dfa6342beeff6225da900de9d8b983a882dc04c2a9011964015c4340969280a"
   }
 }

@@ -57,6 +57,10 @@ else:
         assistant = {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-4-6", "content": [{"type": "text", "text": "not-json" if "INVALID_JSON" in stdin else "5"}]}, "session_id": sid}
         assistant.update(scenario.get("assistant", {}))
         emit(assistant)
+    if "rate_limit" in scenario:
+        rate_limit = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "resetsAt": 1, "rateLimitType": "five_hour"}, "session_id": sid}
+        rate_limit.update(scenario["rate_limit"])
+        emit(rate_limit)
     if "BIG" in stdin:
         print("x" * (3 * 1024 * 1024), flush=True)
     result = {"type": "result", "subtype": "success", "is_error": "ERROR_RESULT" in stdin, "session_id": sid,
@@ -408,6 +412,23 @@ def test_mismatched_assistant_and_result_are_rejected(cli, change):
     assert error.value.category == "subscription_protocol"
 
 
+def test_per_turn_rate_limit_event_does_not_discard_a_successful_answer(cli):
+    # stream-json emits rate_limit_event every turn; rejecting it would spend
+    # subscription quota and still return no answer.
+    scenario(cli, rate_limit={})
+    response = run(cli)
+    assert response.text == "5"
+    assert response.usage == {"input_tokens": 11, "output_tokens": 1, "cached_input_tokens": 3}
+
+
+@pytest.mark.parametrize("change", [{"session_id": "other"}, {"rate_limit_info": "allowed"}, {"rate_limit_info": None}])
+def test_mismatched_rate_limit_event_is_rejected(cli, change):
+    scenario(cli, rate_limit=change)
+    with pytest.raises(ChatGPTPlanError) as error:
+        run(cli)
+    assert error.value.category == "subscription_protocol"
+
+
 def test_token_usage_includes_cache_reads_and_creation(cli):
     scenario(cli, result={"usage": {"input_tokens": 8, "output_tokens": 1, "cache_read_input_tokens": 3, "cache_creation_input_tokens": 5}})
     assert run(cli).usage == {"input_tokens": 16, "output_tokens": 1, "cached_input_tokens": 3}
@@ -423,3 +444,17 @@ def test_example_stays_disabled_until_real_cli_verification():
     assert profile.api_key_env is None and cfg.llm.enable_cache is False
     assert cfg.models.routing['chat']['fallback'] == []
     assert cfg.models.budget.require_persistent_ledger is True
+
+
+def test_example_planner_route_works_without_a_caller_role(tmp_path):
+    # The internal planner sends no authenticated role, so the router treats it as
+    # an operator; operators may not use the subscription profile.
+    from pathlib import Path
+    from omnidesk_agent.config import load_config
+
+    cfg = load_config(Path(__file__).resolve().parents[2] / 'examples/config.claude-code-cli.yaml', ensure_dirs=False)
+    router = ModelRouter(cfg.models, TokenBudgetManager(tmp_path / "tokens.sqlite3"))
+    assert router.route_plan("planner", {}).profiles == ["local"]
+    with pytest.raises(PermissionError):
+        router.route_plan("chat", {})
+    assert router.route_plan("chat", {"role": "owner"}).profiles == ["claude_code_cli"]

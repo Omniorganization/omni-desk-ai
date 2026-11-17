@@ -65,7 +65,7 @@ def _usage(raw: Any) -> dict[str, int]:
 
 
 def _parse_events(raw: bytes) -> tuple[str, dict[str, int], str]:
-    """Accept exactly: one tool-less init, optional text-only assistant events, one successful result."""
+    """Accept exactly: one tool-less init, optional text-only assistant and rate-limit events, one successful result."""
     session_id = None
     model = None
     assistant_text = []
@@ -104,6 +104,11 @@ def _parse_events(raw: bytes) -> tuple[str, dict[str, int], str]:
                     if not isinstance(block.get("text"), str):
                         raise ChatGPTPlanError("subscription_protocol", "Claude Code CLI returned invalid assistant text; request stopped")
                     assistant_text.append(block["text"])
+        elif kind == "rate_limit_event":
+            # Informational per-turn quota status; it carries no model output. A failed
+            # request is still caught by the result checks below.
+            if event.get("session_id") != session_id or not isinstance(event.get("rate_limit_info"), dict):
+                raise ChatGPTPlanError("subscription_protocol", "Claude Code CLI returned a mismatched rate-limit event; request stopped")
         elif kind == "result":
             result = event
         else:

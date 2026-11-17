@@ -9,7 +9,7 @@
 - 子进程只继承有限环境；不接受 API key、base URL、额外 headers/body。认证仍由 CLI 自管，不提取或复制凭据。
 - `--tools "" --strict-mcp-config --disable-slash-commands --safe-mode --setting-sources "" --settings '{"disableAllHooks":true}'` 限制工具及用户自定义；会话使用 `--no-session-persistence`。
 - 私有 system 经独立匿名管道交给 `--system-prompt-file /dev/fd/N`，user 仅走 stdin，保留指令层级；两者不进入 argv、环境或普通文件。管道并发写入，超时/取消清理整个进程组。
-- init 必须没有工具/MCP；assistant 必须绑定同一 init 的 session/model、assistant role 和合法文本，result 须成功且与 assistant 文本相同。未知、尾随、工具或不完整事件拒绝。
+- init 必须没有工具/MCP；assistant 必须绑定同一 init 的 session/model、assistant role 和合法文本，result 须成功且与 assistant 文本相同。每轮的 rate_limit_event 仅作信息事件接受，须绑定同一 session 且带 rate_limit_info 对象。未知、尾随、工具或不完整事件拒绝。示例配置中内部 planner 请求不带调用者角色，故 planner 路由到 local。
 - 设置 `CLAUDE_CODE_MAX_RETRIES=0`、`CLAUDE_CODE_RETRY_WATCHDOG=0`、`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1`、`CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES=0`。OmniDesk 不重试、不修复重发、不转付费 profile；实际 CLI 网络行为尚未验收。
 - 仅 POSIX、文本输入；SSE 是完整结果后的缓冲输出（`native=false`）。账本 USD 估算为 0，仍消费订阅额度；输入 token 包括缓存读取/创建，不代表无限额度或供方硬输出上限。
 

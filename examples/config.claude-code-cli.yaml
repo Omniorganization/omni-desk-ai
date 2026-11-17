@@ -42,7 +42,8 @@ models:
       base_url: http://127.0.0.1:11434
   routing:
     chat: {primary: claude_code_cli, fallback: [], max_retries: 0}
-    planner: {primary: claude_code_cli, fallback: [], max_retries: 0}
+    # 内部 planner 请求不带调用者角色，按 operator 处理；operator 只允许 local。
+    planner: {primary: local, fallback: [], max_retries: 0}
     tool_plan: {primary: claude_code_cli, fallback: [], max_retries: 0}
     code: {primary: claude_code_cli, fallback: [], max_retries: 0}
     upgrade: {primary: claude_code_cli, fallback: [], max_retries: 0}
