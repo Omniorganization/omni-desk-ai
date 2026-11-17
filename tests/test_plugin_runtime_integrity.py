@@ -320,6 +320,28 @@ def test_each_call_runs_a_verified_copy_not_the_live_directory(tmp_path, monkeyp
     assert not seen["entry"].exists()  # the copy is removed after the call
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_verified_copy_keeps_only_the_execute_bit_of_a_signed_file(tmp_path):
+    # A signed plugin may launch a bundled executable: a copy that cannot run it
+    # breaks a call whose signature verified. Nothing else of the original mode
+    # may reach the sandbox, in particular not setuid or write-by-others.
+    plugin_dir = _v2_plugin(tmp_path, "deploy")
+    (plugin_dir / "helper").write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    (plugin_dir / "helper").chmod(0o4777)
+    (plugin_dir / "helper.py").chmod(0o666)
+    manifest = PluginManifest(name="deploy", trusted=True, sandbox="subprocess", entrypoint="plugin.py", permissions=["plugin.call"])
+    manifest.sign_v2(plugin_dir, SECRET)
+    copy = tmp_path / "copy"
+    previous = os.umask(0o077)
+    try:
+        manifest.copy_verified(plugin_dir, copy, SECRET)
+    finally:
+        os.umask(previous)
+    assert oct((copy / "helper").stat().st_mode & 0o7777) == oct(0o755)
+    assert oct((copy / "helper.py").stat().st_mode & 0o7777) == oct(0o644)
+    assert oct((copy / "plugin.py").stat().st_mode & 0o7777) == oct(0o644)
+
+
 def test_docker_and_remote_plugins_get_the_verified_copy(tmp_path, monkeypatch):
     plugin_dir = _v2_plugin(tmp_path / "local", "deploy", sandbox="docker")
     _, tools = _load(tmp_path / "local")

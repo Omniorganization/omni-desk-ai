@@ -130,7 +130,9 @@ class PluginManifest(BaseModel):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(path.read_bytes())
                 # Readable by the sandbox user, which is not the gateway user.
-                target.chmod(0o644)
+                # The execute bit is kept so a signed bundled executable still
+                # runs; no other bit of the original mode is carried over.
+                target.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
             else:
                 raise PermissionError(f"plugin may not contain special files: {self.name}: {rel.as_posix()}")
         self.verify(dest, signing_secret, allow_legacy_v1=allow_legacy_v1)
