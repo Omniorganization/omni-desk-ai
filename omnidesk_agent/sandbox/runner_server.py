@@ -65,8 +65,21 @@ def _allowed(argv: list[str], payload: dict[str, Any] | None = None) -> bool:
     return False
 
 
-def _constant_time_ok(expected: str, actual: str) -> bool:
-    return bool(expected) and hmac.compare_digest(expected.encode(), actual.encode())
+def _token_configured(token: str) -> bool:
+    return bool(token.strip())
+
+
+def _bearer_token_ok(token: str, authorization: str) -> bool:
+    """Fail closed: an unset/blank runner token never authenticates anyone.
+
+    Compare the presented token itself, not "Bearer <token>": with an empty
+    token the expected header would be the non-empty "Bearer ", which an
+    attacker can simply send.
+    """
+    if not _token_configured(token) or not authorization.startswith("Bearer "):
+        return False
+    presented = authorization[len("Bearer "):]
+    return bool(presented) and hmac.compare_digest(token.encode(), presented.encode())
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -296,8 +309,13 @@ class SandboxRunnerHandler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": "not found"})
             return
         token = os.getenv(cfg.token_env, "")
+        if not _token_configured(token):
+            # run_server refuses to start without a token; this covers handlers
+            # served any other way and a token removed after startup.
+            self._json(503, {"ok": False, "error": "sandbox runner token is not configured"})
+            return
         auth = self.headers.get("authorization", "")
-        if not _constant_time_ok(f"Bearer {token}", auth):
+        if not _bearer_token_ok(token, auth):
             self._json(401, {"ok": False, "error": "unauthorized"})
             return
         length = int(self.headers.get("content-length", "0") or "0")
@@ -375,8 +393,17 @@ def require_rootless_runtime(cfg: RunnerConfig) -> None:
         )
 
 
+def require_runner_token(cfg: RunnerConfig) -> None:
+    if not _token_configured(os.getenv(cfg.token_env, "")):
+        raise SystemExit(
+            f"sandbox runner refuses to start without {cfg.token_env}; "
+            "set it to a random secret of at least 32 characters (the same value the gateway uses)"
+        )
+
+
 def run_server(host: str = "0.0.0.0", port: int = 18890, cfg: RunnerConfig | None = None) -> None:  # nosec B104
     cfg = cfg or RunnerConfig()
+    require_runner_token(cfg)
     require_rootless_runtime(cfg)
     server = ThreadingHTTPServer((host, port), SandboxRunnerHandler)
     server.runner_config = cfg  # type: ignore[attr-defined]
