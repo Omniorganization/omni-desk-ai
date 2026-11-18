@@ -11,11 +11,13 @@ import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional, cast
 
 DeviceType = Literal["desktop", "mobile", "web_admin"]
-ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
+# "consumed": the approval authorized a run that a runtime device has claimed.
+ApprovalStatus = Literal["pending", "approved", "rejected", "expired", "consumed"]
 TaskStatus = Literal["queued", "running", "blocked", "completed", "failed", "cancelled"]
+TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 def _now() -> float:
@@ -61,6 +63,15 @@ def _approval_decision_message(*, approval_id: str, decision: str, timestamp: st
     return f"omnidesk-approval-decision:v1:{approval_id}:{decision}:{timestamp}:{nonce}".encode("utf-8")
 
 
+LEGACY_HMAC_KEY_PREFIX = "legacy-hmac:"
+LEGACY_HMAC_KEY_REFUSED = "legacy-hmac device keys are not accepted in production; enroll the device with an Ed25519 or P-256 public key"
+
+
+def is_legacy_hmac_device_key(public_key: Optional[str]) -> bool:
+    """A ``legacy-hmac:`` device "public key" is the device's HMAC secret, stored as is."""
+    return str(public_key or "").strip().startswith(LEGACY_HMAC_KEY_PREFIX)
+
+
 def _is_ed25519_public_key(value: str) -> bool:
     if not value.startswith("base64:"):
         return False
@@ -78,18 +89,58 @@ def _device_request_message(*, method: str, path: str, body_sha256: str, timesta
     return f"omnidesk-device-request:v1:{method.upper()}:{path}:{body_sha256}:{timestamp}:{nonce}".encode("utf-8")
 
 
+# Events of these types carry a conversation's chat itself.
+_CHAT_EVENT_PREFIXES = ("conversation.", "message.", "chat.")
+
+
+def scope_sync_event_to_actor(
+    event: dict[str, Any],
+    *,
+    actor: str,
+    conversation_owner: Callable[[str], Optional[str]],
+) -> Optional[dict[str, Any]]:
+    """Return ``event`` as ``actor`` may see it in a sync feed, or ``None``.
+
+    Conversations are private to the actor that created them; there is no
+    membership model. Chat events of another actor's conversation are hidden, and
+    any other event that references one (a task created from it) loses the
+    reference. ``conversation_owner`` returns ``None`` for an unknown id, so an
+    unresolvable ``conversation_id`` is treated as another actor's.
+    """
+    event_type = str(event.get("event_type") or "")
+    chat_event = event_type.startswith(_CHAT_EVENT_PREFIXES)
+    if chat_event and str(event.get("actor") or "") != actor:
+        # Offline uploads may name the conversation under another key, or not at all.
+        return None
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    hidden: set[str] = set()
+    conversation_id = str(payload.get("conversation_id") or "")
+    if conversation_id and conversation_owner(conversation_id) != actor:
+        hidden.add("conversation_id")
+    related_id = str(payload.get("related_id") or "")
+    related_owner = conversation_owner(related_id) if related_id else None
+    if related_owner is not None and related_owner != actor:
+        hidden.add("related_id")
+    if not hidden:
+        return event
+    if chat_event or event_type == "notification.created":
+        return None
+    return {**event, "payload": {key: value for key, value in payload.items() if key not in hidden}}
+
+
 def _verify_device_signature(public_key: str, message: bytes, signature: str) -> bool:
     """Verify device challenge signatures.
 
     Production GA path: Ed25519 or P-256 public key in PEM/base64 plus base64/hex signature.
     Legacy HMAC is accepted only for keys prefixed with ``legacy-hmac:`` so old test
-    fixtures cannot accidentally masquerade as production device credentials.
+    fixtures cannot accidentally masquerade as production device credentials; callers
+    refuse those keys in production first (``AppSyncStore._legacy_hmac_refused``).
     """
     public_key = (public_key or "").strip()
     signature = (signature or "").strip()
     if not public_key or not signature:
         return False
-    if public_key.startswith("legacy-hmac:"):
+    if public_key.startswith(LEGACY_HMAC_KEY_PREFIX):
         secret = public_key.split(":", 1)[1]
         expected = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
         return hmac.compare_digest(signature, expected)
@@ -178,6 +229,29 @@ class DeviceRecord:
     # set, approval decisions from this device must carry its signature.
     approval_public_key: Optional[str] = None
     approval_key_registered_at: Optional[float] = None
+
+
+# Values that verify a device credential or address the device's push target.
+_DEVICE_CREDENTIAL_FIELDS = frozenset({"push_token", "token_hash", "last_challenge_nonce_hash", "last_challenge_expires_at"})
+
+
+def _push_target_hint(target: Optional[str]) -> Optional[str]:
+    """Masked push target: its kind, plus the last 4 characters of a long value."""
+    if not target:
+        return None
+    kind = "fid" if target.startswith("fid:") else "fcm_token"
+    return f"{kind}:***{target[-4:]}" if len(target) >= 16 else f"{kind}:***"
+
+
+def public_device_view(device: dict[str, Any]) -> dict[str, Any]:
+    """A device record as API responses return it: no credential fields, and the
+    push target only as a masked hint."""
+    view = {key: value for key, value in device.items() if key not in _DEVICE_CREDENTIAL_FIELDS}
+    view["push_target_hint"] = _push_target_hint(device.get("push_token"))
+    if is_legacy_hmac_device_key(view.get("public_key")):
+        # A legacy "public key" is the device's HMAC secret.
+        view["public_key"] = f"{LEGACY_HMAC_KEY_PREFIX}***"
+    return view
 
 
 @dataclass
@@ -280,7 +354,9 @@ class DeviceEnrollmentRecord:
     requested_by: str
     pairing_code_hash: str
     organization_id: str = "org_default"
-    status: Literal["pending", "completed", "expired", "revoked"] = "pending"
+    # pending -> paired (pairing code proven, device and key bound) -> completed
+    # (challenge verified). A completed enrollment cannot verify another device.
+    status: Literal["pending", "paired", "completed", "expired", "revoked"] = "pending"
     device_id: Optional[str] = None
     public_key: Optional[str] = None
     created_at: float = field(default_factory=_now)
@@ -418,6 +494,10 @@ class AppSyncStore:
         self.sync_cursors: dict[str, SyncCursorRecord] = {}
         self.sync_conflicts: dict[str, SyncConflictRecord] = {}
         self.network_state: dict[str, Any] = {"state": "local_only", "updated_at": _now()}
+        # Server-side organization of each actor on first use (configuration, never a request).
+        self.actor_organizations: dict[str, str] = {}
+        # Turned off in production; see configure_device_key_policy.
+        self.allow_legacy_hmac_device_keys = True
         self._seq = 0
         self._load()
 
@@ -487,9 +567,34 @@ class AppSyncStore:
     def _normalize_org_id(self, organization_id: Optional[str]) -> str:
         return str(organization_id or self._default_org_id() or "org_default").strip() or "org_default"
 
+    def configure_device_key_policy(self, *, allow_legacy_hmac: bool) -> None:
+        """Whether ``legacy-hmac:`` device keys may be registered, paired or verified.
+
+        The factory turns them off for production stores. Routes also pass their
+        per-request production check to the verify methods; either one refuses.
+        """
+        with self._lock:
+            self.allow_legacy_hmac_device_keys = bool(allow_legacy_hmac)
+
+    def _legacy_hmac_refused(self, public_key: Optional[str], *, allow_legacy_hmac: bool = True) -> bool:
+        allowed = self.allow_legacy_hmac_device_keys and allow_legacy_hmac
+        return not allowed and is_legacy_hmac_device_key(public_key)
+
+    def configure_actor_organizations(self, assignments: Optional[dict[str, str]]) -> None:
+        """Set the server-side organization that each listed actor joins on first use."""
+        with self._lock:
+            self.actor_organizations = {
+                str(actor).strip(): self._normalize_org_id(organization_id)
+                for actor, organization_id in (assignments or {}).items()
+                if str(actor).strip()
+            }
+
+    def organization_for_new_actor(self, actor: Optional[str]) -> str:
+        return self._normalize_org_id(self.actor_organizations.get(actor or ""))
+
     def _organization_for_actor(self, actor: Optional[str]) -> str:
         user = self.users.get(actor or "unknown")
-        return self._normalize_org_id(user.organization_id if user else None)
+        return self._normalize_org_id(user.organization_id) if user else self.organization_for_new_actor(actor)
 
     def _organization_for_device(self, device_id: Optional[str]) -> str:
         device = self.devices.get(device_id or "")
@@ -705,15 +810,19 @@ class AppSyncStore:
                 max_seq = max(max_seq, remote_seq)
                 payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
                 remote_event_id = str(event.get("event_id") or event.get("operation_id") or f"{remote}:{remote_seq}:{event.get('event_type', 'event')}")
-                if remote_event_id in self.local_inbox:
+                # Event ids and idempotency keys are client-chosen (or predictable),
+                # so dedupe and outbox matching only ever see the caller's own records.
+                inbox_key = self._inbox_key(organization_id, actor, remote_event_id)
+                if inbox_key in self.local_inbox:
                     duplicates += 1
-                    self.local_inbox[remote_event_id].status = "duplicate"
+                    self.local_inbox[inbox_key].status = "duplicate"
                     continue
                 key = str(event.get("idempotency_key") or payload.get("idempotency_key") or "")
                 payload_hash = _fingerprint(payload)
                 matched = [
                     item for item in self.local_outbox.values()
                     if key and item.idempotency_key == key and item.status in {"pending", "failed", "syncing"}
+                    and item.actor == actor and self._normalize_org_id(item.organization_id) == organization_id
                 ]
                 if matched and any(item.payload_hash != payload_hash for item in matched):
                     conflict = self._record_sync_conflict_locked(
@@ -727,10 +836,10 @@ class AppSyncStore:
                         conflict_type="idempotency_payload_mismatch",
                     )
                     conflicts.append(conflict)
-                    self.local_inbox[remote_event_id] = LocalInboxRecord(remote_event_id=remote_event_id, event_type=str(event.get("event_type") or "event"), payload=payload, actor=str(event.get("actor") or actor), organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="conflict")
+                    self.local_inbox[inbox_key] = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="conflict")
                     continue
-                inbox = LocalInboxRecord(remote_event_id=remote_event_id, event_type=str(event.get("event_type") or "event"), payload=payload, actor=str(event.get("actor") or actor), organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied")
-                self.local_inbox[remote_event_id] = inbox
+                inbox = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied")
+                self.local_inbox[inbox_key] = inbox
                 if matched:
                     self.mark_local_operation_synced(matched[0].operation_id, remote_seq=remote_seq)
                 applied += 1
@@ -761,6 +870,11 @@ class AppSyncStore:
                 "payload": payload,
             })
         return self.record_remote_events(actor=actor, events=events, remote=remote, device_id=device_id, conflict_policy=conflict_policy)
+
+    @staticmethod
+    def _inbox_key(organization_id: str, actor: str, remote_event_id: str) -> str:
+        # Also the stored remote_event_id: the Postgres inbox is keyed on it alone.
+        return json.dumps([organization_id, actor, remote_event_id], ensure_ascii=False, separators=(",", ":"))
 
     def _record_sync_conflict_locked(
         self,
@@ -824,23 +938,42 @@ class AppSyncStore:
             }
 
     def ensure_user(self, actor: str, role: str = "operator", display_name: Optional[str] = None, organization_id: Optional[str] = None) -> dict[str, Any]:
+        """Return the actor's profile, creating it on first use.
+
+        ``organization_id`` comes from a server-side caller, never a request. A new
+        actor joins it, else its configured organization, else the default one; an
+        existing actor never changes organization.
+        """
         actor = actor or "unknown"
-        requested_organization_id = organization_id
-        organization_id = self._normalize_org_id(organization_id)
+        requested = self._normalize_org_id(organization_id) if organization_id is not None else None
         with self._lock:
+            assigned = self.actor_organizations.get(actor)
+            if requested is not None and assigned is not None and requested != assigned:
+                raise PermissionError("organization does not match the server-side assignment for this actor")
             if actor not in self.users:
-                self.users[actor] = UserProfile(user_id=actor, display_name=display_name or actor, role=role, organization_id=organization_id)
-                self._event("user.created", actor, {"user_id": actor, "role": role, "organization_id": organization_id})
+                new_organization_id = requested or self.organization_for_new_actor(actor)
+                self.users[actor] = UserProfile(user_id=actor, display_name=display_name or actor, role=role, organization_id=new_organization_id)
+                self._event("user.created", actor, {"user_id": actor, "role": role, "organization_id": new_organization_id})
                 self._persist()
-            elif requested_organization_id is not None and self._normalize_org_id(self.users[actor].organization_id) != organization_id:
+            elif requested is not None and self._normalize_org_id(self.users[actor].organization_id) != requested:
                 raise PermissionError("actor is already bound to a different organization")
             return self._record(self.users[actor])
 
-    def register_device(self, *, actor: str, device_id: Optional[str], device_type: DeviceType, name: str, platform: str, push_token: Optional[str] = None, capabilities: Optional[list[str]] = None, public_key: Optional[str] = None, token_hash: Optional[str] = None, organization_id: str = "org_default", idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def register_device(self, *, actor: str, device_id: Optional[str], device_type: DeviceType, name: str, platform: str, push_token: Optional[str] = None, capabilities: Optional[list[str]] = None, public_key: Optional[str] = None, token_hash: Optional[str] = None, organization_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, device_signature_verified: bool = False) -> dict[str, Any]:
+        """Register a device or refresh an existing one owned by the same actor.
+
+        The device joins its actor's organization; ``organization_id`` is only a
+        server-side assignment for a new actor (see ``ensure_user``).
+        ``device_signature_verified`` must only be set when the request was signed
+        by this device's own verified key; it allows a verified device to update
+        its push target and capabilities.
+        """
         actor = actor or "unknown"
-        organization_id = self._normalize_org_id(organization_id)
+        if self._legacy_hmac_refused(public_key):
+            raise PermissionError(LEGACY_HMAC_KEY_REFUSED)
         with self._lock:
             self.ensure_user(actor, organization_id=organization_id)
+            organization_id = self._organization_for_actor(actor)
             cached = self._idempotency_get(actor=actor, endpoint="devices.register", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
                 return cached
@@ -855,8 +988,16 @@ class AppSyncStore:
                 if existing.credential_status == "revoked" or existing.revoked_at:
                     raise PermissionError("device is revoked; enroll a new device")
                 key_changed = bool(public_key) and public_key != existing.public_key
-                if key_changed and existing.credential_status == "verified":
-                    raise PermissionError("verified device keys can only be replaced through re-enrollment")
+                if existing.credential_status == "verified":
+                    self._check_verified_device_update(
+                        existing,
+                        device_type=device_type,
+                        key_changed=key_changed,
+                        push_token=push_token,
+                        capabilities=capabilities,
+                        token_hash=token_hash,
+                        device_signature_verified=device_signature_verified,
+                    )
                 existing.device_type = device_type
                 existing.name = name or existing.name
                 existing.platform = platform or existing.platform
@@ -881,6 +1022,33 @@ class AppSyncStore:
             self._persist()
             return result
 
+    @staticmethod
+    def _check_verified_device_update(
+        existing: DeviceRecord,
+        *,
+        device_type: str,
+        key_changed: bool,
+        push_token: Optional[str],
+        capabilities: Optional[list[str]],
+        token_hash: Optional[str],
+        device_signature_verified: bool,
+    ) -> None:
+        # Type and key are bound by the enrollment; the token is minted by challenge
+        # verification or rotation. Push target and capabilities need the device's
+        # own signature so an actor token alone cannot redirect pushes or relabel it.
+        if key_changed:
+            raise PermissionError("verified device keys can only be replaced through re-enrollment")
+        if device_type != existing.device_type:
+            raise PermissionError("verified device type can only change through re-enrollment")
+        if token_hash and token_hash != existing.token_hash:
+            raise PermissionError("verified device tokens can only change through challenge verification or rotation")
+        if device_signature_verified:
+            return
+        if push_token and push_token != existing.push_token:
+            raise PermissionError("verified device push targets can only change through a device-signed request")
+        if capabilities and list(capabilities) != list(existing.capabilities):
+            raise PermissionError("verified device capabilities can only change through a device-signed request")
+
     def create_conversation(self, *, actor: str, title: str, source_device_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:
             cached = self._idempotency_get(actor=actor, endpoint="conversations.create", key=idempotency_key, payload=idempotency_payload)
@@ -901,6 +1069,13 @@ class AppSyncStore:
             self._persist()
             return result
 
+    def record_event(self, event_type: str, actor: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Append and persist an event raised by a collaborator such as the project store."""
+        with self._lock:
+            event = self._event(event_type, actor, payload)
+            self._persist()
+            return event
+
     def get_idempotency_response(self, *, actor: str, endpoint: str, key: Optional[str], payload: dict[str, Any] | None = None) -> Optional[Any]:
         with self._lock:
             return self._idempotency_get(actor=actor, endpoint=endpoint, key=key, payload=payload)
@@ -910,12 +1085,30 @@ class AppSyncStore:
             self._idempotency_put(actor=actor, endpoint=endpoint, key=key, payload=payload, response=response)
             self._persist()
 
+    def _owned_conversation_locked(self, conversation_id: str, actor: str) -> ConversationRecord:
+        """Conversations are private to the actor that created them."""
+        conversation = self.conversations.get(conversation_id)
+        if not conversation:
+            raise KeyError("conversation not found")
+        self._require_actor_org(actor, conversation.organization_id)
+        if conversation.actor != actor:
+            # The same answer as for a missing conversation.
+            raise KeyError("conversation not found")
+        return conversation
+
+    def _conversation_owner(self, conversation_id: str) -> Optional[str]:
+        conversation = self.conversations.get(conversation_id)
+        return conversation.actor if conversation else None
+
+    def _task_for_actor(self, task: dict[str, Any], actor: Optional[str]) -> dict[str, Any]:
+        """Tasks are organization-wide work items; the conversation they came from is not."""
+        if actor and self._conversation_owner(str(task.get("conversation_id") or "")) != actor:
+            return {key: value for key, value in task.items() if key != "conversation_id"}
+        return task
+
     def add_chat_user_message(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
+            conversation = self._owned_conversation_locked(conversation_id, actor)
             now = _now()
             mid = _id("msg")
             message = MessageRecord(message_id=mid, conversation_id=conversation_id, role="user", content=content, actor=actor, organization_id=conversation.organization_id, source_device_id=source_device_id)
@@ -927,10 +1120,7 @@ class AppSyncStore:
 
     def add_assistant_message(self, *, actor: str, conversation_id: str, content: str, provider: str, model: str, profile: str, usage: Optional[dict[str, Any]] = None, trace_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
+            conversation = self._owned_conversation_locked(conversation_id, actor)
             now = _now()
             mid = _id("msg")
             trace_id = trace_id or _id("trace")
@@ -959,10 +1149,7 @@ class AppSyncStore:
             cached = self._idempotency_get(actor=actor, endpoint="messages.create", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
                 return cached
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
+            conversation = self._owned_conversation_locked(conversation_id, actor)
             mid = _id("msg")
             task_id = _id("task")
             message = MessageRecord(message_id=mid, conversation_id=conversation_id, role="user", content=content, actor=actor, organization_id=conversation.organization_id, source_device_id=source_device_id, task_id=task_id)
@@ -1022,7 +1209,9 @@ class AppSyncStore:
             approval.decision_idempotency_key = idempotency_key
             approval.decided_at = _now()
             task = self.tasks.get(approval.task_id)
-            if task:
+            # Only a task still waiting on this approval moves; a decision must not
+            # revive a task that was cancelled meanwhile.
+            if task and task.status == "blocked":
                 task.status = "queued" if decision == "approved" else "cancelled"
                 task.updated_at = _now()
             self._event("approval.decided", actor, {"approval_id": approval_id, "decision": decision, "task_id": approval.task_id, "organization_id": approval.organization_id})
@@ -1069,10 +1258,9 @@ class AppSyncStore:
                     continue
                 if task.status == "running" and task.lease_expires_at and task.lease_expires_at > now:
                     continue
-                if task.approval_id:
-                    approval = self.approvals.get(task.approval_id)
-                    if not approval or approval.status != "approved":
-                        continue
+                approval = self.approvals.get(task.approval_id) if task.approval_id else None
+                if task.approval_id and not self._approval_allows_claim(task, approval):
+                    continue
                 task.status = "running"
                 task.assigned_runtime_device_id = device_id
                 task.claimed_by_device_id = device_id
@@ -1080,11 +1268,72 @@ class AppSyncStore:
                 task.attempt_count += 1
                 task.updated_at = now
                 self._event("task.claimed", actor, {"task_id": task.task_id, "device_id": device_id, "lease_expires_at": task.lease_expires_at, "capabilities": list(capabilities or []), "organization_id": organization_id})
+                if approval is not None:
+                    self._consume_approval_locked(approval, actor=actor, device_id=device_id)
                 self._persist()
-                return self._record(task)
+                return self._task_for_actor(self._record(task), actor)
             return None
 
-    def update_task_status(self, *, task_id: str, actor: str, status: TaskStatus, result_summary: Optional[str] = None, assigned_runtime_device_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _approval_allows_claim(task: TaskRecord, approval: Optional[ApprovalRecord]) -> bool:
+        """An approval authorizes exactly one claim of its task.
+
+        The claim consumes it. A run whose lease expired is not handed to another
+        device under the same approval: that would execute an approved action twice.
+        The holder can still report, and the creator can cancel it.
+        """
+        if approval is None or approval.task_id != task.task_id:
+            return False
+        return task.status == "queued" and approval.status == "approved"
+
+    def _consume_approval_locked(self, approval: ApprovalRecord, *, actor: str, device_id: str) -> None:
+        if approval.status == "consumed":
+            return
+        approval.status = "consumed"
+        self._event("approval.consumed", actor, {"approval_id": approval.approval_id, "task_id": approval.task_id, "device_id": device_id, "organization_id": approval.organization_id})
+
+    def _authorize_task_status_change_locked(self, task: TaskRecord, *, actor: str, status: str, device_id: Optional[str], assigned_runtime_device_id: Optional[str]) -> None:
+        """Only the device holding a task's lease reports on it, and finished tasks stay finished."""
+        self._require_actor_org(actor, task.organization_id)
+        if task.status in TERMINAL_TASK_STATUSES:
+            raise ValueError(f"task is already {task.status}")
+        if device_id and assigned_runtime_device_id and device_id != assigned_runtime_device_id:
+            raise PermissionError("assigned_runtime_device_id must match the reporting device")
+        reporting_device_id = device_id or assigned_runtime_device_id
+        if task.status != "running":
+            # Nothing holds an unclaimed task; its creator may still withdraw it.
+            if status != "cancelled" or task.actor != actor:
+                raise PermissionError("an unclaimed task can only be cancelled by its creator")
+            return
+        if not reporting_device_id or reporting_device_id != task.claimed_by_device_id:
+            lease_expired = not task.lease_expires_at or task.lease_expires_at <= _now()
+            if status == "cancelled" and task.actor == actor and lease_expired:
+                # A run abandoned by its device can be withdrawn by the task's creator.
+                return
+            raise PermissionError("only the device holding the task lease can update it")
+        device = self.devices.get(reporting_device_id)
+        if device and (device.actor != actor or self._normalize_org_id(device.organization_id) != self._normalize_org_id(task.organization_id)):
+            raise PermissionError("the lease-holding device belongs to a different actor or organization")
+        if status == "blocked":
+            raise ValueError("tasks are blocked only by the approval flow")
+        if status == "queued" and task.approval_id:
+            raise PermissionError("an approved task cannot be re-queued; request a new approval")
+
+    @staticmethod
+    def _apply_task_status(task: TaskRecord, *, status: str, result_summary: Optional[str], now: float) -> None:
+        task.status = cast(TaskStatus, status)
+        task.result_summary = result_summary or task.result_summary
+        task.updated_at = now
+        if status == "queued":
+            # The lease holder released the task; the next claim starts a new run.
+            task.claimed_by_device_id = None
+            task.assigned_runtime_device_id = None
+            task.lease_expires_at = None
+        elif status in TERMINAL_TASK_STATUSES:
+            task.lease_expires_at = None
+
+    def update_task_status(self, *, task_id: str, actor: str, status: TaskStatus, result_summary: Optional[str] = None, assigned_runtime_device_id: Optional[str] = None, device_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Apply a status report; ``device_id`` is the device that authenticated the request."""
         with self._lock:
             cached = self._idempotency_get(actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
@@ -1092,21 +1341,12 @@ class AppSyncStore:
             task = self.tasks.get(task_id)
             if not task:
                 raise KeyError("task not found")
-            runtime_device_id = assigned_runtime_device_id or task.assigned_runtime_device_id or task.claimed_by_device_id
-            if runtime_device_id and runtime_device_id in self.devices:
-                if self._organization_for_device(runtime_device_id) != self._normalize_org_id(task.organization_id):
-                    raise PermissionError("runtime device belongs to a different organization")
-            else:
-                self._require_actor_org(actor, task.organization_id)
-            task.status = status
-            task.result_summary = result_summary or task.result_summary
-            task.assigned_runtime_device_id = assigned_runtime_device_id or task.assigned_runtime_device_id
-            task.updated_at = _now()
+            self._authorize_task_status_change_locked(task, actor=actor, status=status, device_id=device_id, assigned_runtime_device_id=assigned_runtime_device_id)
+            self._apply_task_status(task, status=status, result_summary=result_summary, now=_now())
             self._event("task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.organization_id})
-            if status in {"completed", "failed", "cancelled"}:
-                task.lease_expires_at = None
+            if status in TERMINAL_TASK_STATUSES:
                 self._notify_locked(audience="all", title=f"Task {status}", body=task.title[:180], event_type="task.status", actor=actor, related_id=task_id)
-            result = self._record(task)
+            result = self._task_for_actor(self._record(task), actor)
             self._idempotency_put(actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload, response=result)
             self._persist()
             return result
@@ -1116,17 +1356,35 @@ class AppSyncStore:
         organization_id = self._organization_for_related(related_id, actor)
         notification = NotificationRecord(notification_id=nid, audience=audience, title=title, body=body, event_type=event_type, actor=actor, organization_id=organization_id, related_id=related_id)
         self.notifications[nid] = notification
+        # A chat reply notification goes to its conversation's actor alone.
+        recipient = self._conversation_owner(related_id or "")
         for device in self.devices.values():
             if self._normalize_org_id(device.organization_id) != organization_id:
                 continue
-            if not device.push_token:
+            if not self._device_receives_push(device):
                 continue
             if audience not in {"all", device.device_type}:
+                continue
+            if recipient is not None and device.actor != recipient:
                 continue
             push_id = _id("push")
             self.push_outbox[push_id] = PushOutboxRecord(push_id=push_id, device_id=device.device_id, platform=device.platform, audience=audience, title=title, body=body, organization_id=organization_id, related_id=related_id)
         self._event("notification.created", actor, {"notification_id": nid, "audience": audience, "event_type": event_type, "related_id": related_id, "organization_id": organization_id})
         return self._record(notification)
+
+    @staticmethod
+    def _device_receives_push(device: DeviceRecord) -> bool:
+        """Pushes carry task and approval text: only challenge-verified, unrevoked devices get them."""
+        return (
+            bool(device.push_token)
+            and not device.revoked_at
+            and device.credential_status == "verified"
+            and device.trust_level == "challenge_verified"
+        )
+
+    def _notification_visible(self, notification: NotificationRecord, actor: str) -> bool:
+        owner = self._conversation_owner(notification.related_id or "")
+        return owner is None or owner == actor
 
     def register_push_token(self, *, actor: str, device_id: str, push_token: str, platform: str = "unknown") -> dict[str, Any]:
         with self._lock:
@@ -1134,6 +1392,10 @@ class AppSyncStore:
             if not device:
                 raise KeyError("device not found")
             self._require_actor_org(actor, device.organization_id)
+            if device.actor != actor:
+                raise PermissionError("device belongs to a different actor")
+            if device.revoked_at or device.credential_status == "revoked":
+                raise PermissionError("device is revoked; enroll a new device")
             device.push_token = push_token
             device.platform = platform or device.platform
             device.last_seen_at = _now()
@@ -1177,17 +1439,45 @@ class AppSyncStore:
                 raise ValueError("enrollment expired")
             if not _secret_matches(record.pairing_code_hash, pairing_code, purpose="pairing_code"):
                 raise ValueError("pairing code mismatch")
-            record.status = "completed"
+            device_id = (device_id or "").strip()
+            public_key = (public_key or "").strip()
+            if not device_id or not public_key:
+                raise ValueError("device_id and public_key are required")
+            if self._legacy_hmac_refused(public_key):
+                raise ValueError(LEGACY_HMAC_KEY_REFUSED)
+            device = self.devices.get(device_id)
+            if device:
+                self._check_enrollment_device(record, device, actor=actor)
+            # The pairing code binds this enrollment to one device and key; the
+            # challenge must later be signed by exactly that key.
+            record.status = "paired"
             record.device_id = device_id
             record.public_key = public_key
-            record.completed_at = _now()
-            if device_id in self.devices and self._normalize_org_id(self.devices[device_id].organization_id) != self._normalize_org_id(record.organization_id):
-                raise PermissionError("device belongs to a different organization")
             self._event("device.enrollment_completed", actor, {"enrollment_id": enrollment_id, "device_id": device_id, "organization_id": record.organization_id})
             self._persist()
             result = self._record(record)
             result.pop("pairing_code_hash", None)
             return result
+
+    def _check_enrollment_device(self, enrollment: DeviceEnrollmentRecord, device: DeviceRecord, *, actor: str) -> None:
+        if self._normalize_org_id(device.organization_id) != self._normalize_org_id(enrollment.organization_id):
+            raise PermissionError("device belongs to a different organization")
+        if device.actor != actor:
+            raise PermissionError("device belongs to a different actor")
+        if device.revoked_at or device.credential_status == "revoked":
+            raise PermissionError("device is revoked; enroll a new device")
+        if device.device_type != enrollment.device_type:
+            raise PermissionError("device type does not match the enrollment")
+
+    def _require_paired_enrollment_locked(self, enrollment: DeviceEnrollmentRecord, *, device_id: str) -> None:
+        if enrollment.status == "paired" and enrollment.expires_at < _now():
+            enrollment.status = "expired"
+            self._persist()
+            raise ValueError("enrollment expired")
+        if enrollment.status != "paired":
+            raise ValueError("enrollment is not awaiting device verification")
+        if not device_id or device_id != enrollment.device_id:
+            raise PermissionError("device does not match the enrollment")
 
     def issue_device_challenge(self, *, actor: str, enrollment_id: str, device_id: str) -> dict[str, Any]:
         with self._lock:
@@ -1195,8 +1485,11 @@ class AppSyncStore:
             if not record:
                 raise KeyError("enrollment not found")
             self._require_actor_org(actor, record.organization_id)
-            if record.status not in {"pending", "completed"}:
-                raise ValueError("enrollment is not active")
+            self._require_paired_enrollment_locked(record, device_id=device_id)
+            device = self.devices.get(device_id)
+            if not device:
+                raise KeyError("device not found")
+            self._check_enrollment_device(record, device, actor=actor)
             nonce = secrets.token_urlsafe(32)
             challenge_id = _id("chal")
             nonce_hash = _hash_secret(nonce, purpose="device_challenge_nonce")
@@ -1211,7 +1504,7 @@ class AppSyncStore:
             result.pop("nonce_hash", None)
             return result
 
-    def verify_device_challenge(self, *, actor: str, enrollment_id: str, challenge_id: str, device_id: str, signature: str) -> dict[str, Any]:
+    def verify_device_challenge(self, *, actor: str, enrollment_id: str, challenge_id: str, device_id: str, signature: str, allow_legacy_hmac: bool = True) -> dict[str, Any]:
         with self._lock:
             challenge = self.device_challenges.get(challenge_id)
             if not challenge or challenge.enrollment_id != enrollment_id or challenge.device_id != device_id:
@@ -1223,32 +1516,42 @@ class AppSyncStore:
                 challenge.status = "expired"
                 self._persist()
                 raise ValueError("challenge expired")
-            device = self.devices.get(device_id)
             enrollment = self.device_enrollments.get(enrollment_id)
             if not enrollment:
                 raise KeyError("enrollment not found")
             if self._normalize_org_id(enrollment.organization_id) != self._normalize_org_id(challenge.organization_id):
                 raise PermissionError("challenge belongs to a different organization")
-            public_key = (device.public_key if device else None) or enrollment.public_key or ""
-            if device and self._normalize_org_id(device.organization_id) != self._normalize_org_id(challenge.organization_id):
-                raise PermissionError("device belongs to a different organization")
+            self._require_paired_enrollment_locked(enrollment, device_id=device_id)
+            device = self.devices.get(device_id)
+            if not device:
+                raise KeyError("device not found")
+            self._check_enrollment_device(enrollment, device, actor=actor)
+            # Verify against the key bound by the pairing code, never a key the
+            # device registered on its own.
+            public_key = enrollment.public_key or ""
+            if self._legacy_hmac_refused(public_key, allow_legacy_hmac=allow_legacy_hmac):
+                raise PermissionError(LEGACY_HMAC_KEY_REFUSED)
             message = _device_signing_message(challenge_id=challenge.challenge_id, nonce_hash=challenge.nonce_hash)
             if not _verify_device_signature(public_key, message, signature):
                 raise ValueError("device challenge signature mismatch")
+            now = _now()
             challenge.status = "verified"
-            challenge.verified_at = _now()
+            challenge.verified_at = now
             token = secrets.token_urlsafe(32)
             token_hash = _hash_secret(token, purpose="device_token")
-            if device:
-                device.credential_status = "verified"
-                device.trust_level = "challenge_verified"
-                device.token_hash = token_hash
-                device.last_challenge_nonce_hash = challenge.nonce_hash
-                device.last_challenge_expires_at = challenge.expires_at
-                device.updated_at = _now()
+            device.public_key = public_key
+            device.credential_status = "verified"
+            device.trust_level = "challenge_verified"
+            device.token_hash = token_hash
+            device.last_challenge_nonce_hash = challenge.nonce_hash
+            device.last_challenge_expires_at = challenge.expires_at
+            device.updated_at = now
+            # Single use: the enrollment and its outstanding challenges are spent.
             enrollment.status = "completed"
-            enrollment.device_id = device_id
-            enrollment.completed_at = enrollment.completed_at or _now()
+            enrollment.completed_at = now
+            for other in self.device_challenges.values():
+                if other.enrollment_id == enrollment_id and other.status == "pending":
+                    other.status = "expired"
             self._event("device.challenge_verified", actor, {"challenge_id": challenge_id, "enrollment_id": enrollment_id, "device_id": device_id, "algorithm": "asymmetric", "organization_id": challenge.organization_id})
             self._persist()
             return {"device_id": device_id, "device_token": token, "token_hash": token_hash, "trust_level": "challenge_verified"}
@@ -1281,6 +1584,13 @@ class AppSyncStore:
             device.revoked_at = _now()
             device.online = False
             device.updated_at = device.revoked_at
+            # A lost or revoked device gets no further pushes, including queued ones.
+            device.push_token = None
+            for item in self.push_outbox.values():
+                if item.device_id == device_id and item.status == "pending":
+                    item.status = "failed"
+                    item.last_error = "device_revoked"
+                    item.updated_at = device.revoked_at
             self._event(
                 "device.revoked",
                 actor,
@@ -1291,7 +1601,22 @@ class AppSyncStore:
 
     def pending_push_outbox(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
-            values = [v for v in self.push_outbox.values() if v.status == "pending"]
+            values: list[PushOutboxRecord] = []
+            dropped = False
+            for item in self.push_outbox.values():
+                if item.status != "pending":
+                    continue
+                device = self.devices.get(item.device_id)
+                if device is None or not self._device_receives_push(device):
+                    # Queued while the device was unverified, or before it was revoked.
+                    item.status = "failed"
+                    item.last_error = "device_not_eligible"
+                    item.updated_at = _now()
+                    dropped = True
+                    continue
+                values.append(item)
+            if dropped:
+                self._persist()
             return [self._record(v) for v in sorted(values, key=lambda item: item.created_at)[: max(1, min(limit, 500))]]
 
     def mark_push_delivery(self, *, push_id: str, status: Literal["sent", "failed"], error: Optional[str] = None) -> dict[str, Any]:
@@ -1378,6 +1703,9 @@ class AppSyncStore:
             device = self.devices.get(device_id)
             if not device or not device.approval_public_key:
                 return False, "approval_key_not_registered"
+            # Approval keys are registered as Ed25519 only; this covers rows written otherwise.
+            if self._legacy_hmac_refused(device.approval_public_key):
+                return False, "legacy_hmac_key_not_allowed"
             nonce_key = f"approval:{device_id}:{nonce}"
             if nonce_key in self.device_request_nonces:
                 return False, "nonce_replay"
@@ -1398,10 +1726,17 @@ class AppSyncStore:
         timestamp: str,
         nonce: str,
         signature: str,
+        expected_actor: str,
         required_device_types: set[str] | None = None,
         max_skew_seconds: int = 300,
         nonce_ttl_seconds: int = 600,
+        allow_legacy_hmac: bool = True,
     ) -> tuple[bool, str]:
+        """Verify a device-signed request made under ``expected_actor``'s credentials.
+
+        The device must belong to that actor and its organization, so one actor's
+        device key cannot act as the second factor for another actor's token.
+        """
         now = _now()
         device_id = (device_id or "").strip()
         timestamp = (timestamp or "").strip()
@@ -1435,9 +1770,15 @@ class AppSyncStore:
                 return False, "device_revoked"
             if device.credential_status != "verified" or device.trust_level != "challenge_verified":
                 return False, "device_not_challenge_verified"
+            if not expected_actor or device.actor != expected_actor:
+                return False, "device_actor_mismatch"
+            if self._normalize_org_id(device.organization_id) != self._organization_for_actor(expected_actor):
+                return False, "device_organization_mismatch"
             public_key = device.public_key or ""
             if not public_key:
                 return False, "missing_public_key"
+            if self._legacy_hmac_refused(public_key, allow_legacy_hmac=allow_legacy_hmac):
+                return False, "legacy_hmac_key_not_allowed"
             # Opportunistically garbage-collect expired nonce records.
             for key, expires_at in list(self.device_request_nonces.items()):
                 if expires_at <= now:
@@ -1456,17 +1797,20 @@ class AppSyncStore:
             self._persist()
             return True, "ok"
 
-    def bootstrap(self, actor: str) -> dict[str, Any]:
+    def bootstrap(self, actor: str, *, role: str = "viewer") -> dict[str, Any]:
+        """``role`` is the one the gateway authenticated; the stored profile role is
+        not a credential. Viewers see only their own devices."""
         with self._lock:
             user = self.ensure_user(actor)
             organization_id = self._normalize_org_id(user["organization_id"])
+            sees_organization_devices = role in {"owner", "operator"}
             return {
                 "organization": {**self._record(self.organization), "organization_id": organization_id},
-                "user": user,
-                "devices": [self._record(v) for v in self.devices.values() if self._normalize_org_id(v.organization_id) == organization_id and (v.actor == actor or user["role"] in {"owner", "operator"})],
+                "user": {**user, "role": role},
+                "devices": [public_device_view(self._record(v)) for v in self.devices.values() if self._normalize_org_id(v.organization_id) == organization_id and (v.actor == actor or sees_organization_devices)],
                 "runtime_status": [self._record(v) for v in self.runtimes.values() if self._normalize_org_id(v.organization_id) == organization_id],
                 "pending_approvals": [self._record(v) for v in self.approvals.values() if v.status == "pending" and self._normalize_org_id(v.organization_id) == organization_id],
-                "notifications": [self._record(v) for v in sorted((n for n in self.notifications.values() if self._normalize_org_id(n.organization_id) == organization_id), key=lambda n: n.created_at, reverse=True)[:50]],
+                "notifications": [self._record(v) for v in sorted((n for n in self.notifications.values() if self._normalize_org_id(n.organization_id) == organization_id and self._notification_visible(n, actor)), key=lambda n: n.created_at, reverse=True)[:50]],
                 "sync_seq": self._seq,
             }
 
@@ -1485,11 +1829,7 @@ class AppSyncStore:
         actor: str,
     ) -> dict[str, Any]:
         with self._lock:
-            conversation = self.conversations.get(conversation_id)
-            if not conversation:
-                raise KeyError("conversation not found")
-            self._require_actor_org(actor, conversation.organization_id)
-            return self._record(conversation)
+            return self._record(self._owned_conversation_locked(conversation_id, actor))
 
     def list_messages(self, conversation_id: str, actor: Optional[str] = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -1498,7 +1838,8 @@ class AppSyncStore:
                 raise KeyError("conversation not found")
             if actor and (conversation.actor != actor or not self._actor_can_access_org(actor, conversation.organization_id)):
                 return []
-            values = [item for item in self.messages.values() if item.conversation_id == conversation_id]
+            # Messages another actor wrote into the conversation are never chat history.
+            values = [item for item in self.messages.values() if item.conversation_id == conversation_id and item.actor == conversation.actor]
             return [self._record(v) for v in sorted(values, key=lambda m: m.created_at)]
 
     def get_task(self, task_id: str, actor: Optional[str] = None) -> dict[str, Any]:
@@ -1508,7 +1849,7 @@ class AppSyncStore:
                 raise KeyError("task not found")
             if actor and not self._actor_can_access_org(actor, task.organization_id):
                 raise KeyError("task not found")
-            return self._record(task)
+            return self._task_for_actor(self._record(task), actor)
 
     def list_approvals(self, status: Optional[str] = None, actor: Optional[str] = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -1525,7 +1866,7 @@ class AppSyncStore:
             values = list(self.notifications.values())
             if actor:
                 organization_id = self._organization_for_actor(actor)
-                values = [v for v in values if self._normalize_org_id(v.organization_id) == organization_id]
+                values = [v for v in values if self._normalize_org_id(v.organization_id) == organization_id and self._notification_visible(v, actor)]
             if audience:
                 values = [v for v in values if v.audience in {audience, "all"}]
             if unread_only:
@@ -1537,5 +1878,10 @@ class AppSyncStore:
             events = [event for event in self.events if int(event.get("seq", 0)) > since_seq]
             if actor:
                 organization_id = self._organization_for_actor(actor)
-                events = [event for event in events if self._organization_for_event(event) == organization_id]
+                scoped = (
+                    scope_sync_event_to_actor(event, actor=actor, conversation_owner=self._conversation_owner)
+                    for event in events
+                    if self._organization_for_event(event) == organization_id
+                )
+                events = [event for event in scoped if event is not None]
             return {"sync_seq": self._seq, "events": events}

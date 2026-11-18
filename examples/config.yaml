@@ -123,6 +123,11 @@ app_sync:
   namespace: default
   require_idempotency: true
   task_lease_seconds: 60
+  # Organization of each actor on first use; requests cannot choose it.
+  actor_organizations: {}
+  websocket_max_connections_per_actor: 8
+  websocket_max_connections: 256
+  websocket_poll_seconds: 2.0
 
 plugins:
   enabled: true
