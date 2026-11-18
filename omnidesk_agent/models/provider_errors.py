@@ -16,7 +16,7 @@ class ProviderErrorInfo:
     status_code: Optional[int] = None
 
 
-SUBSCRIPTION_PROVIDERS = frozenset({"chatgpt_plan", "codex_cli"})
+SUBSCRIPTION_PROVIDERS = frozenset({"chatgpt_plan", "codex_cli", "claude_code_cli"})
 
 
 class ChatGPTPlanError(RuntimeError):
