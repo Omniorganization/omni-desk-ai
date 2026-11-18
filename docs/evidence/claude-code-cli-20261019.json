@@ -1,0 +1,63 @@
+{
+  "checked_at": "2026-11-17T18:42:22+00:00",
+  "previous_checked_at": "2026-10-19T11:10:33.173670+08:00",
+  "scope": "source_review_and_offline_cli_gateway_fixtures_only",
+  "repository": "Omniorganization/omni-desk-ai",
+  "base_commit": "b66a916465f8985b9a13e92dde60d92f1f9f627b",
+  "branch": "ai/claude-code-cli-provider-20261019",
+  "input_patch": {
+    "filename": "0001-Add-Claude-Code-CLI-provider.patch",
+    "sha256": "258cb47d35e05d9dcb65ca6176b34e737463b8da7ebf8f2b4294bb4a5d3e35f0",
+    "source_commit": "6b72acee4cd54eab93f0c2393b690fcabfd20aa5"
+  },
+  "validation": [
+    {
+      "scope": "tests/models and tests/test_codex_cli_gateway.py",
+      "result": "381 passed",
+      "flags": "-W error -p no:cacheprovider"
+    },
+    {
+      "scope": "full Python suite on Python 3.11 with requirements.dev.lock",
+      "result": "2112 passed, 17 skipped (PostgreSQL DSN not configured)",
+      "flags": "-p no:cacheprovider"
+    },
+    {
+      "scope": "Ruff omnidesk_agent tests and git diff --check",
+      "result": "passed"
+    },
+    {
+      "scope": "pyright --project pyrightconfig.json",
+      "result": "not re-run for this revision"
+    }
+  ],
+  "regression_before_fix": "6 failed/5 passed: system/user separation, oversized private system and four malformed or third-party authentication combinations",
+  "activation": {
+    "example_enabled": false,
+    "pull_request_draft": false,
+    "real_claude_calls": 0,
+    "credentials_copied": false,
+    "production_deployed": false
+  },
+  "unverified": [
+    "real CLI 2.1.302 flags/FD compatibility",
+    "actual personal subscription auth status and model aliases",
+    "CLI hooks/settings and transport behavior on a real unmanaged host",
+    "managed host safety (unsupported; managed hooks are not blocked by ordinary disableAllHooks)",
+    "Linux/Windows/cloud/production"
+  ],
+  "risk": "Do not enable on managed hosts. Safe mode and user disableAllHooks cannot disable managed hooks. Offline fixtures do not prove real CLI behavior.",
+  "rollback": "Keep profile disabled or restore previous configuration/deployment; retain audit and ledger. Revert code through a new ai/* PR.",
+  "source_sha256": {
+    "docs/claude-code-subscription.md": "febb570051bffe76cb35761307dabd9dfe621c5e2d18a9f09736ca62b68dec9a",
+    "examples/config.claude-code-cli.yaml": "42d13c31ceb8c91569c7917e735267b50ae44743e92ad25a5dfe9692baa524ae",
+    "omnidesk_agent/config.py": "829c0a362f312cee5b687d780b2e428ea91ca6370341feba432b82adaea517e8",
+    "omnidesk_agent/models/claude_code_cli.py": "462098cce8133d3bf07b5b18820c3308f439b455c096c2c48c8a7dfa7d810d1f",
+    "omnidesk_agent/models/pricing.py": "5865b7b6d1f6facbfeb263ab28192420c330ba0b28da6855ecd15bdd22d2223e",
+    "omnidesk_agent/models/provider_errors.py": "a5f034ea2837a5c55666766a741f321b504920e327a99895bc314be8e5486f7e",
+    "omnidesk_agent/models/provider_streaming.py": "3d2583f79bcbde267f5a5b275dcd94fdaf94853eb9cea5234220897a0b22c0c6",
+    "omnidesk_agent/models/providers.py": "8f4e9e513939b010b0cc538e5d7d6c61af4c99ddd28d4a56c63beb9276b4d63e",
+    "omnidesk_agent/models/router.py": "ca3a08edbd589795e0e673678c70aa7758486e876eafe64146ad1e01979e2f48",
+    "tests/models/test_claude_code_cli_provider.py": "cef9268d8b785ae36e677801bbdaf191b0bf7598e15e45caebcabecd9076272f",
+    "tests/test_codex_cli_gateway.py": "1dfa6342beeff6225da900de9d8b983a882dc04c2a9011964015c4340969280a"
+  }
+}
