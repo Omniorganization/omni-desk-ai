@@ -33,6 +33,7 @@ SECURITY_SNIPPETS = [
     "github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.4.0",
     "Enforce Python dependency audit",
     "Enforce ecosystem dependency audits",
+    "python ../../scripts/check_npm_audit.py ../../reports/ecosystem-security/desktop-npm-audit.json --project apps/desktop-tauri",
     "security-core-${{ github.sha }}",
     "ecosystem-security-${{ github.sha }}",
 ]
@@ -462,7 +463,8 @@ def check(root: Path) -> list[str]:
     ]
     if allow_ghsa_lines or "--ignore" in security_text:
         issues.append(
-            "dependency-review and ecosystem audits must not suppress advisories"
+            "dependency-review and ecosystem audits must not suppress advisories; "
+            "accept an advisory only through scripts/check_npm_audit.py and a governed exception record"
         )
     if "check_security_exceptions.py" not in security_text:
         issues.append("security.yml must validate governed security exceptions")
