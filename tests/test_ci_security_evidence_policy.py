@@ -142,6 +142,10 @@ def test_security_workflow_dependency_review_and_all_python_locks_are_blocking()
     assert allow_ghsa_lines == []
     assert "--ignore" not in workflow
     assert "python scripts/check_glib_backport.py ." in workflow
+    # The desktop npm audit is gated by governed exception records, not by an allowlist.
+    desktop_audit = workflow[workflow.index("name: Audit Desktop npm graph") : workflow.index("name: Audit Rust dependency graph")]
+    assert "npm audit --json > ../../reports/ecosystem-security/desktop-npm-audit.json" in desktop_audit
+    assert "check_npm_audit.py ../../reports/ecosystem-security/desktop-npm-audit.json --project apps/desktop-tauri" in desktop_audit
 
     audit_start = workflow.index("for lockfile in")
     audit_end = workflow.index("set -e", audit_start)
