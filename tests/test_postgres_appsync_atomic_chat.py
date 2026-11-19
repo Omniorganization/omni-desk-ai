@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import inspect
 import threading
 import time
 import uuid
@@ -23,6 +24,17 @@ from omnidesk_agent.appsync.migrated_postgres_store import (
 )
 from omnidesk_agent.appsync.postgres_migrations import MIGRATIONS, apply_appsync_migrations
 from omnidesk_agent.models.base import ModelResponse
+
+
+def _actor_binding(store: object, actor: str) -> dict[str, str]:
+    """Bind device signatures to ``actor`` where the store supports it.
+
+    The isolated-cloud negative controls replay these tests against pinned
+    baselines that predate actor-bound device signatures; they must still reach
+    the original failure there instead of a TypeError.
+    """
+    parameters = inspect.signature(type(store).verify_device_request_signature).parameters
+    return {"expected_actor": actor} if "expected_actor" in parameters else {}
 
 
 def _dsn() -> str:
@@ -67,7 +79,7 @@ def test_serialized_device_request_preserves_http_method_keyword() -> None:
     try:
         result = store.verify_device_request_signature(
             device_id="unregistered", method="POST", path="/app/devices/unregistered/rotate-token",
-            body=b"{}", timestamp="", nonce="", signature="",
+            body=b"{}", timestamp="", nonce="", signature="", **_actor_binding(store, "nobody"),
         )
         assert result == (False, "missing_timestamp")
         assert store.ensure_user("after-rejection")["user_id"] == "after-rejection"
@@ -101,7 +113,7 @@ def test_device_nonce_is_durable_across_instances_and_recreation() -> None:
             path = f"/app/devices/{device_id}/rotate-token"
             message = f"omnidesk-device-request:v1:POST:{path}:{body_hash}:{timestamp}:{nonce}".encode()
             return dict(device_id=device_id, method="POST", path=path, body=b"{}", timestamp=timestamp,
-                        nonce=nonce, signature=key.sign(message).hex())
+                        nonce=nonce, signature=key.sign(message).hex(), **_actor_binding(first, "nonce-owner"))
 
         request = signed_request()
         assert first.verify_device_request_signature(**request) == (True, "ok")
