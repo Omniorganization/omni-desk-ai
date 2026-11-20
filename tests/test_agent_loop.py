@@ -1081,9 +1081,11 @@ class Listener:
             raise RuntimeError("push service down")
 
 
-def plane(h: "Harness", listener: Optional[Listener] = None) -> Orchestrator:
+def plane(h: "Harness", listener: Optional[Listener] = None, resolver: Any = None) -> Orchestrator:
     orchestrator = h.build()
-    orchestrator.approval_listener = listener  # attached after construction, as the gateway does
+    # Attached after construction, as the gateway does.
+    orchestrator.approval_listener = listener
+    orchestrator.organization_resolver = resolver
     return orchestrator
 
 
@@ -1102,6 +1104,23 @@ def test_a_pause_tells_the_approval_plane_once_the_approval_and_the_run_are_save
     assert event.requester == "owner" and "owner" in {event.proposal.get(f) for f in ("created_by", "proposer", "actor")}
     assert event.risk == "high" and event.requires_dual_approval is False and event.expires_at
     assert json.loads(json.dumps(event.to_dict()))["approval_id"] == first["approval_id"]
+    # Without the server's resolver there is no organization, and the listener must not guess one.
+    assert event.organization is None
+
+
+def test_the_approval_event_names_the_requesters_organization_as_the_server_resolves_it(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    listener = Listener(h)
+    asked: list[str] = []
+
+    def resolve(actor: str) -> str:
+        asked.append(actor)
+        return {"owner": "org_acme"}.get(actor, "org_default")
+
+    asyncio.run(plane(h, listener, resolve).handle_message(ChannelMessage(channel="telegram", sender_id="owner", text="save the quarterly report")))
+
+    # Resolved from the authenticated requester, not from the channel.
+    assert listener.events[0].organization == "org_acme" and asked == ["owner"]
 
 
 def test_a_failing_approval_plane_never_breaks_the_pause(harness):

@@ -93,10 +93,13 @@ Tool permission decisions are audited by the permission manager as before. Loop 
 Approvers can decide on their devices (gateway-clients' AppSync plane) instead of calling `resume()` with the bearer token.
 
 - **Notification.** On every pause, once the approval is recorded and the run saved, `Orchestrator.approval_listener` gets `on_approval_wait(ApprovalWaitEvent)` (`core/approval_plane.py`), in a worker thread. The listener is a constructor argument, or an attribute attached after construction.
-  - The event holds `run_id`, `approval_id`, `requester`, `channel`, `risk`, `requires_dual_approval`, `created_at` and `expires_at`.
+  - The event holds `run_id`, `approval_id`, `requester`, `organization`, `channel`, `risk`, `requires_dual_approval`, `created_at` and `expires_at`.
+  - `organization` is the requester's organization as the server assigns it, through `Orchestrator.organization_resolver`, which the gateway attaches. It is `None` when no resolver is attached; the listener must then not guess one.
   - Its proposal is the approval record as the ApprovalStore holds it: redacted, with the requester stamped where `security.dual_approval.proposal_requesters` reads it.
+  - The proposal still holds the action's content, such as a message body. It must never go into a push notification, since APNs and FCM are third parties. Push ids, tool/action and risk; devices fetch the details over the authenticated API.
   - Listener errors are counted (`omnidesk_approval_listener_errors_total`) and never break the run.
 - **Decision.** The plane records the decision in the ApprovalStore, which stays the ledger, and then calls `await orchestrator.resume_by_approval(approval_id)`. This is internal: no HTTP route exposes it.
+  - **Authority.** Being approved in the ApprovalStore is then the only capability checked, so the plane's decide route must apply exactly the authority of `POST /approvals/{id}/approve`. The approver is an owner, or the dedicated approver role, in the run's organization, never a viewer or an operator device. Break-glass cannot approve critical. Critical needs two distinct owners other than the requester. A device signature proves which device sent the decision, not that its user may approve.
   - Pending: nothing changes (`approval_pending`).
   - Approved: the run resumes as with `resume()`, and the bearer token is spent with it.
   - Denied or expired: the run ends `failed`, with `approval_denied` or `approval_expired`.

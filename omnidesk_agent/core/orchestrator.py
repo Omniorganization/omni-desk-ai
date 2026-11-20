@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import asyncio
 from dataclasses import asdict, replace
@@ -77,6 +77,7 @@ class Orchestrator:
         loop_budget: Optional[LoopBudget] = None,
         emergency_stop: Optional[EmergencyStop] = None,
         approval_listener: Optional[Any] = None,
+        organization_resolver: Optional[Callable[[str], str]] = None,
     ):
         self.planner = planner
         self.tools = tools
@@ -94,8 +95,10 @@ class Orchestrator:
         self.dual_approval_store = dual_approval_store
         self.loop_budget = loop_budget or LoopBudget()
         self.emergency_stop = emergency_stop
-        # core.approval_plane.ApprovalListener; may also be attached after construction.
+        # core.approval_plane.ApprovalListener, and actor -> organization as the server
+        # assigns it (AppSync); both may also be attached after construction.
         self.approval_listener = approval_listener
+        self.organization_resolver = organization_resolver
 
     # ------------------------------------------------------------------ entry points
 
@@ -125,7 +128,17 @@ class Orchestrator:
 
         For the approval plane: its decide route records a device-signed decision
         (dual for critical) in the ApprovalStore and then calls this, so no resume
-        token is involved. Internal only; no HTTP route may expose it. Idempotent:
+        token is involved. Internal only; no HTTP route may expose it.
+
+        Precondition: being approved in the ApprovalStore is the only capability
+        checked here, so the caller must already have applied exactly the
+        authority of POST /approvals/{id}/approve. The approver is an owner (or
+        the dedicated approver role) in the run's organization, never a viewer
+        or an operator device; break-glass cannot approve critical; critical
+        needs two distinct owners other than the requester. A device signature
+        proves which device sent the decision, not that its user may approve.
+
+        Idempotent:
 
         - pending: nothing happens (`approval_pending`);
         - approved: the run continues from the blocked step, as with resume();
@@ -613,11 +626,14 @@ class Orchestrator:
             stored: dict[str, Any] = record if isinstance(record, dict) else {}
             # The stored record, not the in-memory proposal: it is what approvers may see.
             proposal = dict(stored.get("proposal") or approval.proposal or {})
+            requester = str(proposal.get("created_by") or proposal.get("actor") or "")
+            resolve = self.organization_resolver
             event = ApprovalWaitEvent(
                 run_id=state.run_id,
                 approval_id=approval.approval_id,
                 proposal=proposal,
-                requester=str(proposal.get("created_by") or proposal.get("actor") or ""),
+                requester=requester,
+                organization=(str(resolve(requester)) or None) if callable(resolve) and requester else None,
                 channel=msg.channel,
                 risk=str(proposal.get("risk") or "medium"),
                 requires_dual_approval=bool(proposal.get("requires_dual_approval")),
