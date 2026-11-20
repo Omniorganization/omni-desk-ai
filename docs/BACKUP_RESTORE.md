@@ -23,6 +23,20 @@ The manifest records encrypted file hashes plus plaintext hashes. Verification d
 
 `deploy/systemd/omnidesk-backup.service` backs up every `*.sqlite3` in `/var/lib/omnidesk` (`--discover`).
 
+## Retention: at most 35 days
+
+Backups hold the same personal data as the stores they copy, including records
+that a data-subject erasure has since removed. Security's privacy requirement
+(`SECURITY.md`) is that backups are kept for **at most 35 days**.
+- The scheduled unit prunes after 30 days (`--retention-days 30`).
+- Operators may lower that value, but must not raise it above 35.
+- `tests/test_backup_retention_policy.py` fails if the unit stops pruning or keeps
+  backups longer than 35 days.
+
+Run by hand, `backup_sqlite.py` and `backup_postgres.py` keep every set unless you
+pass `--retention-days` (or `--keep`), so pass it wherever you schedule them.
+A restored backup can hold records erased after it was taken.
+
 ## PostgreSQL backup / restore
 
 Production keeps multi-instance state in PostgreSQL: the core runtime state
