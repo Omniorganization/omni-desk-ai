@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import secrets
 import sys
 from pathlib import Path
 
@@ -45,14 +44,13 @@ def _find(docs: list[dict], kind: str, name: str) -> dict:
     raise SystemExit(f"rendered chart has no {kind}/{name}")
 
 
-def _dummy(name: str) -> str:
+def _placeholder(name: str) -> str:
+    """A long, obviously fake value per key: the validator checks presence and
+    strength (length, known placeholder words), so no real or random secret is
+    needed or produced by this contract check."""
     if name.endswith("_DSN"):
-        return "postgresql://omnidesk:" + secrets.token_urlsafe(24) + "@postgres.omnidesk-data.svc:5432/omnidesk"
-    if name == "OMNIDESK_MEMORY_ENCRYPTION_KEY":
-        from cryptography.fernet import Fernet
-
-        return Fernet.generate_key().decode()
-    return secrets.token_urlsafe(48)
+        return "postgresql://contract-check@postgres.omnidesk-data.svc:5432/omnidesk"
+    return f"helm-contract-check-{name.lower()}-" + "x" * 24
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
 
     env = {item["name"]: str(item["value"]) for item in container.get("env", []) if "value" in item}
     env.update({"KUBERNETES_SERVICE_HOST": "10.96.0.1", "KUBERNETES_SERVICE_PORT": "443"})
-    env.update({key: _dummy(key) for key in keys})
+    env.update({key: _placeholder(key) for key in keys})
     config = yaml.safe_load(configmap["data"]["config.production.yaml"])
     cfg = AppConfig.model_validate(config)
     policy = validate_production_config(cfg, env)
