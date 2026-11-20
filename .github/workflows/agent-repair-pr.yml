@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: "3.11"
@@ -37,3 +40,33 @@ jobs:
         run: python scripts/check_external_ga_evidence.py . --audit-only
       - name: Focused repair-loop tests
         run: python -m pytest tests/test_ga_1_11_openclaw_codex_alignment.py
+      - name: Self-upgrade PRs stay inside the diff policy
+        if: startsWith(github.head_ref, 'ai/self-upgrade-')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --name-only "$BASE_SHA" HEAD > changed.txt
+          python - <<'PY'
+          from fnmatch import fnmatch
+          from pathlib import Path
+          from omnidesk_agent.self_upgrade.pipeline.diff_policy import RESTRICTED_PATTERNS
+          changed = [p for p in Path("changed.txt").read_text().splitlines() if p]
+          bad = [p for p in changed if any(fnmatch(p, pattern) for pattern in RESTRICTED_PATTERNS)]
+          if bad:
+              raise SystemExit(f"self-upgrade PR touches restricted paths: {bad}")
+          print(f"{len(changed)} changed files, none restricted")
+          PY
+      - name: Re-run the tests the pipeline named, independently
+        if: startsWith(github.head_ref, 'ai/self-upgrade-')
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess, sys
+          match = re.search(r"^self-upgrade-targeted-tests: (\[.*\])$", os.environ.get("PR_BODY", ""), re.MULTILINE)
+          tests = json.loads(match.group(1)) if match else []
+          node = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py(::[A-Za-z0-9_\[\]-]+)*$")
+          if not tests or not all(isinstance(t, str) and node.match(t) for t in tests):
+              raise SystemExit("PR body must list valid targeted tests")
+          sys.exit(subprocess.call([sys.executable, "-m", "pytest", "-q", "-W", "error", *tests]))
+          PY

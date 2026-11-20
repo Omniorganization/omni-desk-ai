@@ -1,0 +1,138 @@
+name: Self Upgrade Pipeline
+
+# A maintainer dispatches this for one issue labelled `self-upgrade`.
+# propose: holds the model key, never runs the patch.
+# verify:  runs the patch and the test suites, holds no secret.
+# publish: holds a short-lived GitHub App token, applies (never runs) the
+#          verified patch and opens a draft PR on an ai/* branch. Nothing merges.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number labelled self-upgrade"
+        required: true
+        type: string
+      provider:
+        description: "Model provider"
+        required: true
+        default: anthropic
+        type: choice
+        options: [anthropic, openai, openai_compatible, gemini]
+      model:
+        description: "Model id for the provider"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: self-upgrade-${{ inputs.issue }}
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    environment: self-upgrade
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Fetch the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          [[ "$ISSUE" =~ ^[0-9]{1,7}$ ]] || { echo "issue must be a number"; exit 2; }
+          mkdir -p work
+          gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json number,title,body,labels > work/issue.json
+      - name: Ask the model for a diff
+        env:
+          OMNIDESK_UPGRADE_MODEL_API_KEY: ${{ secrets.OMNIDESK_UPGRADE_MODEL_API_KEY }}
+          PROVIDER: ${{ inputs.provider }}
+          MODEL: ${{ inputs.model }}
+        run: python -m omnidesk_agent.self_upgrade.pipeline propose --issue work/issue.json --out work --provider "$PROVIDER" --model "$MODEL"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: self-upgrade-proposal-${{ github.run_id }}
+          path: work/
+          if-no-files-found: error
+
+  verify:
+    needs: propose
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.propose.outputs.base_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: self-upgrade-proposal-${{ github.run_id }}
+          path: work
+      - name: Verify in an isolated worktree
+        run: python -m omnidesk_agent.self_upgrade.pipeline verify --issue work/issue.json --diff work/proposal.diff --out work
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: self-upgrade-evidence-${{ github.run_id }}
+          path: work/evidence.json
+          if-no-files-found: warn
+
+  publish:
+    needs: [propose, verify]
+    runs-on: ubuntu-latest
+    environment: self-upgrade
+    permissions: {}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.propose.outputs.base_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: self-upgrade-proposal-${{ github.run_id }}
+          path: work
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: self-upgrade-evidence-${{ github.run_id }}
+          path: work
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        with:
+          app-id: ${{ vars.OMNIDESK_UPGRADE_APP_ID }}
+          private-key: ${{ secrets.OMNIDESK_UPGRADE_APP_PRIVATE_KEY }}
+          repositories: omni-desk-ai
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open the ai/* pull request
+        env:
+          OMNIDESK_UPGRADE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          python -m omnidesk_agent.self_upgrade.pipeline publish
+          --issue work/issue.json --diff work/proposal.diff --evidence work/evidence.json
+          --proposal work/proposal.json --repo "$GITHUB_REPOSITORY"
