@@ -3,21 +3,24 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import logging
 import os
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from ipaddress import ip_address, ip_network
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from fastapi import HTTPException, Request
 
 from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
+
+log = logging.getLogger(__name__)
 
 _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9@._:/-]+")
 # The liveness probe is cheap, unauthenticated, reveals nothing internal and must
@@ -135,11 +138,16 @@ class PostgresRateLimiter:
     same however many requests arrive. Each connection carries a statement and
     a lock timeout: a slow or locked store fails the check, and the request is
     refused, instead of hanging. A check is one autocommit upsert. Expired
-    windows are deleted every ``prune_interval_seconds``.
+    windows are deleted every ``prune_interval_seconds``, in the background on
+    the limiter's executor and in batches of ``prune_batch_rows``, so a backlog
+    neither slows a request nor outlasts the statement timeout. A failed prune
+    is retried at the next interval; it never refuses a request.
     """
 
     backend = "postgres"
     prune_interval_seconds = 300.0
+    prune_batch_rows = 5_000
+    prune_max_batches = 20
     application_name = "omnidesk-rate-limiter"
 
     def __init__(
@@ -163,6 +171,9 @@ class PostgresRateLimiter:
         self.executor = ThreadPoolExecutor(max_workers=self._pool.max_size, thread_name_prefix="omnidesk-rate-limit-db")
         self._prune_lock = threading.Lock()
         self._last_prune = 0.0
+        self._pruning = False
+        # The most recent background prune, for observability and tests.
+        self.last_prune: Optional[Future] = None
         self._init_schema()
 
     def _session_dsn(self, statement_timeout_ms: int, lock_timeout_ms: int) -> str:
@@ -190,6 +201,11 @@ class PostgresRateLimiter:
                 """
             )
         )
+        self._run(
+            lambda cur: cur.execute(
+                "CREATE INDEX IF NOT EXISTS omnidesk_api_resource_rate_limits_window ON omnidesk_api_resource_rate_limits (window_started)"
+            )
+        )
 
     def _run(self, work):  # type: ignore[no-untyped-def]
         # A connection that broke since its last use (a database restart, say)
@@ -211,11 +227,40 @@ class PostgresRateLimiter:
 
     def _maybe_prune(self, now: float, window_seconds: int) -> None:
         with self._prune_lock:
-            if now - self._last_prune < self.prune_interval_seconds:
+            if self._pruning or now - self._last_prune < self.prune_interval_seconds:
                 return
             self._last_prune = now
-        cutoff = now - 2 * window_seconds
-        self._run(lambda cur: cur.execute("DELETE FROM omnidesk_api_resource_rate_limits WHERE window_started < %s", (cutoff,)))
+            self._pruning = True
+        try:
+            self.last_prune = self.executor.submit(self._prune, now - 2 * window_seconds)
+        except RuntimeError:  # the executor is shut down
+            with self._prune_lock:
+                self._pruning = False
+
+    def _prune(self, cutoff: float) -> int:
+        """Delete windows older than ``cutoff`` in bounded batches; returns the rows deleted."""
+
+        def batch(cur):  # type: ignore[no-untyped-def]
+            cur.execute(
+                "DELETE FROM omnidesk_api_resource_rate_limits WHERE key IN "
+                "(SELECT key FROM omnidesk_api_resource_rate_limits WHERE window_started < %s LIMIT %s)",
+                (cutoff, self.prune_batch_rows),
+            )
+            return int(cur.rowcount or 0)
+
+        deleted = 0
+        try:
+            for _ in range(self.prune_max_batches):
+                count = self._run(batch)
+                deleted += count
+                if count < self.prune_batch_rows:
+                    break
+        except Exception as exc:  # retried at the next interval; never refuses a request
+            log.warning("rate-limit prune failed: %s", type(exc).__name__)
+        finally:
+            with self._prune_lock:
+                self._pruning = False
+        return deleted
 
     def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
         if limit <= 0:

@@ -68,6 +68,7 @@ def test_the_connection_count_stays_constant_under_concurrent_checks(real):
 def test_counts_reset_per_window_and_expired_windows_are_deleted(real):
     live, old = f"{real.prefix}:live", f"{real.prefix}:old"
     assert real.limiter.allow(old, limit=2, window_seconds=60)
+    real.limiter.last_prune.result(timeout=10)  # the first check's prune, in the background
     real.clock[0] += 61
 
     assert [real.limiter.allow(live, limit=2, window_seconds=60) for _ in range(3)] == [True, True, False]
@@ -75,8 +76,24 @@ def test_counts_reset_per_window_and_expired_windows_are_deleted(real):
     # After the prune interval: live starts a new window, old is more than two windows old.
     real.clock[0] += real.limiter.prune_interval_seconds
     assert real.limiter.allow(live, limit=2, window_seconds=60) is True
+    real.limiter.last_prune.result(timeout=10)
     keys = {key for (key,) in _query(real.psycopg, "SELECT key FROM omnidesk_api_resource_rate_limits WHERE key LIKE %s", (f"{real.prefix}:%",))}
     assert keys == {live}
+
+
+def test_a_backlog_is_deleted_in_batches_within_the_statement_timeout(real):
+    with real.psycopg.connect(DSN, autocommit=True) as con:
+        con.execute(
+            "INSERT INTO omnidesk_api_resource_rate_limits (key, window_started, count) "
+            "SELECT %s::text || g::text, 0, 1 FROM generate_series(1, 12000) AS g",
+            (f"{real.prefix}:backlog:",),
+        )
+
+    deleted = real.limiter._prune(cutoff=1.0)
+
+    assert deleted >= 12000  # three batches of at most prune_batch_rows each
+    left = _query(real.psycopg, "SELECT count(*) FROM omnidesk_api_resource_rate_limits WHERE key LIKE %s", (f"{real.prefix}:backlog:%",))
+    assert left[0][0] == 0
 
 
 def test_connections_carry_the_statement_and_lock_timeouts(real):

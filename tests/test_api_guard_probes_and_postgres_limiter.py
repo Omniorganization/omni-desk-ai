@@ -27,6 +27,7 @@ class _FakeCursor:
     def __init__(self, con):
         self.con = con
         self._row = None
+        self.rowcount = 0
 
     def __enter__(self):
         return self
@@ -43,6 +44,10 @@ class _FakeCursor:
         if self.con.registry.timeout_next:
             self.con.registry.timeout_next = False
             raise TimeoutError("canceling statement due to lock timeout")
+        if sql.startswith("DELETE"):
+            if self.con.registry.prune_fails:
+                raise TimeoutError("canceling statement due to statement timeout")
+            self.rowcount = self.con.registry.expired.pop(0) if self.con.registry.expired else 0
         if "RETURNING count" in sql:
             self.con.registry.threads.append(threading.current_thread().name)
             key = params[0]
@@ -85,7 +90,7 @@ class _FakeConnection:
 
 @pytest.fixture()
 def fake_psycopg(monkeypatch):
-    registry = types.SimpleNamespace(connections=[], counts={}, dsns=[], threads=[], timeout_next=False, options="")
+    registry = types.SimpleNamespace(connections=[], counts={}, dsns=[], threads=[], timeout_next=False, options="", expired=[], prune_fails=False)
     lock = threading.Lock()
 
     def connect(dsn, **kwargs):
@@ -109,6 +114,7 @@ def fake_psycopg(monkeypatch):
 
 def test_postgres_limiter_counts_on_one_reused_connection(fake_psycopg):
     limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN")
+    limiter.prune_interval_seconds = float("inf")  # no background prune competing for the connection
 
     results = [limiter.allow("ip:1", limit=3, window_seconds=60) for _ in range(5)]
 
@@ -152,6 +158,7 @@ def test_postgres_limiter_does_not_retry_a_timeout(fake_psycopg):
 
 def test_postgres_limiter_replaces_a_broken_connection_once(fake_psycopg):
     limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN")
+    limiter.prune_interval_seconds = float("inf")
     limiter.allow("k", limit=10, window_seconds=60)
     fake_psycopg.connections[-1].fail_next = True
 
@@ -159,15 +166,47 @@ def test_postgres_limiter_replaces_a_broken_connection_once(fake_psycopg):
     assert fake_psycopg.connections[-2].closed is True  # the broken one was dropped
 
 
+def _deletes(fake_psycopg) -> list[str]:
+    return [s for con in fake_psycopg.connections for s in con.statements if s.startswith("DELETE FROM omnidesk_api_resource_rate_limits")]
+
+
 def test_postgres_limiter_prunes_expired_windows(fake_psycopg):
     clock = [1000.0]
     limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN", clock=lambda: clock[0])
     limiter.allow("k", limit=10, window_seconds=60)
+    limiter.last_prune.result(timeout=5)
     clock[0] += limiter.prune_interval_seconds + 1
     limiter.allow("k", limit=10, window_seconds=60)
+    limiter.last_prune.result(timeout=5)
 
-    deletes = [s for con in fake_psycopg.connections for s in con.statements if s.startswith("DELETE FROM omnidesk_api_resource_rate_limits")]
-    assert len(deletes) == 2  # first call, then again after the interval
+    assert len(_deletes(fake_psycopg)) == 2  # first call, then again after the interval
+
+
+def test_a_backlog_is_pruned_in_bounded_batches(fake_psycopg):
+    # gateway-clients' review: one unbounded DELETE after a long backlog can
+    # outlast the 2 s statement timeout every time and never finish.
+    limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN")
+    fake_psycopg.expired = [limiter.prune_batch_rows, limiter.prune_batch_rows, 17]
+
+    assert limiter._prune(cutoff=0.0) == 2 * limiter.prune_batch_rows + 17
+    assert len(_deletes(fake_psycopg)) == 3  # stops at the first short batch
+    fake_psycopg.expired = [limiter.prune_batch_rows] * 100
+    limiter._prune(cutoff=0.0)
+    assert len(_deletes(fake_psycopg)) == 3 + limiter.prune_max_batches  # and is capped per run
+
+
+def test_a_failing_prune_never_refuses_a_request(fake_psycopg):
+    clock = [1000.0]
+    limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN", clock=lambda: clock[0])
+    fake_psycopg.prune_fails = True
+
+    assert limiter.allow("k", limit=10, window_seconds=60) is True
+    assert limiter.last_prune.result(timeout=5) == 0  # swallowed and logged
+    fake_psycopg.prune_fails = False
+    clock[0] += limiter.prune_interval_seconds + 1
+    limiter.allow("k", limit=10, window_seconds=60)
+    limiter.last_prune.result(timeout=5)
+    assert len(_deletes(fake_psycopg)) == 2  # tried again at the next interval
 
 
 class _ThreadRecordingLimiter:
