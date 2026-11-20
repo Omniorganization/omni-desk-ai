@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable, Optional
 
 from omnidesk_agent.config import SandboxConfig
 
@@ -28,9 +29,9 @@ from omnidesk_agent.self_learning.policy_registry import PolicyRegistry
 from omnidesk_agent.self_learning.proposal_generator import ControlledProposalGenerator
 from omnidesk_agent.self_learning.rollback import RollbackManager
 from omnidesk_agent.self_learning.schemas import ControlledLearningReport
-from omnidesk_agent.self_learning.replay import ReplayReportBuilder
-from omnidesk_agent.self_learning.skill_learning import SkillLearningPipeline
-from omnidesk_agent.self_learning.skill_learning.structural_miner import StructuralSkillMiner
+from omnidesk_agent.self_learning.replay import ReplayEngine, cases_from_runs
+from omnidesk_agent.self_learning.replay.engine import PlanFn
+from omnidesk_agent.self_learning.skill_learning import StructuralSkillMiner
 from omnidesk_agent.self_learning.store import SelfLearningStore
 from omnidesk_agent.self_learning.validator import SandboxValidator
 
@@ -42,8 +43,18 @@ class DailySelfLearningJob:
     reviewable upgrade request artifacts.
     """
 
-    def __init__(self, memory: ExperienceStore, workspace_root: Path, *, sandbox_cfg: SandboxConfig | None = None):
+    def __init__(
+        self,
+        memory: ExperienceStore,
+        workspace_root: Path,
+        *,
+        sandbox_cfg: SandboxConfig | None = None,
+        replay_plan_fn: Optional[PlanFn] = None,
+        replay_runs: Optional[Callable[[], Iterable[dict[str, Any]]]] = None,
+    ):
         self.memory = memory
+        self.replay_plan_fn = replay_plan_fn
+        self.replay_runs = replay_runs
         self.workspace_root = workspace_root.expanduser()
         self.failure_analyzer = FailureAnalyzer()
         self.growth_planner = GrowthPlanner(self.failure_analyzer)
@@ -51,10 +62,8 @@ class DailySelfLearningJob:
         self.proposal_generator = UpgradeProposalGenerator()
         self.proposal_store = UpgradeProposalStore(self.workspace_root / 'upgrade_proposals')
         self.memory_curator = MemoryCurator()
-        self.replay = ReplayReportBuilder()
         self.drift = DriftDetectionSuite()
         self.audit = LearningAuditLog(self.workspace_root / "learning_audit.jsonl")
-        self.skill_learning = SkillLearningPipeline(self.workspace_root / "skill_candidates")
         self.self_learning_store = SelfLearningStore(self.workspace_root / "self_learning.sqlite3")
         self.data_collector = LearningDataCollector()
         self.learning_analyzer = LearningAnalyzer()
@@ -96,14 +105,6 @@ class DailySelfLearningJob:
                 metadata={"reason": review.get("reason")},
             ))
 
-        replay_report = self.replay.from_experiences(recent_memories, limit=25)
-        if replay_report["trace_count"]:
-            self.audit.append(LearningEvent(
-                event_type="replay_evaluation",
-                policy_improvement_score=replay_report.get("policy_improvement_score"),
-                learning_regression_score=replay_report.get("learning_regression_score"),
-                metadata={"average_improvement_delta": replay_report.get("average_improvement_delta")},
-            ))
 
         drift_signals = self.drift.detect(metrics=metrics, failure_counts=failure_counts, experiences=recent_memories)
         for signal in drift_signals:
@@ -113,21 +114,8 @@ class DailySelfLearningJob:
                 metadata=signal,
             ))
 
-        reusable_memories = [item for item in self.memory.list_structured(days=days, limit=100, statuses=["validated", "trusted"]) if item.get("reusable_skill")]
-        skill_candidates = self.skill_learning.run(
-            reusable_memories,
-            replay_score=replay_report.get("policy_improvement_score"),
-            limit=10,
-        )
-        for candidate in skill_candidates:
-            self.audit.append(LearningEvent(
-                event_type="skill_promotion",
-                skill_id=candidate.get("name"),
-                skill_promotion_success=candidate.get("status") in {"candidate", "canary", "stable"},
-                metadata={"status": candidate.get("status"), "source_experience_id": candidate.get("source_experience_id")},
-            ))
-
         learned_artifacts = self._register_learned_skills(days=days)
+        replay_report = self._replay_candidates()
 
         proposals = self.growth_planner.propose(growth_plan=growth_plan, failure_summary=repeated or failure_counts, metrics=metrics)
         for signal in drift_signals:
@@ -176,7 +164,6 @@ class DailySelfLearningJob:
             "memory_reviews": memory_reviews,
             "replay_report": replay_report,
             "drift_signals": drift_signals,
-            "skill_candidates": skill_candidates,
             "learned_artifacts": learned_artifacts,
             "proposals": safe_proposals,
             "persisted_upgrade_proposals": persisted_proposals,
@@ -206,6 +193,42 @@ class DailySelfLearningJob:
                 continue
             registered.append({"artifact_id": artifact.artifact_id, "name": artifact.name, "status": artifact.status, "blockers": artifact.blockers})
         return {"registered": registered, "errors": errors, "applied_by_this_job": 0, "active_policy_version": self.policy_registry.active_version()}
+
+    def _replay_candidates(self, *, limit: int = 5) -> dict[str, Any]:
+        """Replay recorded runs with each new candidate and record the evaluation."""
+        if self.replay_plan_fn is None or self.replay_runs is None:
+            return {"status": "not_run", "reason": "no replay planner or run source configured"}
+        try:
+            asyncio.get_running_loop()
+            return {"status": "not_run", "reason": "called inside a running event loop; use the async entry point"}
+        except RuntimeError:
+            pass
+        return asyncio.run(self.replay_candidates_async(limit=limit))
+
+    async def replay_candidates_async(self, *, limit: int = 5) -> dict[str, Any]:
+        if self.replay_plan_fn is None or self.replay_runs is None:
+            return {"status": "not_run", "reason": "no replay planner or run source configured"}
+        cases, skipped = cases_from_runs(self.replay_runs())
+        engine = ReplayEngine(self.replay_plan_fn)
+        evaluations = []
+        for artifact in self.policy_registry.list_artifacts(statuses=["candidate"], limit=limit):
+            report = await engine.evaluate(
+                cases,
+                baseline=self.policy_registry.active_policy(),
+                candidate=self.policy_registry.candidate_policy(artifact.artifact_id),
+                skipped=skipped,
+            )
+            payload = report.to_dict()
+            self.policy_registry.record_evaluation(artifact.artifact_id, payload)
+            self.audit.append(LearningEvent(
+                event_type="replay_evaluation",
+                skill_id=artifact.name,
+                policy_improvement_score=report.policy_improvement_score,
+                learning_regression_score=report.learning_regression_score,
+                metadata={"artifact_id": artifact.artifact_id, "verdict": report.verdict, "trace_count": report.trace_count},
+            ))
+            evaluations.append({"artifact_id": artifact.artifact_id, **{k: payload[k] for k in ("verdict", "reason", "trace_count", "wins", "losses", "p_improved", "p_regressed")}})
+        return {"status": "ran", "case_count": len(cases), "skipped": skipped, "evaluations": evaluations}
 
     def _run_controlled_self_learning(self, *, days: int) -> dict[str, Any]:
         source_records = self.data_collector.collect(memory=self.memory, audit_log=self.audit, days=days, limit=200)

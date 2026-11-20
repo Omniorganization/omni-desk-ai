@@ -329,6 +329,26 @@ class PolicyRegistry:
             ))
         return policy
 
+    def mark_rolled_back(self, artifact_id: str, *, actor: str, reason: str) -> LearnedArtifact:
+        """An online experiment rolled this candidate back before it was applied.
+
+        The approval is spent: the artefact needs a new evaluation and approval.
+        """
+        artifact = self._require(artifact_id)
+        if artifact.status != "approved":
+            return artifact
+        artifact.status = "rolled_back"
+        artifact.updated_at = time.time()
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            current = self._pointer(con)
+            self._write(con, artifact)
+            con.execute(
+                "INSERT INTO learning_policy_history(at, action, from_version, to_version, artifact_id, actor, reason) VALUES(?,?,?,?,?,?,?)",
+                (time.time(), "experiment_rollback", current, current, artifact_id, actor, reason),
+            )
+        return artifact
+
     # ----------------------------------------------------------------- reads
     def active_version(self) -> str:
         with self._connect() as con:
