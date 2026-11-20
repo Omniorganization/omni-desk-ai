@@ -10,7 +10,9 @@ if the loop stops re-planning, or if a budget, approval or audit rule regresses.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -90,10 +92,25 @@ def output_text(observation: dict[str, Any]) -> str:
 class Harness:
     """A runtime with real stores, router and tools around a scripted model."""
 
-    def __init__(self, tmp_path: Path, monkeypatch, decide, *, approval_mode: str = "interactive_cli", default_mode: str = "allow", budget: Optional[LoopBudget] = None, vision: bool = False, extra_tools: tuple = (), hook: Any = None, permissions_cls=PermissionManager, usage: Optional[dict[str, Any]] = None):
+    def __init__(self, tmp_path: Path, monkeypatch, decide, *, approval_mode: str = "interactive_cli", default_mode: str = "allow", budget: Optional[LoopBudget] = None, vision: bool = False, extra_tools: tuple = (), hook: Any = None, permissions_cls=PermissionManager, usage: Optional[dict[str, Any]] = None, console: Optional[str] = None):
         self.tmp_path = tmp_path
         self.script = Script(decide)
         script = self.script
+        # An operator at the console who gives `console` to every permission prompt.
+        # Default allow never prompts; a request that must be approved afresh does
+        # (a high-risk step planned after untrusted output, under fresh-approval enforcement).
+        self.console_prompts: list[str] = []
+        if console is not None:
+            class Console:
+                def isatty(self) -> bool:
+                    return True
+
+            def answer(prompt: str = "") -> str:
+                self.console_prompts.append(prompt)
+                return console
+
+            monkeypatch.setattr(sys, "stdin", Console())
+            monkeypatch.setattr(builtins, "input", answer)
 
         class ScriptedProvider:
             def __init__(self, settings):
@@ -191,7 +208,7 @@ def test_file_content_reaches_the_model_and_drives_the_next_step(harness):
             return turn(steps=[step("files", "write_text", {"path": "notes/out.txt", "text": secret_word.upper()}, risk="high")])
         return turn("done", final_answer="copied the codeword in upper case")
 
-    h = harness(decide)
+    h = harness(decide, console="y")
     (h.workspace / "notes").mkdir()
     (h.workspace / "notes" / "in.txt").write_text("the codeword=pelican is here", encoding="utf-8")
 
@@ -713,7 +730,7 @@ def test_repeated_screenshot_is_skipped_only_while_nothing_changed(harness, tmp_
             return turn(steps=[step("computer", "click", {"x": 1, "y": 1}, risk="high"), shot])
         return turn("done", final_answer="looked")
 
-    h = harness(decide, extra_tools=(computer,))
+    h = harness(decide, extra_tools=(computer,), console="y")
     result = h.run("look, click, look again")
 
     # The second identical screenshot right after the first is skipped (and ends that turn);
@@ -889,7 +906,7 @@ def test_the_grounded_click_is_tainted_by_the_screen_it_was_read_from(harness, t
         return turn("done", final_answer="pressed")
 
     log: list[dict[str, Any]] = []
-    h = harness(decide, vision=True, extra_tools=(computer,), permissions_cls=recording_permissions(log))
+    h = harness(decide, vision=True, extra_tools=(computer,), permissions_cls=recording_permissions(log), console="y")
     result = h.run("press the login button")
 
     assert result["status"] == "completed" and computer.calls == ["screenshot", "click"]
