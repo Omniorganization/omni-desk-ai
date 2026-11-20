@@ -31,6 +31,12 @@ CREATE INDEX IF NOT EXISTS idx_omnidesk_core_state_namespace_updated
   ON omnidesk_core_state(namespace, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_omnidesk_core_state_namespace_status
   ON omnidesk_core_state(namespace, ((value_json->>'status')), updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_omnidesk_core_state_task_id
+  ON omnidesk_core_state(namespace, ((value_json->>'task_id')));
+CREATE INDEX IF NOT EXISTS idx_omnidesk_core_state_value_id
+  ON omnidesk_core_state(namespace, ((value_json->>'id')));
+CREATE INDEX IF NOT EXISTS idx_omnidesk_core_state_namespace_created
+  ON omnidesk_core_state(namespace, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_omnidesk_jobs_dedupe
   ON omnidesk_core_state ((value_json->>'dedupe_key')) WHERE namespace='jobs';
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_omnidesk_outbound_idempotency
@@ -223,11 +229,63 @@ class _PostgresJsonState:
             raise ValueError(f"unsupported JSON count field: {field}")
         with self._connect() as con:
             with con.cursor() as cur:
+                # The key is a literal so idx_omnidesk_core_state_task_id applies;
+                # this runs on every model call.
                 cur.execute(
-                    "SELECT COUNT(*) FROM omnidesk_core_state WHERE namespace=%s AND value_json->>%s=%s",
-                    (namespace, field, value),
+                    "SELECT COUNT(*) FROM omnidesk_core_state WHERE namespace=%s AND value_json->>'task_id'=%s",
+                    (namespace, value),
                 )
                 return int(cur.fetchone()[0])
+
+    def list_expired(
+        self,
+        namespace: str,
+        *,
+        before: float,
+        limit: int = 1000,
+        channel: Optional[str] = None,
+        actor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Rows whose numeric ``expires_at`` is at or before ``before``, oldest first.
+
+        Filtered in SQL: ``list`` returns only the newest rows, so a purge built
+        on it never reached old expired rows once newer ones existed.
+        """
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT value_json FROM omnidesk_core_state
+                    WHERE namespace=%s
+                      AND CASE WHEN jsonb_typeof(value_json->'expires_at') = 'number'
+                               THEN (value_json->>'expires_at')::double precision END <= %s
+                      AND (%s::text IS NULL OR value_json->>'channel' = %s::text)
+                      AND (%s::text IS NULL OR value_json->>'actor' = %s::text)
+                    ORDER BY created_at ASC
+                    LIMIT %s
+                    """,
+                    (namespace, float(before), channel, channel, actor, actor, max(1, int(limit))),
+                )
+                return [_loads(row[0]) for row in cur.fetchall()]
+
+    def delete_expired(self, namespace: str, *, before: float, limit: int = 1000) -> int:
+        """Delete at most ``limit`` rows whose numeric ``expires_at`` has passed."""
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM omnidesk_core_state
+                    WHERE (namespace, key) IN (
+                      SELECT namespace, key FROM omnidesk_core_state
+                      WHERE namespace=%s
+                        AND CASE WHEN jsonb_typeof(value_json->'expires_at') = 'number'
+                                 THEN (value_json->>'expires_at')::double precision END <= %s
+                      LIMIT %s FOR UPDATE SKIP LOCKED
+                    )
+                    """,
+                    (namespace, float(before), max(1, int(limit))),
+                )
+                return int(cur.rowcount or 0)
 
     def list_planner_memories(self, namespace: str, *, channel: str, actor: str, limit: int) -> list[dict[str, Any]]:
         # Filter ownership in SQL before loading any protected payload.
@@ -1829,17 +1887,7 @@ class PostgresExperienceStore:
         limit: int = 1000,
     ) -> dict[str, Any]:
         cutoff = time.time() if now is None else float(now)
-        candidates = []
-        for raw in self.state.list(self.namespace_structured, limit=max(limit, 10000)):
-            if raw.get("expires_at") is None or float(raw.get("expires_at") or 0) > cutoff:
-                continue
-            if channel is not None and raw.get("channel") != channel:
-                continue
-            if actor is not None and raw.get("actor") != actor:
-                continue
-            candidates.append(raw)
-            if len(candidates) >= limit:
-                break
+        candidates = self.state.list_expired(self.namespace_structured, before=cutoff, limit=limit, channel=channel, actor=actor)
         ids = [int(r["id"]) for r in candidates]
         deleted_count = 0
         if not dry_run:

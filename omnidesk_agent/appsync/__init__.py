@@ -83,20 +83,23 @@ def register_appsync_routes(
     _register_appsync_routes(app, cfg, rt, metrics, admin)
     _remove_shadowed_chat_routes(app)
     register_project_routes(app, cfg, rt, metrics, admin)
-    _start_retention(getattr(rt, "app_sync", None), metrics)
+    _start_retention(getattr(rt, "app_sync", None), metrics, getattr(rt, "repository_factory", None))
 
 
-def _start_retention(store: Any, metrics: Any) -> None:
+def _start_retention(store: Any, metrics: Any, repositories: Any = None) -> None:
     """PostgreSQL stores prune their tables in the background; 0 turns it off
-    (for example when a CronJob runs ``python -m omnidesk_agent.appsync.retention``)."""
+    (for example when a CronJob runs ``python -m omnidesk_agent.appsync.retention``).
+    The core runtime state is pruned in the same pass when it is on PostgreSQL."""
     start = getattr(store, "start_retention", None)
     if not callable(start):
         return
     from omnidesk_agent.appsync.retention import retention_interval_seconds
 
     interval = retention_interval_seconds()
-    if interval > 0:
-        start(interval_seconds=interval, metrics=metrics)
+    if interval <= 0:
+        return
+    core = getattr(repositories, "run_core_state_retention", None)
+    start(interval_seconds=interval, metrics=metrics, also={"core_state": core} if callable(core) else None)
 
 
 __all__ = ["AppSyncStore", "register_appsync_routes"]

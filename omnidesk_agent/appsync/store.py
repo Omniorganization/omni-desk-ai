@@ -112,6 +112,10 @@ def scope_sync_event_to_actor(
     if chat_event and str(event.get("actor") or "") != actor:
         # Offline uploads may name the conversation under another key, or not at all.
         return None
+    if event_type == "conversation.deleted":
+        # Only the owner deletes, and the conversation no longer resolves: the
+        # owner's devices still need the event to drop their copy.
+        return event
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     hidden: set[str] = set()
     conversation_id = str(payload.get("conversation_id") or "")
@@ -531,6 +535,16 @@ def sync_page(
     cursor = int(page[-1]["seq"]) if has_more else head
     events = page if scope is None else [event for event in (scope(item) for item in page) if event is not None]
     return {"sync_seq": cursor, "head_seq": head, "events": events, "has_more": has_more, "reset_required": False, "pruned_through": pruned_through}
+
+
+def mentions_conversation(payload: Any, conversation_id: str) -> bool:
+    """Whether a stored payload (or an outbox event's nested one) is about the conversation."""
+    if not isinstance(payload, dict):
+        return False
+    if conversation_id in (payload.get("conversation_id"), payload.get("related_id"), payload.get("id") if payload.get("record") == "conversation" else None):
+        return True
+    nested = payload.get("payload")
+    return isinstance(nested, dict) and conversation_id in (nested.get("conversation_id"), nested.get("related_id"))
 
 
 def runtime_status_changed(previous: Optional[RuntimeStatusRecord], current: RuntimeStatusRecord) -> bool:
@@ -1299,6 +1313,48 @@ class AppSyncStore:
             # The same answer as for a missing conversation.
             raise KeyError("conversation not found")
         return conversation
+
+    def delete_conversation(self, *, actor: str, conversation_id: str) -> dict[str, Any]:
+        """Erase one of the actor's conversations and the data derived from it.
+
+        Messages, chat replays, notifications and pushes about it, idempotency
+        responses and offline-sync payloads that carry it are deleted; sync
+        events keep their numbers (readers' cursors stay valid) but lose the
+        title. Tasks and approvals created from it stay: they are the
+        organization's record of requested and approved actions.
+        """
+        with self._lock:
+            conversation = self._owned_conversation_locked(conversation_id, actor)
+            organization_id = self._normalize_org_id(conversation.organization_id)
+
+            def drop(table: dict[str, Any], keep: Callable[[Any], bool]) -> int:
+                doomed = [key for key, value in table.items() if not keep(value)]
+                for key in doomed:
+                    del table[key]
+                return len(doomed)
+
+            deleted = {
+                "messages": drop(self.messages, lambda item: item.conversation_id != conversation_id),
+                "notifications": drop(self.notifications, lambda item: item.related_id != conversation_id),
+                "push_outbox": drop(self.push_outbox, lambda item: item.related_id != conversation_id),
+                "idempotency_keys": drop(self.idempotency, lambda item: item.get("actor") != actor or conversation_id not in json.dumps(item.get("response"), default=str)),
+                "local_inbox": drop(self.local_inbox, lambda item: item.actor != actor or not mentions_conversation(item.payload, conversation_id)),
+                "local_outbox": drop(self.local_outbox, lambda item: item.actor != actor or not mentions_conversation(item.payload, conversation_id)),
+                "sync_conflicts": drop(self.sync_conflicts, lambda item: item.actor != actor or not (mentions_conversation(item.local_payload, conversation_id) or mentions_conversation(item.remote_payload, conversation_id))),
+            }
+            redacted = 0
+            for event in self.events:
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else None
+                if payload is not None and mentions_conversation(payload, conversation_id):
+                    payload.pop("title", None)
+                    payload["redacted"] = True
+                    redacted += 1
+            deleted["sync_events_redacted"] = redacted
+            del self.conversations[conversation_id]
+            deleted["conversations"] = 1
+            self._event("conversation.deleted", actor, {"conversation_id": conversation_id, "organization_id": organization_id})
+            self._persist()
+            return {"conversation_id": conversation_id, "deleted": deleted}
 
     def _conversation_owner(self, conversation_id: str) -> Optional[str]:
         conversation = self.conversations.get(conversation_id)

@@ -225,7 +225,7 @@ def test_postgres_routes_start_background_retention(monkeypatch: pytest.MonkeyPa
     started: list[float] = []
 
     class _Store:
-        def start_retention(self, *, interval_seconds: float, metrics: Any = None) -> None:
+        def start_retention(self, *, interval_seconds: float, metrics: Any = None, also: Any = None) -> None:
             started.append(interval_seconds)
 
     monkeypatch.setenv("OMNIDESK_APPSYNC_RETENTION_INTERVAL_SECONDS", "900")

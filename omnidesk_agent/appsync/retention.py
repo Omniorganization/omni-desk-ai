@@ -186,8 +186,13 @@ def run_retention(
     batch: int = 5000,
     max_batches: int = 200,
     dry_run: bool = False,
+    also: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Prune one namespace. Only one replica runs at a time; the others skip."""
+    """Prune one namespace. Only one replica runs at a time; the others skip.
+
+    ``also`` maps report keys to callables run after the AppSync tables while the
+    election lock is held (skipped on a dry run).
+    """
     import psycopg  # type: ignore
 
     now = time.time() if now is None else now
@@ -218,6 +223,13 @@ def run_retention(
                         tables[rule.name] = {"would_delete": int(cur.fetchone()[0]), "days": rule.days}
                 else:
                     tables[rule.name] = {"deleted": _delete_batches(store, _rule_delete_sql(rule, count_only=False), params, batch=batch, max_batches=max_batches), "days": rule.days}
+            if not dry_run:
+                for name, job in (also or {}).items():
+                    try:
+                        report[name] = job()
+                    except Exception as exc:  # one failing job must not stop the others
+                        logger.exception("retention job failed", extra={"job": name})
+                        report[name] = {"error": type(exc).__name__}
         finally:
             election.execute("SELECT pg_advisory_unlock(%s)", (_lock_key(store.namespace),))
     report["finished_at"] = time.time()
@@ -225,12 +237,17 @@ def run_retention(
 
 
 class RetentionWorker:
-    """Runs :func:`run_retention` every ``interval_seconds`` on a daemon thread."""
+    """Runs :func:`run_retention` every ``interval_seconds`` on a daemon thread.
 
-    def __init__(self, store: Any, *, interval_seconds: float, metrics: Any = None) -> None:
+    ``also`` are further pruning jobs (the core runtime state) that run in the
+    same elected pass.
+    """
+
+    def __init__(self, store: Any, *, interval_seconds: float, metrics: Any = None, also: Optional[dict[str, Any]] = None) -> None:
         self.store = store
         self.interval_seconds = max(60.0, float(interval_seconds))
         self.metrics = metrics
+        self.also = dict(also or {})
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.last_report: Optional[dict[str, Any]] = None
@@ -251,7 +268,7 @@ class RetentionWorker:
         delay = random.uniform(30.0, min(self.interval_seconds, 600.0))  # nosec B311 - scheduling jitter, not security
         while not self._stop.wait(delay):
             try:
-                report = run_retention(self.store)
+                report = run_retention(self.store, also=self.also)
                 self.last_report = report
                 if self.metrics is not None:
                     for table, outcome in report.get("tables", {}).items():

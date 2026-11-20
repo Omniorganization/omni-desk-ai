@@ -240,6 +240,12 @@ class PostgresRepositoryFactory:
                 self._runtime = PostgresRuntimeStateStores(pool)
             return self._runtime
 
+    def run_core_state_retention(self, **kwargs):
+        """Prune expired memories, idempotency rows and aged model cache/usage."""
+        from omnidesk_agent.repositories.retention import run_core_state_retention
+
+        return run_core_state_retention(self._runtime_state(), **kwargs)
+
     def dual_approval_store(self):
         return self._runtime_state().dual_approval_store()
 

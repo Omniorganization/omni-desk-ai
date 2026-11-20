@@ -266,6 +266,23 @@ INSERT INTO omnidesk_appsync_operation_log(namespace, organization_id, seq, even
 VALUES (%(namespace)s, %(organization_id)s, nextval('omnidesk_appsync_operation_log_entry_seq'), %(event)s, %(payload)s, %(created_at)s)
 """
 
+# Erasing a conversation: every statement is scoped to the namespace and, for
+# rows that are not keyed by the conversation, to the deleting actor.
+CONVERSATION_ERASURE_SQL: tuple[tuple[str, str], ...] = (
+    ("messages", "DELETE FROM omnidesk_appsync_messages WHERE namespace = %(namespace)s AND conversation_id = %(conversation_id)s"),
+    # Stream events go with their request (ON DELETE CASCADE).
+    ("chat_requests", "DELETE FROM omnidesk_appsync_chat_requests WHERE namespace = %(namespace)s AND conversation_id = %(conversation_id)s"),
+    ("notifications", "DELETE FROM omnidesk_appsync_notifications WHERE namespace = %(namespace)s AND related_id = %(conversation_id)s"),
+    ("push_outbox", "DELETE FROM omnidesk_appsync_push_outbox WHERE namespace = %(namespace)s AND related_id = %(conversation_id)s"),
+    ("idempotency_keys", "DELETE FROM omnidesk_appsync_idempotency_keys WHERE namespace = %(namespace)s AND organization_id = %(organization_id)s AND actor = %(actor)s AND position(%(conversation_id)s in response::text) > 0"),
+    ("local_inbox", "DELETE FROM omnidesk_appsync_local_inbox WHERE namespace = %(namespace)s AND actor = %(actor)s AND (payload->>'conversation_id' = %(conversation_id)s OR payload->'payload'->>'conversation_id' = %(conversation_id)s)"),
+    ("local_outbox", "DELETE FROM omnidesk_appsync_local_outbox WHERE namespace = %(namespace)s AND actor = %(actor)s AND (payload->>'conversation_id' = %(conversation_id)s OR payload->'payload'->>'conversation_id' = %(conversation_id)s)"),
+    ("sync_conflicts", "DELETE FROM omnidesk_appsync_sync_conflicts WHERE namespace = %(namespace)s AND actor = %(actor)s AND (local_payload->>'conversation_id' = %(conversation_id)s OR (local_payload->>'record' = 'conversation' AND local_payload->>'id' = %(conversation_id)s) OR remote_payload->>'conversation_id' = %(conversation_id)s)"),
+    # Events keep their numbers so readers' cursors stay valid; only the title goes.
+    ("sync_events_redacted", "UPDATE omnidesk_appsync_sync_events SET payload = (payload - 'title') || '{\"redacted\": true}'::jsonb WHERE namespace = %(namespace)s AND organization_id = %(organization_id)s AND (payload->>'conversation_id' = %(conversation_id)s OR payload->>'related_id' = %(conversation_id)s)"),
+    ("conversations", "DELETE FROM omnidesk_appsync_conversations WHERE namespace = %(namespace)s AND conversation_id = %(conversation_id)s"),
+)
+
 # The newest ``limit`` entries, oldest first; ``organization_id`` NULL means all.
 OPERATION_LOG_REPLAY_SQL = """
 SELECT seq, event, payload, organization_id, created_at FROM (
@@ -675,13 +692,13 @@ class MigratedMultiInstancePostgresAppSyncStore:
     def _ensure_schema(self, conn: Any) -> None:
         assert_appsync_schema_current(conn, namespace=self.namespace)
 
-    def start_retention(self, *, interval_seconds: float, metrics: Any = None) -> Any:
+    def start_retention(self, *, interval_seconds: float, metrics: Any = None, also: Optional[dict[str, Any]] = None) -> Any:
         """Prune this namespace periodically on a daemon thread (see ``retention``)."""
         from omnidesk_agent.appsync.retention import RetentionWorker
 
         worker = getattr(self, "_retention_worker", None)
         if worker is None:
-            worker = RetentionWorker(self, interval_seconds=interval_seconds, metrics=metrics)
+            worker = RetentionWorker(self, interval_seconds=interval_seconds, metrics=metrics, also=also)
             self._retention_worker = worker
             worker.start()
         return worker
@@ -1508,6 +1525,23 @@ class MigratedMultiInstancePostgresAppSyncStore:
             result = self._record(conversation)
             self._idempotency_store(tx, actor=actor, endpoint="conversations.create", key=idempotency_key, payload=idempotency_payload, response=result)
             return result
+
+        return self._transaction(body)
+
+    def delete_conversation(self, *, actor: str, conversation_id: str) -> dict[str, Any]:
+        """Erase one of the actor's conversations and the data derived from it
+        (see :meth:`AppSyncStore.delete_conversation`), in one transaction."""
+
+        def body(tx: _Tx) -> dict[str, Any]:
+            conversation = self._owned_conversation(tx, conversation_id, actor, for_update=True)
+            organization_id = self._normalize_org_id(conversation.organization_id)
+            params = {"namespace": self.namespace, "conversation_id": conversation_id, "actor": actor, "organization_id": organization_id}
+            deleted: dict[str, int] = {}
+            for name, statement in CONVERSATION_ERASURE_SQL:
+                tx.cur.execute(statement, params)
+                deleted[name] = int(tx.cur.rowcount or 0)
+            self._event(tx, "conversation.deleted", actor, {"conversation_id": conversation_id, "organization_id": organization_id})
+            return {"conversation_id": conversation_id, "deleted": deleted}
 
         return self._transaction(body)
 
