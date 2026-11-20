@@ -57,8 +57,16 @@ config:
   # Ingress/proxy pod IPs or CIDRs whose X-Forwarded-For is honored (read right to left).
   trustedProxyIps: []
 sandboxRunner:
+  # The runner needs a rootless container runtime, which a pod under the
+  # restricted Pod Security profile cannot provide, so it runs on dedicated
+  # runner hosts (deploy/sandbox-runner.service or deploy/sandbox-runner/).
+  # The chart publishes those hosts in-cluster as the `sandbox-runner` Service
+  # that config.sandboxRunnerUrl points at; readiness fails until one answers.
   repository: ghcr.io/omniorganization/omni-desk-ai/omnidesk-sandbox-runner
-  digest: "" # required: runner image digest must be pinned
+  digest: "" # required: runner image digest must be pinned (deployed on the runner hosts)
+  external:
+    addresses: [] # required: runner host IPv4 addresses reachable from the gateway pods
+    port: 18890
 migrations:
   enabled: true
   backoffLimit: 3
@@ -82,3 +90,17 @@ networkPolicy:
     kubernetes.io/metadata.name: ingress-nginx
   ingressPodLabel:
     app.kubernetes.io/name: ingress-nginx
+  # Prometheus scrapes /admin/metrics with a viewer token (service-monitor.yaml).
+  metricsNamespaceLabel:
+    kubernetes.io/metadata.name: monitoring
+  # Cluster DNS: without it the pods cannot resolve Postgres, the collector or the runner.
+  dnsNamespaceLabel:
+    kubernetes.io/metadata.name: kube-system
+  dnsPodLabel:
+    k8s-app: kube-dns
+  # Namespaces that host Postgres (5432) and the OTLP collector (4318).
+  dataPlaneNamespaceLabel:
+    omnidesk.io/network: data-plane
+  # HTTPS egress for model providers and channel APIs. NetworkPolicy cannot match
+  # host names: list the providers' published CIDRs. Empty means no internet egress.
+  httpsEgressCIDRs: []
