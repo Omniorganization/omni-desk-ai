@@ -171,7 +171,12 @@ def test_qq_seed_repeats_the_secret_to_32_bytes():
 def test_qq_op13_validation_is_answered_with_an_ed25519_signature(monkeypatch):
     channel = _qq(monkeypatch, QQ_BOT_SECRET=QQ_SECRET)
     payload = {"op": 13, "d": {"plain_token": "Arq0D5A61EgUu4OxUvOp", "event_ts": "1725442341"}}
-    channel.verify_request({"User-Agent": "QQBot-Callback"}, json.dumps(payload).encode(), {}, payload)
+    body = json.dumps(payload).encode()
+    signed = {"User-Agent": "QQBot-Callback", "X-Signature-Timestamp": "1725442341", "X-Signature-Ed25519": qq_signing_key(QQ_SECRET).sign(b"1725442341" + body).hex()}
+    channel.verify_request(signed, body, {}, payload)
+    # The handshake itself must be signed by QQ.
+    with pytest.raises(PermissionError):
+        channel.verify_request({"User-Agent": "QQBot-Callback"}, body, {}, payload)
     answer = channel.webhook_response(channel.parse_webhook(payload), payload)
     assert answer["plain_token"] == "Arq0D5A61EgUu4OxUvOp"
     qq_signing_key(QQ_SECRET).public_key().verify(bytes.fromhex(answer["signature"]), b"1725442341Arq0D5A61EgUu4OxUvOp")

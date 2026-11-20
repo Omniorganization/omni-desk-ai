@@ -54,7 +54,16 @@ def test_qq_route_answers_op13_and_acks_pushes(monkeypatch):
     cfg.channels.qq.enabled = True
     client, queue = _client(cfg, qq=QQChannel(cfg.channels.qq))
 
-    validation = client.post("/webhooks/qq", content=json.dumps({"op": 13, "d": {"plain_token": "tok123", "event_ts": "1725442341"}}))
+    handshake = json.dumps({"op": 13, "d": {"plain_token": "tok123", "event_ts": "1725442341"}}).encode()
+    # Unsigned or forged handshakes get 403 and no plain_token/signature echo.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    forged_sig = Ed25519PrivateKey.generate().sign(b"1725442341" + handshake).hex()
+    for headers in ({}, {"X-Signature-Timestamp": "1725442341"}, {"X-Signature-Ed25519": forged_sig, "X-Signature-Timestamp": "1725442341"}):
+        refused = client.post("/webhooks/qq", content=handshake, headers=headers)
+        assert refused.status_code == 403 and "plain_token" not in refused.text and "signature" not in refused.json()
+
+    validation = client.post("/webhooks/qq", content=handshake, headers={"X-Signature-Ed25519": qq_signing_key(QQ_SECRET).sign(b"1725442341" + handshake).hex(), "X-Signature-Timestamp": "1725442341"})
     assert validation.status_code == 200
     answer = validation.json()
     assert set(answer) == {"plain_token", "signature"}

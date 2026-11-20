@@ -611,9 +611,10 @@ class MatrixChannel:
 
 
 QQ_ACCESS_TOKEN_URL = "https://api.bot.qq.com/app/getAppAccessToken"
-# op 13 values the callback validation will sign. Event signatures cover
-# timestamp + a JSON object body, so a signed "event_ts + plain_token" made of
-# these characters can never double as an event signature.
+# op 13 values the callback validation will sign. The handshake is itself
+# signature-checked; restricting what we sign also guarantees that a signed
+# "event_ts + plain_token" can never double as an event signature (those
+# cover timestamp + a JSON object body).
 _QQ_PLAIN_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _QQ_EVENT_TS_RE = re.compile(r"[0-9]{1,20}")
 _QQ_MESSAGE_EVENTS = {"GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}
@@ -666,12 +667,13 @@ class QQChannel:
         if self.bot_secret:
             if not isinstance(payload, dict):
                 raise PermissionError("QQ callback body must be a JSON object")
-            signature = header(headers, "x-signature-ed25519")
-            if signature or payload.get("op") != 13:
-                timestamp = header(headers, "x-signature-timestamp")
-                if not (timestamp.isascii() and timestamp.isdigit()):
-                    raise PermissionError("missing or invalid QQ X-Signature-Timestamp")
-                verify_ed25519(self._public_key_hex(), timestamp.encode("utf-8") + body, signature, channel="QQ")
+            # Every callback, the op 13 URL validation included, carries QQ's
+            # signature: Tencent's own SDK (botgo interaction/webhook) verifies
+            # it before answering op 13, so an unsigned handshake gets no echo.
+            timestamp = header(headers, "x-signature-timestamp")
+            if not (timestamp.isascii() and timestamp.isdigit()):
+                raise PermissionError("missing or invalid QQ X-Signature-Timestamp")
+            verify_ed25519(self._public_key_hex(), timestamp.encode("utf-8") + body, header(headers, "x-signature-ed25519"), channel="QQ")
             return
         verify_hmac_sha256(body, self.webhook_secret or env_secret(self.cfg.webhook_secret_env, channel=self.name), header(headers, "x-omnidesk-webhook-signature-256"), prefix="sha256=")
 
