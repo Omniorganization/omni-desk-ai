@@ -129,9 +129,12 @@ PROBE = textwrap.dedent(
         observed["exec_from_tmp"] = errno.errorcode.get(exc.errno, str(exc.errno))
     state = Path("/workspace/approvals.sqlite3")
     if state.exists():
+        before = state.read_bytes()[:64].decode(errors="replace")
+        write = attempt(lambda: state.write_text("forged"))
         observed["state_file"] = {
-            "content": state.read_bytes()[:64].decode(errors="replace"),
-            "write": attempt(lambda: state.write_text("forged")),
+            "content": before,
+            "write": write,
+            "content_after_write": state.read_bytes()[:64].decode(errors="replace"),
         }
     print(json.dumps(observed, sort_keys=True))
     '''
@@ -217,7 +220,9 @@ def test_shell_docker_backend_masks_runtime_state_and_contains_escape(container_
     assert observed["write_workspace"] == "EROFS"
     assert observed["state_file"] is not None
     assert "SECRET" not in observed["state_file"]["content"], "runtime state was readable in the sandbox"
-    assert observed["state_file"]["write"] in {"EROFS", "EACCES", "EPERM"}
+    # The mask is /dev/null: a write is discarded (a read-only mount does not stop
+    # writes to a character device) and never reaches the real file.
+    assert observed["state_file"]["content_after_write"] == ""
     assert (workspace / "approvals.sqlite3").read_text() == "SECRET-APPROVAL-STATE"
 
 
