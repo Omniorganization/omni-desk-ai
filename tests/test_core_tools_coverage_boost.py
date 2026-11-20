@@ -21,6 +21,7 @@ from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.tools.shell import ShellTool
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, normalize_schema, _json_type, _type_ok
+from omnidesk_agent.tools.foreground import ForegroundWindow
 from omnidesk_agent.tools.ui_bridge_tool import UIBridgeTool
 from omnidesk_agent.security.approval_required import ApprovalRequired
 
@@ -255,13 +256,13 @@ class ToolProxy:
 def test_ui_bridge_all_actions_and_app_guard():
     async def run_case():
         proxy = ToolProxy()
-        tool = UIBridgeTool(UIBridgeConfig(enabled=True, allowed_apps=["Gmail"]), proxy)
+        tool = UIBridgeTool(UIBridgeConfig(enabled=True, allowed_apps=["Gmail"]), proxy, foreground_probe=lambda: ForegroundWindow(app="Gmail"))
         assert tool.spec().actions["observe"].name == "observe"
         assert (await tool.call("observe", {"app": "Gmail", "max_width": 700}, ctx())).data["action"] == "screenshot"
         assert (await tool.call("type_visible_reply", {"app": "Gmail", "text": "hello"}, ctx())).data["action"] == "type_text"
         assert (await tool.call("press_send", {"app": "Gmail"}, ctx())).data["action"] == "hotkey"
         assert (await tool.call("click", {"app": "Gmail", "x": "1", "y": "2"}, ctx())).data["action"] == "click"
-        with pytest.raises(ValueError, match="not allowed"):
+        with pytest.raises(PermissionError, match="not allowed"):
             await tool.call("observe", {"app": "Slack"}, ctx())
         with pytest.raises(ValueError, match="Unsupported ui_bridge"):
             await tool.call("unknown", {"app": "Gmail"}, ctx())

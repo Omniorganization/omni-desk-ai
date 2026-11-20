@@ -34,6 +34,7 @@ from omnidesk_agent.tools.computer import ComputerTool
 from omnidesk_agent.tools.files import FilesTool
 from omnidesk_agent.tools.gmail_tool import GmailTool
 from omnidesk_agent.tools.pr_tool import PullRequestTool
+from omnidesk_agent.tools.foreground import ForegroundWindow
 from omnidesk_agent.tools.ui_bridge_tool import UIBridgeTool
 from omnidesk_agent.tools.vision import VisionGroundingTool
 
@@ -226,7 +227,7 @@ def test_ui_bridge_type_visible_reply_binds_the_full_text():
     computer = Mock()
     computer.call = AsyncMock(return_value=Mock(ok=True))
     permissions = RecordingPermissions()
-    tool = UIBridgeTool(UIBridgeConfig(enabled=True, allowed_apps=["Mail"]), computer)
+    tool = UIBridgeTool(UIBridgeConfig(enabled=True, allowed_apps=["Mail"]), computer, foreground_probe=lambda: ForegroundWindow(app="Mail"))
     for text in (APPROVED, SWAPPED):
         _run(tool, "type_visible_reply", {"app": "Mail", "text": text}, permissions)
     _assert_bound(permissions, "text")
