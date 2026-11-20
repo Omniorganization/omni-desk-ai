@@ -731,10 +731,19 @@ class QQChannel:
         return ChannelMessage(channel=self.name, sender_id=sender or "unknown", thread_id=thread or source or sender, message_id=mid, text=text, raw=payload)
 
     def webhook_response(self, parsed: Any, payload: Any) -> Optional[dict[str, Any]]:
-        """Body QQ expects back: the op 13 answer as is, otherwise the op 12 HTTP callback ACK."""
+        """Body QQ expects back: the op 13 answer, otherwise the op 12 HTTP callback ACK.
+
+        Only called for a verified request. The op 13 answer is a pure function
+        of that signed request, so it is rebuilt from ``payload`` when no parse
+        result is passed (for example for a verified duplicate delivery).
+        """
         if isinstance(parsed, dict) and "plain_token" in parsed:
             return parsed
-        if self.bot_secret and isinstance(payload, dict) and payload.get("op") == 0:
+        if not self.bot_secret or not isinstance(payload, dict):
+            return None
+        if payload.get("op") == 13:
+            return self.callback_validation(payload)
+        if payload.get("op") == 0:
             return {"op": 12, "d": 0}
         return None
 

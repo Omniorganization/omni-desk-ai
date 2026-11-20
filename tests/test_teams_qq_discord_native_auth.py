@@ -182,6 +182,17 @@ def test_qq_op13_validation_is_answered_with_an_ed25519_signature(monkeypatch):
     qq_signing_key(QQ_SECRET).public_key().verify(bytes.fromhex(answer["signature"]), b"1725442341Arq0D5A61EgUu4OxUvOp")
 
 
+def test_qq_response_is_rebuilt_from_a_verified_payload_without_a_parse_result(monkeypatch):
+    # A verified duplicate may skip parsing; QQ still needs the op 13 answer
+    # (it re-sends validation after a timeout) and the op 12 ACK for pushes.
+    channel = _qq(monkeypatch, QQ_BOT_SECRET=QQ_SECRET)
+    op13 = {"op": 13, "d": {"plain_token": "Arq0D5A61EgUu4OxUvOp", "event_ts": "1725442341"}}
+    answer = channel.webhook_response(None, op13)
+    qq_signing_key(QQ_SECRET).public_key().verify(bytes.fromhex(answer["signature"]), b"1725442341Arq0D5A61EgUu4OxUvOp")
+    assert channel.webhook_response(None, {"op": 0, "t": "C2C_MESSAGE_CREATE", "d": {}}) == {"op": 12, "d": 0}
+    assert _qq(monkeypatch).webhook_response(None, op13) is None  # no secret: no signing
+
+
 def test_qq_op13_refuses_values_that_could_forge_an_event_signature(monkeypatch):
     # The validation signs event_ts + plain_token. An event signature covers
     # timestamp + a JSON object body, so a "{" must never be signable here.
