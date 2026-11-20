@@ -226,3 +226,13 @@ def test_production_validator_rejects_default_allow(tmp_path):
     cfg.permissions.default_mode = "ask"
     issues = validate_production_config(cfg, {"OMNIDESK_ENV": "production"})["issues"]
     assert not any("permissions.default_mode" in issue for issue in issues)
+
+
+@pytest.mark.parametrize("mode,ok", [("interactive_cli", False), ("auto_policy", False), ("remote_approval", True)])
+def test_production_validator_requires_remote_approval(mode, ok):
+    cfg = AppConfig()
+    cfg.permissions.approval_mode = mode
+
+    issues = validate_production_config(cfg, {"OMNIDESK_ENV": "production"})["issues"]
+
+    assert ("permissions.approval_mode must be remote_approval in production" not in issues) is ok
