@@ -54,6 +54,8 @@ from omnidesk_agent.appsync.store import (
     SyncCursorRecord,
     TaskRecord,
     TaskStatus,
+    apply_approval_decision,
+    approvals_required,
     UserProfile,
     _approval_decision_message,
     _device_request_message,
@@ -369,7 +371,7 @@ SELECT
     (SELECT COUNT(*) FROM omnidesk_appsync_sync_conflicts WHERE namespace = %(namespace)s AND status = 'open' AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text))
 """
 
-_JSON_COLUMNS = frozenset({"capabilities", "usage", "payload", "local_payload", "remote_payload", "action", "result", "action_detail"})
+_JSON_COLUMNS = frozenset({"capabilities", "usage", "payload", "local_payload", "remote_payload", "action", "result", "action_detail", "approved_by"})
 
 # How a resolution is recorded in SyncConflictRecord.strategy.
 RESOLUTION_STRATEGY: dict[str, Any] = {"keep_server": "server-wins", "apply_client": "client-wins", "merged": "merge"}
@@ -767,6 +769,13 @@ class MigratedMultiInstancePostgresAppSyncStore:
             self._retention_worker = worker
             worker.start()
         return worker
+
+    def schema_status(self) -> dict[str, Any]:
+        """``{"current", "required", "ready"}`` of this namespace's migrations, for readiness."""
+        from omnidesk_agent.appsync.postgres_migrations import appsync_schema_status
+
+        with self._connect() as conn:
+            return dict(appsync_schema_status(conn, namespace=self.namespace))
 
     def close(self) -> None:
         worker = getattr(self, "_retention_worker", None)
@@ -1673,7 +1682,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
         approval = ApprovalRecord(
             approval_id=_id("appr"), task_id=task.task_id, risk=risk, action=action, reason=reason, requested_by=actor,
             organization_id=self._normalize_org_id(task.organization_id), created_at=tx.now, expires_at=tx.now + 900,
-            action_detail=dict(task.action or {}), action_hash=task.action_hash,
+            action_detail=dict(task.action or {}), action_hash=task.action_hash, required_approvals=approvals_required(risk),
         )
         self._insert(tx, APPROVALS, approval)
         self._event(tx, "approval.requested", actor, {"approval_id": approval.approval_id, "task_id": task.task_id, "risk": risk, "organization_id": approval.organization_id})
@@ -1732,12 +1741,15 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 self._update(tx, APPROVALS, approval)
                 self._event(tx, "approval.expired", actor, {"approval_id": approval_id, "task_id": approval.task_id, "organization_id": approval.organization_id})
                 return _CommitThenRaise(ValueError("approval expired"))
-            approval.status = decision
-            approval.decided_by = actor
-            approval.decision_reason = reason
-            approval.decision_idempotency_key = idempotency_key
-            approval.decided_at = tx.now
+            final = apply_approval_decision(approval, actor=actor, decision=decision, reason=reason, idempotency_key=idempotency_key, now=tx.now)
             self._update(tx, APPROVALS, approval)
+            if not final:
+                # One of two approvals of a critical action: ask for the second.
+                self._event(tx, "approval.partially_approved", actor, {"approval_id": approval_id, "task_id": approval.task_id, "approvals": len(approval.approved_by), "required": approval.required_approvals, "organization_id": approval.organization_id})
+                self._notify(tx, audience="mobile", title="Second approval required", body=approval.action[:180], event_type="approval.requested", actor=actor, related_id=approval.approval_id)
+                partial = self._record(approval)
+                self._idempotency_store(tx, actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload, response={"approval": partial})
+                return partial
             task: Optional[TaskRecord] = self._get(tx, TASKS, approval.task_id, for_update=True)
             # Only a task still waiting on this approval moves; a decision must not
             # revive a task that was cancelled meanwhile.

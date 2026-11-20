@@ -141,6 +141,16 @@ Sync events are pruned by sequence number: the watermark (`pruned_through`) is
 committed before any event is deleted, so a reader below it is reset rather than
 moved silently past the gap.
 
+## Approvals: four eyes
+
+`decide_approval` follows the same rule as the agent's own approvals (security, #224):
+- The **requester never approves** their own request: 403 `the requester cannot approve their own request`. Withdrawing it (rejecting) is allowed.
+- A **critical** action (`risk == "critical"`) needs **two distinct approvers**, neither of them the requester. After the first approval the approval stays `pending`, with `approved_by` listing who approved. The task stays blocked, and a "Second approval required" push goes to the organization's mobile devices. The second distinct approver makes it `approved` and queues the task. The same approver approving twice gets 403.
+- Any eligible approver's rejection is final.
+- `required_approvals` is stored with the approval, and recomputed from the risk when the decision is made, so critical approvals created before this rule also need two.
+- Actors are bound to gateway tokens (`OMNIDESK_<ROLE>_ACTOR`), so the owner token is one actor. An owner who requests a desktop action cannot also approve it; another approver must (for example the operator requests and the owner approves). A critical action needs two approvers other than the requester, for example the owner and the admin token.
+- Migration 9 (`approval_four_eyes`) adds `required_approvals` and `approved_by`.
+
 ## Push outbox and dispatch
 
 A notification queues one push per challenge-verified, unrevoked device it is

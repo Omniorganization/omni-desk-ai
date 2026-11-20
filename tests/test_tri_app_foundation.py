@@ -141,14 +141,17 @@ def test_appsync_store_filters_cross_organization_objects_and_sync(tmp_path):
         requires_desktop_runtime=True,
         risk="high",
     )
+    # A requester never approves their own request: each org's second member does.
+    store.ensure_user("anna", organization_id="org-a")
+    store.ensure_user("boris", organization_id="org-b")
     store.decide_approval(
         approval_id=alice_created["approval"]["approval_id"],
-        actor="alice",
+        actor="anna",
         decision="approved",
     )
     store.decide_approval(
         approval_id=bob_created["approval"]["approval_id"],
-        actor="bob",
+        actor="boris",
         decision="approved",
     )
 

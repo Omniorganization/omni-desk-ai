@@ -26,6 +26,7 @@ from omnidesk_agent.config import AppConfig
 from omnidesk_agent.server import create_app
 
 OWNER = "token:OMNIDESK_OWNER_TOKEN"
+APPROVER = "andrea-approver"  # approvals need someone other than the requester
 OPERATOR = "token:OMNIDESK_OPERATOR_TOKEN"
 
 
@@ -191,7 +192,7 @@ def _approved_desktop_task(store: AppSyncStore) -> tuple[str, str]:
     conversation = store.create_conversation(actor=OWNER, title="ops")
     created = store.add_message_and_task(actor=OWNER, conversation_id=conversation["conversation_id"], content="Wire $10k to vendor (desktop action)", requires_desktop_runtime=True, risk="high")
     task_id, approval_id = created["task"]["task_id"], created["approval"]["approval_id"]
-    store.decide_approval(approval_id=approval_id, actor=OWNER, decision="approved")
+    store.decide_approval(approval_id=approval_id, actor=APPROVER, decision="approved")
     return task_id, approval_id
 
 
@@ -231,7 +232,7 @@ def test_requeued_task_cannot_reuse_a_consumed_approval(store: AppSyncStore) -> 
     assert store.claim_next_task(actor=OWNER, device_id="dev_desk") is None
     assert store.approvals[approval_id].status == "consumed"
     with pytest.raises(ValueError, match="already decided"):
-        store.decide_approval(approval_id=approval_id, actor=OWNER, decision="approved")
+        store.decide_approval(approval_id=approval_id, actor=APPROVER, decision="approved")
 
 
 def test_lease_holder_rules(store: AppSyncStore) -> None:
@@ -298,7 +299,7 @@ def test_unclaimed_task_can_only_be_cancelled_by_its_creator(store: AppSyncStore
         store.update_task_status(task_id=task_id, actor=OPERATOR, status="cancelled")
     assert store.update_task_status(task_id=task_id, actor=OWNER, status="cancelled")["status"] == "cancelled"
     # Approving the still-pending approval afterwards does not revive the task.
-    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=OWNER, decision="approved")
+    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=APPROVER, decision="approved")
     assert store.tasks[task_id].status == "cancelled"
     store.register_device(actor=OWNER, device_id="dev_desk", device_type="desktop", name="d", platform="mac")
     assert store.claim_next_task(actor=OWNER, device_id="dev_desk") is None
@@ -420,8 +421,9 @@ def test_route_approval_decision_rejects_another_actors_device(gateway, monkeypa
     oscar_key, olivia_key = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     _enroll(store, owner="olivia", actor="oscar", device_id="dev_oscar_phone", device_type="mobile", secret=oscar_key)
     _enroll(store, owner="olivia", actor="olivia", device_id="dev_olivia_phone", device_type="mobile", secret=olivia_key)
-    conversation = store.create_conversation(actor="olivia", title="ops")
-    created = store.add_message_and_task(actor="olivia", conversation_id=conversation["conversation_id"], content="desktop action", requires_desktop_runtime=True)
+    # Oscar requests, so olivia may approve (the requester never approves).
+    conversation = store.create_conversation(actor="oscar", title="ops")
+    created = store.add_message_and_task(actor="oscar", conversation_id=conversation["conversation_id"], content="desktop action", requires_desktop_runtime=True)
     path = f"/app/approvals/{created['approval']['approval_id']}/decide"
     monkeypatch.setenv("OMNIDESK_ENV", "production")
 
@@ -444,7 +446,7 @@ def test_route_task_status_requires_the_lease_holder(gateway, monkeypatch: pytes
     conversation = store.create_conversation(actor="olivia", title="ops")
     created = store.add_message_and_task(actor="olivia", conversation_id=conversation["conversation_id"], content="desktop action", requires_desktop_runtime=True)
     task_id = created["task"]["task_id"]
-    store.decide_approval(approval_id=created["approval"]["approval_id"], actor="olivia", decision="approved")
+    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=APPROVER, decision="approved")
     store.claim_next_task(actor="oscar", device_id="dev_oscar_desk")
     monkeypatch.setenv("OMNIDESK_ENV", "production")
     path = f"/app/tasks/{task_id}/status"

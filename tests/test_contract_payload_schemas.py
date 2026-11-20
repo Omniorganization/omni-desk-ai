@@ -163,9 +163,11 @@ def test_the_gateway_meets_the_contract_on_every_client_route(tmp_path: Path, mo
         assert "chat.completed" in events, events
         gw.checked.add(("POST", "/api/chat/stream"))
 
-        # An executable desktop task: requested from the phone, approved, claimed, reported.
+        # An executable desktop task: the operator asks, the owner approves on the
+        # phone (never the requester), the desktop claims and reports.
         action = {"capability": "workspace.read_file", "scope": {"workspace": "reports", "relative_path": "q3.md"}}
-        gw.call("POST", "/app/conversations/{conversation_id}/messages", f"{conversation_path}/messages", OWNER, {"content": "send me the Q3 report", "requires_desktop_runtime": True, "risk": "high", "action": action})
+        task_conversation = gw.call("POST", "/app/conversations", "/app/conversations", OPERATOR, {"title": "reports"}).json()["conversation"]
+        gw.call("POST", "/app/conversations/{conversation_id}/messages", f"/app/conversations/{task_conversation['conversation_id']}/messages", OPERATOR, {"content": "send me the Q3 report", "requires_desktop_runtime": True, "risk": "high", "action": action})
         snapshot = gw.call("GET", "/app/bootstrap", "/app/bootstrap", OWNER).json()
         approval_id = snapshot["pending_approvals"][0]["approval_id"]
         gw.call("GET", "/app/approvals", "/app/approvals?status=pending", OWNER)
