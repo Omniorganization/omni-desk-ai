@@ -63,7 +63,16 @@ def test_export_covers_supported_stores_and_names_the_rest(app):
     assert "security_audit_log" in export["retained"]
     # Every store the runtime has is exported or named unsupported, and
     # "complete" follows from that; this holds before and after stores gain hooks.
-    stores = {"approvals": "approval_store", "memory": "memory", "runs": "run_store", "outbound_messages": "outbound_messages", "app_sync": "app_sync", "jobs": "job_queue"}
+    stores = {
+        "approvals": "approval_store",
+        "memory": "memory",
+        "runs": "run_store",
+        "outbound_messages": "outbound_messages",
+        "app_sync": "app_sync",
+        "jobs": "job_queue",
+        "agent_run_idempotency": "agent_run_idempotency",
+        "side_effect_idempotency": "side_effect_idempotency",
+    }
     present = {name for name, attr in stores.items() if getattr(app.state.runtime, attr, None) is not None}
     assert "jobs" in present  # the job queue keeps every inbound message
     assert (set(export["data"]) - set(export["retained"])) | set(export["unsupported"]) == present
@@ -136,3 +145,63 @@ def test_service_reports_unsupported_stores_and_audits_counts_only(tmp_path):
     assert all("secret" not in json.dumps(payload) for _event, payload in events)
     with pytest.raises(ValueError):
         service.export(" ", requested_by="owner-a")
+
+
+def _approval_and_dual_stores(tmp_path):
+    from omnidesk_agent.security.approval_store import ApprovalStore
+    from omnidesk_agent.security.dual_approval import DualApprovalStore
+
+    dual = DualApprovalStore(tmp_path / "dual.sqlite3")
+    return ApprovalStore(tmp_path / "approvals.sqlite3", dual_approval_store=dual), dual
+
+
+def _request(actor: str, risk: str = "high") -> dict:
+    return {"tool": "files", "action": "write_text", "risk": risk, "actor": actor, "created_by": actor, "requires_dual_approval": risk == "critical", "args": {"text": f"{actor} wrote this", "text_sha256": "ab" * 32}}
+
+
+def test_erasure_withdraws_what_the_subject_left_pending_and_anonymizes_the_rest(tmp_path):
+    # One rule for every store (Rule 7, with AppSync's #285): the operational
+    # records anonymize the subject and withdraw anything still pending, so
+    # nobody can count twice; the audit chain keeps who requested and approved.
+    store, dual = _approval_and_dual_stores(tmp_path)
+    own_pending = store.create(_request("alice"))
+    own_decided = store.create(_request("alice"))
+    store.decide(own_decided, "approved", {"decided_by": "owner-a"})
+    judged = store.create(_request("bob"))
+    store.decide(judged, "denied", {"decided_by": "alice", "reason": "alice's words"})
+    partial = store.create(_request("bob", "critical"))
+    dual.approve(partial, "alice")
+    ready = store.create(_request("carol", "critical"))
+    dual.approve(ready, "alice")
+    dual.approve(ready, "dave")
+
+    assert store.erase_subject("alice") >= 5
+
+    withdrawn = store.get(own_pending)
+    assert withdrawn["status"] == "denied" and withdrawn["result"]["withdrawn"] == "requester erased"
+    assert withdrawn["proposal"]["created_by"] == "[erased]" and withdrawn["proposal"]["args"] == {"text_sha256": "ab" * 32}
+    assert store.get(own_decided)["status"] == "approved" and store.get(own_decided)["proposal"]["actor"] == "[erased]"
+    assert store.get(judged)["result"] == {"decided_by": "[erased]"}  # alice's reason is cleared
+    # Alice's lone first approval is withdrawn: two fresh approvers are needed again.
+    assert dual.status(partial).first_approver is None and not dual.status(partial).ready
+    # A ready approval stays ready, without her name.
+    assert dual.status(ready).ready and dual.status(ready).first_approver == "[erased]"
+    assert store.export_subject("alice") == []
+    assert store.get(judged)["proposal"]["created_by"] == "bob"  # other people's records keep them
+
+
+def test_replay_caches_are_exported_and_erased(tmp_path):
+    from omnidesk_agent.security.agent_run_idempotency import SQLiteAgentRunIdempotencyStore
+    from omnidesk_agent.security.idempotency import SQLiteSideEffectIdempotencyStore
+
+    runs = SQLiteAgentRunIdempotencyStore(tmp_path / "runs.sqlite3")
+    effects = SQLiteSideEffectIdempotencyStore(tmp_path / "effects.sqlite3")
+    for actor in ("alice", "bob"):
+        runs.begin(actor=actor, key="k1", source_device=None, payload={"message": f"{actor}'s task"})
+        runs.complete(actor=actor, key="k1", source_device=None, response={"answer": f"for {actor}"})
+        effects.begin(route="/agent/runs/{run_id}/cancel", actor=actor, key="k1", payload={"run_id": "r"}, resource_id="r")
+
+    assert [r["response"] for r in runs.export_subject("alice")] == [{"answer": "for alice"}]
+    assert [r["route"] for r in effects.export_subject("alice")] == ["/agent/runs/{run_id}/cancel"]
+    assert runs.erase_subject("alice") == 1 and effects.erase_subject("alice") == 1
+    assert runs.export_subject("alice") == [] and len(runs.export_subject("bob")) == 1

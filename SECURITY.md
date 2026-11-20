@@ -26,7 +26,14 @@ What the code provides today (`privacy/data_subject.py`, `server_routes/privacy_
 - **What results say.**
   - Every result lists the stores that could not take part (`unsupported`) and the records kept on purpose (`retained`): the tamper-evident audit logs, which are kept for their retention period and never rewritten.
   - Every export and erasure is audited with counts only, never content.
-- **Participating stores.** A store takes part by implementing `export_subject(actor)` and `erase_subject(actor)`. Today only the approval records (SQLite) and their dual-approval rows do. Memory, runs, outbound messages, the job queue (every inbound task message and its result) and AppSync report `unsupported` until their owners add the hooks, so a result says `complete: false` until then.
+- **Participating stores.** A store takes part by implementing `export_subject(actor)` and `erase_subject(actor)`. Today these do: the approval records and their dual-approval rows (SQLite), and the two replay caches of side-effecting requests (`agent_run_idempotency`, `side_effect_idempotency`, both backends; their rows expire after 30 minutes anyway). Memory, runs, outbound messages, the job queue (every inbound task message and its result) and AppSync report `unsupported` until their owners add the hooks, so a result says `complete: false` until then.
+- **Approvals: one rule in every store.** The same rule applies to the approval ledger, its dual-approval rows and AppSync's approvals.
+  - A request made by the subject: requester fields become `[erased]` and argument content is withheld; digests and lengths stay. A request still pending is withdrawn.
+  - A decision by the subject on someone else's request: the decider becomes `[erased]`, and the reason the subject wrote is cleared.
+  - A pending partial approval by the subject is withdrawn. The request then needs fresh approvers, so nobody can count twice.
+  - The security audit chain is never rewritten. It is the governance record of who requested and who approved actions taken on the organization's behalf, kept for accountability and for the defence of legal claims (GDPR Art. 17(3)(b) and (e)). It keeps the real identities for the audit retention period.
+- **Exempt: break-glass sessions.** Who opened emergency access, why, and who approved it is the same governance record. The sessions are time-boxed, every transition is on the audit chain, and they are kept for the audit retention period.
+- **Audit retention period.** 365 days, unless the operator's legal obligations require longer. Not enforced yet: pruning sealed audit segments, decided approvals and break-glass sessions older than this period is a security follow-up.
 - **Where erasure reaches, and what remains.**
   - **Gateway replicas.** Erasure runs against the gateway's stores. On PostgreSQL every gateway replica shares them, so it is complete for all replicas at once. A JSON or SQLite store belongs to one gateway.
   - **Devices' local-first stores.** Erasure does not yet reach the copies on desktop and mobile devices.

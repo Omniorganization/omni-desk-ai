@@ -5,10 +5,26 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from omnidesk_agent.security.dual_approval import proposal_requesters
+from omnidesk_agent.security.dual_approval import ERASED_ACTOR, anonymized_request, proposal_requesters
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from typing import Any, Optional
+
+
+def _deciders(result: dict[str, Any]) -> set[str]:
+    names = {str(result.get(key) or "") for key in ("decided_by", "denied_by")}
+    approved = result.get("approved_by")
+    names |= {str(a) for a in approved} if isinstance(approved, list) else {str(approved or "")}
+    return names - {""}
+
+
+def _anonymized_decision(result: dict[str, Any], actor: str) -> dict[str, Any]:
+    out = {k: (ERASED_ACTOR if v == actor else v) for k, v in result.items() if k != "reason"}
+    if isinstance(out.get("approved_by"), list):
+        out["approved_by"] = [ERASED_ACTOR if a == actor else a for a in out["approved_by"]]
+    if "reason" in result and result.get("decided_by") != actor and result.get("denied_by") != actor:
+        out["reason"] = result["reason"]  # another person's words stay
+    return out
 
 
 class ApprovalStore:
@@ -176,20 +192,52 @@ class ApprovalStore:
     # --- data-subject requests (privacy/data_subject.py) --------------------------------
 
     def export_subject(self, actor: str) -> list[dict[str, Any]]:
-        """Approval records the actor requested."""
-        return [row for row in self.list() if actor in proposal_requesters(row.get("proposal") or {})]
+        """The approvals the actor requested, in full, and the actor's decisions on others' requests."""
+        out: list[dict[str, Any]] = []
+        for row in self.list():
+            result = row.get("result") or {}
+            if actor in proposal_requesters(row.get("proposal") or {}):
+                out.append(row)
+            elif actor in _deciders(result):
+                out.append({"id": row["id"], "role": "decider", "status": row.get("status"), "decided_at": row.get("decided_at"), "result": result})
+        return out
 
     def erase_subject(self, actor: str) -> int:
-        """Delete the approval records the actor requested, and their dual-approval rows."""
-        ids = [row["id"] for row in self.export_subject(actor)]
-        if not ids:
-            return 0
+        """Data-subject erasure: anonymize the actor in every approval, withdraw what they left pending.
+
+        - A request by the actor: requester fields become [erased] and argument
+          content is withheld; a pending one is withdrawn (denied).
+        - A decision by the actor on someone else's request: the decider becomes
+          [erased] and the reason they wrote is cleared. A pending dual approval
+          loses the actor's lone first approval (DualApprovalStore.erase_subject).
+        The security audit chain keeps the real identities: it is the governance
+        record of who requested and approved what (SECURITY.md, Data-Subject Requests).
+        Returns the records changed.
+        """
+        changed = 0
+        now = time.time()
         with connect_sqlite(self.db_path) as con:
-            con.executemany("DELETE FROM approvals WHERE id = ?", [(approval_id,) for approval_id in ids])
-        erase_dual = getattr(getattr(self, "dual_approval_store", None), "erase_approvals", None)
+            con.execute("BEGIN IMMEDIATE")
+            for approval_id, status, proposal_json, result_json in con.execute("SELECT id, status, proposal, result FROM approvals").fetchall():
+                proposal = json.loads(proposal_json or "{}")
+                result = json.loads(result_json) if result_json else {}
+                new_status, new_proposal, new_result = status, proposal, result
+                if actor in proposal_requesters(proposal):
+                    new_proposal = anonymized_request(proposal, actor)
+                    if status == "pending":
+                        new_status, new_result = "denied", {**result, "withdrawn": "requester erased"}
+                if actor in _deciders(new_result):
+                    new_result = _anonymized_decision(new_result, actor)
+                if (new_status, new_proposal, new_result) != (status, proposal, result):
+                    con.execute(
+                        "UPDATE approvals SET status = ?, proposal = ?, result = ?, decided_at = COALESCE(decided_at, ?) WHERE id = ?",
+                        (new_status, json.dumps(new_proposal, ensure_ascii=False), json.dumps(new_result, ensure_ascii=False), now, approval_id),
+                    )
+                    changed += 1
+        erase_dual = getattr(getattr(self, "dual_approval_store", None), "erase_subject", None)
         if callable(erase_dual):
-            erase_dual(ids)
-        return len(ids)
+            changed += int(erase_dual(actor))
+        return changed
 
     @staticmethod
     def _requires_dual_approval(proposal: dict[str, Any]) -> bool:

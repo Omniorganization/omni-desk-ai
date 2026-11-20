@@ -92,6 +92,18 @@ class SQLiteAgentRunIdempotencyStore:
         with connect_sqlite(self.db_path) as con:
             con.execute("DELETE FROM agent_run_idempotency WHERE scope_key=? AND status='running'", (scope,))
 
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Data-subject export: the actor's replay records (which request, when, and its stored answer)."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute("SELECT request_key, source_device, status, created_at, expires_at, response_json FROM agent_run_idempotency WHERE actor = ?", (actor,)).fetchall()
+        keys = ["request_key", "source_device", "status", "created_at", "expires_at"]
+        return [{**dict(zip(keys, row)), "response": json.loads(row[-1]) if row[-1] else None} for row in rows]
+
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: delete the actor's replay records."""
+        with connect_sqlite(self.db_path) as con:
+            return int(con.execute("DELETE FROM agent_run_idempotency WHERE actor = ?", (actor,)).rowcount or 0)
+
 
 class JsonStateAgentRunIdempotencyStore:
     namespace = "agent_run_idempotency"
@@ -150,3 +162,15 @@ class JsonStateAgentRunIdempotencyStore:
         for row in self.state.list(self.namespace, limit=1000):
             if float(row.get("expires_at") or 0.0) <= now:
                 self.state.delete(self.namespace, str(row.get("scope_key") or ""))
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Data-subject export: the actor's replay records (which request, when, and its stored answer)."""
+        return [{k: row.get(k) for k in ("request_key", "source_device", "status", "created_at", "expires_at", "response")} for row in self.state.list(self.namespace, limit=10_000) if row.get("actor") == actor]
+
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: delete the actor's replay records."""
+        erased = 0
+        for row in self.state.list(self.namespace, limit=10_000):
+            if row.get("actor") == actor and self.state.delete(self.namespace, str(row.get("scope_key") or "")):
+                erased += 1
+        return erased

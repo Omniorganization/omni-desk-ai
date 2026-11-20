@@ -127,6 +127,18 @@ class SQLiteSideEffectIdempotencyStore:
     def close(self) -> None:
         return None
 
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Data-subject export: the actor's replay records (which request, when, and its stored answer)."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute("SELECT route, resource_id, request_key, status, created_at, expires_at, response_json FROM side_effect_idempotency WHERE actor = ?", (actor,)).fetchall()
+        keys = ["route", "resource_id", "request_key", "status", "created_at", "expires_at"]
+        return [{**dict(zip(keys, row)), "response": json.loads(row[-1]) if row[-1] else None} for row in rows]
+
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: delete the actor's replay records."""
+        with connect_sqlite(self.db_path) as con:
+            return int(con.execute("DELETE FROM side_effect_idempotency WHERE actor = ?", (actor,)).rowcount or 0)
+
 
 class JsonStateSideEffectIdempotencyStore:
     namespace = "side_effect_idempotency"
@@ -198,3 +210,15 @@ class JsonStateSideEffectIdempotencyStore:
 
     def close(self) -> None:
         return None
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Data-subject export: the actor's replay records (which request, when, and its stored answer)."""
+        return [{k: row.get(k) for k in ("route", "resource_id", "request_key", "status", "created_at", "expires_at", "response")} for row in self.state.list(self.namespace, limit=10_000) if row.get("actor") == actor]
+
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: delete the actor's replay records."""
+        erased = 0
+        for row in self.state.list(self.namespace, limit=10_000):
+            if row.get("actor") == actor and self.state.delete(self.namespace, str(row.get("scope_key") or "")):
+                erased += 1
+        return erased

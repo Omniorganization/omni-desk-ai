@@ -48,6 +48,9 @@ def _service(cfg: Any, rt: Any) -> DataSubjectService:
         "app_sync": getattr(rt, "app_sync", None),
         # Every inbound task message (sender, text, raw payload) and its result.
         "jobs": getattr(rt, "job_queue", None),
+        # Replay caches of side-effecting requests: the actor, the request key and the stored answer.
+        "agent_run_idempotency": getattr(rt, "agent_run_idempotency", None),
+        "side_effect_idempotency": getattr(rt, "side_effect_idempotency", None),
     }
     admin_log = getattr(getattr(rt, "admin_auth", None), "audit_log", None)
     retained = {
