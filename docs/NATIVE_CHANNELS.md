@@ -106,11 +106,11 @@ The page access token is sent as `Authorization: Bearer`, not `?access_token=`, 
 | Channel | Live mode today | What the run exercises |
 |---|---|---|
 | Slack | send-receive | `auth.test`; Socket Mode (`apps.connections.open`, no public URL); `SlackChannel.send_text` after the socket is up; the reply as an Events API payload through `SlackChannel.parse_webhook` (user and channel allowlists); every envelope acknowledged |
-| Feishu / Lark | send-only | tenant access token; `send_text` to the test user's `open_id`. Receiving needs the long-connection event client (not implemented yet) or a public webhook |
+| Feishu / Lark | send-receive | tenant access token; the long-connection event mode (`/callback/ws/endpoint` → WebSocket, protobuf frames, no public URL); `send_text` to the test user's `open_id` once connected; the reply as an `im.message.receive_v1` event through `parse_webhook` (open_id allowlist); every event acknowledged with `biz_rt`. The console saves "receive events through a long connection" only while one is online, so save it during the first run |
 | WhatsApp Cloud | send-only | phone-number probe; the approved `hello_world` template to the verified test recipient. Inbound needs a public HTTPS webhook, deferred until one exists |
 | Telegram | none (no test account) | covered only by `getUpdates` polling and recorded-fixture tests; no live run has happened |
 
-Slack's live receive path is Socket Mode, which the gateway itself does not use (its Slack inbound is the signed Events API webhook); the run proves real event delivery and parsing, not the HTTP signature check, which stays covered by unit tests.
+Slack's live receive path is Socket Mode and Feishu/Lark's is the long connection; the gateway itself does not use either yet (its inbound for both is the signed webhook), so these runs prove real event delivery and parsing, not the HTTP signature checks, which stay covered by unit tests.
 
 The run needs a `channel-live` GitHub environment (Settings → Environments; add required reviewers to gate runs). The owner sets each secret with `gh secret set NAME --env channel-live`; a channel only needs its own:
 

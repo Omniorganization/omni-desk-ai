@@ -343,3 +343,103 @@ def test_feishu_send_only_sends_json_string_content_to_the_open_id(runner, monke
     send = next(kwargs for method, url, kwargs in provider.calls if url.endswith("/im/v1/messages"))
     assert send["params"] == {"receive_id_type": "open_id"} and json.loads(send["json"]["content"])["text"].startswith("OmniDesk live contract")
     assert result["checks"]["send"]["provider_message_id"] == "om_placeholder000000000000000001"
+
+
+# ----------------------------------------------------------------------------- Feishu long connection
+
+from omnidesk_agent.channels.lark_long_connection import decode_frame, encode_frame  # noqa: E402
+
+
+def _ws_event_frame(text: str, *, message_id="m-1", total=1, seq=0, chunk=None, sender="ou_placeholder"):
+    event = copy.deepcopy(_shape_raw("feishu", "im_message_receive_v1")["event"])
+    event["event"]["message"]["content"] = json.dumps({"text": text})
+    event["event"]["sender"]["sender_id"]["open_id"] = sender
+    payload = json.dumps(event).encode()
+    if chunk is not None:
+        payload = chunk(payload)
+    return encode_frame({"SeqID": 7, "LogID": 99, "service": 33554678, "method": 1, "headers": [("type", "event"), ("message_id", message_id), ("sum", str(total)), ("seq", str(seq)), ("trace_id", "t1")], "payload": payload})
+
+
+def _shape_raw(platform: str, name: str) -> Any:
+    return json.loads((ROOT / "tests" / "fixtures" / "channels" / platform / f"{name}.json").read_text(encoding="utf-8"))
+
+
+class FakeLarkSocket:
+    def __init__(self, frames):
+        self.frames = list(frames)
+        self.sent: list[dict] = []
+
+    async def recv(self):
+        if not self.frames:
+            await asyncio.sleep(3600)
+        item = self.frames.pop(0)
+        return item() if callable(item) else item
+
+    async def send(self, data):
+        self.sent.append(decode_frame(data))
+
+
+class RecordedFeishu(RecordedProvider):
+    def __init__(self):
+        super().__init__({"internal": _shape("feishu", "tenant_access_token"), "messages": _shape("feishu", "message_sent"), "endpoint": _shape("feishu", "ws_endpoint")})
+
+    @property
+    def sent_text(self):
+        for method, url, kwargs in self.calls:
+            if url.endswith("/im/v1/messages"):
+                return json.loads(kwargs["json"]["content"])["text"]
+        return None
+
+
+def _code_of(provider):
+    return provider.sent_text.split("code ", 1)[1].split(" ", 1)[0]
+
+
+@pytest.fixture
+def feishu_env(monkeypatch):
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_placeholder")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
+    monkeypatch.setenv("FEISHU_LIVE_OPEN_ID", "ou_placeholder")
+
+
+def test_frame_codec_round_trips_and_writes_required_zero_fields():
+    ping = encode_frame({"SeqID": 0, "LogID": 0, "service": 5, "method": 0, "headers": [("type", "ping")]})
+    # Fields 1-4 present even when zero (the Go decoder rejects frames without them).
+    assert ping == bytes.fromhex("0800" "1000" "1805" "2000" "2a0c" "0a0474797065" "120470696e67")
+    frame = {"SeqID": 300, "LogID": 2**40, "service": 33554678, "method": 1, "headers": [("type", "event"), ("sum", "1")], "payload": b'{"x":1}', "LogIDNew": "abc"}
+    assert decode_frame(encode_frame(frame)) == frame
+
+
+def test_feishu_send_receive_over_the_long_connection(runner, feishu_env):
+    provider = RecordedFeishu()
+    socket = FakeLarkSocket([
+        encode_frame({"SeqID": 0, "LogID": 0, "service": 33554678, "method": 0, "headers": [("type", "pong")], "payload": b'{"PingInterval": 90}'}),
+        lambda: _ws_event_frame("someone else", message_id="m-other", sender="ou_stranger"),
+        lambda: _ws_event_frame(f"here: {_code_of(provider)}", message_id="m-2", total=2, seq=0, chunk=lambda p: p[: len(p) // 2]),
+        lambda: _ws_event_frame(f"here: {_code_of(provider)}", message_id="m-2", total=2, seq=1, chunk=lambda p: p[len(p) // 2:]),
+    ])
+    connect = FakeConnect([socket])
+
+    result = asyncio.run(runner.run_feishu(mode="send-receive", reply_timeout_seconds=60, http=provider, connect=connect))
+
+    checks = result["checks"]
+    endpoint = next(kwargs for method, url, kwargs in provider.calls if url.endswith("/callback/ws/endpoint"))
+    assert endpoint["json"] == {"AppID": "cli_placeholder", "AppSecret": "secret"}
+    assert connect.urls[0].startswith("wss://msg-frontier.feishu.cn/")
+    # First frame out is the ping; then one ACK per complete event (the
+    # stranger's message is acknowledged but filtered by the allowlist).
+    assert socket.sent[0]["method"] == 0 and ("type", "ping") in socket.sent[0]["headers"]
+    acks = socket.sent[1:]
+    assert len(acks) == 2 and all(json.loads(ack["payload"]) == {"code": 200} for ack in acks)
+    assert all(any(key == "biz_rt" for key, _ in ack["headers"]) for ack in acks)
+    assert ("message_id", "m-2") in acks[1]["headers"] and acks[1]["SeqID"] == 7 and acks[1]["service"] == 33554678
+    assert checks["receive"]["provider_message_id"] == "om_reply_placeholder00000000000001"
+    assert checks["receive"]["event_id"] == "5e3702a84e847582be8db7fb73283c02"
+    assert "ou_placeholder" not in json.dumps(checks)
+
+
+def test_feishu_endpoint_refusal_is_a_clear_config_error(runner, feishu_env):
+    provider = RecordedFeishu()
+    provider.responses["endpoint"] = {"code": 1000040346, "msg": "app_id is invalid", "data": {"URL": ""}}
+    with pytest.raises(Exception, match="1000040346"):
+        asyncio.run(runner.run_feishu(mode="send-receive", reply_timeout_seconds=60, http=provider, connect=FakeConnect([])))

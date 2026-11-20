@@ -1,0 +1,2 @@
+{"_source": "Shape of POST https://open.feishu.cn/callback/ws/endpoint (lark_oapi ws client, ws/const.py GEN_ENDPOINT_URI); URL and ids are placeholders.",
+ "response": {"code": 0, "msg": "ok", "data": {"URL": "wss://msg-frontier.feishu.cn/ws/v2?device_id=7000000000000000001&service_id=33554678&access_key=placeholder&ticket=placeholder", "ClientConfig": {"ReconnectCount": -1, "ReconnectInterval": 120, "ReconnectNonce": 30, "PingInterval": 120}}}}

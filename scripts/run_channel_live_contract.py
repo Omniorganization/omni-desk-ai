@@ -11,9 +11,12 @@ truncated SHA-256 digests.
   ``SlackChannel.send_text`` posts a one-time code to the test channel, and
   the test user's reply must arrive as an Events API payload that
   ``SlackChannel.parse_webhook`` accepts through its allowlists.
-- feishu / lark: a tenant access token, then ``send_text`` of the code to the
-  test user's open_id (p2p). Receiving uses the platform's long-connection
-  mode once it is implemented; until then only send-only runs pass.
+- feishu / lark: a tenant access token, then the long connection (no public
+  URL); once it is up, ``send_text`` sends the code to the test user's open_id
+  (p2p) and the reply must arrive as an ``im.message.receive_v1`` event that
+  ``parse_webhook`` accepts through the open_id allowlist. The console only
+  saves "receive events through a long connection" while one is online, so
+  the first send-receive run is the moment to save that setting.
 - whatsapp: phone-number probe, then the approved ``hello_world`` template
   to the verified test recipient (send-only; inbound needs a public HTTPS
   webhook, which is deferred).
@@ -41,6 +44,7 @@ if str(ROOT) not in sys.path:
 
 from omnidesk_agent.channels.http_client import ChannelHttpClient  # noqa: E402
 from omnidesk_agent.channels.lark_feishu import FeishuChannel, LarkChannel  # noqa: E402
+from omnidesk_agent.channels.lark_long_connection import LarkLongConnection  # noqa: E402
 from omnidesk_agent.channels.native_messaging import SlackChannel  # noqa: E402
 from omnidesk_agent.channels.provider_errors import ensure_provider_success  # noqa: E402
 from omnidesk_agent.channels.slack_socket_mode import SlackSocketModeReceiver  # noqa: E402
@@ -222,13 +226,11 @@ async def run_slack(*, mode: str, reply_timeout_seconds: int, http: Optional[Cha
     return {"channel": "slack", "mode": mode, "checks": checks}
 
 
-async def _run_lark_family(name: str, *, mode: str, reply_timeout_seconds: int, http: Optional[ChannelHttpClient] = None) -> dict[str, Any]:
+async def _run_lark_family(name: str, *, mode: str, reply_timeout_seconds: int, http: Optional[ChannelHttpClient] = None, connect: Any = None) -> dict[str, Any]:
     prefix = name.upper()
     _required_env(f"{prefix}_APP_ID")
     _required_env(f"{prefix}_APP_SECRET")
     open_id = _required_env(f"{prefix}_LIVE_OPEN_ID")
-    if mode == "send-receive":
-        raise LiveContractFailure(f"{name} receive needs the long-connection event client, which is not implemented yet; run send-only")
     channel = (FeishuChannel(FeishuConfig(enabled=True, allowed_open_ids=[open_id])) if name == "feishu" else LarkChannel(LarkConfig(enabled=True, allowed_open_ids=[open_id])))
     if http is not None:
         channel.http = http
@@ -236,11 +238,44 @@ async def _run_lark_family(name: str, *, mode: str, reply_timeout_seconds: int, 
     await channel._tenant_access_token()
     checks["auth"] = {"passed": True, "method": "auth/v3/tenant_access_token/internal"}
     code = _new_code()
-    sent = await channel.send_text(open_id, _prompt(code, reply_timeout_seconds, "to this message"), idempotency_key=f"live-contract-{code}")
-    if not sent.get("message_id"):
-        raise LiveContractFailure("im/v1/messages returned no message_id")
-    checks["send"] = {"passed": True, "adapter": f"{type(channel).__name__}.send_text", "provider_message_id": sent["message_id"], "open_id_sha256": digest(open_id)}
-    checks["receive"] = {"passed": None, "skipped": "send-only run"}
+    text = _prompt(code, reply_timeout_seconds, "to this message")
+    sent_state: dict[str, Any] = {}
+
+    async def send() -> None:
+        sent_state["at"] = time.monotonic()
+        sent_state["sent"] = await channel.send_text(open_id, text, idempotency_key=f"live-contract-{code}")
+
+    def record_send() -> None:
+        sent = sent_state.get("sent") or {}
+        if not sent.get("message_id"):
+            raise LiveContractFailure("im/v1/messages returned no message_id", checks=checks)
+        checks["send"] = {"passed": True, "adapter": f"{type(channel).__name__}.send_text", "provider_message_id": sent["message_id"], "open_id_sha256": digest(open_id)}
+
+    if mode == "send-only":
+        await send()
+        record_send()
+        checks["receive"] = {"passed": None, "skipped": "send-only run"}
+        return {"channel": name, "mode": mode, "checks": checks}
+
+    inbox: list[Any] = []
+    kwargs = {"connect": connect} if connect is not None else {}
+    connection = LarkLongConnection(channel, inbox.append, http=channel.http, **kwargs)
+    received = await connection.run_until(lambda: any(code in message.text for message in inbox), timeout_seconds=reply_timeout_seconds, on_connected=send)
+    checks["long_connection"] = {"passed": "sent" in sent_state, "events_acknowledged": connection.acknowledged}
+    if "sent" in sent_state:
+        record_send()
+    if not received:
+        raise LiveContractFailure(f"no reply containing the code from the allowlisted test user within {reply_timeout_seconds}s", checks=checks)
+    reply = next(message for message in inbox if code in message.text)
+    header = (reply.raw or {}).get("header") or {}
+    checks["receive"] = {
+        "passed": True,
+        "adapter": "LarkLongConnection -> parse_webhook (open_id allowlist)",
+        "provider_message_id": reply.message_id,
+        "event_id": header.get("event_id"),
+        "sender_id_sha256": digest(reply.sender_id),
+        "seconds_after_send": round(time.monotonic() - sent_state["at"], 1),
+    }
     return {"channel": name, "mode": mode, "checks": checks}
 
 

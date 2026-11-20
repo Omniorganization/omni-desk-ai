@@ -23,7 +23,7 @@ on:
           - whatsapp
           - telegram
       mode:
-        description: send-receive needs the test user to reply with the code the run sends (slack, telegram); send-only checks auth and sending (all channels)
+        description: send-receive needs the test user to reply with the code the run sends (slack, feishu, lark, telegram); send-only checks auth and sending (all channels)
         type: choice
         required: true
         default: send-receive
