@@ -80,7 +80,11 @@ class OutboundDispatcher:
             channel = str(message.get("channel", "unknown"))
             capability = capability_for(channel)
             ambiguous_categories = {"timeout", "network_error", "provider_5xx"}
-            if info.retryable and capability.mode != "native" and info.category in ambiguous_categories:
+            # A channel error that knows the request never left (request_sent is
+            # False) is safe to retry; unknown or sent means it may have arrived.
+            never_sent = getattr(exc, "request_sent", None) is False
+            maybe_delivered = info.retryable and capability.mode != "native" and info.category in ambiguous_categories and not never_sent
+            if maybe_delivered:
                 self.store.mark_ambiguous(
                     message_id,
                     str(exc),
@@ -93,7 +97,7 @@ class OutboundDispatcher:
             inc = getattr(metrics, "inc", None)
             if callable(inc):
                 inc("omnidesk_outbound_failures_total", channel=channel, category=info.category)
-                if info.retryable and capability.mode != "native" and info.category in ambiguous_categories:
+                if maybe_delivered:
                     inc("omnidesk_outbound_ambiguous_send_total", channel=channel, category=info.category)
                 elif info.dead_letter_now or not info.retryable:
                     inc("omnidesk_outbound_dead_letter_total", channel=channel, category=info.category)

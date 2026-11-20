@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional, Union, cast
 
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.core.outbound_messages import STALE_SEND_ERROR, stale_send_is_resendable
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
 from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
@@ -1242,7 +1243,10 @@ class PostgresOutboundMessageStore:
         count = 0
         for row in self.state.list(self.namespace, status="running", limit=1000):
             if row.get("locked_at") is not None and float(row.get("locked_at") or 0) <= cutoff:
-                self.mark_failed(row["id"], f"stale running outbound recovered after {lease_seconds}s lease")
+                if stale_send_is_resendable(str(row.get("channel") or "")):
+                    self.mark_failed(row["id"], f"stale running outbound recovered after {lease_seconds}s lease")
+                else:
+                    self.mark_ambiguous(row["id"], STALE_SEND_ERROR, category="stale_running")
                 count += 1
         return count
 

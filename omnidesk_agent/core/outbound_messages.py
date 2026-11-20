@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.channels.idempotency import capability_for
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
@@ -13,6 +14,17 @@ from omnidesk_agent.storage.sqlite import connect_sqlite
 TERMINAL_OUTBOUND_STATUSES = {"sent", "dead_letter", "cancelled"}
 ACTIVE_OUTBOUND_STATUSES = {"pending", "retry", "running"}
 RECONCILIATION_OUTBOUND_STATUSES = {"ambiguous"}
+STALE_SEND_ERROR = "send interrupted before its outcome was recorded; reconcile with the provider before re-sending"
+
+
+def stale_send_is_resendable(channel: str) -> bool:
+    """Whether a send that was claimed but never finished may simply be sent again.
+
+    Only a provider that deduplicates by our idempotency key ('native') makes a
+    second send harmless; for every other one the first send may have been
+    delivered, so the message must be reconciled instead of re-sent.
+    """
+    return capability_for(str(channel or "")).mode == "native"
 
 
 class OutboundMessageStore:
@@ -159,14 +171,25 @@ class OutboundMessageStore:
         now = time.time()
         cutoff = now - max(0, int(lease_seconds))
         recovered = 0
+        ambiguous = 0
         with connect_sqlite(self.db_path) as con:
             rows = con.execute(
-                "SELECT id, retry_count, max_retries FROM outbound_messages WHERE status='running' AND locked_at IS NOT NULL AND locked_at <= ?",
+                "SELECT id, retry_count, max_retries, channel FROM outbound_messages WHERE status='running' AND locked_at IS NOT NULL AND locked_at <= ?",
                 (cutoff,),
             ).fetchall()
-            for message_id, retry_count, max_retries in rows:
+            for message_id, retry_count, max_retries, channel in rows:
                 next_count = int(retry_count) + 1
-                if next_count > int(max_retries):
+                if not stale_send_is_resendable(channel):
+                    con.execute(
+                        """
+                        UPDATE outbound_messages
+                        SET status='ambiguous', next_retry_at=0, locked_at=NULL, updated_at=?, last_error=?, error_category='stale_running'
+                        WHERE id=?
+                        """,
+                        (now, STALE_SEND_ERROR, message_id),
+                    )
+                    ambiguous += 1
+                elif next_count > int(max_retries):
                     con.execute(
                         """
                         UPDATE outbound_messages
@@ -195,6 +218,8 @@ class OutboundMessageStore:
                 recovered += 1
         if recovered:
             self._metric("omnidesk_outbound_stale_recovered_total")
+        if ambiguous:
+            self._metric("omnidesk_outbound_ambiguous_send_total", category="stale_running")
         return recovered
 
     def mark_sent(self, message_id: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None) -> None:
