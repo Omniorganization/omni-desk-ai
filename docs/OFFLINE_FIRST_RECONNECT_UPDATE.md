@@ -74,11 +74,35 @@ When the JSON AppSync store is created with `local_outbox_enabled=True` or the r
 
 `GET /app/sync?since_seq=N` keeps the existing incremental pull contract.
 
-`POST /app/sync` accepts uploaded `operations` and downloaded `remote_events`, records inbox/outbox dedupe, updates cursors, and opens conflicts for idempotency payload mismatches. Conflicts require manual review unless a reviewed merge strategy is implemented.
+`POST /app/sync` accepts uploaded `operations` and downloaded `remote_events`, records inbox/outbox dedupe and cursors, applies uploaded conversations, messages and tasks, and answers per operation in `uploaded.operations`: `applied`, `unchanged`, `duplicate`, `conflict` (with `conflict_id`), `server_kept`, `client_applied`, `merged` or `rejected`. Approvals, notifications and desktop-runtime tasks are never accepted from an upload.
+
+An upload that names a record the server already has with different content is a conflict, and the request's `conflict_policy` decides it:
+
+| Policy | Effect |
+|---|---|
+| `manual-review` (default) | nothing is applied; the conflict stays open |
+| `server-wins` | the server's record stays; the conflict is recorded as resolved |
+| `client-wins` | the uploaded value replaces the server's for conversation titles and for titles of tasks still queued without an approval; messages (append-only) and approved, claimed or desktop tasks are never rewritten, so those conflicts stay open |
+| `merge` | needs `base_<field>` (the value the client last saw, e.g. `base_title`); if only one side changed since then, that side wins, otherwise the conflict stays open |
+
+The same policies apply when a downloaded remote event reuses a queued local operation's idempotency key with another payload: `server-wins` drops the local operation, `client-wins` keeps it queued to send again, and the others open a conflict. A re-uploaded operation the server already received is a `duplicate` and is not applied again, so a retry never becomes a conflict.
+
+`GET /app/sync/conflicts?status=open|resolved` lists the caller's own conflicts, and `POST /app/sync/conflicts/{conflict_id}/resolve` with `{"resolution": "keep_server" | "apply_client" | "merged", "payload": {...}}` settles one (409 if it is already resolved; 403 for an approved, claimed or desktop task). Another actor's conflict answers 404.
 
 Inbox dedupe and outbox matching only consider the caller's own records: a remote event id or idempotency key is matched within the authenticated actor and its organization, never against another actor's queued operations.
 
-The reconnect worker always syncs outbox first and only then calls the update checker. If upload fails or conflicts remain open, update checking is skipped.
+### Reconnect worker and the daemon's upload target
+
+The daemon's reconnect worker uploads the outbox with `omnidesk_agent/offline/uploader.py` to the remote gateway's `POST /app/sync`:
+
+| Variable | Meaning |
+|---|---|
+| `OMNIDESK_SYNC_UPLOAD_URL` | remote gateway base URL (default `gateway.public_base_url`); `https` required except for a loopback host |
+| `OMNIDESK_SYNC_UPLOAD_TOKEN` | bearer token of the remote actor the queued operations belong to |
+| `OMNIDESK_SYNC_UPLOAD_ACTOR` | that actor (default `system`); other actors' operations are not uploaded under this token and stay queued |
+| `OMNIDESK_SYNC_CONFLICT_POLICY` | `manual-review` (default), `server-wins`, `client-wins` or `merge` |
+
+Without a URL and token the outbox stays queued and the worker reports that no upload target is configured. Each operation is marked from the gateway's answer: delivered ones `synced`, ones the gateway holds as conflicts `conflict` (resolve them at the gateway; they are not sent again), and ones it refuses `rejected` (terminal; for example events the node queued on its own that are not uploadable). Conflicts no longer fail the sync. The update check runs after a successful upload; it is skipped when the upload fails, and deferred while this node has its own open conflicts. The worker does not download remote events.
 
 ## Signed Runtime Updates
 

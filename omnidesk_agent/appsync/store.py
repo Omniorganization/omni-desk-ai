@@ -404,7 +404,8 @@ class LocalOutboxRecord:
     idempotency_key: Optional[str] = None
     payload_hash: str = ""
     conflict_policy: Literal["server-wins", "client-wins", "manual-review", "merge"] = "manual-review"
-    status: Literal["pending", "syncing", "synced", "failed", "conflict"] = "pending"
+    # rejected: the remote gateway will never accept it (terminal, not retried).
+    status: Literal["pending", "syncing", "synced", "failed", "conflict", "rejected"] = "pending"
     retry_count: int = 0
     next_retry_at: Optional[float] = None
     remote_seq: Optional[int] = None
@@ -893,6 +894,33 @@ class AppSyncStore:
             self._persist()
             return self._record(item)
 
+    def mark_local_operation_rejected(self, operation_id: str, *, reason: str) -> dict[str, Any]:
+        """The remote gateway refused the operation; it is not sent again."""
+        with self._lock:
+            item = self.local_outbox.get(operation_id)
+            if not item:
+                raise KeyError("local outbox operation not found")
+            item.status = "rejected"
+            item.last_error = str(reason)[:1000]
+            item.next_retry_at = None
+            item.updated_at = _now()
+            self._append_operation_log_locked("operation.rejected", {"operation_id": operation_id, "reason": item.last_error, "organization_id": item.organization_id})
+            self._persist()
+            return self._record(item)
+
+    def mark_local_operation_conflict(self, operation_id: str, *, detail: str) -> dict[str, Any]:
+        """The remote gateway received the operation and holds it as a conflict for review."""
+        with self._lock:
+            item = self.local_outbox.get(operation_id)
+            if not item:
+                raise KeyError("local outbox operation not found")
+            item.status = "conflict"
+            item.last_error = str(detail)[:1000]
+            item.updated_at = _now()
+            self._append_operation_log_locked("operation.conflict", {"operation_id": operation_id, "detail": item.last_error, "organization_id": item.organization_id})
+            self._persist()
+            return self._record(item)
+
     def record_sync_cursor(self, *, actor: str, remote: str, since_seq: int, device_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             organization_id = self._organization_for_actor(actor)
@@ -937,6 +965,22 @@ class AppSyncStore:
                     if key and item.idempotency_key == key and item.status in {"pending", "failed", "syncing"}
                     and item.actor == actor and self._normalize_org_id(item.organization_id) == organization_id
                 ]
+                if matched and any(item.payload_hash != payload_hash for item in matched) and conflict_policy in {"server-wins", "client-wins"}:
+                    # server-wins: the remote version supersedes the queued local one.
+                    # client-wins: the local operation stays queued and is sent again.
+                    closed = SyncConflictRecord(
+                        conflict_id=_id("conflict"), operation_id=matched[0].operation_id, remote_event_id=remote_event_id,
+                        conflict_type="idempotency_payload_mismatch", strategy=conflict_policy, status="resolved",
+                        actor=actor or "unknown", organization_id=organization_id, local_payload=dict(matched[0].payload or {}),
+                        remote_payload=dict(payload or {}), resolved_at=_now(),
+                    )
+                    self.sync_conflicts[closed.conflict_id] = closed
+                    self._append_operation_log_locked("sync.conflict.resolved", {"conflict_id": closed.conflict_id, "operation_id": closed.operation_id, "strategy": conflict_policy, "organization_id": organization_id})
+                    if conflict_policy == "server-wins":
+                        self.mark_local_operation_synced(matched[0].operation_id, remote_seq=remote_seq)
+                    self.local_inbox[inbox_key] = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied")
+                    applied += 1
+                    continue
                 if matched and any(item.payload_hash != payload_hash for item in matched):
                     conflict = self._record_sync_conflict_locked(
                         operation_id=matched[0].operation_id,
@@ -1020,6 +1064,52 @@ class AppSyncStore:
         self._append_operation_log_locked("sync.conflict.opened", {"conflict_id": conflict_id, "operation_id": operation_id, "strategy": strategy, "organization_id": organization_id})
         return self._record(conflict)
 
+    def list_sync_conflicts(self, *, actor: str, status: Optional[str] = "open", limit: int = 200) -> list[dict[str, Any]]:
+        """The actor's own sync conflicts, newest first."""
+        with self._lock:
+            organization_id = self._organization_for_actor(actor)
+            values = [
+                item for item in self.sync_conflicts.values()
+                if item.actor == actor and self._normalize_org_id(item.organization_id) == organization_id and (not status or item.status == status)
+            ]
+            ordered = sorted(values, key=lambda item: item.created_at, reverse=True)
+            return [self._record(item) for item in ordered[: max(1, min(int(limit or 200), 1000))]]
+
+    def resolve_sync_conflict(self, *, actor: str, conflict_id: str, resolution: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Settle one of the actor's open conflicts: keep_server, apply_client or merged."""
+        from omnidesk_agent.appsync.offline_sync_apply import RESOLUTIONS, json_records, resolve_record_conflict
+
+        if resolution not in RESOLUTIONS:
+            raise ValueError("resolution must be keep_server, apply_client or merged")
+        with self._lock:
+            conflict = self.sync_conflicts.get(conflict_id)
+            if conflict is None or conflict.actor != actor or self._normalize_org_id(conflict.organization_id) != self._organization_for_actor(actor):
+                raise KeyError("conflict not found")
+            if conflict.status != "open":
+                raise ValueError("conflict already resolved")
+            if conflict.conflict_type == "idempotency_payload_mismatch":
+                operation = self.local_outbox.get(conflict.operation_id)
+                if operation is not None:
+                    if resolution == "keep_server":
+                        operation.status = "synced"
+                    else:
+                        if resolution == "merged":
+                            if not isinstance(payload, dict):
+                                raise ValueError("a merged resolution needs the merged payload")
+                            operation.payload = dict(payload)
+                            operation.payload_hash = _fingerprint(operation.payload)
+                        operation.status = "pending"
+                        operation.next_retry_at = None
+                    operation.updated_at = _now()
+            else:
+                resolve_record_conflict(json_records(self, actor), conflict, resolution=resolution, payload=payload)
+            conflict.status = "resolved"
+            conflict.resolved_at = _now()
+            conflict.strategy = cast(Any, {"keep_server": "server-wins", "apply_client": "client-wins", "merged": "merge"}[resolution])
+            self._append_operation_log_locked("sync.conflict.resolved", {"conflict_id": conflict_id, "operation_id": conflict.operation_id, "strategy": conflict.strategy, "organization_id": conflict.organization_id})
+            self._persist()
+            return self._record(conflict)
+
     def replay_operation_log(self, *, actor: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:
         with self._lock:
             values = list(self.operation_log)
@@ -1044,6 +1134,7 @@ class AppSyncStore:
                     "pending": sum(1 for item in outbox if item.status in {"pending", "failed"}),
                     "synced": sum(1 for item in outbox if item.status == "synced"),
                     "conflict": sum(1 for item in outbox if item.status == "conflict"),
+                    "rejected": sum(1 for item in outbox if item.status == "rejected"),
                 },
                 "inbox": {"received": len(inbox)},
                 "conflicts": {"open": sum(1 for item in conflicts if item.status == "open")},

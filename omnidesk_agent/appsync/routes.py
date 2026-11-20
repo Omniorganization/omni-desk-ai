@@ -1123,6 +1123,38 @@ def register_appsync_routes(
         decision = await admin(request, "viewer")
         return {"ok": True, **await run_blocking(store.sync_state, actor=_actor(decision))}
 
+    @app.get("/app/sync/conflicts")
+    async def app_sync_conflicts(request: Request, status: Optional[str] = "open"):
+        decision = await admin(request, "viewer")
+        if status not in {None, "", "open", "resolved"}:
+            raise HTTPException(422, "status must be open or resolved")
+        conflicts = await run_blocking(store.list_sync_conflicts, actor=_actor(decision), status=status or None)
+        return {"ok": True, "conflicts": conflicts}
+
+    @app.post("/app/sync/conflicts/{conflict_id}/resolve")
+    async def app_resolve_sync_conflict(conflict_id: str, request: Request):
+        decision = await admin(request, "operator")
+        payload = await request.json()
+        resolution = str(payload.get("resolution") or "")
+        merged = payload.get("payload")
+        if merged is not None and not isinstance(merged, dict):
+            raise HTTPException(422, "payload must be an object")
+        try:
+            conflict = await run_blocking(
+                store.resolve_sync_conflict,
+                actor=_actor(decision),
+                conflict_id=conflict_id,
+                resolution=resolution,
+                payload=merged,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "conflict not found") from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409 if "already resolved" in str(exc) else 422, str(exc)) from exc
+        return {"ok": True, "conflict": conflict}
+
     app_sync_cfg = getattr(cfg, "app_sync", None)
     ws_connections = WebSocketConnectionLimiter(
         max_per_actor=int(getattr(app_sync_cfg, "websocket_max_connections_per_actor", 8)),
