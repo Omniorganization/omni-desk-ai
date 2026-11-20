@@ -57,7 +57,11 @@ class JobQueue:
                 )
                 """
             )
+            columns = {row[1] for row in con.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "error_class" not in columns:
+                con.execute("ALTER TABLE jobs ADD COLUMN error_class TEXT")
             con.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_retry ON jobs(status, next_retry_at, created_at)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at, id)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_jobs_channel_source ON jobs(channel, source_key, created_at)")
             apply_migrations(con, [Migration(1, "job_queue_schema_baseline", lambda _con: None)])
 
@@ -195,6 +199,8 @@ class JobQueue:
     def fail(self, job_id: str, error: Union[BaseException, str]) -> dict[str, Any]:
         now = time.time()
         error_text = str(error)[:4000]
+        # The exception class, so dead letters can be grouped without matching text.
+        error_class = type(error).__name__ if isinstance(error, BaseException) else None
         with connect_sqlite(self.db_path) as con:
             row = con.execute("SELECT retry_count, max_retries FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not row:
@@ -210,10 +216,10 @@ class JobQueue:
             con.execute(
                 """
                 UPDATE jobs
-                SET status=?, retry_count=?, next_retry_at=?, locked_at=NULL, updated_at=?, last_error=?
+                SET status=?, retry_count=?, next_retry_at=?, locked_at=NULL, updated_at=?, last_error=?, error_class=?
                 WHERE id=?
                 """,
-                (status, retry_count, next_retry_at, now, error_text, job_id),
+                (status, retry_count, next_retry_at, now, error_text, error_class, job_id),
             )
         self._metric("omnidesk_jobs_failed_total", status=status)
         if status == "dead_letter":
@@ -222,6 +228,43 @@ class JobQueue:
 
     def list_dead_letters(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self.list(status="dead_letter", limit=limit)
+
+    def page_dead_letters(self, *, limit: int = 100, cursor: Optional[str] = None, error_class: Optional[str] = None) -> dict[str, Any]:
+        """Dead letters newest first, `limit` per page, optionally of one error class.
+
+        Pass the returned `next_cursor` to get the following page; it is None on
+        the last page. Pages are stable while new dead letters arrive.
+        """
+        limit = max(1, min(int(limit), 500))
+        clauses, params = ["status='dead_letter'"], []
+        if error_class:
+            clauses.append("error_class=?")
+            params.append(str(error_class))
+        if cursor:
+            created, _, job_id = str(cursor).partition("|")
+            try:
+                created_at = float(created)
+            except ValueError as exc:
+                raise ValueError(f"invalid dead-letter cursor: {cursor!r}") from exc
+            clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            params.extend([created_at, created_at, job_id])
+        sql = (
+            "SELECT id, dedupe_key, channel, message_id, source_key, payload_json, status, retry_count, max_retries, "
+            "next_retry_at, locked_at, created_at, updated_at, last_error, result_json, error_class FROM jobs WHERE "
+            + " AND ".join(clauses)  # fixed fragments; every value is a bound parameter
+            + " ORDER BY created_at DESC, id DESC LIMIT ?"
+        )
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute(sql, (*params, limit + 1)).fetchall()  # nosec B608
+        items = [{**self._row(row[:15]), "error_class": row[15]} for row in rows[:limit]]
+        next_cursor = f"{items[-1]['created_at']!r}|{items[-1]['id']}" if len(rows) > limit else None
+        return {"items": items, "next_cursor": next_cursor}
+
+    def dead_letter_counts(self) -> dict[str, int]:
+        """Dead letters per error class ('unknown' when none was recorded)."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute("SELECT COALESCE(error_class, 'unknown'), COUNT(*) FROM jobs WHERE status='dead_letter' GROUP BY 1").fetchall()
+        return {str(name): int(count) for name, count in rows}
 
     def requeue_dead_letter(self, job_id: str) -> dict[str, Any]:
         now = time.time()
