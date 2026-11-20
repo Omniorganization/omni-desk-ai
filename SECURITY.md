@@ -25,7 +25,7 @@ What the code enforces today:
   - content bound by a digest (`x` next to `x_sha256`: typed text, file bodies, messages, plugin arguments) is withheld; the digest and the approval record identify it.
 - **Approval records** and the run's copy of a pending proposal keep the content the approver judges, with those credentials redacted. Identities such as `token:OMNIDESK_OWNER_TOKEN` are never redacted, because they drive the requester-cannot-approve rule. Execution binding is unaffected: it uses the scope hash computed over the unredacted arguments.
 - **API resource guard:**
-  - `/health` and `/ready` are never rate limited and take no concurrency slot, so liveness keeps answering under load or while the rate-limit store is down;
+  - exactly `GET`/`HEAD /health` is never rate limited and takes no concurrency slot, so liveness keeps answering under load or while the rate-limit store is down; `/ready` stays gated, so a saturated or store-less pod leaves the load balancer;
   - every other route fails closed when the store fails;
   - the PostgreSQL limiter keeps one connection per worker thread, reconnects once, prunes expired windows every 5 minutes, and runs off the event loop.
 - **`omnidesk validate-webhook-signatures`** runs the live `WebhookGuard` path for every enabled inbound channel. It exits 1 in any of these cases:

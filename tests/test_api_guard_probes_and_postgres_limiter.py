@@ -134,7 +134,8 @@ class _ThreadRecordingLimiter:
 
 
 class _Request:
-    def __init__(self, path: str):
+    def __init__(self, path: str, method: str = "GET"):
+        self.method = method
         self.url = types.SimpleNamespace(path=path)
         self.client = types.SimpleNamespace(host="203.0.113.9")
         self.headers = types.SimpleNamespace(get=lambda *_a, **_k: None, getlist=lambda *_a: [])
@@ -160,20 +161,30 @@ def test_shared_store_checks_run_off_the_event_loop():
     assert limiter.threads and loop_thread not in limiter.threads
 
 
-@pytest.mark.parametrize("path", sorted(PROBE_PATHS))
-def test_probes_skip_rate_limits_and_concurrency_caps(path):
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_liveness_probe_skips_rate_limits_and_concurrency_caps(method):
     guard = ChatAwareApiResourceGuard(ApiResourceGuardConfig(max_inflight_requests=1, max_body_bytes=0))
     guard.rate = _ThreadRecordingLimiter(fail=True)  # store down
 
     async def admit():
         held = guard._acquire("general")  # the only slot is taken
         try:
-            release = await guard.before_request(_Request(path))
+            release = await guard.before_request(_Request("/health", method))
             release()
         finally:
             held()
 
     asyncio.run(admit())
+    assert PROBE_PATHS == {"/health"}
+
+
+@pytest.mark.parametrize("path,method", [("/ready", "GET"), ("/health", "POST"), ("/health/", "GET"), ("/healthz", "GET")])
+def test_only_the_exact_liveness_probe_is_exempt(path, method):
+    guard = ChatAwareApiResourceGuard(ApiResourceGuardConfig(max_body_bytes=0))
+    guard.rate = _ThreadRecordingLimiter(fail=True)
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        asyncio.run(guard.before_request(_Request(path, method)))
 
 
 def test_health_answers_while_the_rate_store_is_down(tmp_path):

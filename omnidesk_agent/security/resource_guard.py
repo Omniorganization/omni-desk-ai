@@ -16,10 +16,16 @@ from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
 _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9@._:/-]+")
-# Liveness and readiness probes are cheap, unauthenticated and must keep answering
-# while the API is saturated or the rate-limit store is down; they are never
-# rate limited and never take an in-flight slot.
-PROBE_PATHS = frozenset({"/health", "/ready"})
+# The liveness probe is cheap, unauthenticated, reveals nothing internal and must
+# keep answering while the API is saturated or the rate-limit store is down, or
+# the orchestrator restarts healthy pods. Exactly GET/HEAD /health skips rate
+# limits and in-flight slots; readiness stays gated like every other route.
+PROBE_PATHS = frozenset({"/health"})
+PROBE_METHODS = frozenset({"GET", "HEAD"})
+
+
+def is_liveness_probe(request: Request) -> bool:
+    return request.url.path in PROBE_PATHS and str(getattr(request, "method", "")).upper() in PROBE_METHODS
 
 
 @dataclass(frozen=True)
@@ -260,7 +266,7 @@ class ApiResourceGuard:
         return await self._admit(request, _route_class(request.url.path))
 
     async def _admit(self, request: Request, route_class: str) -> Callable[[], None]:
-        if not self._enabled() or request.url.path in PROBE_PATHS:
+        if not self._enabled() or is_liveness_probe(request):
             return lambda: None
         client = _client_key(request, self.cfg)
         path = _path_key(request.url.path)
