@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
+from omnidesk_agent.sandbox.isolation import minimal_host_env
+from omnidesk_agent.security.command_policy import harden_exec_argv
 from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+
+# An agent branch is a plain name under ai/: no refspec syntax (':' '+'), no
+# ref paths, no option-looking names, nothing git check-ref-format would refuse.
+_AI_BRANCH_RE = re.compile(r"ai/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*")
+
+
+def _valid_ai_branch(branch: str) -> bool:
+    return bool(_AI_BRANCH_RE.fullmatch(branch)) and ".." not in branch and not branch.endswith((".lock", ".")) and len(branch) <= 200
 
 
 class GitTool:
@@ -21,9 +33,14 @@ class GitTool:
         self.repo_root = repo_root.resolve()
 
     def _run(self, args: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
+        argv = ["git", *args]
         return subprocess.run(
-            ["git", *args],
+            # Same execution hardening as ShellTool: repository config cannot run
+            # hooks, fsmonitor, external diff or editors, and git sees a minimal
+            # environment instead of the gateway's secrets.
+            harden_exec_argv(argv),
             cwd=self.repo_root,
+            env=minimal_host_env(argv),
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -42,24 +59,25 @@ class GitTool:
             return ToolResult(False, summary=f"dry-run git {action}")
 
         if action == "status":
-            result = self._run(["status", "--short"])
+            result = await asyncio.to_thread(self._run, ["status", "--short"])
         elif action == "diff":
-            result = self._run(["diff", "--", "."])
+            result = await asyncio.to_thread(self._run, ["diff", "--", "."])
         elif action == "checkout_new_branch":
             branch = str(args["branch"])
-            if not branch.startswith("ai/"):
-                return ToolResult(False, error="AI upgrade branches must start with ai/")
-            result = self._run(["checkout", "-b", branch])
+            if not _valid_ai_branch(branch):
+                return ToolResult(False, error="AI upgrade branches must be plain names under ai/")
+            result = await asyncio.to_thread(self._run, ["checkout", "-b", branch])
         elif action == "add":
-            result = self._run(["add", "."])
+            result = await asyncio.to_thread(self._run, ["add", "."])
         elif action == "commit":
             message = str(args.get("message") or "AI upgrade proposal")
-            result = self._run(["commit", "-m", message])
+            result = await asyncio.to_thread(self._run, ["commit", "-m", message])
         elif action == "push":
             branch = str(args["branch"])
-            if not branch.startswith("ai/"):
-                return ToolResult(False, error="Only ai/* branches can be pushed by the agent")
-            result = self._run(["push", "-u", "origin", branch])
+            if not _valid_ai_branch(branch):
+                # 'ai/x:main' is a refspec that pushes to main (2026-11-21 audit probe).
+                return ToolResult(False, error="Only plain ai/* branches can be pushed by the agent")
+            result = await asyncio.to_thread(self._run, ["push", "-u", "origin", branch])
         else:  # pragma: no cover
             return ToolResult(False, error=f"Unhandled git action: {action}")
 

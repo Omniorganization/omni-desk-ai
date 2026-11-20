@@ -26,7 +26,8 @@ What isolates code the agent runs (`omnidesk_agent/sandbox`, `plugins`, `tools/s
 | `argv` (shell, tests) | None. A host process with a command allowlist, a minimal environment and git hardening. | No |
 | `subprocess` (plugins) | None. A host process running as the gateway user, with isolated Python and a scrubbed environment. | No |
 
-- Plugin and remote-runner work cannot outlive its time budget. Each such container is named, and a timeout or cancellation kills and removes it by name before its temporary workspace is deleted (`sandbox/container.py`). A subprocess plugin runs in its own process group, and the whole group is killed.
+- Shell, plugin and remote-runner work cannot outlive its time budget. Each such container is named, and a timeout or cancellation kills and removes it by name before its temporary workspace is deleted (`sandbox/container.py`). A subprocess plugin runs in its own process group, and the whole group is killed. A plan may lower a shell command's timeout but not raise it above `sandbox.timeout_seconds`.
+- `test.run` (pytest runs workspace code) is `critical`, like `shell.run`. The git tool runs git with the same repository-config hardening and minimal environment as the shell tool, and accepts only plain `ai/...` branch names, so `ai/x:main` refspecs are refused.
 - OmniDesk's own state in `workspace.root` (approval, dual-approval, break-glass, run and memory databases, audit files, AppSync state, screenshots; `sandbox.isolation.RUNTIME_STATE_NAMES`) is never part of the archive sent to the remote runner. `runtime_state_masks()` hides those entries from a container that mounts the workspace.
 - The remote runner requires request signing by default. Only a non-production runner may turn it off (`OMNIDESK_SANDBOX_REQUIRE_HMAC=0`), and it refuses to start without the HMAC secret. With `OMNIDESK_ENV=production` it also refuses the rootful-runtime override.
 - CI (`security-attack-surface`) runs real containers with the argv the product builds and attempts each of the following; every attempt must fail:
@@ -40,7 +41,7 @@ What isolates code the agent runs (`omnidesk_agent/sandbox`, `plugins`, `tools/s
   `OMNIDESK_REQUIRE_CONTAINER_TESTS=1` turns a missing runtime into a failure. The rootless runner itself is exercised in `isolated-cloud-acceptance`.
 - Known limits:
   - Isolation rests on the container runtime and the host kernel; a kernel exploit breaks it.
-  - The shell tool and the self-upgrade test runner are not yet switched to the named-container launcher or to the state masks. They live in other owners' paths, and the change has been requested.
+  - The self-upgrade test runner (`self_upgrade/sandbox_runner.py`) does not use the named-container launcher yet. It lives in the autonomy owner's path, and the change has been requested.
 
 ## Reporting
 
