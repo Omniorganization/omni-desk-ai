@@ -46,6 +46,11 @@ class PermissionManager:
         # Set when an audit log fails verification. Every later decision is
         # refused until an operator seals the log (audit_chain rotate).
         self.audit_integrity_failure: str | None = None
+        # Human approval decisions go on this chain too, whichever route or
+        # plane made them: the stores call it inside the deciding transaction.
+        for store in (approval_store, getattr(approval_store, "dual_approval_store", None)):
+            if store is not None and hasattr(store, "decision_audit") and store.decision_audit is None:
+                store.decision_audit = self._audit
 
     def session_key(self, proposal_dict: dict[str, Any]) -> str:
         source = str(proposal_dict.get("source", "unknown"))

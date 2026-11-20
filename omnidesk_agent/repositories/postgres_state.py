@@ -392,6 +392,8 @@ class PostgresDualApprovalStore:
 
     def __init__(self, state: _PostgresJsonState):
         self.state = state
+        # Set by the PermissionManager; called inside the locked transaction (security).
+        self.decision_audit: Any | None = None
 
     def open(self, approval_id: str, proposal: dict[str, Any]) -> None:
         from omnidesk_agent.security.dual_approval import proposal_requesters
@@ -431,6 +433,9 @@ class PostgresDualApprovalStore:
             elif not second:
                 row["second_approver"] = approver
             row["updated_at"] = time.time()
+            if self.decision_audit is not None:
+                approvers = [a for a in (row.get("first_approver"), row.get("second_approver")) if a]
+                self.decision_audit("approval.dual_approved", {"approval_id": approval_id, "approver": approver, "approvers": approvers, "ready": len(approvers) == 2})
             return row
 
         self.state.update_locked(self.namespace, approval_id, update)
@@ -454,9 +459,13 @@ class PostgresApprovalStore:
         self.state = state
         self.ttl_seconds = ttl_seconds
         self.dual_approval_store = dual_approval_store
+        # Set by the PermissionManager; called inside the locked transaction (security).
+        self.decision_audit: Any | None = None
 
     def attach_dual_approval_store(self, dual_approval_store: Any | None) -> None:
         self.dual_approval_store = dual_approval_store
+        if self.decision_audit is not None and getattr(dual_approval_store, "decision_audit", "absent") is None:
+            dual_approval_store.decision_audit = self.decision_audit  # type: ignore[union-attr]
 
     def create(self, proposal: dict[str, Any], ttl_seconds: Optional[int] = None) -> str:
         aid = str(uuid.uuid4())
@@ -501,6 +510,10 @@ class PostgresApprovalStore:
             row["status"] = status
             row["result"] = result or {}
             row["decided_at"] = time.time()
+            if self.decision_audit is not None:
+                from omnidesk_agent.security.approval_store import decision_audit_payload
+
+                self.decision_audit("approval.decided", decision_audit_payload(approval_id, status, row.get("proposal") or {}, result or {}))
             return row
 
         return self.state.update_locked(self.namespace, approval_id, update)

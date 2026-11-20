@@ -47,6 +47,7 @@ What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_w
   - Anyone holding the key can rebuild the chain.
   - Without off-host anchor copies, deleting the newest entries is only caught by anchors that were not deleted with them.
   - A chain detects edits; it does not prevent them. Logs written before this change, at `workspace.root/admin_auth_audit.jsonl`, are left where they are.
+- **Approval decisions.** Every approve, deny and dual approval, from any route or plane and on SQLite or PostgreSQL, is recorded on the security chain (`approval.decided`, `approval.dual_approved`): who decided, the requesters, tool, action and risk, never the arguments. The store writes the entry inside the deciding transaction, so a decision the chain cannot take is rolled back. If the entry is written but the commit then fails, the log shows a decision that did not take effect; that is the safe direction.
 
 ## Reporting
 
