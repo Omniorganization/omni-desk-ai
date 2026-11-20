@@ -407,3 +407,42 @@ class _MemoryState:
         updated = updater(current)
         self.rows[namespace][key] = dict(updated)
         return updated
+
+
+def test_agent_loop_events_are_chained_and_cannot_pose_as_decisions(tmp_path, monkeypatch):
+    pm = _manager(tmp_path, monkeypatch)
+
+    pm.record_event("agent_step_finished", {"step_index": 2, "tool_action": "files.read_text", "ok": True, "token": "abc"})
+
+    event = read_audit_events(pm.audit_log)[-1]
+    assert event["event"] == "agent_step_finished" and event["token"] == "[REDACTED]"
+    for bad in ("allowed_default", "approval_required", "agent-x", "agent_" + "x" * 70):
+        with pytest.raises(ValueError):
+            pm.record_event(bad, {})
+    pm.mark_audit_integrity_failure("tampered")
+    with pytest.raises(AuditIntegrityError):
+        pm.record_event("agent_run_finished", {"status": "completed"})
+
+
+def test_runtime_keeps_admin_audit_and_checkpoints_out_of_the_workspace(tmp_path):
+    from omnidesk_agent.config import AppConfig
+    from omnidesk_agent.daemon import OmniDeskRuntime
+
+    cfg = AppConfig()
+    cfg.workspace.root = tmp_path / "workspace"
+    cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+    cfg.workspace.skills_dirs = [tmp_path / "skills"]
+    cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
+    cfg.permissions.audit_log = tmp_path / "audit" / "audit.log"
+    cfg.learning.growth_plan_file = tmp_path / "growth.json"
+    cfg.channels.gmail.credentials_file = tmp_path / "g" / "c.json"
+    cfg.channels.gmail.token_file = tmp_path / "g" / "t.json"
+    cfg.plugins.enabled = False
+    cfg.ensure_dirs()
+    rt = OmniDeskRuntime(cfg)
+    try:
+        assert rt.admin_auth.audit_log == tmp_path / "audit" / "admin_auth_audit.jsonl"
+        assert rt.audit_checkpoint.checkpoint_dir == tmp_path / "audit" / "audit_checkpoints"
+        assert rt.admin_auth.audit_chain is not None and rt.admin_auth.audit_chain.key_env == cfg.permissions.audit_checkpoint_hmac_key_env
+    finally:
+        rt.close()

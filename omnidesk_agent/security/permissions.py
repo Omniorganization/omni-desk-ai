@@ -226,6 +226,21 @@ class PermissionManager:
         self._audit("policy_blocked", {**proposal_dict, "block_rule": str(rule), "block_reason": str(reason)})
         self._metric("omnidesk_policy_blocks_total", tool=str(proposal_dict.get("tool", "")), rule=str(rule))
 
+    def record_event(self, event: str, payload: dict[str, Any]) -> None:
+        """Audit an agent-loop lifecycle event (agent_turn_planned, agent_step_finished, ...).
+
+        Only ``agent_``-prefixed names are accepted, so loop events can never pose
+        as approval decisions. Payloads pass the same redaction as proposals and
+        should hold ids, counts and digests, not tool output. Raises
+        AuditIntegrityError when the entry cannot be written: stop the run then.
+        """
+        name = str(event or "")
+        if not re.fullmatch(r"agent_[a-z0-9_]{1,60}", name):
+            raise ValueError("agent loop audit events must be named agent_<lower_snake_case>")
+        if not isinstance(payload, dict):
+            raise TypeError("agent loop audit payload must be a dict")
+        self._audit(name, payload)
+
     def mark_audit_integrity_failure(self, message: str) -> None:
         """Fail closed after an audit log failed verification (see AuditIntegrityMonitor)."""
         if self.audit_integrity_failure is None:
