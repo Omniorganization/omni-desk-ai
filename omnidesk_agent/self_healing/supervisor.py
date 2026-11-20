@@ -141,6 +141,9 @@ class HealingSupervisor:
         await self.sleep(self.verify_delay_seconds)
         recovered = await self._verify(probe, component)
         record["verified"] = recovered
+        if not recovered and result.ok and result.detail.get("progress"):
+            record["verified"] = "progress"  # a bounded batch worked; more remains
+            return self._audit(record)
         if recovered:
             self._failed_verifications.pop(component, None)
         else:

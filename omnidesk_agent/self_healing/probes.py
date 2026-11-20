@@ -98,8 +98,14 @@ class JobQueueProbe:
             RuntimeSignal(component="queue:stale_jobs", health_ok=not stale, metadata={"stale_count": len(stale)}),
             RuntimeSignal(
                 component="queue:dead_letters",
-                health_ok=not transient,
-                metadata={"transient_count": len(transient), "dead_letter_count": len(dead), "dependency_healthy": healthy},
+                health_ok=not transient and len(dead) < 200,
+                metadata={
+                    "transient_count": len(transient),
+                    "dead_letter_count": len(dead),
+                    "dependency_healthy": healthy,
+                    # JobQueue.list returns the newest 200 only.
+                    "scan_truncated": len(dead) >= 200,
+                },
             ),
         ]
 

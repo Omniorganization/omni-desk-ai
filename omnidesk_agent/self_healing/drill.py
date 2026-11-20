@@ -5,7 +5,10 @@
 The plan (JSON) names a health URL and a list of injections. Each injection has
 ``inject`` (a list of argv lists, run without a shell), the self-healing audit
 log to watch (``audit_log``), the audit ``event`` that proves containment (for
-example ``recovered``), and a ``timeout_seconds``. The runner records only what
+example ``recovered`` from the watchdog or ``acted`` from the supervisor), the
+``component`` it breaks (required for supervisor logs), an optional ``action``,
+and a ``timeout_seconds``. Only a record for that component whose action
+succeeded and was verified counts. The runner records only what
 it observes: command exit codes, the first matching audit record written after
 the injection, and post-recovery health checks. ``status`` is ``passed`` only
 when every injection was contained and health passed afterwards; otherwise it
@@ -64,6 +67,8 @@ def run_drill(
     artifacts: list[dict[str, Any]] = []
     baseline = health(health_url)
     for spec in plan["injections"]:
+        if str(spec.get("event")) == "acted" and not spec.get("component"):
+            raise ValueError("a supervisor-log injection must name the component it breaks")
         started = clock()
         commands = []
         for argv in spec["inject"]:
@@ -76,7 +81,7 @@ def run_drill(
         deadline = started + float(spec.get("timeout_seconds", 300))
         match: Optional[dict[str, Any]] = None
         while clock() < deadline and match is None:
-            match = next((r for r in _audit_records(audit_path) if float(r.get("at", 0)) >= started and r.get("event") == wanted), None)
+            match = next((r for r in _audit_records(audit_path) if float(r.get("at", 0)) >= started and _contains(r, spec, wanted)), None)
             if match is None:
                 sleep(2.0)
         contained = match is not None
@@ -113,6 +118,22 @@ def run_drill(
         "post_recovery_checks": post,
         "artifacts": artifacts,
     }
+
+
+def _contains(record: dict[str, Any], spec: dict[str, Any], wanted: str) -> bool:
+    """A record proves containment only for the injected component and only if it succeeded."""
+    if record.get("event") != wanted:
+        return False
+    if spec.get("component") and record.get("component") != spec["component"]:
+        return False
+    action = spec.get("action")
+    if action and (record.get("decision") or {}).get("action") != action and record.get("containment_action") != action:
+        return False
+    if "verified" in record and record.get("verified") is not True:
+        return False
+    if (record.get("result") or {}).get("ok") is False:
+        return False
+    return True
 
 
 def _iso(ts: float) -> str:

@@ -78,9 +78,12 @@ class StaleJobActuator:
         if handle is not None and handle.is_alive():
             await _maybe_await(handle.stop())
             restarted = True
-        recovered = await asyncio.to_thread(self.queue.recover_stale_running, lease_seconds=self.lease_seconds)
-        if handle is not None and restarted:
-            await _maybe_await(handle.start())
+        try:
+            recovered = await asyncio.to_thread(self.queue.recover_stale_running, lease_seconds=self.lease_seconds)
+        finally:
+            if handle is not None and restarted:
+                # Never leave a worker stopped because recovery failed or timed out.
+                await _maybe_await(handle.start())
         return ActionResult(True, "recover_stale_jobs", {"recovered": int(recovered), "worker_restarted": restarted})
 
 
@@ -104,7 +107,8 @@ class DeadLetterRequeueActuator:
                 continue
             await asyncio.to_thread(self.queue.requeue_dead_letter, str(job["id"]))
             requeued.append(str(job["id"]))
-        return ActionResult(bool(requeued), "requeue_dead_letters", {"requeued": requeued, "left_for_human": skipped})
+        # A bounded batch is progress even when more transient jobs remain.
+        return ActionResult(bool(requeued), "requeue_dead_letters", {"requeued": requeued, "left_for_human": skipped, "progress": bool(requeued)})
 
 
 class CircuitActuator:

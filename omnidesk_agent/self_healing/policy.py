@@ -109,6 +109,15 @@ class RuntimeSelfHealingController:
                 requires_human_approval=False,
                 cooldown_seconds=60,
             )
+        if component == "queue:dead_letters" and meta.get("scan_truncated") and int(meta.get("transient_count") or 0) == 0:
+            return RecoveryDecision(
+                action="escalate_human_approval",
+                component=component,
+                reason="200 or more dead letters; older transient failures may be hidden from the probe",
+                autonomous=False,
+                requires_human_approval=True,
+                cooldown_seconds=3600,
+            )
         if component == "queue:dead_letters" and int(meta.get("transient_count") or 0) > 0:
             if not meta.get("dependency_healthy"):
                 return RecoveryDecision(

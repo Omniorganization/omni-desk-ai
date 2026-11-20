@@ -33,6 +33,7 @@ trail.
 | stale jobs | `recover_stale_jobs` | yes | restarts the stuck worker first, then `JobQueue.recover_stale_running` |
 | transient dead letters, dependency healthy | `requeue_dead_letters` | yes | requeues at most 20 transient ones; others stay for a human |
 | transient dead letters, dependency down | none | | waits |
+| 200 or more dead letters, none transient among the newest 200 | `escalate_human_approval` | no | escalation: older transient failures may be hidden (`JobQueue.list` returns the newest 200) |
 | model profile failures over threshold | `switch_model_profile` | yes | `ModelRouter.open_circuit(profile)`; the router has no such public API yet, so today the action reports unavailable and the router's own breaker acts |
 | repeated failures elsewhere | `create_upgrade_proposal` | files a request | one repair request per component per day, handed to the self-upgrade pipeline (which opens an `ai/*` PR for review) or queued in `<workspace>/repair_requests/` |
 
@@ -40,7 +41,7 @@ trail.
 
 - Modes: `off`, `observe` (decide and audit, never act), `act`.
 - Each action respects its decision's cooldown, at most 3 actions per component per hour and 20 overall.
-- After each action the same probe runs again; the record says whether the component recovered.
+- After each action the same probe runs again; the record says whether the component recovered, or `progress` when a bounded batch (dead-letter requeue) worked and more remains.
 - Three failed verifications quarantine the component: no more actions, one escalation, until it recovers or `reset(component)` is called.
 - Probe or actuator errors are audited and never crash the gateway.
 - Every decision, action and verification is a line in the audit JSONL.
@@ -50,7 +51,9 @@ trail.
 After `--failures` failed health checks: if the config differs from the last
 known-good snapshot, restore it (the rejected file is kept) and restart;
 otherwise restart. Then poll health until `recovery_timeout`. A config that
-stays healthy for `--good-after` seconds becomes known-good. Restarts are
+stays healthy for `--good-after` seconds becomes known-good; the window
+restarts whenever the config file changes. A failing restart command is
+recorded as `recovery_failed` and the watchdog keeps checking. Restarts are
 limited per hour; past the limit it records an escalation and stops
 restarting. The restart command is a fixed argv (no shell).
 
@@ -58,7 +61,8 @@ restarting. The restart command is a fixed argv (no shell).
 
 `python -m omnidesk_agent.self_healing.drill --plan plan.json --out release/external-evidence/drills/self-healing-failure-injection.json`
 runs each planned injection (argv lists, no shell) on the real host, waits for
-the self-healing audit record that proves containment, checks health
+the self-healing audit record that proves containment (for the injected
+`component`, with a successful and verified action), checks health
 afterwards and writes the report in the external GA evidence format with the
 audit excerpts attached by SHA-256. It reports only what it observed:
 `status` is `passed` only when every injection was contained and health

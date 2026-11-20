@@ -57,6 +57,7 @@ class GatewayWatchdog:
         self.sleep = sleep
         self.consecutive_failures = 0
         self.healthy_since: Optional[float] = None
+        self.qualifying_digest: Optional[str] = None
         self._restarts: deque[float] = deque()
 
     async def healthy(self) -> bool:
@@ -72,9 +73,12 @@ class GatewayWatchdog:
         now = self.clock()
         if await self.healthy():
             self.consecutive_failures = 0
-            if self.healthy_since is None:
-                self.healthy_since = now
             digest = self._config_digest()
+            if self.healthy_since is None or digest != self.qualifying_digest:
+                # The qualification window belongs to one config: a deploy that
+                # rewrites the file while the old process still serves restarts it.
+                self.healthy_since = now
+                self.qualifying_digest = digest
             if digest and digest != self.snapshots.known_good() and now - self.healthy_since >= self.good_after_seconds:
                 self.snapshots.save_known_good(self.config_path)
                 return self._audit({"event": "known_good_saved", "snapshot": digest})
@@ -98,7 +102,15 @@ class GatewayWatchdog:
             rejected = self.snapshots.restore(known_good, self.config_path)
             rolled_back = {"snapshot": known_good, "rejected_config": str(rejected), "rejected_digest": digest}
         self._restarts.append(self.clock())
-        restart = await self.restart()
+        try:
+            restart = await self.restart()
+        except Exception as exc:  # a failed restart must not stop the watchdog
+            return self._audit({
+                "event": "recovery_failed",
+                "containment_action": "rollback_config_and_restart" if rolled_back else "restart",
+                "config_rollback": rolled_back,
+                "restart": {"error_class": type(exc).__name__, "error": str(exc)[:300]},
+            })
         recovered = False
         while self.clock() - started < self.recovery_timeout_seconds:
             await self.sleep(self.poll_seconds)
@@ -160,7 +172,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     async def loop() -> None:
         while True:
-            print(json.dumps(await dog.check()), flush=True)
+            try:
+                print(json.dumps(await dog.check()), flush=True)
+            except Exception as exc:  # keep watching; record why this check failed
+                print(json.dumps(dog._audit({"event": "check_error", "error_class": type(exc).__name__})), flush=True)
             if args.once:
                 return
             await asyncio.sleep(args.interval)

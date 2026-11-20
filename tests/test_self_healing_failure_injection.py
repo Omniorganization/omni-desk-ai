@@ -323,3 +323,103 @@ def test_watchdog_stops_restarting_after_the_hourly_limit(tmp_path):
 
     events = [r["event"] for r in asyncio.run(scenario())]
     assert events == ["recovery_failed", "recovery_failed", "escalated", "escalated"]
+
+
+# ------------------------------------------------ review findings on #232
+
+def test_watchdog_qualifies_each_config_separately(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v: 1\n")
+    clock = {"now": 0.0}
+
+    async def restart():
+        return {"exit_code": 0}
+
+    dog = GatewayWatchdog(FakeHealth([True]), config, tmp_path / "state", restart=restart, good_after_seconds=300, clock=lambda: clock["now"])
+
+    async def scenario():
+        await dog.check()
+        clock["now"] = 400
+        assert (await dog.check())["event"] == "known_good_saved"
+        good = dog.snapshots.known_good()
+        config.write_text("v: 2-broken\n")  # deployed while the old process still answers
+        clock["now"] = 410
+        await dog.check()
+        assert dog.snapshots.known_good() == good  # not promoted on the old process's uptime
+        clock["now"] = 720
+        await dog.check()
+        assert dog.snapshots.known_good() != good  # promoted after its own 300 s
+
+    asyncio.run(scenario())
+
+
+def test_watchdog_survives_a_failing_restart_command(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v: 1\n")
+
+    async def restart():
+        raise TimeoutError("systemctl timed out")
+
+    dog = GatewayWatchdog(FakeHealth([False]), config, tmp_path / "state", restart=restart, failures_before_action=1)
+    record = asyncio.run(dog.check())
+    assert record["event"] == "recovery_failed" and record["restart"]["error_class"] == "TimeoutError"
+    assert asyncio.run(dog.check())["event"] in {"recovery_failed", "escalated"}  # still checking
+
+
+def test_a_full_page_of_dead_letters_is_escalated_not_reported_healthy(tmp_path):
+    class Queue:
+        def list(self, *, status, limit):
+            return []
+
+        def list_dead_letters(self, *, limit):
+            return [{"id": str(i), "last_error": "ValueError: bad payload"} for i in range(200)]
+
+    healer = HealingSupervisor([JobQueueProbe(Queue())], [EscalationActuator(tmp_path)], audit_path=tmp_path / "h.jsonl", mode="act")
+    records = asyncio.run(healer.tick())
+    escalations = [r for r in records if r["component"] == "queue:dead_letters"]
+    assert escalations and escalations[0]["decision"]["action"] == "escalate_human_approval"
+
+
+def test_requeue_batches_count_as_progress_not_failed_recovery(tmp_path):
+    async def scenario():
+        queue = JobQueue(tmp_path / "jobs.sqlite3", max_retries=0)
+        for i in range(61):
+            queue.enqueue(ChannelMessage(channel="c", sender_id="u", text=f"m{i}", message_id=f"m{i}"))
+            job = queue.claim_next()
+            queue.fail(job["id"], "TimeoutError: provider timed out")
+        clock = {"now": 0.0}
+        healer = HealingSupervisor(
+            [JobQueueProbe(queue)], [DeadLetterRequeueActuator(queue)],
+            audit_path=tmp_path / "h.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep,
+            budget=HealingBudget(max_actions_per_component_per_hour=10, failed_verifications_before_escalation=3),
+            clock=lambda: clock["now"],
+        )
+        verified = []
+        for _ in range(4):
+            for record in await healer.tick():
+                verified.append(record.get("verified"))
+            clock["now"] += 301
+        return queue, verified
+
+    queue, verified = asyncio.run(scenario())
+    assert verified == ["progress", "progress", "progress", True]
+    assert queue.list_dead_letters(limit=200) == []
+
+
+def test_stale_job_recovery_failure_still_restarts_the_worker(tmp_path):
+    class BrokenQueue:
+        def recover_stale_running(self, *, lease_seconds):
+            raise RuntimeError("database is locked")
+
+    registry = WorkerRegistry()
+    state = {"alive": True, "starts": 0}
+    registry.register("w", start=lambda: state.update(alive=True, starts=state["starts"] + 1), stop=lambda: state.update(alive=False),
+                      is_alive=lambda: state["alive"])
+    actuator = StaleJobActuator(BrokenQueue(), registry=registry, worker_name="w")
+    decision = HealingSupervisor([], [], audit_path=tmp_path / "x.jsonl").controller.decide(
+        RuntimeSignal(component="queue:stale_jobs", health_ok=False, metadata={"stale_count": 1}))
+    try:
+        asyncio.run(actuator.execute(decision, RuntimeSignal(component="queue:stale_jobs")))
+    except RuntimeError:
+        pass
+    assert state == {"alive": True, "starts": 1}
