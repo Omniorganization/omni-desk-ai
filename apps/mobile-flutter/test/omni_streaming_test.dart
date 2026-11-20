@@ -46,7 +46,10 @@ void main() {
         expect(request.url.path, '/app/conversations/conv-1/ask');
         return http.Response(
           jsonEncode(<String, dynamic>{
-            'assistant_message': <String, dynamic>{'content': 'fallback'},
+            'assistant_message': <String, dynamic>{
+              'role': 'assistant',
+              'content': 'fallback',
+            },
           }),
           200,
         );

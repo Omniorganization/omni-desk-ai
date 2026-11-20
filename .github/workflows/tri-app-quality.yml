@@ -48,6 +48,21 @@ jobs:
           set -o pipefail
           python scripts/check_web_admin_proxy_contract.py . \
             2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/web-admin-proxy-contract.txt"
+      - name: Contract diff against the gateway routes and the three clients
+        run: |
+          set -o pipefail
+          python scripts/check_contract_bidirectional_diff.py . \
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/contract-bidirectional-diff.txt"
+      - name: Generated client contract modules are current
+        run: |
+          set -o pipefail
+          python scripts/generate_contract_clients.py --check \
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/contract-client-modules.txt"
+      - name: Gateway answers meet the contract payload schemas
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q tests/test_contract_payload_schemas.py tests/test_contract_negotiation.py tests/test_contract_bidirectional_diff.py \
+            2>&1 | tee "$RUNNER_TEMP/tri-app-backend-evidence/contract-payload-schemas.txt"
       - run: find . -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} + && find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
       - name: GA release gate
         run: |

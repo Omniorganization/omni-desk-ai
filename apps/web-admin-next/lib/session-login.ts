@@ -1,3 +1,4 @@
+import { CONTRACT_HEADER, CONTRACT_VERSION, assertCompatibleGateway, assertContractResponse } from './generated/contract';
 import { CLIENT_IP_HEADER } from './rate-limit';
 
 export type SessionRole = 'viewer' | 'operator' | 'owner';
@@ -31,13 +32,15 @@ export async function verifyGatewayIdentity(
   fetchImpl: typeof fetch = fetch,
   clientIp: string | null = null,
 ): Promise<GatewayIdentity> {
-  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  const headers: Record<string, string> = { authorization: `Bearer ${token}`, [CONTRACT_HEADER]: CONTRACT_VERSION };
   if (clientIp) headers[CLIENT_IP_HEADER] = clientIp;
   const response = await fetchImpl(`${gatewayUrl.replace(/\/$/, '')}/admin/session/identity`, {
     method: 'GET',
     headers,
     cache: 'no-store',
   });
+  // An incompatible gateway is named as such before its status is.
+  assertCompatibleGateway(response.headers.get(CONTRACT_HEADER));
   if (!response.ok) {
     throw new Error(`gateway identity verification failed: ${response.status}`);
   }
@@ -48,6 +51,7 @@ export async function verifyGatewayIdentity(
   } catch {
     throw new Error('gateway identity response was not valid JSON');
   }
+  assertContractResponse('GET', '/admin/session/identity', payload);
   return {
     actor: normalizeGatewayActor(payload.actor),
     role: normalizeGatewayRole(payload.role),

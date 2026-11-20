@@ -1,6 +1,8 @@
 {
   "name": "Omni Tri-App Sync API",
   "version": "1.12.7+root-monorepo-production-ga-candidate",
+  "contract_version": "1.0",
+  "contract_version_policy": "MAJOR.MINOR. Clients send X-OmniDesk-Contract with the version they were built for, and the gateway answers every contract route with its own. A minor version only adds routes or optional fields, so a client of the same major is served. A client of another major is refused with 426 contract_version_unsupported, and a client refuses a gateway of another major. A request without the header (a client from before negotiation) is served. Response schemas list what clients rely on; a gateway may send more fields.",
   "auth": {
     "type": "bearer",
     "roles": [
@@ -16,7 +18,13 @@
       "X-OmniDesk-Device-Id: <device-id>",
       "X-OmniDesk-Timestamp: <unix-ms>",
       "X-OmniDesk-Nonce: <random-nonce>",
-      "X-OmniDesk-Device-Signature: <base64-signature>"
+      "X-OmniDesk-Device-Signature: <base64-signature>",
+      "X-OmniDesk-Contract: <major.minor>",
+      "X-OmniDesk-Approval-Timestamp: <unix-ms>",
+      "X-OmniDesk-Approval-Nonce: <random-nonce>",
+      "X-OmniDesk-Approval-Signature: <base64-ed25519-signature>",
+      "X-OmniDesk-Client-Role: <role> (Web Admin server only)",
+      "X-OmniDesk-Client-IP: <address> (Web Admin server only)"
     ],
     "device_signature": "For enrolled desktop/mobile/web_admin devices, production sensitive requests must sign: method, path, SHA-256 body hash, timestamp, and nonce. Nonces are one-use replay guards.",
     "websocket": "Authorization header preferred; query token remains development-only compatibility mode"
@@ -27,58 +35,250 @@
     "web_admin"
   ],
   "client_surface_policy": "Each endpoint declares client_surfaces. Typed client contract tests are generated from this field; endpoints with an empty list are server/API-only and must not be required by tri-app clients.",
+  "schemas": {
+    "Project": {
+      "type": "object",
+      "properties": {
+        "description": {"type": ["string", "null"]},
+        "owner_actor": {"type": ["string", "null"]},
+        "organization_id": {"type": "string"},
+        "metadata": {"type": "object"},
+        "created_at": {"type": "number"},
+        "updated_at": {"type": "number"},
+        "project_id": {"type": "string"},
+        "name": {"type": "string"},
+        "archived": {"type": "boolean"}
+      },
+      "required": ["project_id", "name", "archived"]
+    },
+    "PendingApproval": {
+      "type": "object",
+      "properties": {
+        "reason": {"type": ["string", "null"]},
+        "expires_at": {"type": ["number", "null"]},
+        "action_detail": {"type": "object"},
+        "action_hash": {"type": ["string", "null"]},
+        "approval_id": {"type": "string"},
+        "action": {"type": "string"},
+        "risk": {"type": "string"}
+      },
+      "required": ["approval_id", "action", "risk"]
+    },
+    "Notification": {
+      "type": "object",
+      "properties": {
+        "notification_id": {"type": "string"},
+        "title": {"type": "string"},
+        "body": {"type": "string"}
+      },
+      "required": ["notification_id", "title", "body"]
+    },
+    "Message": {
+      "type": "object",
+      "properties": {
+        "model_provider": {"type": ["string", "null"]},
+        "model_name": {"type": ["string", "null"]},
+        "model_profile": {"type": ["string", "null"]},
+        "trace_id": {"type": ["string", "null"]},
+        "role": {"type": "string"},
+        "content": {"type": "string"}
+      },
+      "required": ["role", "content"]
+    },
+    "ClaimedTask": {
+      "type": "object",
+      "properties": {
+        "approval_id": {"type": ["string", "null"]},
+        "capability": {"type": ["string", "null"]},
+        "action_hash": {"type": ["string", "null"]},
+        "task_id": {"type": "string"},
+        "title": {"type": "string"},
+        "action": {"type": "object"}
+      },
+      "required": ["task_id", "title", "action"]
+    },
+    "TaskAction": {
+      "type": "object",
+      "properties": {
+        "capability": {"type": "string"},
+        "scope": {
+          "type": "object",
+          "properties": {
+            "workspace": {"type": "string"},
+            "relative_path": {"type": "string"}
+          },
+          "required": ["relative_path"]
+        }
+      },
+      "required": ["capability", "scope"]
+    }
+  },
   "endpoints": [
     {
       "method": "GET",
       "path": "/app/bootstrap",
       "role": "viewer",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "pending_approvals": {
+            "type": "array",
+            "items": {"$ref": "#/schemas/PendingApproval"}
+          },
+          "notifications": {
+            "type": "array",
+            "items": {"$ref": "#/schemas/Notification"}
+          },
+          "runtime_status": {"type": "array"},
+          "devices": {"type": "array"}
+        },
+        "required": ["pending_approvals", "notifications", "runtime_status", "devices"]
+      }
     },
     {
       "method": "GET",
       "path": "/app/projects",
       "description": "List user-created projects in the caller organization for Web Admin, Desktop, and Mobile project synchronization.",
       "role": "viewer",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {"$ref": "#/schemas/Project"}
+          }
+        },
+        "required": ["projects"]
+      }
     },
     {
       "method": "POST",
       "path": "/app/projects",
       "description": "Create a user-owned project and emit a project.created sync event. No default projects are provisioned by the Gateway.",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "description": {"type": "string"},
+          "metadata": {"type": "object"},
+          "source_device_id": {"type": "string"},
+          "source": {"type": "string"},
+          "name": {"type": "string"}
+        },
+        "required": ["name"]
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "project": {"$ref": "#/schemas/Project"}
+        },
+        "required": ["project"]
+      }
     },
     {
       "method": "PATCH",
       "path": "/app/projects/{project_id}",
       "description": "Rename or update metadata for a user-created project within the caller organization.",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "archived": {"type": "boolean"},
+          "description": {"type": "string"},
+          "metadata": {"type": "object"}
+        }
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "DELETE",
       "path": "/app/projects/{project_id}",
       "description": "Soft-delete a user-created project and emit a project.deleted sync event.",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "response": {"type": "object"}
     },
     {
       "method": "POST",
       "path": "/app/devices/register",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "platform": {"type": "string"},
+          "public_key": {"type": ["string", "null"]},
+          "capabilities": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "organization_id": {"type": "string"},
+          "push_token": {"type": ["string", "null"]},
+          "push_token_type": {"type": "string"},
+          "device_id": {"type": "string"},
+          "device_type": {"type": "string"}
+        },
+        "required": ["device_id", "device_type"]
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "object",
+            "properties": {
+              "device_id": {"type": "string"},
+              "credential_status": {"type": "string"}
+            },
+            "required": ["device_id", "credential_status"]
+          }
+        },
+        "required": ["device"]
+      }
     },
     {
       "method": "GET",
       "path": "/app/conversations",
       "role": "viewer",
-      "client_surfaces": ["web_admin"]
+      "client_surfaces": ["web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "conversations": {"type": "array"}
+        },
+        "required": ["conversations"]
+      }
     },
     {
       "method": "POST",
       "path": "/app/conversations",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "source_device_id": {"type": "string"}
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "conversation": {
+            "type": "object",
+            "properties": {
+              "conversation_id": {"type": "string"}
+            },
+            "required": ["conversation_id"]
+          }
+        },
+        "required": ["conversation"]
+      }
     },
     {
       "method": "DELETE",
@@ -91,20 +291,60 @@
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/messages",
       "role": "operator",
-      "client_surfaces": ["mobile"]
+      "client_surfaces": ["mobile"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "requires_desktop_runtime": {"type": "boolean"},
+          "risk": {"type": "string"},
+          "action": {"$ref": "#/schemas/TaskAction"},
+          "content": {"type": "string"}
+        },
+        "required": ["content"]
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "GET",
       "path": "/app/conversations/{conversation_id}/messages",
       "role": "viewer",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {"$ref": "#/schemas/Message"}
+          }
+        },
+        "required": ["messages"]
+      }
     },
     {
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/ask",
       "description": "Create a Gateway-audited non-streaming chat turn and persist model metadata without exposing provider credentials.",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "model_profile": {"type": "string"},
+          "stream": {"type": "boolean"},
+          "source_device_id": {"type": "string"},
+          "content": {"type": "string"}
+        },
+        "required": ["content"]
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "user_message": {"$ref": "#/schemas/Message"},
+          "audit_trace_id": {"type": ["string", "null"]},
+          "assistant_message": {"$ref": "#/schemas/Message"}
+        },
+        "required": ["assistant_message"]
+      }
     },
     {
       "method": "POST",
@@ -129,7 +369,18 @@
       ],
       "supports_cancellation": true,
       "supports_resume": true,
-      "fallback_endpoint": "/app/conversations/{conversation_id}/ask"
+      "fallback_endpoint": "/app/conversations/{conversation_id}/ask",
+      "request": {
+        "type": "object",
+        "properties": {
+          "conversation_id": {"type": "string"},
+          "model_profile": {"type": "string"},
+          "source_device_id": {"type": "string"},
+          "content": {"type": "string"}
+        },
+        "required": ["content"]
+      },
+      "response_content_type": "text/event-stream"
     },
     {
       "method": "GET",
@@ -142,46 +393,124 @@
       "path": "/app/tasks/{task_id}/status",
       "role": "operator",
       "client_surfaces": ["desktop"],
-      "signed_device_required_in_production": ["desktop"]
+      "signed_device_required_in_production": ["desktop"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "result_summary": {"type": "string"},
+          "assigned_runtime_device_id": {"type": "string"},
+          "result": {"type": "object"},
+          "status": {"type": "string"}
+        },
+        "required": ["status"]
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "GET",
       "path": "/app/approvals",
       "role": "viewer",
-      "client_surfaces": ["web_admin"]
+      "client_surfaces": ["web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "approvals": {"type": "array"}
+        },
+        "required": ["approvals"]
+      }
     },
     {
       "method": "POST",
       "path": "/app/approvals/{approval_id}/decide",
       "role": "owner",
       "client_surfaces": ["mobile", "web_admin"],
-      "signed_device_required_in_production": ["mobile", "web_admin"]
+      "signed_device_required_in_production": ["mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "reason": {"type": ["string", "null"]},
+          "source_device_id": {"type": ["string", "null"]},
+          "decision": {"type": "string"}
+        },
+        "required": ["decision"]
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "GET",
       "path": "/app/notifications",
       "role": "viewer",
-      "client_surfaces": ["mobile", "web_admin"]
+      "client_surfaces": ["mobile", "web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "notifications": {
+            "type": "array",
+            "items": {"$ref": "#/schemas/Notification"}
+          }
+        },
+        "required": ["notifications"]
+      }
     },
     {
       "method": "POST",
       "path": "/app/runtime/desktop/heartbeat",
       "role": "operator",
       "client_surfaces": ["desktop"],
-      "signed_device_required_in_production": ["desktop"]
+      "signed_device_required_in_production": ["desktop"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "version": {"type": "string"},
+          "active_task_id": {"type": "string"},
+          "capabilities": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "device_id": {"type": "string"},
+          "status": {"type": "string"}
+        },
+        "required": ["device_id", "status"]
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "POST",
       "path": "/app/runtime/desktop/claim",
       "role": "operator",
       "client_surfaces": ["desktop"],
-      "signed_device_required_in_production": ["desktop"]
+      "signed_device_required_in_production": ["desktop"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "lease_seconds": {"type": "integer"},
+          "device_id": {"type": "string"}
+        },
+        "required": ["device_id"]
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {"$ref": "#/schemas/ClaimedTask"},
+              {"type": "null"}
+            ]
+          }
+        },
+        "required": ["task"]
+      }
     },
     {
       "method": "GET",
       "path": "/app/sync",
       "role": "viewer",
-      "client_surfaces": ["desktop"]
+      "client_surfaces": ["desktop"],
+      "response": {"type": "object"}
     },
     {
       "method": "POST",
@@ -220,7 +549,17 @@
       "path": "/app/devices/{device_id}/push-token",
       "role": "operator",
       "client_surfaces": ["desktop", "mobile"],
-      "signed_device_required_in_production": ["desktop", "mobile"]
+      "signed_device_required_in_production": ["desktop", "mobile"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "token_type": {"type": "string"},
+          "platform": {"type": "string"},
+          "push_token": {"type": "string"}
+        },
+        "required": ["push_token"]
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "POST",
@@ -228,33 +567,115 @@
       "description": "Register the device's biometric/passcode-gated Ed25519 approval key (write-once); decisions from that device then require its signature.",
       "role": "operator",
       "client_surfaces": ["mobile"],
-      "signed_device_required_in_production": ["mobile"]
+      "signed_device_required_in_production": ["mobile"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "public_key": {"type": "string"}
+        },
+        "required": ["public_key"]
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/start",
       "role": "owner",
-      "client_surfaces": ["mobile", "web_admin"]
+      "client_surfaces": ["mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "device_type": {"type": "string"},
+          "pairing_code": {"type": "string"}
+        },
+        "required": ["device_type", "pairing_code"]
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "enrollment": {
+            "type": "object",
+            "properties": {
+              "enrollment_id": {"type": "string"}
+            },
+            "required": ["enrollment_id"]
+          }
+        },
+        "required": ["enrollment"]
+      }
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/complete",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "pairing_code": {"type": "string"},
+          "device_id": {"type": "string"},
+          "public_key": {"type": "string"}
+        },
+        "required": ["pairing_code", "device_id", "public_key"]
+      },
+      "response": {"type": "object"}
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/challenge",
       "description": "Issue a nonce challenge for device credential verification.",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "device_id": {"type": "string"}
+        },
+        "required": ["device_id"]
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "challenge": {
+            "type": "object",
+            "properties": {
+              "challenge_id": {"type": "string"},
+              "signing_message": {"type": "string"}
+            },
+            "required": ["challenge_id", "signing_message"]
+          }
+        },
+        "required": ["challenge"]
+      }
     },
     {
       "method": "POST",
       "path": "/app/devices/enrollment/{enrollment_id}/verify",
       "description": "Verify a signed device challenge and mint a device credential.",
       "role": "operator",
-      "client_surfaces": ["desktop", "mobile", "web_admin"]
+      "client_surfaces": ["desktop", "mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "challenge_id": {"type": "string"},
+          "device_id": {"type": "string"},
+          "signature": {"type": "string"}
+        },
+        "required": ["challenge_id", "device_id", "signature"]
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "credential": {
+            "type": "object",
+            "properties": {
+              "trust_level": {"type": "string"}
+            },
+            "required": ["trust_level"]
+          }
+        },
+        "required": ["credential"]
+      }
     },
     {
       "method": "POST",
@@ -271,6 +692,35 @@
       "role": "owner",
       "client_surfaces": [],
       "signed_device_required_in_production": ["mobile", "web_admin"]
+    },
+    {
+      "method": "GET",
+      "path": "/admin/session/identity",
+      "description": "The actor and role the presented bearer token authenticates; Web Admin binds its session to them at login.",
+      "role": "viewer",
+      "client_surfaces": ["web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "actor": {"type": "string"},
+          "role": {"type": "string"}
+        },
+        "required": ["actor", "role"]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/channels/ecosystem",
+      "description": "Channel ecosystem matrix: supported channels, their capabilities and security posture.",
+      "role": "viewer",
+      "client_surfaces": ["web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "channels": {"type": "array"}
+        },
+        "required": ["channels"]
+      }
     },
     {
       "method": "POST",

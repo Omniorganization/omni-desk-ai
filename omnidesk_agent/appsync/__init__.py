@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from omnidesk_agent.appsync.chat_routes import register_first_class_chat_routes
+from omnidesk_agent.appsync.contract import CONTRACT_HEADER, ContractVersionMiddleware
 from omnidesk_agent.appsync.projects import register_project_routes
 from omnidesk_agent.appsync.routes import register_appsync_routes as _register_appsync_routes
 from omnidesk_agent.appsync.store import AppSyncStore
@@ -89,6 +90,7 @@ DESKTOP_REQUEST_HEADERS = (
     "x-omnidesk-timestamp",
     "x-omnidesk-nonce",
     "x-omnidesk-device-signature",
+    "x-omnidesk-contract",
 )
 _ORIGIN_RE = re.compile(r"^(https?|tauri)://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 
@@ -110,6 +112,8 @@ def register_desktop_webview_cors(app: FastAPI) -> None:
         allow_origins=desktop_webview_origins(),
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=list(DESKTOP_REQUEST_HEADERS),
+        # The webview reads the gateway's contract version from every answer.
+        expose_headers=[CONTRACT_HEADER],
         allow_credentials=False,
         max_age=600,
     )
@@ -126,6 +130,9 @@ def register_appsync_routes(
     # traffic. The legacy AppSync collection remains for non-chat endpoints while
     # it is split into smaller routers in subsequent maintenance work.
     register_database_busy_handler(app)
+    # Added before CORS, so CORS stays outermost: preflights are answered first,
+    # and a 426 for an incompatible client still carries CORS headers.
+    app.add_middleware(ContractVersionMiddleware)
     register_desktop_webview_cors(app)
     register_first_class_chat_routes(app, cfg, rt, metrics, admin)
     _register_appsync_routes(app, cfg, rt, metrics, admin)

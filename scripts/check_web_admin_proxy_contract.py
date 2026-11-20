@@ -23,6 +23,12 @@ WEB_ADMIN_ROUTE_MAP = {
     "/app/devices/enrollment/{enrollment_id}/challenge": "devices/enrollment/[enrollmentId]/challenge/route.ts",
     "/app/devices/enrollment/{enrollment_id}/verify": "devices/enrollment/[enrollmentId]/verify/route.ts",
     "/api/chat/stream": "chat/stream/route.ts",
+    "/admin/channels/ecosystem": "channels/ecosystem/route.ts",
+}
+
+# Gateway routes Web Admin's server calls itself, never on the browser's behalf.
+WEB_ADMIN_SERVER_CALLS = {
+    "/admin/session/identity": "apps/web-admin-next/lib/session-login.ts",
 }
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -49,6 +55,11 @@ def _check(root: Path) -> list[str]:
         path = str(endpoint.get("path") or "")
         surfaces = endpoint.get("client_surfaces") or []
         if "web_admin" not in surfaces:
+            continue
+        if path in WEB_ADMIN_SERVER_CALLS:
+            server_file = root / WEB_ADMIN_SERVER_CALLS[path]
+            if not server_file.exists() or path not in server_file.read_text(encoding="utf-8"):
+                issues.append(f"web_admin server call {method} {path} not found in {WEB_ADMIN_SERVER_CALLS[path]}")
             continue
         route_rel = WEB_ADMIN_ROUTE_MAP.get(path)
         if route_rel is None:

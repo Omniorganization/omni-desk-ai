@@ -36,6 +36,7 @@ type TypedContractCase = UnsignedTypedContractCase | SignedTypedContractCase;
 
 const WEB_ADMIN_TYPED_CLIENT_CONTRACT_CASES: readonly TypedContractCase[] = [
   { surface: 'web_admin', method: 'GET', contractPath: '/app/bootstrap', clientPath: '/api/omni/bootstrap', invoke: (api) => api.bootstrap() },
+  { surface: 'web_admin', method: 'GET', contractPath: '/admin/channels/ecosystem', clientPath: '/api/omni/channels/ecosystem', invoke: (api) => api.ecosystem() },
   { surface: 'web_admin', method: 'GET', contractPath: '/app/projects', clientPath: '/api/omni/projects', invoke: (api) => api.projects() },
   { surface: 'web_admin', method: 'POST', contractPath: '/app/projects', clientPath: '/api/omni/projects', invoke: (api) => api.createProject('Typed project') },
   { surface: 'web_admin', method: 'PATCH', contractPath: '/app/projects/{project_id}', clientPath: '/api/omni/projects/proj_1234567890abcdef', invoke: (api) => api.updateProject('proj_1234567890abcdef', { name: 'Renamed project' }) },
