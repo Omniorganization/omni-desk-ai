@@ -85,7 +85,7 @@ approval history).
 - The planner does not consume the policy (see above).
 - Evaluation: the paired replay and the online A/B/canary gate that produce
   evaluations are described in [ONLINE_LEARNING_EXPERIMENTS.md](ONLINE_LEARNING_EXPERIMENTS.md).
-- No HTTP route; the admin route needs the server wiring change.
+- HTTP: `omnidesk_agent/self_learning/routes.py` has the admin routes (operator: list, policy, request approval; owner: decide, apply, rollback; the reviewer is the authenticated admin identity; idempotency keys required). `server.py` does not register them yet; that is one line in the wiring change.
 - Knowledge, prompt and workflow drafts from `KnowledgeBuilder` are still
   human-facing review notes under `self_learning/pending_updates/`; they are
   not artefacts and are never applied.
