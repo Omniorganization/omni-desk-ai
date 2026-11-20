@@ -1,13 +1,42 @@
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import hmac
 import json
 import os
+from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 
 from omnidesk_agent.config import AppConfig
+from omnidesk_agent.security.webhook_security import WebhookDuplicate, WebhookRateLimited
+
+# The verified delivery a request is handling: (replay store, channel, digest).
+# Its digest is recorded only after the delivery is durably enqueued
+# (commit_webhook_delivery), so a failed enqueue leaves the provider's
+# redelivery acceptable instead of losing the message.
+_PENDING_DELIVERY: contextvars.ContextVar[Optional[tuple[Any, str, str]]] = contextvars.ContextVar("omnidesk_pending_webhook", default=None)
+
+
+class WebhookDuplicateDelivery(Exception):
+    """A verified delivery that was already enqueued: acknowledge it with 200, process nothing."""
+
+    def __init__(self, channel: str):
+        super().__init__(f"duplicate webhook delivery acknowledged: {channel}")
+        self.channel = channel
+
+
+def commit_webhook_delivery() -> None:
+    """Record the current verified delivery as processed; call after a durable enqueue."""
+    pending = _PENDING_DELIVERY.get()
+    _PENDING_DELIVERY.set(None)
+    if pending is None:
+        return
+    store, channel, digest = pending
+    mark_seen = getattr(store, "mark_seen", None)
+    if callable(mark_seen):
+        mark_seen(channel, digest)
 
 
 class WebhookGuard:
@@ -147,6 +176,7 @@ class WebhookGuard:
             raise PermissionError("Webhook channel is disabled or unknown")
 
     async def guard(self, channel: str, adapter, request: Request, payload=None) -> tuple[bytes, object]:
+        _PENDING_DELIVERY.set(None)
         try:
             self.require_enabled_channel(channel)
             body = await request.body()
@@ -158,14 +188,26 @@ class WebhookGuard:
                 # a rejected replay cannot burn the id of a later real message.
                 self._claim_signed_nonce(channel, adapter, request)
             if hasattr(self.runtime, "webhook_security"):
-                self.runtime.webhook_security.guard(
+                security = self.runtime.webhook_security
+                result = security.guard(
                     channel=channel,
                     body=body,
                     source_key=getattr(envelope, "source_key", None) or "unknown",
                     message_id=getattr(envelope, "message_id", None),
                     timestamp=getattr(envelope, "timestamp", None),
+                    claim=False,
                 )
+                digest = result.get("digest") if isinstance(result, dict) else None
+                if digest:
+                    _PENDING_DELIVERY.set((security, channel, str(digest)))
             return body, envelope
+        except WebhookDuplicate as exc:
+            # Verified and already enqueued: a 2xx stops the provider redelivering it.
+            self._metric("omnidesk_webhook_duplicates_total", channel=channel)
+            raise WebhookDuplicateDelivery(channel) from exc
+        except WebhookRateLimited as exc:
+            self._metric("omnidesk_webhook_rate_limited_total", channel=channel)
+            raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after_seconds)}) from exc
         except PermissionError as exc:
             metrics = getattr(self.runtime, "metrics", None)
             inc = getattr(metrics, "inc", None)
@@ -173,6 +215,11 @@ class WebhookGuard:
                 inc("omnidesk_webhook_signature_failures_total", channel=channel, reason=str(exc)[:80])
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+
+    def _metric(self, name: str, **labels: Any) -> None:
+        inc = getattr(getattr(self.runtime, "metrics", None), "inc", None)
+        if callable(inc):
+            inc(name, **labels)
 
     async def verify_signed_handshake(self, channel: str, adapter, request: Request) -> None:
         """Verify a signed GET handshake (e.g. WeChat echostr) and consume its nonce.
@@ -189,7 +236,7 @@ class WebhookGuard:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def enqueue_webhook_message(runtime, message) -> dict:
+def enqueue_webhook_message(runtime, message, *, batch: bool = False) -> dict:
     metrics = getattr(runtime, "metrics", None)
     inc = getattr(metrics, "inc", None)
     if message is None:
@@ -203,9 +250,14 @@ def enqueue_webhook_message(runtime, message) -> dict:
         if callable(inc):
             inc("omnidesk_webhook_enqueue_failures_total", channel=getattr(message, "channel", "unknown"))
         raise
+    if not batch:
+        commit_webhook_delivery()
     return {"ok": True, "queued": True, "job_id": job["job_id"], "created": job["created"]}
 
 
 def enqueue_webhook_messages(runtime, messages: list) -> dict:
-    jobs = [enqueue_webhook_message(runtime, message) for message in messages]
+    # The delivery counts as processed only once every message is enqueued; the
+    # job queue deduplicates the ones a redelivery enqueues again.
+    jobs = [enqueue_webhook_message(runtime, message, batch=True) for message in messages]
+    commit_webhook_delivery()
     return {"ok": True, "queued": True, "count": len(messages), "jobs": jobs}

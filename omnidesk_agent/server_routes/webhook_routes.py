@@ -4,12 +4,24 @@ import hmac
 import os
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 
 from omnidesk_agent.core.models import ChannelMessage
-from omnidesk_agent.server_routes.webhook_guard import WebhookGuard, enqueue_webhook_message, enqueue_webhook_messages
+from omnidesk_agent.server_routes.webhook_guard import (
+    WebhookDuplicateDelivery,
+    WebhookGuard,
+    enqueue_webhook_message,
+    enqueue_webhook_messages,
+)
 
 
 def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
+    async def _duplicate_delivery(request: Request, exc: Exception) -> JSONResponse:
+        # Signature verified, already enqueued: acknowledge so the provider stops retrying.
+        return JSONResponse(status_code=200, content={"ok": True, "duplicate": True})
+
+    app.add_exception_handler(WebhookDuplicateDelivery, _duplicate_delivery)
+
     async def _guard_webhook(channel: str, adapter, request: Request, payload=None):
         return await guard.guard(channel, adapter, request, payload=payload)
 

@@ -12,9 +12,30 @@ from typing import Any, Optional
 from omnidesk_agent.validation.webhook_signatures import line_signature_valid
 
 
+# How far in the future an event timestamp may be (clock skew).
+FUTURE_SKEW_SECONDS = 300
+
+
+class WebhookDuplicate(PermissionError):
+    """A delivery whose digest was already accepted; answer it, do not process it again."""
+
+
+class WebhookRateLimited(PermissionError):
+    """Too many deliveries from one source; the provider should retry after ``retry_after_seconds``."""
+
+    def __init__(self, message: str, *, retry_after_seconds: int):
+        super().__init__(message)
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+
+
 @dataclass
 class WebhookSecurityConfig:
-    replay_ttl_seconds: int = 300
+    # Oldest event timestamp accepted. Providers redeliver for hours to days
+    # (Meta/WhatsApp up to 7 days) with the original event time, so the window
+    # matches how long accepted digests are remembered: a replay inside it is
+    # caught by the digest, anything older by this check. Providers that sign a
+    # request timestamp (Slack) keep their own short window in the adapter.
+    replay_ttl_seconds: int = 7 * 24 * 3600
     # How long seen message digests are kept. Many channels (DingTalk, X, Lark,
     # Discord, Teams, Matrix, Telegram) carry no signed timestamp, so a captured
     # signed request could be replayed once its digest expired; keep them longer
@@ -69,14 +90,38 @@ class WebhookSecurity:
         source_key: str,
         message_id: Optional[str] = None,
         timestamp: Optional[float] = None,
+        claim: bool = True,
     ) -> dict[str, Any]:
+        """Timestamp, rate and replay checks for one verified delivery.
+
+        With ``claim=False`` the digest is only checked; the caller records it
+        with ``mark_seen`` once the delivery is durably enqueued, so a failed
+        enqueue leaves the provider's redelivery acceptable.
+        """
         self._check_timestamp(timestamp)
         self._check_rate(channel, source_key)
         digest = self._digest(channel, body, message_id)
+        if not claim:
+            if self.is_seen(digest):
+                raise WebhookDuplicate(f"duplicate webhook blocked: {channel}")
+            return {"ok": True, "digest": digest}
         inserted = self._mark_seen(channel, digest)
         if not inserted:
-            raise PermissionError(f"duplicate webhook blocked: {channel}")
+            raise WebhookDuplicate(f"duplicate webhook blocked: {channel}")
         return {"ok": True, "digest": digest}
+
+    def is_seen(self, digest: str) -> bool:
+        cutoff = time.time() - self._seen_retention_seconds()
+        with connect_sqlite(self.db_path) as con:
+            row = con.execute("SELECT 1 FROM webhook_seen WHERE digest = ? AND created_at >= ?", (digest, cutoff)).fetchone()
+        return row is not None
+
+    def mark_seen(self, channel: str, digest: str) -> bool:
+        """Record an enqueued delivery; False when it was already recorded."""
+        return self._mark_seen(channel, digest)
+
+    def _seen_retention_seconds(self) -> float:
+        return seen_retention_seconds(self.cfg)
 
     def claim_nonce(self, *, channel: str, nonce: str, ttl_seconds: float) -> None:
         """Consume a signed single-use nonce in the shared store.
@@ -109,10 +154,7 @@ class WebhookSecurity:
             raise PermissionError("invalid HMAC-SHA256 signature")
 
     def _check_timestamp(self, timestamp: Optional[float]) -> None:
-        if timestamp is None:
-            return
-        if abs(time.time() - timestamp) > self.cfg.replay_ttl_seconds:
-            raise PermissionError("webhook timestamp outside replay window")
+        check_event_timestamp(self.cfg, timestamp)
 
     def _check_rate(self, channel: str, source_key: str) -> None:
         bucket = int(time.time() // self.cfg.rate_limit_window_seconds)
@@ -129,10 +171,10 @@ class WebhookSecurity:
             row = con.execute("SELECT count FROM webhook_rate WHERE key=? AND bucket=?", (key, bucket)).fetchone()
             count = int(row[0]) if row else 0
             if count > self.cfg.rate_limit_max_requests:
-                raise PermissionError(f"webhook rate limit exceeded for {key}")
+                raise WebhookRateLimited(f"webhook rate limit exceeded for {key}", retry_after_seconds=rate_retry_after(self.cfg))
 
     def _mark_seen(self, channel: str, digest: str) -> bool:
-        cutoff = time.time() - max(self.cfg.replay_ttl_seconds, self.cfg.seen_retention_seconds)
+        cutoff = time.time() - self._seen_retention_seconds()
         with connect_sqlite(self.db_path) as con:
             con.execute("DELETE FROM webhook_seen WHERE created_at < ?", (cutoff,))
             try:
@@ -144,6 +186,32 @@ class WebhookSecurity:
     @staticmethod
     def _digest(channel: str, body: bytes, message_id: Optional[str]) -> str:
         return webhook_digest(channel, body, message_id)
+
+
+def seen_retention_seconds(cfg: WebhookSecurityConfig) -> float:
+    return float(cfg.seen_retention_seconds)
+
+
+def max_event_age_seconds(cfg: WebhookSecurityConfig) -> float:
+    # Never accept an event older than the digest store remembers: a replay of
+    # it would no longer be recognised.
+    return float(min(cfg.replay_ttl_seconds, cfg.seen_retention_seconds))
+
+
+def check_event_timestamp(cfg: WebhookSecurityConfig, timestamp: Optional[float]) -> None:
+    """Refuse events from the future (beyond clock skew) or older than the replay window."""
+    if timestamp is None:
+        return
+    now = time.time()
+    if timestamp > now + FUTURE_SKEW_SECONDS or now - timestamp > max_event_age_seconds(cfg):
+        raise PermissionError("webhook timestamp outside replay window")
+
+
+def rate_retry_after(cfg: WebhookSecurityConfig, now: Optional[float] = None) -> int:
+    """Seconds until the current fixed rate window ends."""
+    window = max(1, int(cfg.rate_limit_window_seconds))
+    now = time.time() if now is None else now
+    return max(1, int(window - (now % window)) + 1)
 
 
 def webhook_digest(channel: str, body: bytes, message_id: Optional[str]) -> str:
