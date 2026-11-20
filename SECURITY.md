@@ -27,6 +27,16 @@ What the code provides today (`privacy/data_subject.py`, `server_routes/privacy_
   - Every result lists the stores that could not take part (`unsupported`) and the records kept on purpose (`retained`): the tamper-evident audit logs, which are kept for their retention period and never rewritten.
   - Every export and erasure is audited with counts only, never content.
 - **Participating stores.** A store takes part by implementing `export_subject(actor)` and `erase_subject(actor)`. Today only the approval records (SQLite) and their dual-approval rows do. Memory, runs, outbound messages, the job queue (every inbound task message and its result) and AppSync report `unsupported` until their owners add the hooks, so a result says `complete: false` until then.
+- **Where erasure reaches, and what remains.**
+  - **Gateway replicas.** Erasure runs against the gateway's stores. On PostgreSQL every gateway replica shares them, so it is complete for all replicas at once. A JSON or SQLite store belongs to one gateway.
+  - **Devices' local-first stores.** Erasure does not yet reach the copies on desktop and mobile devices.
+    - It emits no sync event, on purpose: an event naming the subject would copy the identifier into every replica's event log.
+    - Planned (gateway-clients): the gateway keeps an erasure ledger, `HMAC(gateway key, actor)` plus the erased record ids. Sync ingress refuses writes by an erased subject or about an erased record, so an offline outbox cannot bring them back. Devices get a `subject.erased` sync event that carries only the erased record ids, and delete those records locally.
+    - Until then, the erasure revokes the subject's own devices, but other members' devices may keep cached copies of the subject's messages until they are reset. Tell the requester so.
+  - **Backups.** Erasure does not rewrite backups. Backups that hold personal data are kept at most 35 days (`scripts/backup_postgres.py --retention-days 35`), so an erasure reaches every backup within 35 days.
+  - **Restores.** After a restore, every erasure recorded since the backup was taken (`privacy.subject_erased` in the security audit log, which is retained) must be applied again before the gateway serves traffic. Today that means repeating each erasure request, each with a new dual approval. Planned (security): a command that re-applies the logged, dual-approved erasures.
+  - **Projects.** A project owned by the subject keeps its organization; its `owner_actor` becomes `[erased]`, and the organization's owners can reassign it (gateway-clients' #285).
+  - **Notifications.** A notification about an erased record stays visible to its organization with ids only: no text and no actor.
 
 ## Reporting
 
