@@ -102,6 +102,12 @@ class DualApprovalStore:
             )
         return self.status(approval_id)
 
+    def erase_approvals(self, approval_ids: list[str]) -> int:
+        """Delete the dual-approval rows of erased approval records (data-subject erasure)."""
+        with connect_sqlite(self.db_path) as con:
+            cur = con.executemany("DELETE FROM dual_approvals WHERE approval_id = ?", [(approval_id,) for approval_id in approval_ids])
+            return int(cur.rowcount or 0)
+
     def status(self, approval_id: str) -> DualApprovalDecision:
         with connect_sqlite(self.db_path) as con:
             row = con.execute("SELECT first_approver, second_approver FROM dual_approvals WHERE approval_id=?", (approval_id,)).fetchone()

@@ -173,6 +173,24 @@ class ApprovalStore:
         return self._row(row)
 
 
+    # --- data-subject requests (privacy/data_subject.py) --------------------------------
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Approval records the actor requested."""
+        return [row for row in self.list() if actor in proposal_requesters(row.get("proposal") or {})]
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete the approval records the actor requested, and their dual-approval rows."""
+        ids = [row["id"] for row in self.export_subject(actor)]
+        if not ids:
+            return 0
+        with connect_sqlite(self.db_path) as con:
+            con.executemany("DELETE FROM approvals WHERE id = ?", [(approval_id,) for approval_id in ids])
+        erase_dual = getattr(getattr(self, "dual_approval_store", None), "erase_approvals", None)
+        if callable(erase_dual):
+            erase_dual(ids)
+        return len(ids)
+
     @staticmethod
     def _requires_dual_approval(proposal: dict[str, Any]) -> bool:
         return bool(proposal.get("requires_dual_approval"))
