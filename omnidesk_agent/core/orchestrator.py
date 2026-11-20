@@ -11,6 +11,7 @@ from omnidesk_agent.core.serialization import message_from_dict, plan_from_dict
 from omnidesk_agent.core.vision_executor import VisionActionExecutor
 from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.learning.experience_extractor import ExperienceExtractor
+from omnidesk_agent.models.provider_errors import safe_error_text
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.approval_store import ApprovalStore
 from omnidesk_agent.security.permissions import PermissionManager
@@ -61,10 +62,21 @@ class Orchestrator:
             with trace_span("planner.plan", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), channel=msg.channel, actor=msg.sender_id, run_id=run_id):
                 plan = await self.planner.plan(msg)
             self._metric("omnidesk_planner_results_total", channel=msg.channel, status="ok")
-        except Exception:
+        except Exception as exc:
             self._metric("omnidesk_planner_results_total", channel=msg.channel, status="error")
+            # A planning error must not leave the run row in 'planned' forever.
+            await self._mark_planning_failed(run_id, exc)
             raise
         return await self._execute_plan(msg, plan, run_id=run_id, start_index=0, prior_results=[], learning_assignment=learning_assignment)
+
+    async def _mark_planning_failed(self, run_id: Optional[str], exc: Exception) -> None:
+        if self.run_store is None or run_id is None:
+            return
+        result = {"ok": False, "summary": "planning failed", "error": f"{type(exc).__name__}: {safe_error_text(exc)}", "data": {"stage": "planning"}}
+        try:
+            await asyncio.to_thread(self.run_store.complete, run_id, "failed", [result])
+        except Exception as store_exc:
+            exc.add_note(f"run {run_id} could not be marked failed: {type(store_exc).__name__}: {store_exc}")
 
     async def resume(self, run_id: str, resume_token: Optional[str] = None) -> dict:
         if self.run_store is None:
@@ -122,6 +134,11 @@ class Orchestrator:
         results: list[ToolResult] = []
         sanitized_prior = list(prior_results)
         current_step_index = start_index
+
+        if start_index == 0 and not plan.steps:
+            # No step survived planning (for example every rule step needed an
+            # unregistered tool): nothing was done, so the run cannot be 'completed'.
+            results.append(ToolResult(False, error="plan has no executable steps", summary=(plan.rationale or "no executable steps")[:2000]))
 
         try:
             for idx, step in enumerate(plan.steps[start_index:], start=start_index):
@@ -213,17 +230,24 @@ class Orchestrator:
                 "results": all_results,
             "learning_assignment": learning_assignment,
             }
+        except Exception as exc:
+            # A step raised outside the tool registry's own handling (a direct
+            # permission check, a vision helper). Record it as a failed step so the
+            # run ends 'failed' instead of staying 'running' after side effects.
+            results.append(ToolResult(False, error=f"{type(exc).__name__}: {safe_error_text(exc)}", summary=f"step {current_step_index} raised"))
 
         all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
-        status = "completed" if all(r["ok"] for r in all_results) else "failed"
+        status = "completed" if all_results and all(r["ok"] for r in all_results) else "failed"
         if self.run_store and run_id:
             await asyncio.to_thread(self.run_store.complete, run_id, status, all_results)
         resume_token = None
 
         outcome = "\n".join([r.get("summary") or r.get("error") or "" for r in all_results])
         compact_steps = [{"description": s.description, "tool": s.tool, "action": s.action, "risk": s.risk, "args_keys": sorted(s.args.keys())} for s in plan.steps]
-        self.memory.add(task=msg.text[:1000], plan=json.dumps(compact_steps, ensure_ascii=False), outcome=outcome[:2000], tags=[msg.channel], channel=msg.channel, actor=msg.sender_id)
         try:
+            # Inside the try: the run is already recorded, and a memory error must
+            # not turn it into an exception that makes a job retry its side effects.
+            self.memory.add(task=msg.text[:1000], plan=json.dumps(compact_steps, ensure_ascii=False), outcome=outcome[:2000], tags=[msg.channel], channel=msg.channel, actor=msg.sender_id)
             structured = self.experience_extractor.extract(
                 task=msg.text,
                 plan={"steps": compact_steps},

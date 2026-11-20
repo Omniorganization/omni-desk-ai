@@ -33,6 +33,8 @@ class LLMConfig(BaseModel):
     enable_cache: bool = True
     cache_ttl_seconds: int = 86400
     per_task_max_llm_calls: Optional[int] = 16
+    # The cap counts the calls of this many recent seconds (None: every call ever).
+    per_task_window_seconds: Optional[int] = Field(default=3600, ge=1)
     require_approval_above_estimated_tokens: int = 20000
 
 
