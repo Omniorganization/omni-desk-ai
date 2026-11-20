@@ -172,3 +172,174 @@ def test_webhook_conflict_fixture_classifies_as_config_error():
     fixture = _fixture("getUpdates_conflict")
     error = ChannelHttpError("channel provider HTTP 409", status_code=409, channel="telegram", response_json=fixture["response"])
     assert classify_channel_error(error).category == "config_error"
+
+
+# ----------------------------------------------------------------------------- Slack (Socket Mode)
+
+SLACK = ROOT / "tests" / "fixtures" / "channels" / "slack"
+
+
+def _slack(name: str) -> Any:
+    return json.loads((SLACK / f"{name}.json").read_text(encoding="utf-8"))
+
+
+class FakeSocket:
+    def __init__(self, frames):
+        self.frames = list(frames)
+        self.sent: list[dict] = []
+
+    async def recv(self):
+        if not self.frames:
+            await asyncio.sleep(3600)
+        item = self.frames.pop(0)
+        return item() if callable(item) else json.dumps(item)
+
+    async def send(self, data):
+        self.sent.append(json.loads(data))
+
+
+class FakeConnect:
+    def __init__(self, sockets):
+        self.sockets = list(sockets)
+        self.urls: list[str] = []
+
+    def __call__(self, url):
+        self.urls.append(url)
+        socket = self.sockets.pop(0)
+
+        class Ctx:
+            async def __aenter__(self_inner):
+                return socket
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return Ctx()
+
+
+class RecordedSlackWeb:
+    def __init__(self):
+        self.posted_text = None
+        self.calls: list[str] = []
+
+    async def post(self, url, **kwargs):
+        method = url.rsplit("/", 1)[-1]
+        self.calls.append(method)
+        if method == "auth.test":
+            return ChannelHttpResult(200, _slack("auth_test")["response"])
+        if method == "apps.connections.open":
+            assert kwargs["headers"]["Authorization"].startswith("Bearer xapp-")
+            return ChannelHttpResult(200, _slack("apps_connections_open")["response"])
+        if method == "chat.postMessage":
+            self.posted_text = kwargs["json"]["text"]
+            return ChannelHttpResult(200, _slack("chat_postMessage")["response"])
+        raise AssertionError(method)
+
+
+@pytest.fixture
+def slack_env(monkeypatch):
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-placeholder")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-placeholder")
+    monkeypatch.setenv("SLACK_LIVE_CHANNEL_ID", "C0000000001")
+    monkeypatch.setenv("SLACK_LIVE_SENDER_ID", "U0000000002")
+
+
+def _reply_frame(web, *, user="U0000000002", text_template="__CODE__"):
+    def build():
+        frame = copy.deepcopy(_slack("socket_frames")["reply"])
+        code = web.posted_text.split("code ", 1)[1].split(" ", 1)[0]
+        frame["payload"]["event"]["text"] = text_template.replace("__CODE__", code)
+        frame["payload"]["event"]["user"] = user
+        return json.dumps(frame)
+
+    return build
+
+
+def test_slack_send_receive_over_socket_mode(runner, slack_env):
+    frames = _slack("socket_frames")
+    web = RecordedSlackWeb()
+    first = FakeSocket([frames["hello"], frames["bot_echo"], frames["disconnect"]])
+    second = FakeSocket([frames["hello"], _reply_frame(web)])
+    connect = FakeConnect([first, second])
+
+    result = asyncio.run(runner.run_slack(mode="send-receive", reply_timeout_seconds=60, http=web, connect=connect))
+
+    checks = result["checks"]
+    # The message is posted only after the socket is up; our own echo and the
+    # refresh disconnect do not end the run; the reply is parsed by the adapter.
+    assert web.calls.index("chat.postMessage") > web.calls.index("apps.connections.open")
+    assert len(connect.urls) == 2
+    assert checks["send"]["provider_message_id"] == "1763683200.000100"
+    assert checks["receive"]["provider_message_id"] == "00000000-0000-4000-8000-000000000001"
+    assert checks["receive"]["event_id"] == "Ev0000000001"
+    # Every envelope was acknowledged so Slack does not redeliver it.
+    assert [ack["envelope_id"] for ack in first.sent + second.sent] == ["env-bot-echo", "env-reply"]
+    assert "U0000000002" not in json.dumps(checks) and "C0000000001" not in json.dumps(checks)
+
+
+def test_slack_reply_from_another_user_times_out_with_partial_checks(runner, slack_env, monkeypatch):
+    frames = _slack("socket_frames")
+    web = RecordedSlackWeb()
+    connect = FakeConnect([FakeSocket([frames["hello"], _reply_frame(web, user="U0000000999")])])
+
+    with pytest.raises(runner.LiveContractFailure) as exc:
+        asyncio.run(runner.run_slack(mode="send-receive", reply_timeout_seconds=1, http=web, connect=connect))
+    assert exc.value.checks["send"]["passed"] is True and "receive" not in exc.value.checks
+
+
+def test_slack_send_only_needs_no_app_token(runner, slack_env, monkeypatch):
+    monkeypatch.delenv("SLACK_APP_TOKEN")
+    web = RecordedSlackWeb()
+    result = asyncio.run(runner.run_slack(mode="send-only", reply_timeout_seconds=60, http=web))
+    assert result["checks"]["send"]["passed"] is True and result["checks"]["receive"]["passed"] is None
+    assert "apps.connections.open" not in web.calls
+
+
+# ----------------------------------------------------------------------------- WhatsApp, Feishu
+
+
+class RecordedProvider:
+    def __init__(self, responses: dict[str, Any]):
+        self.responses = responses
+        self.calls: list[tuple[str, str, Any]] = []
+
+    async def get(self, url, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        return ChannelHttpResult(200, self.responses[url.rsplit("/", 1)[-1].split("?")[0]])
+
+    async def post(self, url, **kwargs):
+        self.calls.append(("POST", url, kwargs))
+        return ChannelHttpResult(200, self.responses[url.rsplit("/", 1)[-1].split("?")[0]])
+
+
+def _shape(platform: str, name: str) -> Any:
+    return json.loads((ROOT / "tests" / "fixtures" / "channels" / platform / f"{name}.json").read_text(encoding="utf-8"))["response"]
+
+
+def test_whatsapp_send_only_sends_the_hello_world_template(runner, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_CLOUD_TOKEN", "wa-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "100000000000001")
+    monkeypatch.setenv("WHATSAPP_LIVE_RECIPIENT", "15550000000")
+    provider = RecordedProvider({"100000000000001": _shape("whatsapp", "phone_number"), "messages": _shape("whatsapp", "template_sent")})
+
+    result = asyncio.run(runner.run_whatsapp(mode="send-only", reply_timeout_seconds=60, http=provider))
+
+    send_body = provider.calls[1][2]["json"]
+    assert send_body["type"] == "template" and send_body["template"] == {"name": "hello_world", "language": {"code": "en_US"}}
+    assert result["checks"]["send"]["provider_message_id"].startswith("wamid.")
+    assert "15550000000" not in json.dumps(result["checks"])
+    with pytest.raises(runner.LiveContractFailure, match="public HTTPS webhook"):
+        asyncio.run(runner.run_whatsapp(mode="send-receive", reply_timeout_seconds=60, http=provider))
+
+
+def test_feishu_send_only_sends_json_string_content_to_the_open_id(runner, monkeypatch):
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_placeholder")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
+    monkeypatch.setenv("FEISHU_LIVE_OPEN_ID", "ou_placeholder")
+    provider = RecordedProvider({"internal": _shape("feishu", "tenant_access_token"), "messages": _shape("feishu", "message_sent")})
+
+    result = asyncio.run(runner.run_feishu(mode="send-only", reply_timeout_seconds=60, http=provider))
+
+    send = next(kwargs for method, url, kwargs in provider.calls if url.endswith("/im/v1/messages"))
+    assert send["params"] == {"receive_id_type": "open_id"} and json.loads(send["json"]["content"])["text"].startswith("OmniDesk live contract")
+    assert result["checks"]["send"]["provider_message_id"] == "om_placeholder000000000000000001"

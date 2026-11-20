@@ -1,0 +1,2 @@
+{"_source": "Shape of Slack Web API auth.test (docs.slack.dev/reference/methods/auth.test); ids are placeholders.",
+ "response": {"ok": true, "url": "https://omnidesk-test.slack.com/", "team": "OmniDesk Test", "user": "omnidesk_live", "team_id": "T0000000001", "user_id": "U00000000B0", "bot_id": "B0000000001", "is_enterprise_install": false}}

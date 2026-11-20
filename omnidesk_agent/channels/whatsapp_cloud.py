@@ -58,6 +58,20 @@ class WhatsAppCloudChannel:
                         ))
         return out
 
+    async def send_template(self, recipient: str, name: str, language_code: str = "en_US", **kwargs) -> dict[str, Any]:
+        """Send an approved message template (the only way to open a conversation outside the 24h window)."""
+        if not self.cfg.phone_number_id:
+            raise RuntimeError("WhatsApp phone_number_id is missing")
+        if not self.token:
+            raise RuntimeError("WhatsApp access token is missing")
+        url = f"https://graph.facebook.com/{self.cfg.graph_version}/{self.cfg.phone_number_id}/messages"
+        body = {"messaging_product": "whatsapp", "to": recipient, "type": "template", "template": {"name": name, "language": {"code": language_code}}}
+        result = await self.http.post(url, headers={"Authorization": f"Bearer {self.token}"}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        data = result.data if isinstance(result.data, dict) else {}
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        first = messages[0] if messages and isinstance(messages[0], dict) else {}
+        return {"message_id": first.get("id"), "request_id": result.request_id}
+
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any]:
         if not self.cfg.phone_number_id:
             raise RuntimeError("WhatsApp phone_number_id is missing")

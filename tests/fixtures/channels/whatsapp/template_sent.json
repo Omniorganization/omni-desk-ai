@@ -1,0 +1,2 @@
+{"_source": "Shape of the WhatsApp Cloud API /messages response for a template send; ids are placeholders.",
+ "response": {"messaging_product": "whatsapp", "contacts": [{"input": "15550000000", "wa_id": "15550000000"}], "messages": [{"id": "wamid.HBgLMTU1NTAwMDAwMDAVAgARGBI0placeholder", "message_status": "accepted"}]}}

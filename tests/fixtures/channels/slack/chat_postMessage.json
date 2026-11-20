@@ -1,0 +1,2 @@
+{"_source": "Shape of Slack chat.postMessage response; ids are placeholders.",
+ "response": {"ok": true, "channel": "C0000000001", "ts": "1763683200.000100", "message": {"type": "message", "subtype": "bot_message", "bot_id": "B0000000001", "text": "OmniDesk live contract check.", "ts": "1763683200.000100"}}}

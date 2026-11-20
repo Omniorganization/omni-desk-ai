@@ -57,6 +57,8 @@ _GRAPH_RATE_LIMIT = {4, 17, 32, 613, 80001, 80002, 80004, 80005, 80006, 80008, 8
 _GRAPH_AUTH = {0, 102, 190}
 _GRAPH_POLICY = {10, 200, 368, 470, 131031, 131042, 131047, 131049, 131050, 2018278}
 _GRAPH_RECIPIENT = {551, 131021, 131026, 1545041, 2018001, 2018108}
+# 131030: recipient not in the test number's allowed list (add it in API Setup).
+_GRAPH_CONFIG = {131030}
 _GRAPH_PAYLOAD = {131051, 131052, 131053}
 _GRAPH_TRANSIENT = {1, 2, 131000, 131016}
 
@@ -141,6 +143,8 @@ def provider_category(channel: str, data: Any, status: Optional[int] = None) -> 
             return None
         code, subcode = _int(error.get("code")), _int(error.get("error_subcode"))
         for value in (subcode, code):
+            if value in _GRAPH_CONFIG:
+                return "config_error"
             if value in _GRAPH_RATE_LIMIT:
                 return "rate_limit"
             if value in _GRAPH_RECIPIENT:

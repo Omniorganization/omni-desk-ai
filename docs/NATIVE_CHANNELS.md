@@ -101,24 +101,28 @@ The page access token is sent as `Authorization: Bearer`, not `?access_token=`, 
 
 ## Live contract runs
 
-`.github/workflows/channel-live-contract.yml` (manual) runs `scripts/run_channel_live_contract.py` against the real provider with a dedicated test account, through the production adapter code. Today it covers Telegram:
+`.github/workflows/channel-live-contract.yml` (manual) runs `scripts/run_channel_live_contract.py` against the real provider with a dedicated test account, through the production adapter code. A run sends a message with a one-time code; in `send-receive` mode the test user replies with that code from their phone and the reply must come back through the adapter's parser and allowlist within `reply_timeout_minutes`.
 
-1. `getMe`, then `getWebhookInfo` must show no webhook (the run never deletes one).
-2. Pending updates are drained.
-3. `TelegramChannel.send_text` posts a message with a one-time code to the test chat.
-4. The test user replies with the code from their phone; `TelegramPoller` must deliver that reply through the allowlist within `reply_timeout_minutes`.
+| Channel | Live mode today | What the run exercises |
+|---|---|---|
+| Slack | send-receive | `auth.test`; Socket Mode (`apps.connections.open`, no public URL); `SlackChannel.send_text` after the socket is up; the reply as an Events API payload through `SlackChannel.parse_webhook` (user and channel allowlists); every envelope acknowledged |
+| Feishu / Lark | send-only | tenant access token; `send_text` to the test user's `open_id`. Receiving needs the long-connection event client (not implemented yet) or a public webhook |
+| WhatsApp Cloud | send-only | phone-number probe; the approved `hello_world` template to the verified test recipient. Inbound needs a public HTTPS webhook, deferred until one exists |
+| Telegram | none (no test account) | covered only by `getUpdates` polling and recorded-fixture tests; no live run has happened |
 
-`send-only` mode stops after step 3.
+Slack's live receive path is Socket Mode, which the gateway itself does not use (its Slack inbound is the signed Events API webhook); the run proves real event delivery and parsing, not the HTTP signature check, which stays covered by unit tests.
 
-The run needs a `channel-live` GitHub environment (Settings → Environments; add required reviewers to gate runs) with these secrets, set by the owner with `gh secret set NAME --env channel-live`:
+The run needs a `channel-live` GitHub environment (Settings → Environments; add required reviewers to gate runs). The owner sets each secret with `gh secret set NAME --env channel-live`; a channel only needs its own:
 
-| Secret | Value |
+| Channel | Secrets |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | token of a dedicated test bot from @BotFather, with no webhook set |
-| `TELEGRAM_LIVE_CHAT_ID` | chat id the run sends to (the test user's private chat with the bot) |
-| `TELEGRAM_LIVE_SENDER_ID` | numeric user id of the test account that replies |
+| Slack | `SLACK_BOT_TOKEN` (xoxb-), `SLACK_APP_TOKEN` (xapp-, `connections:write`), `SLACK_LIVE_CHANNEL_ID` (dedicated test channel, not the alerts channel), `SLACK_LIVE_SENDER_ID` (the replying user's member id) |
+| Feishu | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_LIVE_OPEN_ID` (the test user's `ou_…` open_id for this app) |
+| Lark | `LARK_APP_ID`, `LARK_APP_SECRET`, `LARK_LIVE_OPEN_ID` |
+| WhatsApp | `WHATSAPP_CLOUD_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` (the test number), `WHATSAPP_LIVE_RECIPIENT` (a verified recipient, digits only) |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_LIVE_CHAT_ID`, `TELEGRAM_LIVE_SENDER_ID` |
 
-The evidence artifact (`dist/evidence/channels/<channel>-live-contract.json`, schema `omnidesk-channel-live-contract/v1`) records what the run observed: provider message ids, run URL and commit, with chat and user ids only as truncated SHA-256 digests. A failed run writes `status: failed` with the error. Only a passed run's file is committed, under `release/external-evidence/channels/`, together with its run URL. CI runs the same runner against recorded responses in `tests/fixtures/channels/telegram/` (`tests/test_channel_live_contract.py`).
+The evidence artifact (`dist/evidence/channels/<channel>-live-contract.json`, schema `omnidesk-channel-live-contract/v1`) records what the run observed: provider message ids, event ids, run URL and commit, with chat, channel and user ids only as truncated SHA-256 digests. A failed run writes `status: failed`, the error and the checks that passed before it. Only a passed run's file is committed, under `release/external-evidence/channels/`, together with its run URL. CI runs the same runners against recorded responses in `tests/fixtures/channels/` (`tests/test_channel_live_contract.py`); the fixtures are documented response shapes with placeholder ids until a passed run replaces them with sanitized recordings.
 
 ## Inbound authentication without URL tokens
 

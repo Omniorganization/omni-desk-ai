@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """Live contract run of a messaging channel against the real provider.
 
-The run drives the production adapter code (``TelegramChannel.send_text``,
-``TelegramPoller`` and ``TelegramChannel.parse_update``) against the provider
-with a dedicated test account, and writes evidence describing only what this
-run observed. Nothing is mocked; credentials come from the environment (GitHub
+The run drives the production adapter code against the provider with a
+dedicated test account and writes evidence describing only what this run
+observed. Nothing is mocked; credentials come from the environment (GitHub
 environment secrets in CI). Identifiers of people and chats are recorded as
 truncated SHA-256 digests.
 
-Telegram send-receive:
-1. ``getMe`` authenticates the bot token.
-2. ``getWebhookInfo`` must show no webhook: polling cannot run beside one,
-   and the run never deletes a webhook.
-3. Pending updates are drained so only replies to this run count.
-4. ``send_text`` posts a message carrying a one-time code to the test chat.
-5. The test user replies with the code; the poller must deliver that reply
-   through the allowlist within the timeout.
+- slack: auth.test, then Socket Mode (no public URL). Once connected,
+  ``SlackChannel.send_text`` posts a one-time code to the test channel, and
+  the test user's reply must arrive as an Events API payload that
+  ``SlackChannel.parse_webhook`` accepts through its allowlists.
+- feishu / lark: a tenant access token, then ``send_text`` of the code to the
+  test user's open_id (p2p). Receiving uses the platform's long-connection
+  mode once it is implemented; until then only send-only runs pass.
+- whatsapp: phone-number probe, then the approved ``hello_world`` template
+  to the verified test recipient (send-only; inbound needs a public HTTPS
+  webhook, which is deferred).
+- telegram: getMe, no competing webhook, drain, ``send_text`` with the code,
+  and the allowlisted reply delivered by ``TelegramPoller``.
 """
 
 from __future__ import annotations
@@ -37,16 +40,24 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from omnidesk_agent.channels.http_client import ChannelHttpClient  # noqa: E402
+from omnidesk_agent.channels.lark_feishu import FeishuChannel, LarkChannel  # noqa: E402
+from omnidesk_agent.channels.native_messaging import SlackChannel  # noqa: E402
 from omnidesk_agent.channels.provider_errors import ensure_provider_success  # noqa: E402
+from omnidesk_agent.channels.slack_socket_mode import SlackSocketModeReceiver  # noqa: E402
 from omnidesk_agent.channels.telegram import TelegramChannel  # noqa: E402
 from omnidesk_agent.channels.telegram_polling import TelegramPoller  # noqa: E402
-from omnidesk_agent.config import TelegramConfig  # noqa: E402
+from omnidesk_agent.channels.whatsapp_cloud import WhatsAppCloudChannel  # noqa: E402
+from omnidesk_agent.config import FeishuConfig, LarkConfig, SlackConfig, TelegramConfig, WhatsAppCloudConfig  # noqa: E402
 
 SCHEMA = "omnidesk-channel-live-contract/v1"
 
 
 class LiveContractFailure(RuntimeError):
-    pass
+    """A failed contract step; ``checks`` keeps what passed before it."""
+
+    def __init__(self, message: str, *, checks: Optional[dict[str, Any]] = None):
+        super().__init__(message)
+        self.checks = checks or {}
 
 
 def digest(value: Any) -> str:
@@ -113,8 +124,8 @@ async def run_telegram(*, mode: str, reply_timeout_seconds: int, http: Optional[
     inbox.clear()
     checks["drain"] = {"passed": True, "pending_updates_confirmed": drained}
 
-    code = "OD" + secrets.token_hex(4).upper()
-    text = f"OmniDesk live contract check. Reply to this chat with the code {code} within {max(1, reply_timeout_seconds // 60)} minutes."
+    code = _new_code()
+    text = _prompt(code, reply_timeout_seconds, "to this chat")
     sent_at = time.monotonic()
     sent = await channel.send_text(chat_id, text, idempotency_key=f"live-contract-{code}")
     if not sent.get("message_id"):
@@ -135,7 +146,7 @@ async def run_telegram(*, mode: str, reply_timeout_seconds: int, http: Optional[
     while reply is None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise LiveContractFailure(f"no reply containing the code from the allowlisted test user within {reply_timeout_seconds}s")
+            raise LiveContractFailure(f"no reply containing the code from the allowlisted test user within {reply_timeout_seconds}s", checks=checks)
         await poller.poll_once(timeout_seconds=int(min(25, max(1, remaining))))
         reply = next((message for message in inbox if code in message.text), None)
     checks["receive"] = {
@@ -149,7 +160,126 @@ async def run_telegram(*, mode: str, reply_timeout_seconds: int, http: Optional[
     return {"channel": "telegram", "mode": mode, "checks": checks}
 
 
-RUNNERS = {"telegram": run_telegram}
+def _new_code() -> str:
+    return "OD" + secrets.token_hex(4).upper()
+
+
+def _prompt(code: str, reply_timeout_seconds: int, where: str) -> str:
+    return f"OmniDesk live contract check. Reply {where} with the code {code} within {max(1, reply_timeout_seconds // 60)} minutes."
+
+
+async def run_slack(*, mode: str, reply_timeout_seconds: int, http: Optional[ChannelHttpClient] = None, connect: Any = None) -> dict[str, Any]:
+    bot_token = _required_env("SLACK_BOT_TOKEN")
+    channel_id = _required_env("SLACK_LIVE_CHANNEL_ID")
+    sender_id = _required_env("SLACK_LIVE_SENDER_ID")
+    app_token = _required_env("SLACK_APP_TOKEN") if mode == "send-receive" else ""
+    channel = SlackChannel(SlackConfig(enabled=True, allowed_user_ids=[sender_id], allowed_channel_ids=[channel_id]))
+    if http is not None:
+        channel.http = http
+    checks: dict[str, Any] = {}
+
+    auth = await channel.http.post("https://slack.com/api/auth.test", headers={"Authorization": f"Bearer {bot_token}"}, channel="slack", idempotent=True)
+    ensure_provider_success("slack", auth)
+    data = auth.data if isinstance(auth.data, dict) else {}
+    checks["auth"] = {"passed": True, "method": "auth.test", "team_id_sha256": digest(data.get("team_id")), "bot_user_id_sha256": digest(data.get("user_id"))}
+
+    code = _new_code()
+    text = _prompt(code, reply_timeout_seconds, "in this channel")
+    sent_state: dict[str, Any] = {}
+
+    async def send() -> None:
+        sent_state["at"] = time.monotonic()
+        sent_state["sent"] = await channel.send_text(channel_id, text, idempotency_key=f"live-contract-{code}")
+
+    if mode == "send-only":
+        await send()
+    else:
+        inbox: list[Any] = []
+        kwargs = {"connect": connect} if connect is not None else {}
+        receiver = SlackSocketModeReceiver(channel, app_token, inbox.append, http=channel.http, **kwargs)
+        # Post only once the socket is up, so the reply cannot arrive unseen.
+        received = await receiver.run_until(lambda: any(code in message.text for message in inbox), timeout_seconds=reply_timeout_seconds, on_connected=send)
+        checks["socket_mode"] = {"passed": "sent" in sent_state, "envelopes_acknowledged": receiver.acknowledged}
+        if not received:
+            if "sent" in sent_state:
+                checks["send"] = {"passed": True, "adapter": "SlackChannel.send_text", "provider_message_id": sent_state["sent"].get("message_id"), "channel_id_sha256": digest(channel_id)}
+            raise LiveContractFailure(f"no reply containing the code from the allowlisted test user within {reply_timeout_seconds}s", checks=checks)
+        reply = next(message for message in inbox if code in message.text)
+        checks["receive"] = {
+            "passed": True,
+            "adapter": "SlackSocketModeReceiver -> SlackChannel.parse_webhook (user and channel allowlists)",
+            "provider_message_id": reply.message_id,
+            "event_id": (reply.raw or {}).get("event_id"),
+            "sender_id_sha256": digest(reply.sender_id),
+            "seconds_after_send": round(time.monotonic() - sent_state["at"], 1),
+        }
+    sent = sent_state["sent"]
+    if not sent.get("message_id"):
+        raise LiveContractFailure("chat.postMessage returned no ts")
+    checks["send"] = {"passed": True, "adapter": "SlackChannel.send_text", "provider_message_id": sent["message_id"], "channel_id_sha256": digest(channel_id)}
+    if mode == "send-only":
+        checks["receive"] = {"passed": None, "skipped": "send-only run"}
+    return {"channel": "slack", "mode": mode, "checks": checks}
+
+
+async def _run_lark_family(name: str, *, mode: str, reply_timeout_seconds: int, http: Optional[ChannelHttpClient] = None) -> dict[str, Any]:
+    prefix = name.upper()
+    _required_env(f"{prefix}_APP_ID")
+    _required_env(f"{prefix}_APP_SECRET")
+    open_id = _required_env(f"{prefix}_LIVE_OPEN_ID")
+    if mode == "send-receive":
+        raise LiveContractFailure(f"{name} receive needs the long-connection event client, which is not implemented yet; run send-only")
+    channel = (FeishuChannel(FeishuConfig(enabled=True, allowed_open_ids=[open_id])) if name == "feishu" else LarkChannel(LarkConfig(enabled=True, allowed_open_ids=[open_id])))
+    if http is not None:
+        channel.http = http
+    checks: dict[str, Any] = {}
+    await channel._tenant_access_token()
+    checks["auth"] = {"passed": True, "method": "auth/v3/tenant_access_token/internal"}
+    code = _new_code()
+    sent = await channel.send_text(open_id, _prompt(code, reply_timeout_seconds, "to this message"), idempotency_key=f"live-contract-{code}")
+    if not sent.get("message_id"):
+        raise LiveContractFailure("im/v1/messages returned no message_id")
+    checks["send"] = {"passed": True, "adapter": f"{type(channel).__name__}.send_text", "provider_message_id": sent["message_id"], "open_id_sha256": digest(open_id)}
+    checks["receive"] = {"passed": None, "skipped": "send-only run"}
+    return {"channel": name, "mode": mode, "checks": checks}
+
+
+async def run_feishu(**kwargs: Any) -> dict[str, Any]:
+    return await _run_lark_family("feishu", **kwargs)
+
+
+async def run_lark(**kwargs: Any) -> dict[str, Any]:
+    return await _run_lark_family("lark", **kwargs)
+
+
+async def run_whatsapp(*, mode: str, reply_timeout_seconds: int, http: Optional[ChannelHttpClient] = None) -> dict[str, Any]:
+    _required_env("WHATSAPP_CLOUD_TOKEN")
+    phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
+    recipient = _required_env("WHATSAPP_LIVE_RECIPIENT")
+    if mode == "send-receive":
+        raise LiveContractFailure("WhatsApp inbound needs a public HTTPS webhook, which is deferred; run send-only")
+    cfg = WhatsAppCloudConfig(enabled=True, phone_number_id=phone_number_id, allowed_wa_ids=[recipient])
+    channel = WhatsAppCloudChannel(cfg)
+    if http is not None:
+        channel.http = http
+    checks: dict[str, Any] = {}
+    probe = await channel.http.get(
+        f"https://graph.facebook.com/{cfg.graph_version}/{phone_number_id}",
+        headers={"Authorization": f"Bearer {channel.token}"},
+        params={"fields": "verified_name,quality_rating"},
+        channel="whatsapp_cloud",
+    )
+    probe_data = probe.data if isinstance(probe.data, dict) else {}
+    checks["auth"] = {"passed": True, "method": "GET /{phone-number-id}", "verified_name": probe_data.get("verified_name"), "graph_version": cfg.graph_version}
+    sent = await channel.send_template(recipient, "hello_world", "en_US", idempotency_key=f"live-contract-{_new_code()}")
+    if not sent.get("message_id"):
+        raise LiveContractFailure("messages returned no wamid")
+    checks["send"] = {"passed": True, "adapter": "WhatsAppCloudChannel.send_template (hello_world)", "provider_message_id": sent["message_id"], "recipient_sha256": digest(recipient)}
+    checks["receive"] = {"passed": None, "skipped": "inbound webhook deferred until a public HTTPS endpoint exists"}
+    return {"channel": "whatsapp", "mode": mode, "checks": checks}
+
+
+RUNNERS = {"telegram": run_telegram, "slack": run_slack, "feishu": run_feishu, "lark": run_lark, "whatsapp": run_whatsapp}
 
 
 def build_evidence(result: Optional[dict[str, Any]], *, channel: str, mode: str, error: Optional[str]) -> dict[str, Any]:
@@ -179,6 +309,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     result = None
     try:
         result = asyncio.run(RUNNERS[args.channel](mode=args.mode, reply_timeout_seconds=max(30, args.reply_timeout_seconds)))
+    except LiveContractFailure as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        result = {"checks": exc.checks}
     except Exception as exc:  # the evidence records the failure; the exit code fails the job
         error = f"{type(exc).__name__}: {exc}"
     evidence = build_evidence(result, channel=args.channel, mode=args.mode, error=error)

@@ -15,11 +15,15 @@ on:
         description: Provider to exercise with its test account
         type: choice
         required: true
-        default: telegram
+        default: slack
         options:
+          - slack
+          - feishu
+          - lark
+          - whatsapp
           - telegram
       mode:
-        description: send-receive needs the test user to reply with the code the run sends; send-only checks auth and sending
+        description: send-receive needs the test user to reply with the code the run sends (slack, telegram); send-only checks auth and sending (all channels)
         type: choice
         required: true
         default: send-receive
@@ -35,7 +39,8 @@ permissions:
   contents: read
 
 concurrency:
-  # One poller per bot: a second getUpdates caller gets 409 Conflict.
+  # One run per channel at a time (a second Telegram poller gets 409 Conflict,
+  # and two Slack runs would see each other's codes).
   group: channel-live-contract-${{ inputs.channel }}
   cancel-in-progress: false
 
@@ -58,6 +63,19 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           MODE: ${{ inputs.mode }}
           REPLY_TIMEOUT_MINUTES: ${{ inputs.reply_timeout_minutes }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_LIVE_CHANNEL_ID: ${{ secrets.SLACK_LIVE_CHANNEL_ID }}
+          SLACK_LIVE_SENDER_ID: ${{ secrets.SLACK_LIVE_SENDER_ID }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_LIVE_OPEN_ID: ${{ secrets.FEISHU_LIVE_OPEN_ID }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_LIVE_OPEN_ID: ${{ secrets.LARK_LIVE_OPEN_ID }}
+          WHATSAPP_CLOUD_TOKEN: ${{ secrets.WHATSAPP_CLOUD_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          WHATSAPP_LIVE_RECIPIENT: ${{ secrets.WHATSAPP_LIVE_RECIPIENT }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_LIVE_CHAT_ID: ${{ secrets.TELEGRAM_LIVE_CHAT_ID }}
           TELEGRAM_LIVE_SENDER_ID: ${{ secrets.TELEGRAM_LIVE_SENDER_ID }}
