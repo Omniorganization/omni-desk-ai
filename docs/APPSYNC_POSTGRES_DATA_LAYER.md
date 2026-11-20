@@ -151,6 +151,23 @@ moved silently past the gap.
 - Actors are bound to gateway tokens (`OMNIDESK_<ROLE>_ACTOR`), so the owner token is one actor. An owner who requests a desktop action cannot also approve it; another approver must (for example the operator requests and the owner approves). A critical action needs two approvers other than the requester, for example the owner and the admin token.
 - Migration 9 (`approval_four_eyes`) adds `required_approvals` and `approved_by`.
 
+## Agent approvals in the clients' plane
+
+The orchestrator records an agent step that needs approval in security's `ApprovalStore`. That store is the ledger: single-use, scope-bound, with dual approval when the proposal sets `requires_dual_approval`. `attach_approval_plane(rt)` connects it to the clients:
+- **Listener.** `rt.orchestrator.approval_listener = AppSyncApprovalListener(rt.app_sync)` and `rt.orchestrator.organization_resolver = rt.app_sync.organization_for_actor` (agent-core #280). Each pause becomes the AppSync approval `agt_<ledger id>`. It is idempotent, belongs to the run's organization, and is pending for Web Admin and mobile. Its action reads `Agent step tool.action`, and `action_detail.proposal` holds the stored, redacted proposal. A pause without an organization or a requester is shown to nobody; it stays decidable through the ledger's own routes.
+- **Decision.** `POST /app/approvals/agt_.../decide` takes the owner role and a device signature (a signature proves the device, not the right to approve). Before AppSync records anything, it applies the ledger's authority:
+  - the requester (the proposal's `created_by`/`proposer`/`actor`) never approves;
+  - a break-glass elevation never approves a critical step;
+  - the approver must be in the run's organization;
+  - a critical step needs two distinct owners. When the ledger opened a dual approval, each approval goes through `dual_approval_store.approve` first, and the ledger's readiness decides. A critical step without that flag still needs two approvers here.
+
+  Then `decide("approved"|"denied")`, then AppSync mirrors the decision, and `await rt.orchestrator.resume_by_approval(ledger id)` resumes the run or ends it (`approval_denied` / `approval_expired`). The response carries only a summary of the run (`status`, `run_id`, `termination_reason`), never its output.
+- **Errors.** An expired or already decided ledger approval gets 409; a refusal gets 403.
+
+## Pushes carry no content
+
+Every push, from both stores and for every event, has a fixed title and body (`push_text`). An agent step adds only its `tool.action` and risk, never its args, chat text, task text or file paths, because FCM and APNs are third parties. In-app notifications and approvals keep their text, and devices read them over the authenticated API.
+
 ## Push outbox and dispatch
 
 A notification queues one push per challenge-verified, unrevoked device it is
