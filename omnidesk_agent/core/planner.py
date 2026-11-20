@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
-from typing import Any, Optional, cast
+from typing import Any, Iterable, Optional, cast
+from omnidesk_agent.core.agent_loop import LoopView, PlannerTurn
 from omnidesk_agent.core.llm import LLM
 from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep
 from omnidesk_agent.channels.ecosystem import resolve_channel
@@ -17,8 +18,11 @@ class HierarchicalPlanner:
         self.tools = tools
 
     async def plan(self, msg: ChannelMessage) -> Plan:
+        return await self._plan(msg)
+
+    async def _plan(self, msg: ChannelMessage, *, retrieve_memory: bool = True) -> Plan:
         retrieve = getattr(self.memory, "retrieve_for_task", None)
-        experiences = self.memory.retrieve_for_task(msg.text, limit=4, channel=msg.channel, actor=msg.sender_id) if callable(retrieve) else []
+        experiences = self.memory.retrieve_for_task(msg.text, limit=4, channel=msg.channel, actor=msg.sender_id) if retrieve_memory and callable(retrieve) else []
         skills_context = self.skills.prompt_block(msg.text, max_chars=6000)
         profile: Optional[dict[str, Any]] = None
         get_profile = getattr(self.memory, "get_interaction_profile", None)
@@ -30,7 +34,35 @@ class HierarchicalPlanner:
             except Exception:
                 profile = None
         interaction = infer_interaction_signal(msg.text, source_channel=msg.channel, actor=msg.sender_id, learned_profile=profile)
-        return self._rule_plan(msg, experiences, skills_context, interaction)
+        return self._available_steps_only(self._rule_plan(msg, experiences, skills_context, interaction))
+
+    async def next_turn(self, view: LoopView) -> PlannerTurn:
+        """The rule plan as the run's only planned turn; the loop finishes the run once its steps ran."""
+        return PlannerTurn.from_plan(await self._plan(view.msg, retrieve_memory=view.retrieve_memory), source="rule")
+
+    def _available_steps_only(self, plan: Plan) -> Plan:
+        """Drop rule steps whose tool action is not registered, and say so in the rationale.
+
+        The rules are keyword matches written for the full tool surface; most
+        deployments enable a few tools only, and this planner is also the fallback
+        when an LLM plan is rejected for using an unavailable tool.
+        """
+        names = getattr(self.tools, "names", None)
+        action_spec = getattr(self.tools, "action_spec", None)
+        if not callable(names) or not callable(action_spec):
+            return plan  # no registry to check against
+        registered = set(cast(Iterable[str], names()))
+        kept: list[PlanStep] = []
+        dropped: list[str] = []
+        for step in plan.steps:
+            if step.tool in registered and action_spec(step.tool, step.action) is not None:
+                kept.append(step)
+            else:
+                dropped.append(f"{step.tool}.{step.action}")
+        if not dropped:
+            return plan
+        rationale = "{}；已移除未注册的工具动作: {}".format(plan.rationale, ", ".join(dropped))
+        return Plan(goal=plan.goal, steps=kept, rationale=rationale, plan_id=plan.plan_id)
 
     def _rule_plan(self, msg: ChannelMessage, experiences: list[dict[str, Any]], skills_context: str, interaction: Optional[InteractionSignal] = None) -> Plan:
         if interaction is None:

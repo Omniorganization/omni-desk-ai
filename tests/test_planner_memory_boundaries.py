@@ -7,7 +7,7 @@ import time
 import pytest
 
 from omnidesk_agent.config import MemoryPrivacyConfig
-from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.core.models import ChannelMessage, Plan
 from omnidesk_agent.core.structured_planner import LLMStructuredPlanner
 from omnidesk_agent.core.token_budget import TokenBudgetConfig
 from omnidesk_agent.memory.experience import ExperienceStore
@@ -155,11 +155,15 @@ def test_structured_planner_provider_context_is_actor_scoped(memory):
 
     class Fallback:
         async def plan(self, msg):
-            return None
+            return Plan(goal=msg.text, steps=[])
 
     router = Router()
     planner = LLMStructuredPlanner(router, memory, Skills(), Tools(), Fallback())
     asyncio.run(planner.plan(ChannelMessage(channel="chat", sender_id="alice", thread_id="t", message_id="m", text="shipment")))
-    context = json.loads(router.requests[0].user)["recent_experiences"]
-    assert context and all(row["actor"] == "alice" for row in context)
+    payload = json.loads(router.requests[0].user)
+    items = {item["id"]: item for item in payload["data"]}
+    refs = payload["recent_experiences"]
+    assert refs and all(items[ref]["trust"] == "untrusted" and items[ref]["source"] == "memory:experience" for ref in refs)
+    rows = [json.loads(items[ref]["content"].split("\n", 1)[1].rsplit("\n", 1)[0]) for ref in refs]
+    assert all(row["actor"] == "alice" for row in rows)
     assert "other actor confidential" not in router.requests[0].user
