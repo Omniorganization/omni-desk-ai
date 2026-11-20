@@ -43,21 +43,28 @@ class AdminAuth:
 
     Role model:
       - viewer: dashboard/status/metrics/read-only
+      - auditor: what a viewer can do, plus reading the audit logs; nothing else
       - operator: run/evaluate/generate/test
       - owner: approve/reject/resume/oauth/write-sensitive admin operations
+
+    A route that requires ``auditor`` admits auditors and owners only: an
+    operator outranks a viewer, not an auditor, and break-glass never grants it.
     """
 
-    ROLE_LEVEL = {"viewer": 1, "operator": 2, "owner": 3}
+    ROLE_LEVEL = {"viewer": 1, "auditor": 1, "operator": 2, "owner": 3}
+    AUDIT_READERS = frozenset({"auditor", "owner"})
 
     def __init__(
         self,
         *,
         admin_token_env: str = "OMNIDESK_ADMIN_TOKEN",
         viewer_token_env: str = "OMNIDESK_VIEWER_TOKEN",
+        auditor_token_env: str = "OMNIDESK_AUDITOR_TOKEN",
         operator_token_env: str = "OMNIDESK_OPERATOR_TOKEN",
         owner_token_env: str = "OMNIDESK_OWNER_TOKEN",
         admin_actor_env: str = "OMNIDESK_ADMIN_ACTOR",
         viewer_actor_env: str = "OMNIDESK_VIEWER_ACTOR",
+        auditor_actor_env: str = "OMNIDESK_AUDITOR_ACTOR",
         operator_actor_env: str = "OMNIDESK_OPERATOR_ACTOR",
         owner_actor_env: str = "OMNIDESK_OWNER_ACTOR",
         legacy_actor_env: str = "OMNIDESK_LEGACY_ADMIN_ACTOR",
@@ -73,12 +80,14 @@ class AdminAuth:
         self.admin_token_env = admin_token_env
         self.role_token_envs = {
             "viewer": viewer_token_env,
+            "auditor": auditor_token_env,
             "operator": operator_token_env,
             "owner": owner_token_env,
         }
         self.admin_actor_env = admin_actor_env
         self.role_actor_envs = {
             "viewer": viewer_actor_env,
+            "auditor": auditor_actor_env,
             "operator": operator_actor_env,
             "owner": owner_actor_env,
         }
@@ -274,6 +283,8 @@ class AdminAuth:
         required_role = required_role if required_role in self.ROLE_LEVEL else "viewer"
         if ok and self.ROLE_LEVEL[role] < self.ROLE_LEVEL[required_role]:
             return AdminAuthDecision(False, f"admin role {role} is below required role {required_role}", actor=actor, role=role)
+        if ok and required_role == "auditor" and role not in self.AUDIT_READERS:
+            return AdminAuthDecision(False, f"admin role {role} cannot read the audit logs", actor=actor, role=role)
         return AdminAuthDecision(ok, reason, actor=actor, role=role)
 
     def _audit(self, decision: AdminAuthDecision, client_host: str, required_role: str, path: str) -> None:

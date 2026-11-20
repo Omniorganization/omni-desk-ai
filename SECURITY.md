@@ -70,6 +70,19 @@ Web Admin and other admin clients should not keep the long-lived role token. The
 - **Audit.** `admin_session.login` and `admin_session.revoke` go to the chained admin audit log with the session id, never the token. Every request made with a session records its session id. A login that cannot be audited is revoked again (503). A revoke is never undone because its audit entry failed.
 - **Known limit.** Revocation is a column, not sealed history. Someone who can write the table and kept a copy of a row from before its revocation could restore it until its original expiry.
 
+## Reading the Audit Logs
+
+`GET /admin/audit/events` (`server_routes/audit_routes.py`) is the read API for Web Admin's audit view.
+
+- **Who.** Auditors and owners only. `auditor` is a role of its own (`OMNIDESK_AUDITOR_TOKEN`, `OMNIDESK_AUDITOR_ACTOR`). It can do what a viewer can, plus read the audit logs, and nothing else. A route that requires `auditor` refuses operators, and break-glass never grants it.
+- **What.** `log=security` is the permission gate's log; `log=admin` is admin authentication and sessions. `after_seq` and `limit` (at most 500) page through the chain in order.
+- **Scope.** An entry belongs to the organization of its actor. Entries with no actor are deployment-level and shown only to callers in `org_default`.
+- **Redaction.**
+  - Argument values are withheld; their digests and lengths are kept.
+  - Content fields (message text, tool output, model replies) are withheld.
+  - Secret-named keys are masked, and credentials inside the remaining strings are masked.
+- **Integrity.** `verification` reports the background chain check for that log: `ok`, `failed` or `not_checked`, when it last ran, the last sequence it verified, and its error.
+
 ## Reporting
 
 Do not include secrets, credentials, private keys, tokens, customer data, or production evidence payloads in public issues. Use a private security channel controlled by the repository owner.

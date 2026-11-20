@@ -49,7 +49,7 @@ MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 12 * 3600
 MAX_LOGINS_PER_MINUTE = 10
 MAX_ACTIVE_SESSIONS_PER_ACTOR = 20
-ROLES = frozenset({"viewer", "operator", "owner"})
+ROLES = frozenset({"viewer", "auditor", "operator", "owner"})
 
 _LOOKUP_LABEL = b"omnidesk/admin-session/lookup/v1"
 _SEAL_LABEL = b"omnidesk/admin-session/seal/v1"
