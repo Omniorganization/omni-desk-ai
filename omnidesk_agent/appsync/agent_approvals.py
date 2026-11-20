@@ -141,6 +141,7 @@ async def decide_agent_approval(
     record = await run_blocking(
         store.decide_approval, approval_id=approval_id, actor=actor, decision=decision,
         reason=reason, idempotency_key=idempotency_key, idempotency_payload=idempotency_payload,
+        break_glass=break_glass,
     )
     run: Optional[dict[str, Any]] = None
     resume = cast(Optional[Callable[[str], Awaitable[Any]]], getattr(orchestrator, "resume_by_approval", None))

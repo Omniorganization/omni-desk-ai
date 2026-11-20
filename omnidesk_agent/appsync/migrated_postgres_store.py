@@ -1760,7 +1760,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
 
         return self._transaction(body)
 
-    def decide_approval(self, *, approval_id: str, actor: str, decision: Literal["approved", "rejected"], reason: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def decide_approval(self, *, approval_id: str, actor: str, decision: Literal["approved", "rejected"], reason: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, break_glass: bool = False) -> dict[str, Any]:
         def body(tx: _Tx) -> Any:
             cached = self._idempotency_lookup(tx, actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload, lock=True)
             if cached is not None:
@@ -1776,7 +1776,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 self._update(tx, APPROVALS, approval)
                 self._event(tx, "approval.expired", actor, {"approval_id": approval_id, "task_id": approval.task_id, "organization_id": approval.organization_id})
                 return _CommitThenRaise(ValueError("approval expired"))
-            final = apply_approval_decision(approval, actor=actor, decision=decision, reason=reason, idempotency_key=idempotency_key, now=tx.now)
+            final = apply_approval_decision(approval, actor=actor, decision=decision, reason=reason, idempotency_key=idempotency_key, now=tx.now, break_glass=break_glass)
             self._update(tx, APPROVALS, approval)
             if not final:
                 # One of two approvals of a critical action: ask for the second.

@@ -397,21 +397,26 @@ def approvals_required(risk: str) -> int:
     return CRITICAL_APPROVERS if risk == "critical" else 1
 
 
-def apply_approval_decision(approval: ApprovalRecord, *, actor: str, decision: str, reason: Optional[str], idempotency_key: Optional[str], now: float) -> bool:
+def apply_approval_decision(approval: ApprovalRecord, *, actor: str, decision: str, reason: Optional[str], idempotency_key: Optional[str], now: float, break_glass: bool = False) -> bool:
     """Records ``actor``'s decision on a pending approval; True once it is final.
 
     The requester may withdraw (reject) their own request but never approve it.
     A critical approval stays pending until two distinct approvers other than
     the requester have approved; a rejection by any of them is final. Approvals
-    created before this rule still need what their risk requires now.
+    created before this rule still need what their risk requires now. A
+    break-glass elevation may decide a single-approver action but is never one
+    of the two approvers of a critical one.
     """
+    required = max(int(approval.required_approvals or 1), approvals_required(approval.risk))
+    if decision == "approved" and break_glass and required > 1:
+        raise PermissionError("a break-glass elevation cannot approve a critical action")
     if decision == "approved" and actor == approval.requested_by:
         raise PermissionError("the requester cannot approve their own request")
     if decision == "approved" and actor in approval.approved_by:
         raise PermissionError("this approver has already approved; a different approver must decide")
     if decision == "approved":
         approval.approved_by = [*approval.approved_by, actor]
-        approval.required_approvals = max(int(approval.required_approvals or 1), approvals_required(approval.risk))
+        approval.required_approvals = required
         if len(approval.approved_by) < approval.required_approvals:
             return False
     approval.status = "approved" if decision == "approved" else "rejected"
@@ -1678,7 +1683,7 @@ class AppSyncStore:
             self._persist()
             return self._record(record)
 
-    def decide_approval(self, *, approval_id: str, actor: str, decision: Literal["approved", "rejected"], reason: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def decide_approval(self, *, approval_id: str, actor: str, decision: Literal["approved", "rejected"], reason: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, break_glass: bool = False) -> dict[str, Any]:
         with self._lock:
             cached = self._idempotency_get(actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
@@ -1694,7 +1699,7 @@ class AppSyncStore:
                 self._event("approval.expired", actor, {"approval_id": approval_id, "task_id": approval.task_id, "organization_id": approval.organization_id})
                 self._persist()
                 raise ValueError("approval expired")
-            if not apply_approval_decision(approval, actor=actor, decision=decision, reason=reason, idempotency_key=idempotency_key, now=_now()):
+            if not apply_approval_decision(approval, actor=actor, decision=decision, reason=reason, idempotency_key=idempotency_key, now=_now(), break_glass=break_glass):
                 # One of two approvals of a critical action: ask for the second.
                 self._event("approval.partially_approved", actor, {"approval_id": approval_id, "task_id": approval.task_id, "approvals": len(approval.approved_by), "required": approval.required_approvals, "organization_id": approval.organization_id})
                 self._notify_locked(audience="mobile", title="Second approval required", body=approval.action[:180], event_type="approval.requested", actor=actor, related_id=approval.approval_id)

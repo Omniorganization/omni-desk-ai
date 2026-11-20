@@ -20,7 +20,7 @@ from omnidesk_agent.appsync.store import (
     normalize_task_result,
     public_device_view,
 )
-from omnidesk_agent.appsync.agent_approvals import decide_agent_approval, is_agent_approval, refuse_break_glass_for_critical
+from omnidesk_agent.appsync.agent_approvals import decide_agent_approval, is_agent_approval
 from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
 from omnidesk_agent.appsync.sync_websocket import (
     MAX_CONCURRENT_SYNC_POLLS,
@@ -794,8 +794,6 @@ def register_appsync_routes(
                 )
                 approval, run = outcome["approval"], outcome["run"]
             else:
-                if break_glass and verdict == "approved":
-                    refuse_break_glass_for_critical(await run_blocking(store.get_approval, approval_id, actor=actor), break_glass=True)
                 approval = await run_blocking(store.decide_approval,
                     approval_id=approval_id,
                     actor=actor,
@@ -803,6 +801,8 @@ def register_appsync_routes(
                     reason=payload.get("reason"),
                     idempotency_key=_require_idempotency(cfg, request, payload),
                     idempotency_payload=payload,
+                    # An operator raised by break-glass is never one of the four eyes.
+                    break_glass=break_glass,
                 )
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc
