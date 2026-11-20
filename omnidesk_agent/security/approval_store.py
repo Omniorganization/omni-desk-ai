@@ -11,16 +11,39 @@ from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from typing import Any, Optional
 
 
+def decision_audit_payload(approval_id: str, status: str, proposal: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """The audit entry for a human decision: who decided what, never the arguments."""
+    decided_by = result.get("decided_by") or result.get("approved_by") or result.get("denied_by")
+    return {
+        "approval_id": approval_id,
+        "decision": status,
+        "decided_by": decided_by,
+        "requesters": sorted(proposal_requesters(proposal)),
+        "tool": proposal.get("tool"),
+        "action": proposal.get("action"),
+        "risk": proposal.get("risk"),
+        "run_id": proposal.get("run_id"),
+        "plane": str(result.get("plane") or "ledger"),
+        "reason": str(result.get("reason") or "")[:300] or None,
+    }
+
+
 class ApprovalStore:
     def __init__(self, db_path: Path, ttl_seconds: int = 600, dual_approval_store: Any | None = None):
         self.db_path = db_path.expanduser()
         self.ttl_seconds = ttl_seconds
         self.dual_approval_store = dual_approval_store
+        # (event, payload) -> None, set by the PermissionManager: decisions go on the
+        # security audit chain inside the deciding transaction, so a decision the
+        # chain cannot take is rolled back.
+        self.decision_audit: Any | None = None
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init()
 
     def attach_dual_approval_store(self, dual_approval_store: Any | None) -> None:
         self.dual_approval_store = dual_approval_store
+        if self.decision_audit is not None and getattr(dual_approval_store, "decision_audit", "absent") is None:
+            dual_approval_store.decision_audit = self.decision_audit  # type: ignore[union-attr]
 
     def _init(self) -> None:
         with connect_sqlite(self.db_path) as con:
@@ -109,6 +132,8 @@ class ApprovalStore:
                 "UPDATE approvals SET status = ?, result = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
                 (status, json.dumps(result or {}, ensure_ascii=False), time.time(), approval_id),
             )
+            if self.decision_audit is not None:
+                self.decision_audit("approval.decided", decision_audit_payload(approval_id, status, current.get("proposal") or {}, result or {}))
             row = con.execute(
                 "SELECT id, status, proposal, result, created_at, expires_at, decided_at, consumed_at, consumed_by_run_id, consumed_scope_hash FROM approvals WHERE id = ?",
                 (approval_id,),

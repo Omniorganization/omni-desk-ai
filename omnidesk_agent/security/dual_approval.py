@@ -48,6 +48,8 @@ class DualApprovalStore:
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path).expanduser()
+        # (event, payload) -> None, set by the PermissionManager; see ApprovalStore.
+        self.decision_audit: Any | None = None
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with connect_sqlite(self.db_path) as con:
             con.execute(
@@ -100,6 +102,8 @@ class DualApprovalStore:
                 "UPDATE dual_approvals SET first_approver=?, second_approver=?, updated_at=? WHERE approval_id=?",
                 (first, second, now, approval_id),
             )
+            if self.decision_audit is not None:
+                self.decision_audit("approval.dual_approved", {"approval_id": approval_id, "approver": approver, "approvers": [a for a in (first, second) if a], "ready": bool(first and second)})
         return self.status(approval_id)
 
     def status(self, approval_id: str) -> DualApprovalDecision:
