@@ -112,17 +112,37 @@ RUNTIME_STATE_NAMES = frozenset({
 _RUNTIME_STATE_SUFFIXES = ("-wal", "-shm", "-journal", ".key", ".lock")
 
 
+def _folded(name: str) -> str:
+    """The name, folded the way case-insensitive filesystems compare names.
+
+    macOS (APFS by default) and Windows ignore case, APFS also ignores Unicode
+    normalization, and Windows drops trailing dots and spaces and opens
+    ``name::$DATA`` as the file itself. On a case-sensitive filesystem the
+    folding over-matches, which only hides a look-alike file.
+    """
+    name = name.split(":", 1)[0]
+    return unicodedata.normalize("NFKC", name).casefold().rstrip(" .")
+
+
+_FOLDED_STATE_NAMES = frozenset(_folded(name) for name in RUNTIME_STATE_NAMES)
+
+
 def is_runtime_state(relative: PurePath | str) -> bool:
-    """True for a workspace-relative path inside OmniDesk's own state entries."""
+    """True for a workspace-relative path inside OmniDesk's own state entries.
+
+    Pass the resolved path (no ``..``, symlinks followed). Names are compared
+    folded, so "RUNS.SQLITE3" counts as runs.sqlite3, as it does on macOS and
+    Windows, where it opens that file.
+    """
     parts = PurePath(relative).parts
     if not parts:
         return False
-    top = parts[0]
+    top = _folded(parts[0])
     for suffix in _RUNTIME_STATE_SUFFIXES:
         if top.endswith(suffix):
             top = top[: -len(suffix)]
             break
-    return top in RUNTIME_STATE_NAMES
+    return top in _FOLDED_STATE_NAMES
 
 
 def runtime_state_masks(workspace: Path, *, container_root: str = "/workspace") -> list[str]:

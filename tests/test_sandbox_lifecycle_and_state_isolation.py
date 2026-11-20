@@ -206,6 +206,27 @@ def test_runtime_state_masks_cover_files_side_files_and_directories(tmp_path):
     assert not any("src.py" in spec or "/pkg" in spec for spec in targets)
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "RUNS.SQLITE3",  # agent-core's finding: on APFS or NTFS this opens runs.sqlite3
+        "Approvals.Sqlite3-WAL",
+        "AUDIT_CHEC\u212aPOINTS/anchor.json",  # KELVIN SIGN normalizes to K on APFS
+        "runs.sqlite3.",  # Windows drops trailing dots and spaces
+        "runs.sqlite3 ",
+        "runs.sqlite3::$DATA",  # Windows: the file's own data stream
+    ],
+)
+def test_state_is_recognised_however_a_case_insensitive_filesystem_spells_it(name):
+    assert is_runtime_state(name)
+
+
+def test_folding_matches_only_the_top_level_state_entries():
+    assert not is_runtime_state("pkg/RUNS.SQLITE3")
+    assert not is_runtime_state("runs.sqlite3.bak")
+    assert not is_runtime_state("my_runs.sqlite3")
+
+
 def test_every_sqlite_store_name_the_runtime_creates_is_classified_as_state():
     source = Path("omnidesk_agent/repositories/sqlite.py").read_text(encoding="utf-8")
     import re
