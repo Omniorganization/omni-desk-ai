@@ -124,3 +124,25 @@ def test_every_alert_has_a_promtool_case() -> None:
         "OmniDeskHostDiskCritical", "OmniDeskHostMemoryLow",
     }
     assert set(untested) <= legacy, f"alerts without a promtool case: {sorted(set(untested) - legacy)}"
+
+
+def test_slack_receiver_reads_the_webhook_url_from_a_file_only() -> None:
+    # The incoming-webhook URL is a bearer secret: it must never be written into
+    # the rendered config (which is mounted read-only and may be logged).
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("render_alertmanager_config", ROOT / "scripts" / "render_alertmanager_config.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rendered = yaml.safe_load(module.render("slack", slack_url_file="/etc/alertmanager/secrets/slack_webhook_url", slack_channel="#omnidesk-alerts"))
+    (receiver,) = rendered["receivers"]
+    (slack,) = receiver["slack_configs"]
+    assert slack["api_url_file"] == "/etc/alertmanager/secrets/slack_webhook_url"
+    assert "api_url" not in slack and slack["send_resolved"] is True
+    assert rendered["route"]["receiver"] == receiver["name"] == "omnidesk-oncall"
+    for bad in ({"slack_url_file": "relative/path"}, {"slack_url_file": "/ok", "slack_channel": "general; rm"}):
+        try:
+            module.render("slack", **bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"render accepted {bad}")

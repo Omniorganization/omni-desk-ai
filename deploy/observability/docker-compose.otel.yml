@@ -62,7 +62,7 @@ services:
       - omnidesk-observability
 
   alertmanager:
-    # Render ./alertmanager.yml first: scripts/render_alertmanager_config.py --receiver telegram ...
+    # Render ./alertmanager.yml first: scripts/render_alertmanager_config.py --receiver slack ...
     image: ${OMNIDESK_ALERTMANAGER_IMAGE:?set OMNIDESK_ALERTMANAGER_IMAGE to prom/alertmanager digest-pinned image, e.g. prom/alertmanager@sha256:...}
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
@@ -76,8 +76,8 @@ services:
     ports:
       - "127.0.0.1:9093:9093"
     secrets:
-      - source: alert_telegram_bot_token
-        target: /etc/alertmanager/secrets/telegram_bot_token
+      - source: alert_slack_webhook_url
+        target: /etc/alertmanager/secrets/slack_webhook_url
     volumes:
       - alertmanager-data:/alertmanager
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
@@ -116,8 +116,8 @@ secrets:
     file: ${OMNIDESK_GRAFANA_ADMIN_PASSWORD_FILE:?path to grafana admin password file}
   omnidesk_metrics_token:
     file: ${OMNIDESK_METRICS_TOKEN_FILE:?path to an AdminAuth viewer/operator token file for /admin/metrics scraping}
-  alert_telegram_bot_token:
-    file: ${OMNIDESK_ALERT_TELEGRAM_BOT_TOKEN_FILE:?path to the alert bot token file (empty file when the webhook receiver is used)}
+  alert_slack_webhook_url:
+    file: ${OMNIDESK_ALERT_SLACK_WEBHOOK_URL_FILE:?path to the file holding the Slack incoming-webhook URL (secret OMNIDESK_ALERT_SLACK_WEBHOOK_URL)}
 
 networks:
   omnidesk-observability:

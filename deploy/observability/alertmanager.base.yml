@@ -1,6 +1,7 @@
-# Alertmanager routing for OmniDesk. Receivers are rendered by
-# scripts/render_alertmanager_config.py (the chat id and the webhook URL are
-# deployment values; the bot token is only ever a file). Alerts go straight
+# Alertmanager routing for OmniDesk. The receiver is rendered by
+# scripts/render_alertmanager_config.py: a Slack incoming webhook whose URL is
+# only ever a file (secret OMNIDESK_ALERT_SLACK_WEBHOOK_URL), or a plain
+# webhook for CI. Alerts go straight
 # from Alertmanager to the on-call channel, never through the OmniDesk
 # gateway, so an OmniDesk outage cannot suppress its own alerts.
 route:

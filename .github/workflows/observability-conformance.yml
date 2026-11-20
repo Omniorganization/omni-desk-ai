@@ -68,13 +68,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/am"
-          python scripts/render_alertmanager_config.py --receiver telegram --telegram-chat-id -1001234567890 --output "$RUNNER_TEMP/am/telegram.yml"
+          python scripts/render_alertmanager_config.py --receiver slack --slack-channel '#omnidesk-alerts' --output "$RUNNER_TEMP/am/slack.yml"
           python scripts/render_alertmanager_config.py --receiver webhook --webhook-url http://receiver:9099/alerts --output "$RUNNER_TEMP/am/webhook.yml"
-          # Fail-closed rendering: a zero chat id or a credential-bearing URL must be refused.
-          if python scripts/render_alertmanager_config.py --receiver telegram --telegram-chat-id 0 --output "$RUNNER_TEMP/am/bad.yml"; then exit 1; fi
+          # The Slack webhook URL is a secret: it must only ever be referenced as a file.
+          ! grep -q 'hooks.slack.com' "$RUNNER_TEMP/am/slack.yml"
+          grep -q 'api_url_file: /etc/alertmanager/secrets/slack_webhook_url' "$RUNNER_TEMP/am/slack.yml"
+          # Fail-closed rendering: a relative secret path, a bad channel or a credential-bearing URL must be refused.
+          if python scripts/render_alertmanager_config.py --receiver slack --slack-webhook-url-file relative/url --output "$RUNNER_TEMP/am/bad.yml"; then exit 1; fi
+          if python scripts/render_alertmanager_config.py --receiver slack --slack-channel 'alerts; rm' --output "$RUNNER_TEMP/am/bad.yml"; then exit 1; fi
           if python scripts/render_alertmanager_config.py --receiver webhook --webhook-url 'https://x.example/hook?token=abc' --output "$RUNNER_TEMP/am/bad.yml"; then exit 1; fi
-          for f in telegram webhook; do
-            docker run --rm -v "$RUNNER_TEMP/am:/am:ro" --entrypoint amtool "$ALERTMANAGER_IMAGE" check-config "/am/$f.yml"
+          # amtool resolves api_url_file, so give it a placeholder file at that path.
+          mkdir -p "$RUNNER_TEMP/am-secrets"
+          printf 'https://example.invalid/placeholder-not-a-webhook' > "$RUNNER_TEMP/am-secrets/slack_webhook_url"
+          for f in slack webhook; do
+            docker run --rm -v "$RUNNER_TEMP/am:/am:ro" -v "$RUNNER_TEMP/am-secrets:/etc/alertmanager/secrets:ro" --entrypoint amtool "$ALERTMANAGER_IMAGE" check-config "/am/$f.yml"
           done
       - name: promtool check the runtime metrics exposition
         run: |

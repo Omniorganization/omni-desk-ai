@@ -3,8 +3,10 @@
 Every alert in `deploy/observability/prometheus-rules.yml` and
 `deploy/observability/prometheus-rules.host.yml` links here. Alertmanager
 (`deploy/observability/alertmanager.base.yml`, rendered by
-`scripts/render_alertmanager_config.py`) sends them straight to the on-call
-channel, not through the gateway. `critical` alerts repeat every hour and
+`scripts/render_alertmanager_config.py --receiver slack`) sends them straight
+to the on-call Slack channel through an incoming webhook, not through the
+gateway. The webhook URL is the secret `OMNIDESK_ALERT_SLACK_WEBHOOK_URL`; it
+is mounted as a file and never written into the config. `critical` alerts repeat every hour and
 `warning` alerts every 12 hours until resolved.
 
 SLOs and error budgets are defined in [docs/SLO.md](../SLO.md).
