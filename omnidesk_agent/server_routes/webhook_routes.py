@@ -4,12 +4,37 @@ import hmac
 import os
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 
 from omnidesk_agent.core.models import ChannelMessage
-from omnidesk_agent.server_routes.webhook_guard import WebhookGuard, enqueue_webhook_message, enqueue_webhook_messages
+from omnidesk_agent.server_routes.webhook_guard import (
+    WebhookDuplicateDelivery,
+    WebhookGuard,
+    enqueue_webhook_message,
+    enqueue_webhook_messages,
+)
 
 
 def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
+    async def _duplicate_delivery(request: Request, exc: Exception) -> Response:
+        # Signature verified, already enqueued: acknowledge so the provider stops
+        # retrying. A provider that expects a specific body (QQ's op 13 answer or
+        # op 12 ACK, WeChat's plain "success") gets it rebuilt from the verified
+        # payload; nothing is parsed or enqueued again.
+        shape = getattr(getattr(exc, "adapter", None), "webhook_response", None)
+        if callable(shape):
+            try:
+                shaped = shape(None, getattr(exc, "payload", None))
+            except PermissionError as refused:
+                return JSONResponse(status_code=403, content={"detail": str(refused)})
+            if isinstance(shaped, Response):
+                return shaped
+            if shaped is not None:
+                return JSONResponse(status_code=200, content=shaped)
+        return JSONResponse(status_code=200, content={"ok": True, "duplicate": True})
+
+    app.add_exception_handler(WebhookDuplicateDelivery, _duplicate_delivery)
+
     async def _guard_webhook(channel: str, adapter, request: Request, payload=None):
         return await guard.guard(channel, adapter, request, payload=payload)
 

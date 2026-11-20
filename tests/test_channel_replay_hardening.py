@@ -30,7 +30,7 @@ from omnidesk_agent.channels.wechat_official import WECHAT_SIGNATURE_MAX_AGE_SEC
 from omnidesk_agent.config import AppConfig, TelegramConfig, WeChatOfficialConfig
 from omnidesk_agent.repositories.postgres_state import PostgresWebhookSecurity
 from omnidesk_agent.security.webhook_security import WebhookSecurity, WebhookSecurityConfig
-from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
+from omnidesk_agent.server_routes.webhook_guard import WebhookDuplicateDelivery, WebhookGuard, commit_webhook_delivery
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
 
 OWNER = 1111
@@ -136,13 +136,15 @@ async def test_telegram_guard_keys_replay_on_update_id(tmp_path: Path, monkeypat
     first = json.dumps(_telegram_update(5001, user=OWNER, chat=OWNER, message_id=7)).encode()
     second = json.dumps(_telegram_update(5002, user=2222, chat=2222, message_id=7)).encode()
     _, first_envelope = await _deliver(guard, "telegram", adapter, first, headers=headers)
+    commit_webhook_delivery()  # what a successful enqueue does
     _, second_envelope = await _deliver(guard, "telegram", adapter, second, headers=headers)
+    commit_webhook_delivery()
     assert first_envelope.message_id == "update:5001"
     assert second_envelope.message_id == "update:5002"
 
-    with pytest.raises(HTTPException) as exc:
+    # A verified redelivery of an enqueued update is acknowledged (200), not processed again.
+    with pytest.raises(WebhookDuplicateDelivery):
         await _deliver(guard, "telegram", adapter, first, headers=headers)
-    assert exc.value.status_code == 403 and "duplicate" in exc.value.detail
 
 
 def test_postgres_seen_digests_expire_after_retention(monkeypatch: pytest.MonkeyPatch) -> None:

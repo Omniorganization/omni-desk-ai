@@ -45,8 +45,13 @@ def test_webhook_security_hmac_replay_timestamp_and_rate_limit(tmp_path):
     sec2.guard(channel="telegram", body=body, source_key="user", message_id="m1", timestamp=time.time())
     with pytest.raises(PermissionError, match="duplicate"):
         sec2.guard(channel="telegram", body=body, source_key="user", message_id="m1", timestamp=time.time())
+    # Redeliveries carry the original event time, so the window is as long as
+    # digests are remembered (7 days); older or future-dated events are refused.
+    sec2.guard(channel="telegram", body=b"3", source_key="user2", timestamp=time.time() - 10000)
     with pytest.raises(PermissionError, match="timestamp"):
-        sec2.guard(channel="telegram", body=b"3", source_key="user2", timestamp=time.time() - 10000)
+        sec2.guard(channel="telegram", body=b"4", source_key="user2", timestamp=time.time() - 8 * 24 * 3600)
+    with pytest.raises(PermissionError, match="timestamp"):
+        sec2.guard(channel="telegram", body=b"5", source_key="user2", timestamp=time.time() + 3600)
 
 
 def test_permission_manager_no_tty_and_interactive_paths(monkeypatch, tmp_path):

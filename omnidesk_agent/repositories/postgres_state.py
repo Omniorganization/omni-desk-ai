@@ -14,7 +14,16 @@ from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.core.token_budget import TokenBudgetConfig, TokenBudgetManager
 from omnidesk_agent.security.dual_approval import DualApprovalDecision
 from omnidesk_agent.security.break_glass import BreakGlassSession
-from omnidesk_agent.security.webhook_security import WebhookSecurityConfig, nonce_digest, webhook_digest
+from omnidesk_agent.security.webhook_security import (
+    WebhookDuplicate,
+    WebhookRateLimited,
+    WebhookSecurityConfig,
+    check_event_timestamp,
+    nonce_digest,
+    rate_retry_after,
+    seen_retention_seconds,
+    webhook_digest,
+)
 from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
 from omnidesk_agent.memory.retrieval import known_memory_identity, matches_memory_query, planner_memory_visible
 
@@ -837,22 +846,40 @@ class PostgresWebhookSecurity:
         self._next_purge_at = 0.0
 
     def guard(
-        self, *, channel: str, body: bytes, source_key: str, message_id: Optional[str] = None, timestamp: Optional[float] = None
+        self,
+        *,
+        channel: str,
+        body: bytes,
+        source_key: str,
+        message_id: Optional[str] = None,
+        timestamp: Optional[float] = None,
+        claim: bool = True,
     ) -> dict[str, Any]:
+        # Same contract as security.webhook_security.WebhookSecurity.guard.
         self._check_timestamp(timestamp)
         self._purge_expired()
         self._check_rate(channel, source_key)
         digest = webhook_digest(channel, body, message_id)
+        if not claim:
+            if self.is_seen(digest):
+                raise WebhookDuplicate(f"duplicate webhook blocked: {channel}")
+            return {"ok": True, "digest": digest}
+        if not self.mark_seen(channel, digest):
+            raise WebhookDuplicate(f"duplicate webhook blocked: {channel}")
+        return {"ok": True, "digest": digest}
+
+    def is_seen(self, digest: str) -> bool:
+        row = self.state.get("webhook_seen", digest)
+        return bool(row) and float(row.get("created_at") or 0) >= time.time() - self._seen_retention_seconds()
+
+    def mark_seen(self, channel: str, digest: str) -> bool:
         now = time.time()
-        inserted = self.state.insert_once_or_replace_stale(
+        return self.state.insert_once_or_replace_stale(
             "webhook_seen",
             digest,
             {"digest": digest, "channel": channel, "created_at": now, "status": "seen"},
             stale_before=now - self._seen_retention_seconds(),
         )
-        if not inserted:
-            raise PermissionError(f"duplicate webhook blocked: {channel}")
-        return {"ok": True, "digest": digest}
 
     def claim_nonce(self, *, channel: str, nonce: str, ttl_seconds: float) -> None:
         """Consume a signed single-use nonce; shared by every replica using this database."""
@@ -869,7 +896,7 @@ class PostgresWebhookSecurity:
             raise PermissionError(f"replayed webhook nonce blocked: {channel}")
 
     def _seen_retention_seconds(self) -> float:
-        return float(max(self.cfg.replay_ttl_seconds, self.cfg.seen_retention_seconds))
+        return seen_retention_seconds(self.cfg)
 
     def _purge_expired(self) -> None:
         now = time.time()
@@ -883,8 +910,7 @@ class PostgresWebhookSecurity:
         self.state.delete_stale("webhook_nonce", stale_before=now - self._seen_retention_seconds(), limit=batch)
 
     def _check_timestamp(self, timestamp: Optional[float]) -> None:
-        if timestamp is not None and abs(time.time() - timestamp) > self.cfg.replay_ttl_seconds:
-            raise PermissionError("webhook timestamp outside replay window")
+        check_event_timestamp(self.cfg, timestamp)
 
     def _check_rate(self, channel: str, source_key: str) -> None:
         bucket = int(time.time() // self.cfg.rate_limit_window_seconds)
@@ -899,7 +925,7 @@ class PostgresWebhookSecurity:
         else:
             row = self.state.get("webhook_rate", key) or {"count": 1}
         if int(row.get("count") or 0) > self.cfg.rate_limit_max_requests:
-            raise PermissionError(f"webhook rate limit exceeded for {channel}:{source_key}")
+            raise WebhookRateLimited(f"webhook rate limit exceeded for {channel}:{source_key}", retry_after_seconds=rate_retry_after(self.cfg))
 
 
 class PostgresJobQueue:
