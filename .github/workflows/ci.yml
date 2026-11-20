@@ -174,6 +174,20 @@ jobs:
         run: |
           echo "OMNIDESK_COVERAGE_EVIDENCE_DIR=$RUNNER_TEMP/ci-coverage" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/ci-coverage" reports/ci/coverage
+      - name: PostgreSQL 16 client tools for the backup tests
+        # The runner image ships PostgreSQL 18 tools only, and a backup taken or
+        # restored with another major than the postgres:16 service cannot be
+        # restored into it. Run 16's pg_dump/pg_restore from the official image.
+        run: |
+          docker pull --quiet postgres:16-bookworm
+          bin="$RUNNER_TEMP/pg16/bin"
+          mkdir -p "$bin"
+          for tool in pg_dump pg_restore; do
+            printf '#!/bin/sh\nexec docker run --rm -i --network host --user "$(id -u):$(id -g)" -e PGPASSWORD -v /tmp:/tmp -v "%s:%s" -v "$PWD:$PWD" -w "$PWD" postgres:16-bookworm %s "$@"\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$tool" > "$bin/$tool"
+            chmod +x "$bin/$tool"
+          done
+          "$bin/pg_dump" --version
+          echo "OMNIDESK_PG_BIN=$bin" >> "$GITHUB_ENV"
       - name: Full test and coverage gate
         id: full_tests
         run: |
