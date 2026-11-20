@@ -186,3 +186,44 @@ def test_candidate_policy_is_active_plus_candidate_without_changing_active(regis
     assert policy.policy_id == "planner_candidate"
     assert "Base procedure." in policy.skills_block and policy.prompt_addendum == "Keep replies short."
     assert registry.active_policy().prompt_addendum == ""
+
+
+def test_rollback_follows_activation_order_when_a_version_id_repeats(registry):
+    # Codex review on #226: content-hashed version ids repeat across apply orders.
+    a = _approved(registry, kind="workflow", name="a", body="Rule A.")
+    b = _approved(registry, kind="workflow", name="b", body="Rule B.")
+    registry.apply(a.artifact_id, actor="owner@example.com")
+    registry.record_evaluation(b.artifact_id, PASSING)
+    registry.apply(b.artifact_id, actor="owner@example.com")  # {A, B}, reached via A
+    registry.rollback(actor="owner@example.com", reason="undo B")
+    registry.rollback(actor="owner@example.com", reason="undo A")
+    assert registry.active_policy().is_empty
+
+    for artifact in (b, a):  # now apply in the other order: B, then A
+        fresh = registry.get(artifact.artifact_id)
+        registry.record_evaluation(fresh.artifact_id, PASSING)
+        approval = registry.request_approval(fresh.artifact_id)
+        registry.decide(approval.approval_id, "approved", reviewer="owner@example.com")
+        registry.apply(fresh.artifact_id, actor="owner@example.com")
+    assert registry.active_policy().rules == ("Rule A.", "Rule B.")
+
+    # Undo the latest apply (A): B must stay active.
+    assert registry.rollback(actor="owner@example.com", reason="undo A").rules == ("Rule B.",)
+    with pytest.raises(PermissionError, match="not an earlier activation"):
+        registry.rollback(actor="owner@example.com", reason="jump", to_version="pv_unknown")
+
+
+def test_long_names_keep_distinct_slots(registry):
+    # Codex review on #226: truncation must not merge different procedures.
+    prefix = "browser_automation-" + "-".join(["browser-navigate", "browser-click-selector", "browser-type-selector"])
+    first = registry.register_candidate("skill", prefix + "-browser-get-dom-text", "Sequence one.")
+    second = registry.register_candidate("skill", prefix + "-browser-screenshot", "Sequence two.")
+    assert first.name != second.name and len(first.name) <= 80 and len(second.name) <= 80
+    for artifact in (first, second):
+        registry.record_evaluation(artifact.artifact_id, PASSING)
+        approval = registry.request_approval(artifact.artifact_id)
+        registry.decide(approval.approval_id, "approved", reviewer="owner@example.com")
+    registry.apply(first.artifact_id, actor="owner@example.com")
+    registry.record_evaluation(second.artifact_id, PASSING)
+    policy = registry.apply(second.artifact_id, actor="owner@example.com")
+    assert "Sequence one." in policy.skills_block and "Sequence two." in policy.skills_block

@@ -51,8 +51,10 @@ register_candidate -> record_evaluation -> request_approval
    the active policy changed since the evaluation (re-run it). It creates a
    new immutable policy version and moves the `active` pointer. An artefact
    with the same kind and name is superseded.
-5. **Rollback.** `rollback` moves the pointer to the parent version (or
-   `--to-version`), marks the removed artefacts `rolled_back`, restores
+5. **Rollback.** `rollback` moves the pointer back to the policy that was
+   active before the latest apply (an activation stack, so the order artefacts
+   were applied in is respected), or to an earlier activation named with
+   `--to-version`; it marks the removed artefacts `rolled_back`, restores
    superseded ones, and writes a `rollback_event` to the learning audit log.
    A rolled-back artefact needs a new evaluation and approval.
 
