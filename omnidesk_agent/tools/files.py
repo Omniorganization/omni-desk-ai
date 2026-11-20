@@ -1,23 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.sandbox.isolation import is_runtime_state
 from omnidesk_agent.tools.base import PolicyRefusal, ToolContext, bound_content, permission_guarded, proposal, record_access
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
-
-
-def _is_runtime_state(relative: Path) -> bool:
-    """OmniDesk's own state in the workspace root (runs, approvals, memory, audit files; the
-    sandbox hides the same entries). An agent that could read them would see other runs and
-    actors; one that could write them could approve itself.
-
-    Compared in lower case: on a case-insensitive filesystem (macOS, Windows) RUNS.SQLITE3
-    opens runs.sqlite3.
-    """
-    return is_runtime_state(PurePath(*(part.lower() for part in relative.parts)))
 
 
 class FilesTool:
@@ -59,7 +48,11 @@ class FilesTool:
     def _content_path(self, rel: str) -> Path:
         """A workspace path whose content the agent may read or write."""
         path = self._safe_path(rel)
-        if _is_runtime_state(path.relative_to(self.root)):
+        # OmniDesk's own state in the workspace root (runs, approvals, memory, audit files; the
+        # sandbox hides the same entries): an agent that could read them would see other runs
+        # and actors, one that could write them could approve itself. `path` is resolved, as
+        # is_runtime_state requires; it folds case and spelling variants itself.
+        if is_runtime_state(path.relative_to(self.root)):
             raise PolicyRefusal(f"OmniDesk runtime state is not accessible to the agent: {rel}", rule="runtime_state")
         return path
 
