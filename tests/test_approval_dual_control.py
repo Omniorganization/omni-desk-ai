@@ -16,7 +16,6 @@ is set (CI's PostgreSQL job) and are skipped otherwise.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import threading
@@ -37,6 +36,7 @@ from omnidesk_agent.repositories.postgres_state import PostgresApprovalStore, Po
 from omnidesk_agent.security.admin_auth import AdminAuth
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.approval_store import ApprovalStore
+from omnidesk_agent.security.audit_chain import read_audit_events
 from omnidesk_agent.security.break_glass import BreakGlassSession, BreakGlassStore, has_required_approvals
 from omnidesk_agent.security.dual_approval import DualApprovalStore
 from omnidesk_agent.security.idempotency import SQLiteSideEffectIdempotencyStore
@@ -256,7 +256,7 @@ def test_delegated_request_is_inert_until_a_distinct_second_owner_approves(backe
     with pytest.raises(PermissionError, match="not waiting"):
         store.approve("s1", approver="owner-c")
 
-    events = [json.loads(line)["event"] for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    events = [event["event"] for event in read_audit_events(tmp_path / "audit.jsonl")]
     assert events == ["break_glass.request", "break_glass.approve"]
 
 

@@ -699,10 +699,13 @@ class PostgresBreakGlassStore:
 
     namespace = "break_glass_sessions"
 
-    def __init__(self, state: _PostgresJsonState, *, audit_log: Path):
+    def __init__(self, state: _PostgresJsonState, *, audit_log: Path, audit_key_env: str = "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY"):
+        from omnidesk_agent.security.audit_chain import AuditChain
+
         self.state = state
         self.audit_log = Path(audit_log).expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
+        self.audit_chain = AuditChain(self.audit_log, key_env=audit_key_env)
 
     def open(
         self, *, session_id: str, actor: str, reason: str, approved_by: str, ttl_seconds: int = 900, metadata: dict[str, Any] | None = None
@@ -710,6 +713,7 @@ class PostgresBreakGlassStore:
         from omnidesk_agent.security.break_glass import STATUS_ACTIVE, validate_self_session
 
         actor, approved_by, reason = validate_self_session(actor, approved_by, reason, ttl_seconds)
+        self.audit_chain.check()
         now = time.time()
         expires_at = now + int(ttl_seconds)
         row = {
@@ -747,6 +751,7 @@ class PostgresBreakGlassStore:
 
         window = DEFAULT_APPROVAL_WINDOW_SECONDS if approval_window_seconds is None else approval_window_seconds
         actor, requested_by, reason = validate_delegated_request(actor, requested_by, reason, ttl_seconds, window)
+        self.audit_chain.check()
         now = time.time()
         approve_by = now + int(window)
         row = {
@@ -775,6 +780,7 @@ class PostgresBreakGlassStore:
         approver = approver.strip()
         if not approver:
             raise ValueError("approver is required")
+        self.audit_chain.check()
 
         def update(row: dict[str, Any]) -> dict[str, Any]:
             now = time.time()
@@ -820,9 +826,17 @@ class PostgresBreakGlassStore:
         return require_usable(self.get(session_id), actor)
 
     def _audit(self, event: str, **fields: Any) -> None:
-        record = {"event": event, "ts": time.time(), **fields}
-        with self.audit_log.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True, default=lambda o: o.__dict__) + "\n")
+        from omnidesk_agent.security.break_glass import audit_transition
+
+        audit_transition(self.audit_chain, event, fields, revoke=self._revoke_unaudited)
+
+    def _revoke_unaudited(self, session_id: str) -> None:
+        def update(row: dict[str, Any]) -> dict[str, Any]:
+            if row.get("revoked_at") is None:
+                row["revoked_at"] = time.time()
+            return row
+
+        self.state.update_locked(self.namespace, session_id, update)
 
 
 class PostgresWebhookSecurity:

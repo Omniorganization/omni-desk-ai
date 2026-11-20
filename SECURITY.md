@@ -27,6 +27,27 @@ What the code enforces today (`omnidesk_agent/security/permissions.py`, `approva
   - Approver identities are static per-role bearer tokens. The owner token and the admin token count as two distinct owners; no per-person identity exists yet.
   - AppSync task approvals (`/app/approvals`) do not apply dual approval.
 
+## Audit Log Integrity
+
+What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_worm.py`):
+
+- The security audit log (`permissions.audit_log`: approval decisions, break-glass transitions, policy blocks) and the admin authentication log are HMAC-SHA256 hash chains.
+  - Every entry carries a sequence number and the previous entry's MAC.
+  - The MAC key is derived from `OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY` (the `permissions.audit_checkpoint_hmac_key_env` setting), which production must load from the secret store. The production validator refuses to start without it, and nothing in production falls back to a local key.
+  - Outside production, when the variable is unset, a random per-log key is created once next to the log (`<log>.key`, mode 0600). It protects against accidents only.
+- Writers fail closed and never restart the chain. When the last line is partial or not JSON, an unchained line follows the chain, or the last entry fails its MAC, the permission gate refuses the action, break-glass refuses the transition, and admin authentication refuses the request. A break-glass session whose audit entry could not be written is revoked.
+- A log written before the chain existed is upgraded on the next write. The first keyed entry commits to the SHA-256 of all earlier bytes.
+- Verification:
+  - `python -m omnidesk_agent.security.audit_chain verify <log>...` verifies the whole chain. It exits 1 on any edited, inserted, deleted or reordered entry, a wrong key, or a damaged tail, and exits 2 when no key is available.
+  - With `--checkpoint-dir`, it also checks the newest signed anchor and writes a new one. Truncating the tail is then caught as well, because the anchored entry must still be present. Mirror anchor files to storage the gateway cannot delete.
+- The gateway re-verifies both logs in the background. Every `OMNIDESK_AUDIT_VERIFY_INTERVAL_SECONDS` (default 300) it checks what was appended since the last check, and every `OMNIDESK_AUDIT_FULL_VERIFY_INTERVAL_SECONDS` (default 3600) it re-verifies everything. On a failure every permission decision is refused, `/ready` reports not ready, and `omnidesk_audit_chain_verify_failures_total` increases.
+- Recovery: keep the damaged log as evidence, then run `python -m omnidesk_agent.security.audit_chain rotate <log> --reason "..."`. It seals the log under a new name and starts a chain whose first entry records the sealed file's SHA-256 and verification result. To rotate the key, use `--previous-key-env`.
+- CI (`security-attack-surface`) runs `scripts/check_audit_chain.py`. The script writes a log through the real writers on the CI runner, verifies it, and checks that the verifier rejects each kind of damage. That is evidence about the verifier, not about any production log.
+- Known limits:
+  - Anyone holding the key can rebuild the chain.
+  - Without off-host anchor copies, deleting the newest entries is only caught by anchors that were not deleted with them.
+  - The admin authentication log still sits in `workspace.root`. Its chain detects edits; it does not prevent them.
+
 ## Reporting
 
 Do not include secrets, credentials, private keys, tokens, customer data, or production evidence payloads in public issues. Use a private security channel controlled by the repository owner.

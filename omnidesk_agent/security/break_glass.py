@@ -5,8 +5,9 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
 STATUS_ACTIVE = "active"
@@ -105,24 +106,42 @@ def require_usable(session: BreakGlassSession, actor: str) -> BreakGlassSession:
     return session
 
 
+def audit_transition(chain: AuditChain, event: str, fields: dict[str, Any], *, revoke: Callable[[str], None]) -> None:
+    """Append a break-glass transition to the keyed audit chain.
+
+    The stores call ``chain.check()`` before changing state, so a broken log
+    refuses the transition up front. If the append still fails afterwards, the
+    session it opened or activated is revoked: no unaudited session stays usable.
+    """
+    try:
+        chain.append(event, fields)
+    except Exception:
+        session_id = fields.get("session_id") or getattr(fields.get("session"), "session_id", None)
+        if session_id and event != "break_glass.revoke":
+            revoke(str(session_id))
+        raise
+
+
 class BreakGlassStore:
     """Time-boxed emergency access ledger.
 
     Break-glass is intentionally explicit, short-lived, auditable, and separate
-    from normal approvals. The store is local-first so it works during outages,
-    while every transition is appended to the main security audit log for WORM
-    checkpointing / external mirroring.
+    from normal approvals. The store is local-first so it works during outages.
+    Every transition is appended to the main security audit log as a keyed chain
+    entry (audit_chain.AuditChain), and no transition happens while that log
+    cannot be extended.
 
     An owner may open a session for themselves. A session that elevates another
     actor is only a pending request until a second, distinct owner approves it;
     neither the requester nor the elevated actor can be that second owner.
     """
 
-    def __init__(self, db_path: Path, *, audit_log: Path):
+    def __init__(self, db_path: Path, *, audit_log: Path, audit_key_env: str = DEFAULT_KEY_ENV):
         self.db_path = Path(db_path).expanduser()
         self.audit_log = Path(audit_log).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
+        self.audit_chain = AuditChain(self.audit_log, key_env=audit_key_env)
         with connect_sqlite(self.db_path) as con:
             # Serialize the schema check and ALTERs across processes opening the same file.
             con.execute("BEGIN IMMEDIATE")
@@ -167,6 +186,7 @@ class BreakGlassStore:
 
     def open(self, *, session_id: str, actor: str, reason: str, approved_by: str, ttl_seconds: int = 900, metadata: dict[str, Any] | None = None) -> BreakGlassSession:
         actor, approved_by, reason = validate_self_session(actor, approved_by, reason, ttl_seconds)
+        self.audit_chain.check()
         now = time.time()
         expires_at = now + int(ttl_seconds)
         payload = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
@@ -194,6 +214,7 @@ class BreakGlassStore:
     ) -> BreakGlassSession:
         """Record a pending session for another actor; it grants nothing until approve()."""
         actor, requested_by, reason = validate_delegated_request(actor, requested_by, reason, ttl_seconds, approval_window_seconds)
+        self.audit_chain.check()
         now = time.time()
         approve_by = now + int(approval_window_seconds)
         payload = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
@@ -213,6 +234,7 @@ class BreakGlassStore:
         approver = approver.strip()
         if not approver:
             raise ValueError("approver is required")
+        self.audit_chain.check()
         now = time.time()
         with connect_sqlite(self.db_path) as con:
             con.execute("BEGIN IMMEDIATE")
@@ -268,6 +290,8 @@ class BreakGlassStore:
             raise ValueError("break-glass session already exists") from exc
 
     def _audit(self, event: str, **fields: Any) -> None:
-        record = {"event": event, "ts": time.time(), **fields}
-        with self.audit_log.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True, default=lambda o: o.__dict__) + "\n")
+        audit_transition(self.audit_chain, event, fields, revoke=self._revoke_unaudited)
+
+    def _revoke_unaudited(self, session_id: str) -> None:
+        with connect_sqlite(self.db_path) as con:
+            con.execute("UPDATE break_glass_sessions SET revoked_at=? WHERE session_id=? AND revoked_at IS NULL", (time.time(), session_id))

@@ -39,7 +39,8 @@ from omnidesk_agent.server_routes.agent_routes import (
 )
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
-from omnidesk_agent.validation.production import assert_production_config_safe
+from omnidesk_agent.security.audit_chain import AuditIntegrityMonitor
+from omnidesk_agent.validation.production import assert_production_config_safe, is_production_mode
 
 
 class _ReadinessCache(TypedDict):
@@ -94,13 +95,28 @@ def create_app(cfg: AppConfig) -> FastAPI:
     assert_production_config_safe(cfg)
     rt = OmniDeskRuntime(cfg)
     approvals = rt.approval_store
+    # Scheduled audit chain verification. A failure fails closed: the permission
+    # gate refuses every action and /ready reports not ready until the log is rotated.
+    audit_monitor = AuditIntegrityMonitor(
+        [cfg.permissions.audit_log, *([rt.admin_auth.audit_log] if rt.admin_auth.audit_log else [])],
+        key_env=cfg.permissions.audit_checkpoint_hmac_key_env,
+        interval_seconds=float(os.getenv("OMNIDESK_AUDIT_VERIFY_INTERVAL_SECONDS", "300") or 300),
+        full_interval_seconds=float(os.getenv("OMNIDESK_AUDIT_FULL_VERIFY_INTERVAL_SECONDS", "3600") or 3600),
+        on_failure=rt.permissions.mark_audit_integrity_failure,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await rt.start()
+        audit_task = asyncio.create_task(audit_monitor.run())
         try:
             yield
         finally:
+            audit_task.cancel()
+            try:
+                await audit_task
+            except (asyncio.CancelledError, Exception):
+                pass
             exporter = getattr(app.state, "otel_exporter", None)
             close_exporter = getattr(exporter, "close", None)
             if callable(close_exporter):
@@ -125,6 +141,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
     app.state.runtime = rt
     app.state.otel_exporter = otel_exporter
     app.state.resource_guard = resource_guard
+    app.state.audit_monitor = audit_monitor
+    audit_monitor.metrics = metrics
     _wire_runtime_metrics(rt, metrics, otel_exporter)
 
     @app.middleware("http")
@@ -322,7 +340,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
                     cfg.sandbox.runner_hmac_secret_env,
                 ]
             )
-        if cfg.permissions.break_glass_enabled:
+        if cfg.permissions.break_glass_enabled or is_production_mode(cfg):
             required_secret_envs.append(
                 cfg.permissions.audit_checkpoint_hmac_key_env
             )
@@ -338,6 +356,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
         checks["plugins"] = (not cfg.plugins.enabled) or bool(
             cfg.capabilities.plugins.enabled
         )
+        checks["audit_chain"] = audit_monitor.failure is None and rt.permissions.audit_integrity_failure is None
+        if not checks["audit_chain"]:
+            checks["audit_chain_error"] = str(audit_monitor.failure or rt.permissions.audit_integrity_failure)[:300]
         checks["schema_version"] = True
         critical_checks = {
             "runtime",
@@ -348,6 +369,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "plugins",
             "schema_version",
             "multi_instance_requirement",
+            "audit_chain",
         }
         ok = all(
             value is not False

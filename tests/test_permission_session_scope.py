@@ -1,7 +1,10 @@
 from __future__ import annotations
 import json
 
+import pytest
+
 from omnidesk_agent.config import PermissionConfig
+from omnidesk_agent.security.audit_chain import AuditIntegrityError
 from omnidesk_agent.security.permissions import PermissionManager
 
 
@@ -18,18 +21,20 @@ def test_session_allow_is_scoped_by_actor_risk_scope_hash(tmp_path):
     assert k2 not in pm.session_allows
 
 
-def test_audit_hash_tail_reader_handles_large_lines_and_external_append(tmp_path):
+def test_audit_chain_handles_large_lines_and_refuses_an_unkeyed_external_append(tmp_path):
     cfg = PermissionConfig(audit_log=tmp_path / "audit.log")
     pm = PermissionManager(cfg)
 
+    # Entries larger than the tail-read chunk still chain correctly.
     pm._audit("large", {"blob": "x" * 70_000})
-    first_hash = pm._last_audit_hash()
+    pm._audit("after_large", {})
+    events = [line for line in cfg.audit_log.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 3  # genesis + 2
 
-    assert len(first_hash) == 64
-    assert pm._cached_last_hash == first_hash
-
-    appended_hash = "a" * 64
+    # Anyone can append a line with a plausible hash; it must not be accepted as the
+    # chain tail (the unkeyed chain used to continue from it silently).
     with cfg.audit_log.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"hash": appended_hash}) + "\n")
+        handle.write(json.dumps({"hash": "a" * 64}) + "\n")
 
-    assert pm._last_audit_hash() == appended_hash
+    with pytest.raises(AuditIntegrityError):
+        pm._audit("next", {})

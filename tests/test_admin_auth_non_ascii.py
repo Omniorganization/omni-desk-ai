@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from omnidesk_agent.security.admin_auth import AdminAuth
+from omnidesk_agent.security.audit_chain import read_audit_events
 
 ROLE_ENVS = ("OMNIDESK_ADMIN_TOKEN", "OMNIDESK_VIEWER_TOKEN", "OMNIDESK_OPERATOR_TOKEN", "OMNIDESK_OWNER_TOKEN")
 OWNER_TOKEN = "o" * 40
@@ -23,7 +22,7 @@ def _clear_admin_env(monkeypatch):
 
 
 def _audit_events(path):
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return read_audit_events(path)
 
 
 @pytest.mark.parametrize("headers", [

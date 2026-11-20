@@ -59,6 +59,17 @@ jobs:
             tests/test_files_path_escape_strict.py \
             tests/test_browser_security.py \
             2>&1 | tee dist/evidence/security-attack-surface-tests/file-browser-isolation.txt
+      - name: Dual approval and keyed audit chain regression tests
+        if: always()
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q --tb=short \
+            tests/test_critical_dual_approval_enforced.py \
+            tests/test_audit_chain_tamper_evident.py \
+            2>&1 | tee dist/evidence/security-attack-surface-tests/approval-audit-chain.txt
+      - name: Audit chain verifier drill
+        if: always()
+        run: python scripts/check_audit_chain.py --output dist/evidence/audit-chain-verifier.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sys
@@ -10,6 +9,7 @@ from typing import Any
 
 from omnidesk_agent.config import PermissionConfig
 from omnidesk_agent.security.approval_required import ApprovalRequired
+from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain, AuditIntegrityError
 from omnidesk_agent.security.dual_approval import stamp_requester
 
 
@@ -27,8 +27,6 @@ class PermissionDecision:
 
 
 class PermissionManager:
-    _AUDIT_TAIL_CHUNK_BYTES = 8192
-
     def __init__(self, cfg: PermissionConfig, approval_store=None):
         self.cfg = cfg
         self.approval_store = approval_store
@@ -40,9 +38,11 @@ class PermissionManager:
         self.metrics: Any = None
         self.audit_log = cfg.audit_log.expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
-        self._cached_last_hash: str | None = None
-        self._cached_audit_size: int | None = None
-        self._cached_audit_mtime_ns: int | None = None
+        # Keyed hash chain; the key comes from the secret store (see audit_chain).
+        self.audit_chain = AuditChain(self.audit_log, key_env=str(getattr(cfg, "audit_checkpoint_hmac_key_env", "") or DEFAULT_KEY_ENV))
+        # Set when an audit log fails verification. Every later decision is
+        # refused until an operator seals the log (audit_chain rotate).
+        self.audit_integrity_failure: str | None = None
 
     def session_key(self, proposal_dict: dict[str, Any]) -> str:
         source = str(proposal_dict.get("source", "unknown"))
@@ -187,78 +187,40 @@ class PermissionManager:
         self._metric("omnidesk_approval_required_total", tool=str(proposal_dict.get("tool", "")), risk=str(proposal_dict.get("risk", "medium")))
         raise ApprovalRequired(approval_id=approval_id, proposal=proposal_dict)
 
+    def record_access(self, proposal: Any) -> None:
+        """Audit an action that runs without an approval gate (for example files.list).
+
+        Raises AuditIntegrityError when the audit log cannot be written; the
+        caller must then not perform the action.
+        """
+        proposal_dict = self._proposal_dict(proposal)
+        self._audit("access_without_approval", proposal_dict)
+        self._metric("omnidesk_audited_access_total", tool=str(proposal_dict.get("tool", "")), action=str(proposal_dict.get("action", "")))
+
+    def record_policy_block(self, proposal: Any, *, rule: str, reason: str) -> None:
+        """Audit a request that a policy check refused before verify() ran.
+
+        ``rule`` names the check (path_escape, git_metadata_write,
+        capability_disabled, command_not_allowlisted, ...). Call it, then refuse
+        the request as before.
+        """
+        proposal_dict = self._proposal_dict(proposal)
+        self._audit("policy_blocked", {**proposal_dict, "block_rule": str(rule), "block_reason": str(reason)})
+        self._metric("omnidesk_policy_blocks_total", tool=str(proposal_dict.get("tool", "")), rule=str(rule))
+
+    def mark_audit_integrity_failure(self, message: str) -> None:
+        """Fail closed after an audit log failed verification (see AuditIntegrityMonitor)."""
+        if self.audit_integrity_failure is None:
+            self.audit_integrity_failure = str(message)
+
     def _audit(self, event: str, payload: dict[str, Any]) -> None:
-        clean = self._redact(payload)
-        previous_hash = self._last_audit_hash()
-        entry = {
-            "ts": time.time(),
-            "event": event,
-            "payload": clean,
-            "previous_hash": previous_hash,
-        }
-        canonical = json.dumps(entry, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        entry["hash"] = hashlib.sha256((previous_hash + "." + canonical).encode("utf-8")).hexdigest()
-        line = json.dumps(entry, ensure_ascii=False, sort_keys=True)
-        with self.audit_log.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        self._cache_last_hash(str(entry["hash"]))
-
-    def _last_audit_hash(self) -> str:
+        if self.audit_integrity_failure is not None:
+            raise AuditIntegrityError(f"audit log integrity failure; refusing until it is rotated: {self.audit_integrity_failure}")
         try:
-            if not self.audit_log.exists():
-                self._cache_last_hash("0" * 64, size=0, mtime_ns=0)
-                return "0" * 64
-            stat = self.audit_log.stat()
-            if stat.st_size == 0:
-                self._cache_last_hash("0" * 64, size=0, mtime_ns=stat.st_mtime_ns)
-                return "0" * 64
-            if (
-                self._cached_last_hash
-                and self._cached_audit_size == stat.st_size
-                and self._cached_audit_mtime_ns == stat.st_mtime_ns
-            ):
-                return self._cached_last_hash
-            line = self._read_last_audit_line()
-            parsed = json.loads(line) if line else {}
-            value = str(parsed.get("hash") or "")
-            last_hash = value if len(value) == 64 else "0" * 64
-            self._cache_last_hash(last_hash, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
-            return last_hash
-        except Exception:
-            return "0" * 64
-
-    def _read_last_audit_line(self) -> str:
-        with self.audit_log.open("rb") as f:
-            f.seek(0, 2)
-            pos = f.tell()
-            if pos <= 0:
-                return ""
-            buffer = b""
-            while pos > 0:
-                read_size = min(self._AUDIT_TAIL_CHUNK_BYTES, pos)
-                pos -= read_size
-                f.seek(pos)
-                buffer = f.read(read_size) + buffer
-                stripped = buffer.rstrip(b"\n")
-                separator = stripped.rfind(b"\n")
-                if separator >= 0:
-                    return stripped[separator + 1 :].decode("utf-8", errors="replace").strip()
-            return buffer.rstrip(b"\n").decode("utf-8", errors="replace").strip()
-
-    def _cache_last_hash(self, value: str, *, size: int | None = None, mtime_ns: int | None = None) -> None:
-        self._cached_last_hash = value if len(value) == 64 else "0" * 64
-        if size is not None and mtime_ns is not None:
-            self._cached_audit_size = size
-            self._cached_audit_mtime_ns = mtime_ns
-            return
-        try:
-            stat = self.audit_log.stat()
-        except OSError:
-            self._cached_audit_size = 0
-            self._cached_audit_mtime_ns = 0
-        else:
-            self._cached_audit_size = stat.st_size
-            self._cached_audit_mtime_ns = stat.st_mtime_ns
+            self.audit_chain.append(event, self._redact(payload))
+        except AuditIntegrityError:
+            self._metric("omnidesk_audit_write_failures_total")
+            raise
 
     def _metric(self, name: str, **labels: Any) -> None:
         metrics = getattr(self, "metrics", None)

@@ -48,6 +48,9 @@ ATTACK_SURFACE_WORKFLOW_SNIPPETS = [
     "tests/test_agent_run_abuse_limits.py",
     "tests/test_files_path_escape_strict.py",
     "tests/test_browser_security.py",
+    "tests/test_critical_dual_approval_enforced.py",
+    "tests/test_audit_chain_tamper_evident.py",
+    "python scripts/check_audit_chain.py --output dist/evidence/audit-chain-verifier.json",
 ]
 
 LOCKFILES = [
