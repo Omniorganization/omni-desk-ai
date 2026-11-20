@@ -45,8 +45,16 @@ def main(argv: list[str] | None = None) -> int:
             if str(qc).lower() != "ok":
                 raise SystemExit(f"backup quick_check failed: {qc}")
         args.target.parent.mkdir(parents=True, exist_ok=True)
+        stamp = int(time.time())
         if args.target.exists():
-            shutil.copy2(args.target, args.target.with_suffix(args.target.suffix + f".pre-restore-{int(time.time())}"))
+            shutil.copy2(args.target, args.target.with_suffix(args.target.suffix + f".pre-restore-{stamp}"))
+        # A WAL or shared-memory file left by the old database would be replayed
+        # onto the restored file and corrupt it. Move them beside the safety copy,
+        # named so SQLite opens them with it (<copy>-wal, <copy>-shm).
+        for suffix in ("-wal", "-shm"):
+            sidecar = args.target.with_name(args.target.name + suffix)
+            if sidecar.exists():
+                sidecar.replace(args.target.with_name(f"{args.target.name}.pre-restore-{stamp}{suffix}"))
         shutil.copy2(backup_path, args.target)
     print(f"restored {args.backup} -> {args.target}")
     return 0
