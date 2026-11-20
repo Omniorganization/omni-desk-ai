@@ -27,6 +27,8 @@ TURN_STATUSES = (TURN_CONTINUE, TURN_DONE, TURN_GIVE_UP)
 # Planner turns of these sources produce one whole plan up front and never see
 # an observation; the loop finishes them itself once their steps have run.
 SINGLE_PLAN_SOURCES = frozenset({"rule", "rule_fallback", "legacy"})
+# The rule planner, which turns the task text itself into tool calls.
+RULE_PLAN_SOURCES = frozenset({"rule", "rule_fallback"})
 
 # Steps the loop adds after a planner step, not chosen by the planner.
 ORIGIN_PLANNER = "planner"
@@ -127,8 +129,9 @@ class StepRecord:
     status: str = "pending"  # pending | done | failed
     result: Optional[dict[str, Any]] = None
     error_class: Optional[str] = None
-    # Taint snapshot of the model context this step came from, fixed when the
-    # step is created; None for steps no model proposed (rule and legacy plans).
+    # Taint snapshot of the content this step was planned from, fixed when the
+    # step is created. None only for steps of a run saved before provenance
+    # existed, whose approved proposal carries none.
     provenance: Optional[dict[str, Any]] = None
 
     def plan_step(self) -> PlanStep:

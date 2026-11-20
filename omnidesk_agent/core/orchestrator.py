@@ -11,7 +11,7 @@ from omnidesk_agent.core.agent_loop import (
     ORIGIN_AUTO_GROUND,
     ORIGIN_PLANNER,
     ORIGIN_VERIFY,
-    SINGLE_PLAN_SOURCES,
+    RULE_PLAN_SOURCES,
     TURN_DONE,
     TURN_GIVE_UP,
     LegacyPlannerAdapter,
@@ -27,6 +27,7 @@ from omnidesk_agent.core.agent_loop import (
     finish_single_plan,
     history_for_planner,
     sanitize_tool_result,
+    task_item,
     tool_output_item,
 )
 from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep, ToolResult
@@ -332,7 +333,7 @@ class Orchestrator:
         state.cost_usd += turn.cost_usd
         state.cost_known = state.cost_known and turn.cost_known
         state.last_errors = list(turn.errors)
-        provenance = self._turn_provenance(state, turn)
+        provenance = self._turn_provenance(msg, state, turn)
         if turn.status not in {TURN_DONE, TURN_GIVE_UP} and not turn.errors:
             steps = turn.steps[: self.loop_budget.max_steps_per_turn]
             if len(turn.steps) > len(steps):
@@ -358,15 +359,18 @@ class Orchestrator:
         return record
 
     @staticmethod
-    def _turn_provenance(state: LoopState, turn: PlannerTurn) -> Optional[dict[str, Any]]:
-        """The taint snapshot for the steps `turn` proposes, after recording what reached its model.
+    def _turn_provenance(msg: ChannelMessage, state: LoopState, turn: PlannerTurn) -> dict[str, Any]:
+        """The taint snapshot for the steps `turn` proposes, after recording what decided them.
 
-        Rule and legacy plans are not model output and carry none, as operator
-        commands do. A model planner that does not report its input is assumed
-        to have seen untrusted text: unknown provenance cannot vouch for anything.
+        Fresh approval follows the content that decided an action, not the planner
+        that wrote it. The rule planner turns the task text itself into the tool
+        call, so its steps carry the task's trust: clean from local-cli and
+        local-api, tainted from every other channel. A planner that does not
+        report its input (and one with only plan(msg)) is assumed to have seen
+        untrusted text: unknown provenance cannot vouch for anything.
         """
-        if turn.source in SINGLE_PLAN_SOURCES:
-            return None
+        if turn.source in RULE_PLAN_SOURCES:
+            return {**state.observe_inputs([task_item(msg)]), "origin": "rule"}
         inputs = list(turn.inputs) or [tag_untrusted("planner did not report its model input", source="agent:unreported_planner_input")]
         return state.observe_inputs(inputs)
 

@@ -921,11 +921,37 @@ def test_the_grounded_click_is_tainted_by_the_screen_it_was_read_from(harness, t
     assert write["provenance"] == shot["provenance"] and requires_fresh_approval(write) is False
 
 
-def test_rule_planned_commands_carry_no_model_provenance(harness):
+def test_rule_planned_steps_carry_the_trust_of_the_task_text(harness):
+    # The rule planner turns the sender's text into the tool call verbatim: fresh
+    # approval follows that text, not which planner wrote the step.
     log: list[dict[str, Any]] = []
-    h = harness(lambda payload, request: pytest.fail("the rule path must not call the model"), permissions_cls=recording_permissions(log))
+    h = harness(lambda payload, request: pytest.fail("the rule path must not call the model"), permissions_cls=recording_permissions(log), console="y")
+
     assert h.run("write file hello")["status"] == "completed"
-    assert log and all(p["provenance"] is None for p in log)
+    local = proposals_for(log, "files", "write_text")[-1]
+    assert (local["provenance"]["tainted"], local["provenance"]["origin"]) == (False, "rule")
+    assert requires_fresh_approval(local) is False  # an operator's own command: no change for operators
+
+    assert h.run("write file from a stranger", channel="telegram", sender="someone")["status"] == "completed"
+    remote = proposals_for(log, "files", "write_text")[-1]
+    assert remote["provenance"]["tainted"] is True and remote["provenance"]["untrusted_sources"] == ["channel:telegram"]
+    # Not None: None means operator-issued (security.provenance.proposal_taint).
+    assert requires_fresh_approval(remote) is True
+
+
+def test_a_plan_only_planner_gets_tainted_steps(harness):
+    class PlanOnly:
+        async def plan(self, msg):
+            return Plan(goal=msg.text, steps=[PlanStep("read", "files", "read_text", {"path": "notes.txt"}, "medium", True)])
+
+    log: list[dict[str, Any]] = []
+    h = harness(lambda payload, request: pytest.fail("unused"), permissions_cls=recording_permissions(log))
+    (h.workspace / "notes.txt").write_text("notes", encoding="utf-8")
+    orchestrator = h.build()
+    orchestrator.planner = PlanOnly()
+    assert asyncio.run(orchestrator.handle_message(ChannelMessage(channel="local-cli", sender_id="owner", text="read notes.txt")))["status"] == "completed"
+    # What it read to plan is unknown, so it cannot vouch for anything.
+    assert log[0]["provenance"]["tainted"] is True and log[0]["provenance"]["untrusted_sources"] == ["agent:unreported_planner_input"]
 
 
 def test_a_model_planner_that_hides_its_input_gets_tainted_steps(harness):

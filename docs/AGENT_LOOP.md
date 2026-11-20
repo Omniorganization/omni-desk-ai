@@ -40,8 +40,10 @@ The run keeps a `security.provenance.TaintTracker` snapshot in `plan_json.agent_
 
 - The snapshot is fixed when the step is planned. A step planned before any tool output reached the model stays clean even if it runs after other steps; a resumed step proposes exactly the snapshot that was approved, so the approval grant (keyed by its taint digest) matches.
 - `vision.ground`, grounded clicks and `vision.verify` steps that the loop derives from a step get a snapshot that includes that step's output: the vision model reads the screen, and a grounded click goes where it says.
-- Steps of rule and legacy plans carry no provenance: no model proposed them.
-- A model planner that does not report what it sent (`PlannerTurn.inputs`) gets tainted steps.
+- Fresh approval follows the content that decided an action, not the planner that wrote it.
+  - **Rule-planner steps.** The rule planner (explicit `shell:` / `write file` commands, and the fallback) turns the task text itself into tool calls. Its steps carry the snapshot taken after that text, with `origin: "rule"`: clean from `local-cli` and `local-api`, tainted from every other channel.
+  - **Unknown input.** A planner that does not report what it sent (`PlannerTurn.inputs`) gets tainted steps; so does one that only implements `plan(msg)`.
+  - **Runs saved before provenance existed.** Their steps keep none, so the approved proposal still matches on resume.
 
 - After a failed step the rest of that turn's steps are dropped (`steps_not_run` in history) and the model plans again.
 - The loop adds steps of its own (`origin` in results): `auto_ground` (above), `auto_click` when the planner step set `auto_click_grounded`, and `verify` for a step with a `verification` spec. They are separate steps so that an approval pause on one of them resumes that step, not the action before it.
