@@ -85,10 +85,12 @@ def test_a_listing_whose_audit_fails_does_not_run(setup, monkeypatch):
     [
         ("read_text", {"path": "../../etc/passwd"}, "path_escape"),
         ("write_text", {"path": ".git/config", "text": "[core]\n fsmonitor = evil"}, "git_metadata_write"),
-        ("read_text", {"path": "runs.sqlite3"}, "security_state"),
-        ("write_text", {"path": "approvals.sqlite3-wal", "text": "x"}, "security_state"),
-        ("write_text", {"path": "notes/memory.sqlite3", "text": "x"}, "security_state"),
-        ("read_text", {"path": "audit_checkpoints/latest.json"}, "security_state"),
+        ("read_text", {"path": "runs.sqlite3"}, "runtime_state"),
+        ("write_text", {"path": "approvals.sqlite3-wal", "text": "x"}, "runtime_state"),
+        # A case-insensitive filesystem opens runs.sqlite3 for this name.
+        ("read_text", {"path": "RUNS.SQLITE3"}, "runtime_state"),
+        ("read_text", {"path": "audit_checkpoints/latest.json"}, "runtime_state"),
+        ("write_text", {"path": "growth_plan.json", "text": "{}"}, "runtime_state"),
     ],
 )
 def test_policy_refusals_are_audited_with_their_rule(setup, action, args, rule):
@@ -102,7 +104,18 @@ def test_policy_refusals_are_audited_with_their_rule(setup, action, args, rule):
     assert events == ["policy_blocked"]  # refused before any proposal reached verify()
     payload = entries()[0]["payload"]
     assert payload["block_rule"] == rule and payload["tool"] == "files" and payload["action"] == action
-    assert not (workspace / ".git").exists() and not (workspace / "approvals.sqlite3-wal").exists()
+    assert not (workspace / ".git").exists() and not (workspace / "approvals.sqlite3-wal").exists() and not (workspace / "growth_plan.json").exists()
+
+
+def test_a_users_own_database_below_the_root_is_not_runtime_state(setup):
+    # Only OmniDesk's entries in the workspace root are its state (sandbox.isolation.is_runtime_state).
+    workspace, _tools, call, entries, _ = setup
+    (workspace / "project").mkdir()
+    (workspace / "project" / "runs.sqlite3").write_text("user data", encoding="utf-8")
+    result = call("files", "read_text", {"path": "project/runs.sqlite3"})
+
+    assert "PolicyRefusal" not in (result.error or "")
+    assert entries()[0]["event"] == "proposal"  # it reached the permission check like any read
 
 
 def test_writes_disabled_by_capability_are_audited(tmp_path):

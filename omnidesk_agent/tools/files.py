@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
+from omnidesk_agent.sandbox.isolation import is_runtime_state
 from omnidesk_agent.tools.base import PolicyRefusal, ToolContext, bound_content, permission_guarded, proposal, record_access
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
 
 
-# Runtime state that lives under the workspace root: the run, approval, memory and
-# token stores and their journals, and audit files. An agent that could read them
-# would see other runs and actors; one that could write them could approve itself.
-_SECURITY_STATE_SUFFIXES = (".sqlite3", ".sqlite3-wal", ".sqlite3-shm", ".sqlite3-journal")
-_SECURITY_STATE_NAMES = frozenset({"admin_auth_audit.jsonl", "audit_checkpoints"})
+def _is_runtime_state(relative: Path) -> bool:
+    """OmniDesk's own state in the workspace root (runs, approvals, memory, audit files; the
+    sandbox hides the same entries). An agent that could read them would see other runs and
+    actors; one that could write them could approve itself.
 
-
-def _is_security_state(relative: Path) -> bool:
-    return any(part.lower().endswith(_SECURITY_STATE_SUFFIXES) or part.lower() in _SECURITY_STATE_NAMES for part in relative.parts)
+    Compared in lower case: on a case-insensitive filesystem (macOS, Windows) RUNS.SQLITE3
+    opens runs.sqlite3.
+    """
+    return is_runtime_state(PurePath(*(part.lower() for part in relative.parts)))
 
 
 class FilesTool:
@@ -58,8 +59,8 @@ class FilesTool:
     def _content_path(self, rel: str) -> Path:
         """A workspace path whose content the agent may read or write."""
         path = self._safe_path(rel)
-        if _is_security_state(path.relative_to(self.root)):
-            raise PolicyRefusal(f"runtime security state is not accessible to the agent: {rel}", rule="security_state")
+        if _is_runtime_state(path.relative_to(self.root)):
+            raise PolicyRefusal(f"OmniDesk runtime state is not accessible to the agent: {rel}", rule="runtime_state")
         return path
 
     def _writable_path(self, rel: str) -> Path:
