@@ -42,7 +42,7 @@ What the code provides today (`privacy/data_subject.py`, `server_routes/privacy_
     - Until then, the erasure revokes the subject's own devices, but other members' devices may keep cached copies of the subject's messages until they are reset. Tell the requester so.
   - **Backups.** Erasure does not rewrite backups. Backups that hold personal data are kept at most 35 days (`scripts/backup_postgres.py --retention-days 35`), so an erasure reaches every backup within 35 days.
   - **Restores.** After a restore, every erasure recorded since the backup was taken (`privacy.subject_erased` in the security audit log, which is retained) must be applied again before the gateway serves traffic. Today that means repeating each erasure request, each with a new dual approval. Planned (security): a command that re-applies the logged, dual-approved erasures.
-  - **Projects.** A project owned by the subject keeps its organization; its `owner_actor` becomes `[erased]`, and the organization's owners can reassign it (gateway-clients' #285).
+  - **Projects.** A project owned by the subject stays with its organization, and its `owner_actor` becomes `[erased]` (gateway-clients' #285). Ownership authorizes nothing, since every project operation is scoped by organization, so nothing is blocked and nothing needs reassigning.
   - **Notifications.** A notification about an erased record stays visible to its organization with ids only: no text and no actor.
 
 ## Reporting
