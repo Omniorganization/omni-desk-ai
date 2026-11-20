@@ -149,6 +149,13 @@ class VisionGroundingTool:
             json_mode=True,
             verified_required=True,
             task_id=self._call_cap_key(args, ctx),
+            # Providers read the image only from inside the workspace, and only
+            # if its bytes still hash to the approved digest (also the cache key).
+            metadata={
+                "allowed_image_roots": [str(self.root)],
+                "image_sha256": {str(image_path): image_sha256},
+                "max_image_bytes": self.max_image_bytes,
+            },
         ))
         text = resp.text.strip()
         try:

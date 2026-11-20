@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 from omnidesk_agent.models.base import ModelDelta, ModelRequest, ModelResponse
 from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error, safe_error_text
 from omnidesk_agent.models.provider_streaming import stream_provider
-from omnidesk_agent.models.router import LOCAL_MODEL_REFUSALS, ModelCallBlocked, ModelRouter
+from omnidesk_agent.models.router import LOCAL_MODEL_REFUSALS, ModelCallBlocked, ModelRouter, request_image_digests
 
 
 class GovernedStreamingRouter:
@@ -142,6 +142,7 @@ class GovernedStreamingRouter:
                 self.router.cfg.max_output_tokens,
             ),
             verified_required=request.verified_required,
+            image_digests=request_image_digests(request),
         )
         if not decision.allowed:
             raise ModelCallBlocked(

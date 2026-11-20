@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Sequence
 
 import hashlib
 import json
@@ -102,12 +102,12 @@ class TokenBudgetManager:
     def _hash(value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    def make_cache_key(self, model: str, system: str, user: str) -> str:
-        payload = json.dumps(
-            {"model": model, "system": self._hash(system), "user": self._hash(user)},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+    def make_cache_key(self, model: str, system: str, user: str, image_digests: Sequence[str] = ()) -> str:
+        key: dict[str, object] = {"model": model, "system": self._hash(system), "user": self._hash(user)}
+        if image_digests:
+            # The answer is about these images: a new screenshot is a new question.
+            key["images"] = list(image_digests)
+        payload = json.dumps(key, ensure_ascii=False, sort_keys=True)
         return self._hash(payload)
 
     @staticmethod
@@ -143,7 +143,10 @@ class TokenBudgetManager:
         task_id: str = "default",
         expected_output_tokens: Optional[int] = None,
         verified_required: bool = False,
+        image_digests: Optional[Sequence[str]] = (),
     ) -> TokenDecision:
+        """`image_digests` are the sha256 of the request's images; None means a request
+        with images of unknown content, which is never served from or stored in the cache."""
         cfg = self.config
         expected_output_tokens = expected_output_tokens or cfg.max_output_tokens
 
@@ -160,7 +163,7 @@ class TokenBudgetManager:
 
         estimated_input = self.estimate_tokens(truncated_system + truncated_user)
         total_estimated = estimated_input + expected_output_tokens
-        cache_key = self.make_cache_key(model, truncated_system, truncated_user)
+        cache_key = None if image_digests is None else self.make_cache_key(model, truncated_system, truncated_user, image_digests)
 
         if cfg.per_task_max_llm_calls is not None:
             used_calls = self.count_calls_for_cap(task_id)

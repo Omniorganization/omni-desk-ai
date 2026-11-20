@@ -78,3 +78,25 @@ The live validation command should be run only in a controlled environment with 
 ```bash
 omnidesk validate-models --config examples/config.yaml
 ```
+
+## Image inputs
+
+`ModelRequest.images` holds absolute image paths. Every multimodal provider sends them in its own format:
+OpenAI Responses `input_image` data URLs; OpenAI-compatible chat, Azure OpenAI and Cohere v2 `image_url` parts;
+Anthropic and Claude on Bedrock base64 `image` blocks; Gemini `inline_data`; Ollama `images`. The complete and
+streaming paths use the same builders. No provider drops images: a model that cannot take them answers with an
+API error, and the subscription CLI providers refuse image requests.
+
+An image is read only when the request metadata binds it (`providers._load_image`):
+
+- `allowed_image_roots`: the image must resolve inside one of them; symlinks and relative paths are refused;
+- `max_image_bytes` (default 10 MiB) and an allowed suffix (png, jpeg, gif, webp);
+- `image_sha256` (`{path: digest}`): the bytes read must hash to that digest, so the image sent is the image that
+  was approved.
+
+A refusal raises `ModelInputRejected` before any request is sent; the router neither retries it, nor falls back to
+another profile, nor counts it toward the circuit breaker. `vision.ground` passes the workspace root, its size limit
+and the digest its approval bound.
+
+The response cache key includes the image digests, so a new screenshot with the same instruction is a new
+question. A request with an image whose digest is not stated is never cached.
