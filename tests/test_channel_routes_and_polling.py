@@ -278,3 +278,24 @@ def test_whatsapp_status_callbacks_get_their_own_rate_bucket_and_event_ids():
     assert sent.source_key == "1555" and sent.message_id == "status:wamid.1:sent"
     assert delivered.message_id != sent.message_id
     assert channel.parse_webhook(status("read")) == []  # statuses are not tasks
+
+
+
+def test_google_chat_and_wechat_replies_are_what_the_provider_expects(monkeypatch):
+    # Google Chat posts a synchronous body as a reply message ({} = no reply);
+    # WeChat shows users an error for anything but "success" or a passive XML reply.
+    from omnidesk_agent.channels.native_messaging import GoogleChatChannel
+    from omnidesk_agent.channels.wechat_official import WeChatOfficialChannel
+    from omnidesk_agent.config import WeChatOfficialConfig
+
+    monkeypatch.setenv("GOOGLE_CHAT_CHANNEL_TOKEN", "chat-token")
+    cfg = AppConfig()
+    cfg.channels.google_chat.enabled = True
+    client, queue = _client(cfg, google_chat=GoogleChatChannel(cfg.channels.google_chat))
+    event = {"type": "MESSAGE", "eventTime": "2026-11-21T00:00:00Z", "space": {"name": "spaces/AAA"}, "user": {"name": "users/1"}, "message": {"name": "spaces/AAA/messages/m1", "text": "hello", "sender": {"name": "users/1"}}}
+    response = client.post("/webhooks/google-chat", json=event, headers={"x-goog-channel-token": "chat-token"})
+    assert response.status_code == 200 and response.json() == {}
+    assert len(queue.messages) == 1
+
+    reply = WeChatOfficialChannel(WeChatOfficialConfig()).webhook_response(None, b"<xml/>")
+    assert reply.status_code == 200 and reply.body == b"success" and reply.media_type == "text/plain"

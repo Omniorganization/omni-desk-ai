@@ -122,6 +122,17 @@ class WeChatOfficialChannel:
             raw={child.tag: child.text for child in root},
         )
 
+    def webhook_response(self, parsed: Any, payload: Any):
+        """Reply for a verified delivery that is not answered with a passive message.
+
+        WeChat treats any other body (JSON in particular) as a failure and shows
+        the user "该公众号暂时无法提供服务"; plain "success" acknowledges the push
+        without a reply, which is what a redelivered (duplicate) message needs.
+        """
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse("success")
+
     def passive_text_reply(self, incoming: ChannelMessage, text: str) -> str:
         to_user = incoming.sender_id
         from_user = incoming.raw.get("ToUserName", "")

@@ -313,6 +313,14 @@ class GoogleChatChannel:
             return None
         return ChannelMessage(channel=self.name, sender_id=sender or "unknown", thread_id=space or sender, message_id=str(msg.get("name") or ""), text=text, raw=payload)
 
+    def webhook_response(self, parsed: Any, payload: Any) -> dict[str, Any]:
+        """Google Chat posts a synchronous response body as a reply message; ``{}`` means no reply.
+
+        The message is queued and any reply goes out later through the
+        approval-gated send, so the HTTP response must not be our job JSON.
+        """
+        return {}
+
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
         # Never post to a caller-chosen URL (kwargs or an LLM-chosen recipient):
         # use the operator-configured webhook, or a recipient that is itself a
