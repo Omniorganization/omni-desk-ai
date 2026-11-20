@@ -17,6 +17,23 @@ from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION
 from omnidesk_agent.models.schema_retry import StructuredOutputError, build_repair_prompt, validate_json_text
 
 
+def request_image_digests(request: ModelRequest) -> Optional[list[str]]:
+    """The sha256 of each request image as the caller bound it, [] without images,
+    or None when an image's content is not stated (such a request is not cached)."""
+    if not request.images:
+        return []
+    stated = request.metadata.get("image_sha256")
+    if not isinstance(stated, dict):
+        return None
+    digests: list[str] = []
+    for path in request.images:
+        digest = stated.get(str(path))
+        if not digest:
+            return None
+        digests.append(str(digest))
+    return digests
+
+
 class ModelCallBlocked(RuntimeError):
     """The local token guardrail refused the call before anything was sent."""
 
@@ -291,6 +308,7 @@ class ModelRouter:
             task_id=request.task_id,
             expected_output_tokens=getattr(provider.settings, "max_output_tokens", self.cfg.max_output_tokens),
             verified_required=request.verified_required,
+            image_digests=request_image_digests(request),
         )
         if not decision.allowed:
             raise ModelCallBlocked(f"Model call blocked by token guardrail: {decision.reason}")

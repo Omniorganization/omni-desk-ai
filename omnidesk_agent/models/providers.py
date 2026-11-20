@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -89,7 +91,26 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _image_part_from_path(raw_path: str, metadata: dict[str, Any]) -> dict[str, Any]:
+@dataclass(frozen=True)
+class ImageInput:
+    mime_type: str
+    data: str  # base64
+    sha256: str
+
+    @property
+    def data_url(self) -> str:
+        return f"data:{self.mime_type};base64,{self.data}"
+
+
+def _expected_image_digest(metadata: dict[str, Any], raw_path: str, resolved: Path) -> Optional[str]:
+    digests = metadata.get("image_sha256")
+    if not isinstance(digests, dict):
+        return None
+    value = digests.get(raw_path) or digests.get(str(resolved))
+    return str(value) if value else None
+
+
+def _load_image(raw_path: str, metadata: dict[str, Any]) -> ImageInput:
     upload_roots = _metadata_values(
         metadata,
         "allowed_image_roots",
@@ -122,12 +143,62 @@ def _image_part_from_path(raw_path: str, metadata: dict[str, Any]) -> dict[str, 
         raise ModelInputRejected("image input type is not allowed")
 
     data = resolved.read_bytes()
-    return {
-        "inline_data": {
-            "mime_type": IMAGE_MIME_TYPES[suffix],
-            "data": base64.b64encode(data).decode("ascii"),
-        }
-    }
+    if len(data) > max_bytes:
+        raise ModelInputRejected("image input exceeds the configured size limit")
+    digest = hashlib.sha256(data).hexdigest()
+    expected = _expected_image_digest(metadata, raw_path, resolved)
+    # The bytes sent must be the bytes that were approved (vision.ground binds the digest).
+    if expected is not None and not hmac.compare_digest(expected, digest):
+        raise ModelInputRejected("image input changed after it was approved")
+    return ImageInput(IMAGE_MIME_TYPES[suffix], base64.b64encode(data).decode("ascii"), digest)
+
+
+def load_image_inputs(request: ModelRequest) -> list[ImageInput]:
+    """Validated images of a request: bound upload root, size, type and approved digest."""
+    return [_load_image(str(path), request.metadata) for path in request.images]
+
+
+def _image_part_from_path(raw_path: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    image = _load_image(raw_path, metadata)
+    return {"inline_data": {"mime_type": image.mime_type, "data": image.data}}
+
+
+# Request bodies per vendor family. Images are sent in each vendor's own format;
+# a provider never drops them silently.
+
+def openai_responses_input(request: ModelRequest) -> list[dict[str, Any]]:
+    images = load_image_inputs(request)
+    user: Any = request.user
+    if images:
+        user = [{"type": "input_text", "text": request.user}] + [{"type": "input_image", "image_url": image.data_url} for image in images]
+    return [{"role": "system", "content": request.system}, {"role": "user", "content": user}]
+
+
+def chat_messages(request: ModelRequest) -> list[dict[str, Any]]:
+    """OpenAI chat-completions messages (OpenAI-compatible vendors, Azure OpenAI, Cohere v2)."""
+    images = load_image_inputs(request)
+    if not images:
+        return msgs(request.system, request.user)
+    content = [{"type": "text", "text": request.user}] + [{"type": "image_url", "image_url": {"url": image.data_url}} for image in images]
+    return [{"role": "system", "content": request.system}, {"role": "user", "content": content}]
+
+
+def anthropic_messages(request: ModelRequest) -> list[dict[str, Any]]:
+    """Anthropic Messages API content (also Claude on Bedrock)."""
+    images = load_image_inputs(request)
+    if not images:
+        return [{"role": "user", "content": request.user}]
+    content: list[dict[str, Any]] = [{"type": "image", "source": {"type": "base64", "media_type": image.mime_type, "data": image.data}} for image in images]
+    content.append({"type": "text", "text": request.user})
+    return [{"role": "user", "content": content}]
+
+
+def ollama_messages(request: ModelRequest) -> list[dict[str, Any]]:
+    messages = msgs(request.system, request.user)
+    images = load_image_inputs(request)
+    if images:
+        messages[-1]["images"] = [image.data for image in images]
+    return messages
 
 
 class OpenAIResponsesProvider:
@@ -145,10 +216,7 @@ class OpenAIResponsesProvider:
         base = (self.settings.base_url or "https://api.openai.com/v1").rstrip("/")
         body = {
             "model": self.model,
-            "input": [
-                {"role": "system", "content": request.system},
-                {"role": "user", "content": request.user},
-            ],
+            "input": openai_responses_input(request),
             "max_output_tokens": self.settings.max_output_tokens,
         }
         if request.json_mode:
@@ -255,7 +323,7 @@ class OpenAICompatibleProvider:
         base = (self.settings.base_url or "https://api.openai.com/v1").rstrip("/")
         body = {
             "model": self.model,
-            "messages": msgs(request.system, request.user),
+            "messages": chat_messages(request),
             "temperature": self.settings.temperature,
             "max_tokens": self.settings.max_output_tokens,
         }
@@ -295,7 +363,7 @@ class AzureOpenAIProvider(OpenAICompatibleProvider):
             raise RuntimeError("Azure OpenAI base_url is required")
         ver = self.settings.api_version or "2024-10-21"
         body = {
-            "messages": msgs(request.system, request.user),
+            "messages": chat_messages(request),
             "temperature": self.settings.temperature,
             "max_tokens": self.settings.max_output_tokens,
         }
@@ -335,7 +403,7 @@ class AnthropicProvider:
             "max_tokens": self.settings.max_output_tokens,
             "temperature": self.settings.temperature,
             "system": request.system,
-            "messages": [{"role": "user", "content": request.user}],
+            "messages": anthropic_messages(request),
         }
         async with httpx.AsyncClient(timeout=120) as c:
             rr = await c.post(
@@ -423,7 +491,7 @@ class OllamaProvider:
         body = {
             "model": self.model,
             "stream": False,
-            "messages": msgs(request.system, request.user),
+            "messages": ollama_messages(request),
             "options": {
                 "temperature": self.settings.temperature,
                 "num_predict": self.settings.max_output_tokens,
@@ -452,7 +520,7 @@ class CohereProvider(OpenAICompatibleProvider):
         base = (self.settings.base_url or "https://api.cohere.com").rstrip("/")
         body = {
             "model": self.model,
-            "messages": msgs(request.system, request.user),
+            "messages": chat_messages(request),
             "temperature": self.settings.temperature,
             "max_tokens": self.settings.max_output_tokens,
         }
@@ -506,7 +574,7 @@ class BedrockProvider:
                 "max_tokens": self.settings.max_output_tokens,
                 "temperature": self.settings.temperature,
                 "system": request.system,
-                "messages": [{"role": "user", "content": request.user}],
+                "messages": anthropic_messages(request),
             }
         )
         resp = client.invoke_model(
