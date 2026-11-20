@@ -141,6 +141,34 @@ Sync events are pruned by sequence number: the watermark (`pruned_through`) is
 committed before any event is deleted, so a reader below it is reset rather than
 moved silently past the gap.
 
+## Data-subject export and erasure
+
+Security's privacy service (`privacy/data_subject.py`) calls
+`export_subject(actor)` and `erase_subject(actor)` on `rt.app_sync`. Both stores
+apply the rules in `appsync/subject_data.py`. Matching is by actor id, and the
+PostgreSQL store erases in one transaction. An export lists what an erasure
+deletes or anonymises, and never includes a credential: no push target, token
+hash or pairing code hash.
+
+| Records | Erasure |
+|---|---|
+| User profile, conversations, messages, chat requests and their stream events | Deleted |
+| The person's tasks | Deleted. A desktop still holding one gets "task not found" when it reports, so nothing is written back |
+| Approvals they requested, or that gate their tasks | Deleted. The approval ledger erases its own rows |
+| Notifications and pushes about these records; pushes and runtime status of their devices | Deleted |
+| Offline-sync outbox, inbox, cursors, conflicts, their operation-log entries; idempotency replays | Deleted |
+| Their devices | Kept, revoked for good: no verification, registration or push again. Name and push token removed, actor `[erased]` |
+| Device enrollments they started | `requested_by` becomes `[erased]`. One not completed is revoked, so its pairing code cannot enrol a device |
+| Approvals they decided for someone else | `decided_by`/`approved_by` become `[erased]`, and their reason is removed. On a pending approval their partial approval is withdrawn: an approver nobody can identify must not count toward four eyes |
+| Notifications they caused on someone else's records | Actor becomes `[erased]` |
+| Sync events | Numbers kept, so cursors stay valid. Actor `[erased]`. Events by the person or about an erased record keep only identifiers and states |
+
+Not covered: the security audit logs (kept by design); projects
+(`GatewayProjectStore`), whose `owner_actor` stays; and the PostgreSQL twins of
+the agent-core stores in `repositories/postgres_state.py`. An erasure on a
+local-first daemon store does not reach the remote gateway; run it on each.
+Backups taken before an erasure still hold the data until they are rotated out.
+
 ## Approvals: four eyes
 
 `decide_approval` follows the same rule as the agent's own approvals (security, #224):

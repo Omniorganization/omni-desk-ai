@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal, Optional, TypeVar, cast
 
 from omnidesk_agent.appsync.postgres_migrations import assert_appsync_schema_current
+from omnidesk_agent.appsync import subject_data as subject
 from omnidesk_agent.appsync.store import (
     LEGACY_HMAC_KEY_REFUSED,
     SYNC_PAGE_LIMIT,
@@ -351,6 +352,73 @@ CONVERSATION_ERASURE_SQL: tuple[tuple[str, str], ...] = (
     ("conversations", "DELETE FROM omnidesk_appsync_conversations WHERE namespace = %(namespace)s AND conversation_id = %(conversation_id)s"),
 )
 
+# Erasing a data subject (rules in subject_data): the person's rows, and rows
+# about the records being erased. The *_ids parameters are text arrays.
+SUBJECT_ERASURE_SQL: tuple[tuple[str, str], ...] = (
+    ("messages", "DELETE FROM omnidesk_appsync_messages WHERE namespace = %(namespace)s AND (actor = %(actor)s OR conversation_id = ANY(%(conversation_ids)s))"),
+    # Stream events go with their request (ON DELETE CASCADE).
+    ("chat_requests", "DELETE FROM omnidesk_appsync_chat_requests WHERE namespace = %(namespace)s AND (actor = %(actor)s OR conversation_id = ANY(%(conversation_ids)s))"),
+    ("conversations", "DELETE FROM omnidesk_appsync_conversations WHERE namespace = %(namespace)s AND conversation_id = ANY(%(conversation_ids)s)"),
+    ("task_leases", "DELETE FROM omnidesk_appsync_task_leases WHERE namespace = %(namespace)s AND task_id = ANY(%(task_ids)s)"),
+    ("tasks", "DELETE FROM omnidesk_appsync_tasks WHERE namespace = %(namespace)s AND task_id = ANY(%(task_ids)s)"),
+    ("approvals", "DELETE FROM omnidesk_appsync_approvals WHERE namespace = %(namespace)s AND approval_id = ANY(%(approval_ids)s)"),
+    ("notifications", "DELETE FROM omnidesk_appsync_notifications WHERE namespace = %(namespace)s AND related_id = ANY(%(related_ids)s)"),
+    # Notifications the actor caused on someone else's records stay with those records.
+    ("notifications_anonymised", "UPDATE omnidesk_appsync_notifications SET actor = %(erased)s WHERE namespace = %(namespace)s AND actor = %(actor)s"),
+    ("push_outbox", "DELETE FROM omnidesk_appsync_push_outbox WHERE namespace = %(namespace)s AND (device_id = ANY(%(device_ids)s) OR related_id = ANY(%(related_ids)s))"),
+    ("runtime_status", "DELETE FROM omnidesk_appsync_runtime_status WHERE namespace = %(namespace)s AND device_id = ANY(%(device_ids)s)"),
+    ("local_outbox", "DELETE FROM omnidesk_appsync_local_outbox WHERE namespace = %(namespace)s AND operation_id = ANY(%(operation_ids)s)"),
+    ("local_inbox", "DELETE FROM omnidesk_appsync_local_inbox WHERE namespace = %(namespace)s AND (actor = %(actor)s OR payload->>'actor' = %(actor)s OR EXISTS (SELECT 1 FROM jsonb_each_text(payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(payload->'payload') = 'object' THEN payload->'payload' END) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)))"),
+    ("sync_cursors", "DELETE FROM omnidesk_appsync_sync_cursors WHERE namespace = %(namespace)s AND actor = %(actor)s"),
+    ("sync_conflicts", "DELETE FROM omnidesk_appsync_sync_conflicts WHERE namespace = %(namespace)s AND (actor = %(actor)s OR EXISTS (SELECT 1 FROM jsonb_each_text(local_payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(local_payload->'payload') = 'object' THEN local_payload->'payload' END) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(remote_payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(remote_payload->'payload') = 'object' THEN remote_payload->'payload' END) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)))"),
+    ("operation_log", "DELETE FROM omnidesk_appsync_operation_log WHERE namespace = %(namespace)s AND (payload->>'operation_id' = ANY(%(operation_ids)s) OR payload->>'cursor_id' = ANY(%(cursor_ids)s))"),
+    ("idempotency_keys", "DELETE FROM omnidesk_appsync_idempotency_keys WHERE namespace = %(namespace)s AND actor = %(actor)s"),
+    ("users", "DELETE FROM omnidesk_appsync_users WHERE namespace = %(namespace)s AND user_id = %(actor)s"),
+)
+
+# The actor's records an erasure starts from; ids of approvals include those of
+# the actor's tasks.
+SUBJECT_SCOPE_SQL = """
+SELECT 'conversation_ids', conversation_id FROM omnidesk_appsync_conversations WHERE namespace = %(namespace)s AND actor = %(actor)s
+UNION ALL SELECT 'task_ids', task_id FROM omnidesk_appsync_tasks WHERE namespace = %(namespace)s AND actor = %(actor)s
+UNION ALL SELECT 'approval_ids', a.approval_id FROM omnidesk_appsync_approvals a
+    WHERE a.namespace = %(namespace)s
+      AND (a.requested_by = %(actor)s OR a.task_id IN (SELECT t.task_id FROM omnidesk_appsync_tasks t WHERE t.namespace = %(namespace)s AND t.actor = %(actor)s))
+UNION ALL SELECT 'device_ids', device_id FROM omnidesk_appsync_devices WHERE namespace = %(namespace)s AND actor = %(actor)s
+UNION ALL SELECT 'cursor_ids', cursor_id FROM omnidesk_appsync_sync_cursors WHERE namespace = %(namespace)s AND actor = %(actor)s
+"""
+
+# The actor's offline operations, and anyone's that name an erased record by id.
+SUBJECT_OPERATIONS_SQL = """
+SELECT operation_id FROM omnidesk_appsync_local_outbox
+WHERE namespace = %(namespace)s AND (actor = %(actor)s OR EXISTS (SELECT 1 FROM jsonb_each_text(payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(payload->'payload') = 'object' THEN payload->'payload' END) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)))
+"""
+
+# Sync events an erasure may change: by the person, naming them, or with an
+# identifier of an erased record (subject_data.scrubbed_event decides).
+SUBJECT_EVENTS_SQL = """
+SELECT seq, actor, payload FROM omnidesk_appsync_sync_events e
+WHERE e.namespace = %(namespace)s
+  AND (e.actor = %(actor)s OR position(%(actor_json)s in e.payload::text) > 0
+       OR EXISTS (SELECT 1 FROM jsonb_each_text(e.payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)))
+ORDER BY seq
+FOR UPDATE
+"""
+
+SUBJECT_EVENT_UPDATE_SQL = "UPDATE omnidesk_appsync_sync_events SET actor = %(actor)s, payload = %(payload)s WHERE namespace = %(namespace)s AND seq = %(seq)s"
+
+SUBJECT_CHAT_REQUESTS_SQL = """
+SELECT endpoint, conversation_id, user_message_id, status, created_at, updated_at FROM omnidesk_appsync_chat_requests
+WHERE namespace = %(namespace)s AND (actor = %(actor)s OR conversation_id = ANY(%(conversation_ids)s))
+ORDER BY created_at
+"""
+
+SUBJECT_EXPORT_EVENTS_SQL = "SELECT seq, event_type, actor, organization_id, payload, created_at FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s AND actor = %(actor)s ORDER BY seq"
+
+SUBJECT_EXPORT_IDEMPOTENCY_SQL = "SELECT endpoint, created_at FROM omnidesk_appsync_idempotency_keys WHERE namespace = %(namespace)s AND actor = %(actor)s ORDER BY created_at"
+
+SUBJECT_EXPORT_OPERATION_LOG_SQL = "SELECT seq, event, payload, created_at FROM omnidesk_appsync_operation_log WHERE namespace = %(namespace)s AND (payload->>'operation_id' = ANY(%(operation_ids)s) OR payload->>'cursor_id' = ANY(%(cursor_ids)s)) ORDER BY seq"
+
 # The newest ``limit`` entries, oldest first; ``organization_id`` NULL means all.
 OPERATION_LOG_REPLAY_SQL = """
 SELECT seq, event, payload, organization_id, created_at FROM (
@@ -437,7 +505,7 @@ class _Table:
             ),
         )
 
-    def select(self, *, where: str, order: str, limit: Optional[int], alias: str) -> Any:
+    def select(self, *, where: str, order: str, limit: Optional[int], alias: str, for_update: bool = False) -> Any:
         """``where`` and ``order`` are fixed fragments from this module, never input."""
 
         def build(sql: Any) -> Any:
@@ -452,9 +520,11 @@ class _Table:
                 query += sql.SQL(" ORDER BY ") + sql.SQL(order)
             if limit is not None:
                 query += sql.SQL(" LIMIT ") + sql.Literal(int(limit))
+            if for_update:
+                query += sql.SQL(" FOR UPDATE")
             return query
 
-        return _composed((self.name, "select", where, order, limit, alias), build)
+        return _composed((self.name, "select", where, order, limit, alias, for_update), build)
 
     def insert(self, *, if_absent: bool) -> Any:
         def build(sql: Any) -> Any:
@@ -854,8 +924,8 @@ class MigratedMultiInstancePostgresAppSyncStore:
         row = tx.cur.fetchone()
         return self._from_row(table, row) if row else None
 
-    def _select(self, tx: _Tx, table: _Table, where: str, params: dict[str, Any], *, order: str = "", limit: Optional[int] = None, alias: str = "") -> list[Any]:
-        tx.cur.execute(table.select(where=where, order=order, limit=limit, alias=alias), {**params, "namespace": self.namespace})
+    def _select(self, tx: _Tx, table: _Table, where: str, params: dict[str, Any], *, order: str = "", limit: Optional[int] = None, alias: str = "", for_update: bool = False) -> list[Any]:
+        tx.cur.execute(table.select(where=where, order=order, limit=limit, alias=alias, for_update=for_update), {**params, "namespace": self.namespace})
         return [self._from_row(table, row) for row in tx.cur.fetchall()]
 
     def _insert(self, tx: _Tx, table: _Table, record: Any, *, if_absent: bool = False) -> bool:
@@ -1623,6 +1693,102 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 deleted[name] = int(tx.cur.rowcount or 0)
             self._event(tx, "conversation.deleted", actor, {"conversation_id": conversation_id, "organization_id": organization_id})
             return {"conversation_id": conversation_id, "deleted": deleted}
+
+        return self._transaction(body)
+
+    # --- data-subject requests (privacy/data_subject.py; rules in subject_data.py)
+
+    def _subject_scope(self, tx: _Tx, actor: str) -> dict[str, list[str]]:
+        """Ids of the actor's records, and of the records about them (text arrays)."""
+        tx.cur.execute(SUBJECT_SCOPE_SQL, {"namespace": self.namespace, "actor": actor})
+        scope: dict[str, set[str]] = {name: set() for name in ("conversation_ids", "task_ids", "approval_ids", "device_ids", "operation_ids", "cursor_ids")}
+        for name, key in tx.cur.fetchall():
+            scope[str(name)].add(str(key))
+        related = sorted(scope["conversation_ids"] | scope["task_ids"] | scope["approval_ids"] | scope["device_ids"])
+        tx.cur.execute(SUBJECT_OPERATIONS_SQL, {"namespace": self.namespace, "actor": actor, "related_ids": related})
+        scope["operation_ids"] = {str(row[0]) for row in tx.cur.fetchall()}
+        return {**{name: sorted(ids) for name, ids in scope.items()}, "related_ids": related}
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """What this namespace holds about ``actor`` (see :meth:`AppSyncStore.export_subject`)."""
+
+        def body(tx: _Tx) -> list[dict[str, Any]]:
+            params: dict[str, Any] = {"actor": actor, **self._subject_scope(tx, actor)}
+            query = {**params, "namespace": self.namespace}
+
+            def rows(kind: str, table: _Table, where: str, order: str) -> list[dict[str, Any]]:
+                return [subject.exported(kind, item) for item in self._select(tx, table, where, params, order=order)]
+
+            user = self._get(tx, USERS, actor)
+            records = [subject.exported("user", user)] if user else []
+            records += rows("device", DEVICES, "device_id = ANY(%(device_ids)s)", "device_id")
+            records += rows("runtime", RUNTIMES, "device_id = ANY(%(device_ids)s)", "device_id")
+            records += rows("conversation", CONVERSATIONS, "conversation_id = ANY(%(conversation_ids)s)", "conversation_id")
+            records += rows("message", MESSAGES, "(actor = %(actor)s OR conversation_id = ANY(%(conversation_ids)s))", "created_at, message_id")
+            tx.cur.execute(SUBJECT_CHAT_REQUESTS_SQL, query)
+            records += [
+                {"record": "chat_request", "endpoint": row[0], "conversation_id": row[1], "user_message_id": row[2], "status": row[3], "created_at": row[4], "updated_at": row[5]}
+                for row in tx.cur.fetchall()
+            ]
+            records += rows("task", TASKS, "task_id = ANY(%(task_ids)s)", "task_id")
+            records += rows("approval", APPROVALS, "approval_id = ANY(%(approval_ids)s)", "approval_id")
+            records += [
+                subject.exported_decision(item, actor)
+                for item in self._select(tx, APPROVALS, "NOT (approval_id = ANY(%(approval_ids)s)) AND (decided_by = %(actor)s OR approved_by ? %(actor)s)", params, order="approval_id")
+            ]
+            records += rows("notification", NOTIFICATIONS, "related_id = ANY(%(related_ids)s)", "created_at, notification_id")
+            records += rows("push", PUSH_OUTBOX, "(device_id = ANY(%(device_ids)s) OR related_id = ANY(%(related_ids)s))", "created_at, push_id")
+            records += rows("device_enrollment", ENROLLMENTS, "requested_by = %(actor)s", "created_at, enrollment_id")
+            records += rows("local_outbox", LOCAL_OUTBOX, "operation_id = ANY(%(operation_ids)s)", "operation_id")
+            records += rows("local_inbox", LOCAL_INBOX, "(actor = %(actor)s OR payload->>'actor' = %(actor)s OR EXISTS (SELECT 1 FROM jsonb_each_text(payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(payload->'payload') = 'object' THEN payload->'payload' END) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)))", "received_at, remote_event_id")
+            records += rows("sync_cursor", SYNC_CURSORS, "actor = %(actor)s", "cursor_id")
+            records += rows("sync_conflict", SYNC_CONFLICTS, "(actor = %(actor)s OR EXISTS (SELECT 1 FROM jsonb_each_text(local_payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(local_payload->'payload') = 'object' THEN local_payload->'payload' END) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(remote_payload) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)) OR EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(remote_payload->'payload') = 'object' THEN remote_payload->'payload' END) kv WHERE kv.key LIKE '%%\\_id' AND kv.value = ANY(%(related_ids)s)))", "created_at, conflict_id")
+            tx.cur.execute(SUBJECT_EXPORT_OPERATION_LOG_SQL, query)
+            records += [{"record": "operation_log", "seq": row[0], "event": row[1], "payload": _payload_dict(row[2]), "ts": row[3]} for row in tx.cur.fetchall()]
+            tx.cur.execute(SUBJECT_EXPORT_EVENTS_SQL, query)
+            records += [
+                {"record": "sync_event", "seq": row[0], "event_type": row[1], "actor": row[2], "organization_id": row[3], "payload": _payload_dict(row[4]), "ts": row[5]}
+                for row in tx.cur.fetchall()
+            ]
+            tx.cur.execute(SUBJECT_EXPORT_IDEMPOTENCY_SQL, query)
+            records += [subject.exported_idempotency({"endpoint": row[0], "created_at": row[1]}) for row in tx.cur.fetchall()]
+            return records
+
+        return self._read(body)
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete or anonymise what this namespace holds about ``actor``
+        (see :meth:`AppSyncStore.erase_subject`), in one transaction."""
+        from psycopg.types.json import Jsonb  # type: ignore
+
+        def body(tx: _Tx) -> int:
+            params: dict[str, Any] = {"namespace": self.namespace, "actor": actor, "erased": subject.ERASED_ACTOR, **self._subject_scope(tx, actor)}
+            count = 0
+            for _name, statement in SUBJECT_ERASURE_SQL:
+                tx.cur.execute(statement, params)
+                count += int(tx.cur.rowcount or 0)
+            devices = self._select(tx, DEVICES, "device_id = ANY(%(device_ids)s)", params, for_update=True)
+            for device in devices:
+                subject.erase_device(device, now=tx.now)
+                self._update(tx, DEVICES, device)
+            count += len(devices)
+            for enrollment in self._select(tx, ENROLLMENTS, "requested_by = %(actor)s", params, for_update=True):
+                subject.erase_enrollment(enrollment)
+                self._update(tx, ENROLLMENTS, enrollment)
+                count += 1
+            for approval in self._select(tx, APPROVALS, "(decided_by = %(actor)s OR approved_by ? %(actor)s)", params, for_update=True):
+                if subject.erase_decision(approval, actor=actor):
+                    self._update(tx, APPROVALS, approval)
+                    count += 1
+            tx.cur.execute(SUBJECT_EVENTS_SQL, {**params, "actor_json": json.dumps(actor, ensure_ascii=False)})
+            erased_ids = set(params["related_ids"])
+            for seq, event_actor, raw in tx.cur.fetchall():
+                payload = _payload_dict(json.loads(raw) if isinstance(raw, str) else raw)
+                scrubbed = subject.scrubbed_event(str(event_actor or ""), payload, actor=actor, erased_ids=erased_ids)
+                if scrubbed is not None:
+                    tx.cur.execute(SUBJECT_EVENT_UPDATE_SQL, {"namespace": self.namespace, "seq": seq, "actor": scrubbed[0], "payload": Jsonb(scrubbed[1])})
+                    count += 1
+            return count
 
         return self._transaction(body)
 
