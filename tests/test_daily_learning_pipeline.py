@@ -31,9 +31,11 @@ def test_daily_learning_job_runs_curator_replay_drift_and_skill_pipeline(tmp_pat
         report = DailySelfLearningJob(memory, tmp_path).run(days=7)
 
         assert report["memory_reviews"]
-        assert report["replay_report"]["trace_count"] >= 1
+        # No planner was given to the job, so nothing can be replayed; the old
+        # template "replay" scored every failed trace as an improvement.
+        assert report["replay_report"] == {"status": "not_run", "reason": "no replay planner or run source configured"}
         assert any(signal["drift_type"] == "ui_drift" for signal in report["drift_signals"])
-        assert report["skill_candidates"]
+        assert report["learned_artifacts"]["applied_by_this_job"] == 0
         controlled = report["controlled_self_learning"]
         assert controlled["phase_1"]["system_changes_applied"] is False
         assert controlled["phase_1"]["findings"]
