@@ -64,6 +64,13 @@ names neither the path nor the contents. There is no button that marks a task
 done: "执行下一个任务" runs the same claim → execute → report cycle as the
 automatic worker.
 
+The webview calls the gateway with `fetch`, so the gateway answers CORS for the
+Tauri origins (`tauri://localhost`, `http://tauri.localhost`,
+`https://tauri.localhost`) and for no other web page. It does not allow
+credentials: the bearer token and the device signature remain what
+authorizes a call. For `npm run dev`, start the gateway with
+`OMNIDESK_DESKTOP_WEBVIEW_ORIGINS=http://127.0.0.1:5173`.
+
 The operator token and device-signed requests go only to the gateway confirmed with "连接 Gateway" (or the one a previous confirmed connect saved to the keychain). While the connection form shows anything else, heartbeat, sync and task claims pause until the change is confirmed, which registers the device with that gateway again.
 
 This template intentionally does not embed unrestricted shell or file automation in the UI. Local execution must stay behind Omni Runtime permission gates.
