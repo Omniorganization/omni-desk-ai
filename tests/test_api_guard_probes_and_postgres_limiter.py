@@ -208,3 +208,47 @@ def test_health_answers_while_the_rate_store_is_down(tmp_path):
     with TestClient(app, raise_server_exceptions=False) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/openapi.json").status_code == 500  # everything else fails closed
+
+
+def _readiness_app(tmp_path):
+    from omnidesk_agent.config import AppConfig
+    from omnidesk_agent.server import create_app
+
+    cfg = AppConfig()
+    cfg.workspace.root = tmp_path / "ws"
+    cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+    cfg.workspace.skills_dirs = [tmp_path / "skills"]
+    cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
+    cfg.permissions.audit_log = tmp_path / "audit.log"
+    cfg.learning.growth_plan_file = tmp_path / "growth.json"
+    cfg.channels.gmail.credentials_file = tmp_path / "g" / "c.json"
+    cfg.channels.gmail.token_file = tmp_path / "g" / "t.json"
+    cfg.gateway.admin_allowed_ips = ["testclient", "127.0.0.1"]
+    cfg.plugins.enabled = False
+    cfg.ensure_dirs()
+    return create_app(cfg)
+
+
+@pytest.mark.parametrize("status,ready", [
+    ({"current": 7, "required": 7, "ready": True}, True),
+    ({"current": 5, "required": 7, "ready": False}, False),
+    (RuntimeError("relation does not exist"), False),
+])
+def test_readiness_reports_the_real_schema_version(tmp_path, monkeypatch, status, ready):
+    """Operations audit: readiness hard-coded schema_version=True."""
+    monkeypatch.setenv("OMNIDESK_ADMIN_TOKEN", "a" * 40)
+    monkeypatch.setenv("OMNIDESK_GATEWAY_SECRET", "g" * 40)
+    app = _readiness_app(tmp_path)
+
+    def schema_status():
+        if isinstance(status, Exception):
+            raise status
+        return status
+
+    app.state.runtime.app_sync.schema_status = schema_status
+    with TestClient(app, raise_server_exceptions=False) as client:
+        deep = client.get("/admin/ready", headers={"authorization": "Bearer " + "a" * 40})
+
+    checks = deep.json()["checks"] if deep.status_code == 200 else deep.json()["detail"]["checks"]
+    assert checks["schema_version"] is ready
+    assert checks["schema"]["versioned"] is True and checks["schema"]["ready"] is ready
