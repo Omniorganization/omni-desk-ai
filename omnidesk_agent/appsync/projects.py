@@ -15,6 +15,7 @@ from typing import Any, Iterator, Optional
 from fastapi import FastAPI, HTTPException, Request
 
 from omnidesk_agent.appsync.factory import create_appsync_store
+from omnidesk_agent.appsync.postgres_migrations import PROJECTS_SCHEMA_SQL
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
 
 PROJECT_ID_RE = re.compile(r"^proj_[a-f0-9]{16}$")
@@ -32,28 +33,8 @@ PROJECT_STORE_RECOVERY_POLICY = (
     "An owner must restore a checksum-valid rotated backup through the administrator recovery tool."
 )
 
-POSTGRES_PROJECTS_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS omnidesk_appsync_projects (
-    namespace TEXT NOT NULL,
-    organization_id TEXT NOT NULL,
-    project_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    owner_actor TEXT NOT NULL,
-    source_device_id TEXT,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    archived BOOLEAN NOT NULL DEFAULT false,
-    created_at DOUBLE PRECISION NOT NULL,
-    updated_at DOUBLE PRECISION NOT NULL,
-    deleted_at DOUBLE PRECISION,
-    PRIMARY KEY(namespace, project_id)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS omnidesk_appsync_projects_active_name_idx
-    ON omnidesk_appsync_projects(namespace, organization_id, lower(name))
-    WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS omnidesk_appsync_projects_org_updated_idx
-    ON omnidesk_appsync_projects(namespace, organization_id, updated_at DESC);
-"""
+# Created by AppSync migration 5; project operations run no DDL.
+POSTGRES_PROJECTS_SCHEMA_SQL = PROJECTS_SCHEMA_SQL
 
 
 def _now() -> float:
@@ -172,9 +153,8 @@ class GatewayProjectStore:
         return str(self.app_sync._organization_for_actor(actor))  # noqa: SLF001 - same package boundary
 
     def _ensure_postgres_schema(self, conn: Any) -> None:
+        # The table comes from the migrations the store already requires.
         self.app_sync._ensure_schema(conn)  # noqa: SLF001 - same package boundary
-        with conn.cursor() as cur:
-            cur.execute(POSTGRES_PROJECTS_SCHEMA_SQL)
 
     def _jsonb(self, value: dict[str, Any]) -> Any:
         from psycopg.types.json import Jsonb  # type: ignore

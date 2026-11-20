@@ -10,7 +10,7 @@ Status: source implementation candidate; customer-distribution GA remains eviden
 - Chat reservation, generated conversation, user message and idempotency ownership are committed atomically.
 - Stream events are append-only rows keyed by request and monotonically increasing sequence.
 - Every event, completion and failure write is fenced by the exact database lease owner, preventing stale workers from overwriting a recovered request.
-- Inherited lower-volume AppSync operations reload under a PostgreSQL advisory lock as a compatibility bridge until each domain receives a dedicated repository.
+- The remaining AppSync operations (devices, tasks, approvals, notifications, heartbeats, enrollment, signatures, offline sync) also run as per-entity transactions with row locks and indexed reads; the advisory-lock reload bridge is gone (see `docs/APPSYNC_POSTGRES_DATA_LAYER.md`).
 - Corrupt JSON development state is quarantined and startup fails closed instead of silently creating empty state.
 
 ## P1 engineering gates

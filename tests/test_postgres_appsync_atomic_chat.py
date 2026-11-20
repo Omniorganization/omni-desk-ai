@@ -144,11 +144,11 @@ def test_version_three_database_requires_append_only_nonce_migration() -> None:
     assert apply_appsync_migrations(dsn, namespace=namespace, migrations=MIGRATIONS[:3]) == [1, 2, 3]
     unmigrated = MigratedMultiInstancePostgresAppSyncStore.__new__(MigratedMultiInstancePostgresAppSyncStore)
     try:
-        with pytest.raises(RuntimeError, match="behind required version 4"):
+        with pytest.raises(RuntimeError, match="behind required version 5"):
             unmigrated.__init__(dsn=dsn, namespace=namespace)
     finally:
         unmigrated.close()
-    assert apply_appsync_migrations(dsn, namespace=namespace) == [4]
+    assert apply_appsync_migrations(dsn, namespace=namespace) == [4, 5]
     store = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace)
     store.close()
 
@@ -156,7 +156,7 @@ def test_version_three_database_requires_append_only_nonce_migration() -> None:
 def test_atomic_chat_is_single_writer_replayable_and_multi_instance_safe() -> None:
     dsn = _dsn()
     namespace = f"test_{uuid.uuid4().hex}"
-    assert apply_appsync_migrations(dsn, namespace=namespace) == [1, 2, 3, 4]
+    assert apply_appsync_migrations(dsn, namespace=namespace) == [1, 2, 3, 4, 5]
     assert apply_appsync_migrations(dsn, namespace=namespace) == []
 
     store_a = MigratedMultiInstancePostgresAppSyncStore(dsn=dsn, namespace=namespace, pool_size=4)

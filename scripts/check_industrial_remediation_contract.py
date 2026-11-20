@@ -15,7 +15,12 @@ CONTRACT: dict[str, tuple[str, ...]] = {
     ),
     "omnidesk_agent/appsync/migrated_postgres_store.py": (
         "PsycopgConnectionPool",
-        "pg_advisory_lock",
+        # Per-entity transactions: commit-ordered event sequence, row-lock
+        # claims and bounded lock waits instead of a namespace-wide lock.
+        "EVENT_COUNTER_SQL",
+        "FOR UPDATE OF t SKIP LOCKED",
+        "lock_timeout",
+        "statement_timeout",
         "assert_appsync_schema_current",
         "direct_transactional_repository",
     ),

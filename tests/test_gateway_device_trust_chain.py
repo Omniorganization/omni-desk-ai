@@ -12,7 +12,6 @@ import hashlib
 import hmac
 import json
 import os
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -517,8 +516,9 @@ def test_postgres_enrollment_is_single_use_and_bound() -> None:
             second.issue_device_challenge(actor=OPERATOR, enrollment_id=pending["enrollment_id"], device_id="dev_attacker")
 
         enrollment = _enroll(first, owner=OWNER, actor=OPERATOR, device_id="dev_phone", device_type="mobile", secret="k")
-        second.bootstrap(OPERATOR)  # serialized call: reloads shared state
-        assert second.device_enrollments[enrollment["enrollment_id"]].status == "completed"
+        with second._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT status FROM omnidesk_appsync_device_enrollments WHERE namespace=%s AND enrollment_id=%s", (second.namespace, enrollment["enrollment_id"]))
+            assert cur.fetchone() == ("completed",)
         second.register_device(actor=OPERATOR, device_id="dev_phone_2", device_type="mobile", name="y", platform="ios", public_key="legacy-hmac:k")
         with pytest.raises(ValueError, match="not awaiting device verification"):
             second.issue_device_challenge(actor=OPERATOR, enrollment_id=enrollment["enrollment_id"], device_id="dev_phone_2")
@@ -559,13 +559,17 @@ def test_postgres_claim_consumes_approval_and_status_needs_the_lease() -> None:
         second.close()
 
 
-def test_postgres_unserialized_persist_fails_closed() -> None:
+def test_postgres_store_has_no_whole_state_write_back() -> None:
+    """Writes go to the rows they change; nothing mirrors a cached copy of the namespace.
+
+    A whole-state write-back from a stale cache is what let one replica roll back
+    another's device revocations and consumed approvals.
+    """
     from omnidesk_agent.appsync.migrated_postgres_store import MigratedMultiInstancePostgresAppSyncStore
 
-    store = MigratedMultiInstancePostgresAppSyncStore.__new__(MigratedMultiInstancePostgresAppSyncStore)
-    store._operation_state = threading.local()
-    with pytest.raises(RuntimeError, match="serialized operation"):
-        store._persist()
+    assert not issubclass(MigratedMultiInstancePostgresAppSyncStore, AppSyncStore)
+    for name in ("_persist", "_mirror_normalized", "_load", "_refresh_state", "_serialized_call"):
+        assert not hasattr(MigratedMultiInstancePostgresAppSyncStore, name), name
 
 
 def test_postgres_project_writes_do_not_roll_back_other_instances() -> None:

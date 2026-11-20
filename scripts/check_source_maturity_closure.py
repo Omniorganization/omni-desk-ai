@@ -106,29 +106,24 @@ def _offline_sync_reconnect(root: Path) -> list[tuple[str, bool]]:
         factory,
         ("ApplyingAppSyncStore", "StrictJsonAppSyncStore"),
     )
-    postgres_factory = _contains_any(
-        root,
-        factory,
-        (
-            "ApplyingDurablePostgresAppSyncStore",
-            "MigratedMultiInstancePostgresAppSyncStore",
-        ),
-    )
+    postgres_factory = _contains(root, factory, "MigratedMultiInstancePostgresAppSyncStore")
     strict_json_applies = _contains(
         root,
         "omnidesk_agent/appsync/strict_json_store.py",
         "ApplyingAppSyncStore",
         "class StrictJsonAppSyncStore(ApplyingAppSyncStore)",
     )
+    # The PostgreSQL store applies uploaded operations as statements in the
+    # receiving transaction (per-entity SQL, no whole-state mirror).
     migrated_postgres_applies = _contains(
         root,
         "omnidesk_agent/appsync/migrated_postgres_store.py",
-        "ApplyingDurablePostgresAppSyncStore",
+        "apply_uploaded_operations_sql",
         "class MigratedMultiInstancePostgresAppSyncStore",
     )
     return [
         ("offline sync applying store exists", _contains(root, "omnidesk_agent/appsync/offline_sync_apply.py", "ApplyingAppSyncStore", "apply_uploaded_operations")),
-        ("postgres applying store exists", _contains(root, "omnidesk_agent/appsync/postgres_applying_sync.py", "ApplyingDurablePostgresAppSyncStore")),
+        ("postgres applying store exists", _contains(root, "omnidesk_agent/appsync/offline_sync_apply.py", "def apply_uploaded_operations_sql")),
         (
             "factory routes to applying stores",
             json_factory
