@@ -22,9 +22,13 @@ _PENDING_DELIVERY: contextvars.ContextVar[Optional[tuple[Any, str, str]]] = cont
 class WebhookDuplicateDelivery(Exception):
     """A verified delivery that was already enqueued: acknowledge it with 200, process nothing."""
 
-    def __init__(self, channel: str):
+    def __init__(self, channel: str, adapter: Any = None, payload: Any = None):
         super().__init__(f"duplicate webhook delivery acknowledged: {channel}")
         self.channel = channel
+        # The verified payload, for adapters whose provider expects a specific
+        # body back (QQ's op 13 answer or op 12 ACK): webhook_response(None, payload).
+        self.adapter = adapter
+        self.payload = payload
 
 
 def commit_webhook_delivery() -> None:
@@ -177,6 +181,7 @@ class WebhookGuard:
 
     async def guard(self, channel: str, adapter, request: Request, payload=None) -> tuple[bytes, object]:
         _PENDING_DELIVERY.set(None)
+        actual_payload = payload
         try:
             self.require_enabled_channel(channel)
             body = await request.body()
@@ -204,7 +209,7 @@ class WebhookGuard:
         except WebhookDuplicate as exc:
             # Verified and already enqueued: a 2xx stops the provider redelivering it.
             self._metric("omnidesk_webhook_duplicates_total", channel=channel)
-            raise WebhookDuplicateDelivery(channel) from exc
+            raise WebhookDuplicateDelivery(channel, adapter, actual_payload) from exc
         except WebhookRateLimited as exc:
             self._metric("omnidesk_webhook_rate_limited_total", channel=channel)
             raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after_seconds)}) from exc

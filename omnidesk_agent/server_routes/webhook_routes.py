@@ -17,7 +17,18 @@ from omnidesk_agent.server_routes.webhook_guard import (
 
 def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
     async def _duplicate_delivery(request: Request, exc: Exception) -> JSONResponse:
-        # Signature verified, already enqueued: acknowledge so the provider stops retrying.
+        # Signature verified, already enqueued: acknowledge so the provider stops
+        # retrying. A provider that expects a specific body (QQ's op 13 answer or
+        # op 12 ACK) gets it rebuilt from the verified payload; nothing is parsed
+        # or enqueued again.
+        shape = getattr(getattr(exc, "adapter", None), "webhook_response", None)
+        if callable(shape):
+            try:
+                shaped = shape(None, getattr(exc, "payload", None))
+            except PermissionError as refused:
+                return JSONResponse(status_code=403, content={"detail": str(refused)})
+            if shaped is not None:
+                return JSONResponse(status_code=200, content=shaped)
         return JSONResponse(status_code=200, content={"ok": True, "duplicate": True})
 
     app.add_exception_handler(WebhookDuplicateDelivery, _duplicate_delivery)

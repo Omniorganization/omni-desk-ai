@@ -78,6 +78,44 @@ def test_a_verified_duplicate_is_acknowledged_and_enqueued_once(client):
     assert len(runtime.job_queue.list()) == 1
 
 
+def test_a_verified_duplicate_gets_the_body_its_provider_expects(client, monkeypatch):
+    # QQ re-sends its op 13 validation after a timeout and needs the op 12 ACK
+    # for every push, so a bare {"duplicate": true} would fail it. The adapter's
+    # webhook_response rebuilds that body from the verified payload alone.
+    test_client, runtime = client
+    calls: list[tuple[Any, Any]] = []
+
+    def webhook_response(parsed, payload):
+        calls.append((parsed, payload))
+        return {"op": 12, "d": 0}
+
+    monkeypatch.setattr(runtime.adapters["telegram"], "webhook_response", webhook_response, raising=False)
+    body = _update(7)
+    assert _post(test_client, body).status_code == 200
+    calls.clear()  # this branch does not shape first deliveries; channels' #233 does
+
+    again = _post(test_client, body)
+
+    assert again.status_code == 200 and again.json() == {"op": 12, "d": 0}
+    assert calls == [(None, json.loads(body))]
+    assert len(runtime.job_queue.list()) == 1
+
+
+def test_a_duplicate_body_the_adapter_refuses_is_403_not_500(client, monkeypatch):
+    test_client, runtime = client
+
+    def webhook_response(parsed, payload):
+        raise PermissionError("QQ validation payload has no plain_token")
+
+    monkeypatch.setattr(runtime.adapters["telegram"], "webhook_response", webhook_response, raising=False)
+    body = _update(8)
+    assert _post(test_client, body).status_code == 200
+
+    refused = _post(test_client, body)
+
+    assert refused.status_code == 403 and "plain_token" in refused.json()["detail"]
+
+
 def test_an_unsigned_duplicate_is_still_refused(client):
     test_client, _runtime = client
     assert _post(test_client, _update(2)).status_code == 200
