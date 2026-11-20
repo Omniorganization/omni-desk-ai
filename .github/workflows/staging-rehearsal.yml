@@ -17,6 +17,7 @@ on:
       - deploy/observability/prometheus-rules*.yml
       - Dockerfile
       - scripts/production_smoke_test.py
+      - scripts/product_soak.py
       - .github/workflows/staging-rehearsal.yml
   workflow_dispatch:
 
@@ -152,6 +153,18 @@ jobs:
           cat "$RUNNER_TEMP/up.json" | tee reports/staging-rehearsal/prometheus-up.json
           python3 -c "import json,sys; r=json.load(open('$RUNNER_TEMP/up.json'))['data']['result']; up={x['metric']['job']: x['value'][1] for x in r}; sys.exit(0 if up.get('omnidesk-agent')=='1' and up.get('node')=='1' else 1)"
           curl -fsS 'http://127.0.0.1:9090/api/v1/query?query=omnidesk_backup_last_verify_success' | tee reports/staging-rehearsal/backup-metric.json | grep -q '"1"'
+      - name: Product soak through the TLS ingress
+        # Agent runs are off here: with no model provider reachable, /agent/run
+        # currently answers 500 (planner RuntimeError escapes the route); that is
+        # reported to agent-core. The staging soak runs them against the real model.
+        run: |
+          set -euo pipefail
+          token="$(sudo grep '^OMNIDESK_ADMIN_TOKEN=' /etc/omnidesk/staging/compose.env | cut -d= -f2-)"
+          secret="$(sudo grep '^OMNIDESK_GATEWAY_SECRET=' /etc/omnidesk/staging/compose.env | cut -d= -f2-)"
+          echo "::add-mask::$token"; echo "::add-mask::$secret"
+          SSL_CERT_FILE="$RUNNER_TEMP/caddy-root.crt" OMNIDESK_SOAK_ADMIN_TOKEN="$token" OMNIDESK_SOAK_GATEWAY_SECRET="$secret" \
+            python3 scripts/product_soak.py --base-url "https://$PUBLIC_HOST" --duration-seconds 120 --concurrency 4 \
+              --rate-per-second 4 --agent-runs-per-minute 0 --environment ci-rehearsal --report reports/staging-rehearsal/product-soak.json
       - name: Alert drill - gateway outage pages through Alertmanager
         run: |
           set -euo pipefail
