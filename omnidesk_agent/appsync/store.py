@@ -427,6 +427,24 @@ def apply_approval_decision(approval: ApprovalRecord, *, actor: str, decision: s
     return True
 
 
+def mirror_ledger_outcome(approval: ApprovalRecord, *, outcome: str, deciders: list[str], reason: Optional[str], now: float) -> None:
+    """Copy onto an agent approval the outcome its ledger already holds, naming the ledger's deciders.
+
+    The plane's checks in apply_approval_decision gate decisions made through it;
+    this decision was made in the ledger (security's ApprovalStore), which stays
+    the authority, so it is recorded as the ledger states it.
+    """
+    if outcome not in ("approved", "rejected") or not deciders:
+        raise ValueError("a ledger outcome needs approved or rejected and at least one decider")
+    if outcome == "approved":
+        approval.approved_by = list(dict.fromkeys(deciders))
+    approval.status = "approved" if outcome == "approved" else "rejected"
+    approval.decided_by = deciders[-1]
+    approval.decision_reason = reason
+    approval.decision_idempotency_key = None
+    approval.decided_at = now
+
+
 @dataclass
 class NotificationRecord:
     notification_id: str
@@ -1720,6 +1738,24 @@ class AppSyncStore:
             self._idempotency_put(actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload, response={"approval": result})
             self._persist()
             return result
+
+    def mirror_agent_decision(self, *, approval_id: str, outcome: Literal["approved", "rejected"], deciders: list[str], reason: Optional[str] = None) -> dict[str, Any]:
+        """Record on an agent approval the outcome its ledger already holds (see mirror_ledger_outcome).
+
+        For a ledger decided outside this plane (``/approvals/*``, the CLI), or by
+        an attempt whose mirror was lost. A decided approval is returned as it is.
+        """
+        if not approval_id.startswith(AGENT_APPROVAL_PREFIX):
+            raise ValueError("only an agent approval mirrors its ledger")
+        with self._lock:
+            approval = self.approvals.get(approval_id)
+            if not approval:
+                raise KeyError("approval not found")
+            if approval.status == "pending":
+                mirror_ledger_outcome(approval, outcome=outcome, deciders=deciders, reason=reason, now=_now())
+                self._event("approval.decided", str(approval.decided_by), {"approval_id": approval_id, "decision": outcome, "task_id": approval.task_id, "organization_id": approval.organization_id})
+                self._persist()
+            return self._record(approval)
 
     def heartbeat_runtime(self, *, actor: str, device_id: str, status: Literal["online", "offline", "degraded"], version: Optional[str] = None, hostname: Optional[str] = None, active_task_id: Optional[str] = None, capabilities: Optional[list[str]] = None) -> dict[str, Any]:
         with self._lock:

@@ -162,6 +162,7 @@ The orchestrator records an agent step that needs approval in security's `Approv
   - a critical step needs two distinct owners. When the ledger opened a dual approval, each approval goes through `dual_approval_store.approve` first, and the ledger's readiness decides. A critical step without that flag still needs two approvers here.
 
   Then `decide("approved"|"denied")`, then AppSync mirrors the decision, and `await rt.orchestrator.resume_by_approval(ledger id)` resumes the run or ends it (`approval_denied` / `approval_expired`). The response carries only a summary of the run (`status`, `run_id`, `termination_reason`), never its output.
+- **Decided outside the plane.** The ledger's own routes (`/approvals/*`) and the CLI decide the ledger directly and record `decided_by`. The next call to the plane mirrors that outcome as the ledger states it (`mirror_agent_decision`), naming who the ledger names: the dual-approval store's two approvers, then the recorded `approved_by`/`denied_by`, then `decided_by`, or the system actor `ledger` when it names nobody. It never names the caller, and it still resumes the run. A caller whose own decision this was gets it back; anyone else gets 409 `already decided: approved` (or `rejected`), so a client never shows a rejection as an approval.
 - **Errors.** An expired or already decided ledger approval gets 409; a refusal gets 403.
 
 ## Pushes carry no content
