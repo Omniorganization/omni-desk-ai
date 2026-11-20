@@ -72,6 +72,24 @@ def test_qq_route_answers_op13_and_acks_pushes(monkeypatch):
     assert len(queue.messages) == 1
 
 
+def test_forged_or_unsigned_discord_ping_gets_no_pong(monkeypatch):
+    # A PING answer is the endpoint proving itself to Discord; an unverified
+    # request must get 403 and no {"type": 1}.
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    monkeypatch.setenv("DISCORD_PUBLIC_KEY", key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex())
+    cfg = AppConfig()
+    cfg.channels.discord.enabled = True
+    client, queue = _client(cfg, discord=DiscordChannel(cfg.channels.discord))
+    body = b'{"type":1,"id":"ping"}'
+    for headers in ({}, {"X-Signature-Timestamp": "1700000000"}, {"X-Signature-Ed25519": other.sign(b"1700000000" + body).hex(), "X-Signature-Timestamp": "1700000000"}):
+        response = client.post("/webhooks/discord", content=body, headers=headers)
+        assert response.status_code == 403 and "type" not in response.json()
+    assert queue.messages == []
+
+
 def test_discord_route_answers_commands_within_the_interaction_contract(monkeypatch):
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -193,11 +211,14 @@ def test_daemon_runs_the_poller_only_in_polling_mode(monkeypatch, tmp_path):
     from omnidesk_agent.daemon import OmniDeskRuntime
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:" + "b" * 35)
-    started = []
+    started, finished = [], []
 
     async def fake_run_forever(self, stop):
         started.append(self)
-        await stop.wait()
+        try:
+            await stop.wait()
+        finally:
+            finished.append(self)
 
     monkeypatch.setattr(TelegramPoller, "run_forever", fake_run_forever)
 
@@ -221,10 +242,16 @@ def test_daemon_runs_the_poller_only_in_polling_mode(monkeypatch, tmp_path):
             rt = runtime(mode)
             await rt.start()
             await asyncio.sleep(0)
+            running = rt._telegram_poll_task
+            assert (running is not None) == (mode == "polling")
             await rt.aclose()
+            # aclose stops the poller and waits for it before closing stores.
+            assert rt._telegram_poll_task is None
+            if running is not None:
+                assert running.done()
 
     asyncio.run(run_case())
-    assert len(started) == 1
+    assert len(started) == 1 and finished == started
 
 
 def test_whatsapp_status_callbacks_get_their_own_rate_bucket_and_event_ids():
