@@ -51,6 +51,10 @@ class AuditLogSubjectSource:
         return records
 
 
+# Erased before every other source (see DataSubjectService.erase).
+ERASE_FIRST = ("runs", "jobs")
+
+
 class DataSubjectService:
     def __init__(
         self,
@@ -94,7 +98,11 @@ class DataSubjectService:
         actor = _require_actor(actor)
         erased: dict[str, int] = {}
         unsupported: list[str] = []
-        for name, store in sorted(self.sources.items()):
+        # Stores that start work go first: once the subject's runs and jobs are
+        # tombstoned, a run finishing meanwhile cannot write new memory about them.
+        first = [name for name in ERASE_FIRST if name in self.sources]
+        order = first + sorted(name for name in self.sources if name not in first)
+        for name, store in ((name, self.sources[name]) for name in order):
             if supports_subject_requests(store):
                 erased[name] = int(store.erase_subject(actor))
             else:

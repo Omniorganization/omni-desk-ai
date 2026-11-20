@@ -205,3 +205,26 @@ def test_replay_caches_are_exported_and_erased(tmp_path):
     assert [r["route"] for r in effects.export_subject("alice")] == ["/agent/runs/{run_id}/cancel"]
     assert runs.erase_subject("alice") == 1 and effects.erase_subject("alice") == 1
     assert runs.export_subject("alice") == [] and len(runs.export_subject("bob")) == 1
+
+
+def test_runs_and_jobs_are_erased_before_anything_a_run_could_write_to(tmp_path):
+    # agent-core: in name order, memory went before runs, and a run finishing in
+    # between wrote a new memory record about the subject.
+    order: list[str] = []
+
+    class Recording:
+        def __init__(self, name):
+            self.name = name
+
+        def export_subject(self, actor):
+            return []
+
+        def erase_subject(self, actor):
+            order.append(self.name)
+            return 0
+
+    names = ("app_sync", "memory", "jobs", "outbound_messages", "runs", "approvals")
+    service = DataSubjectService({name: Recording(name) for name in names})
+    service.erase("alice", requested_by="owner-a", approval_id="ap-1")
+
+    assert order[:2] == ["runs", "jobs"] and sorted(order[2:]) == order[2:]
