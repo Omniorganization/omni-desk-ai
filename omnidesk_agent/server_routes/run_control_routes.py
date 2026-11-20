@@ -3,7 +3,8 @@
 - ``POST /agent/runs/{run_id}/cancel`` (operator or above): an operator may
   cancel the runs started with their own identity, an owner any run. The
   orchestrator records ``agent_run_cancelled`` in the audit log and denies the
-  run's pending approval.
+  run's pending approval. If that entry cannot be written after the run was
+  cancelled, the answer says so in ``audit_error``.
 - ``GET /admin/emergency-stop`` (viewer): whether the stop is engaged.
 - ``POST /admin/emergency-stop/engage`` (operator or above): stopping only takes
   capability away, so anyone who can start a run can stop them all.
@@ -26,6 +27,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from omnidesk_agent.security.audit_errors import AuditIntegrityError
 from omnidesk_agent.server_routes.agent_routes import (
     AdminVerifier,
     _authenticated_actor,
@@ -81,7 +83,16 @@ def register_run_control_routes(app: FastAPI, cfg: Any, rt: Any, admin: AdminVer
         key = _require_idempotency_key(request, body.idempotency_key)
 
         async def call():
-            return await orchestrator.cancel(run_id, reason=body.reason, actor=actor)
+            try:
+                return await orchestrator.cancel(run_id, reason=body.reason, actor=actor)
+            except AuditIntegrityError as exc:
+                # cancel() marks the run cancelled before it writes agent_run_cancelled.
+                # A cancel that took effect is reported as such, never as a failure.
+                run_store = getattr(rt, "run_store", None)
+                run = await asyncio.to_thread(run_store.get, run_id) if run_store is not None else None
+                if not run or run.get("status") != "cancelled":
+                    raise HTTPException(503, "the audit log is unavailable and the run was not cancelled") from exc
+                return {"ok": True, "status": "cancelled", "run_id": run_id, "audit_error": type(exc).__name__}
 
         return await _idempotent_side_effect(
             rt,

@@ -143,6 +143,36 @@ def test_cancel_needs_an_idempotency_key_and_a_replay_does_not_cancel_twice(app)
     assert len(app.state.cancels) == 1
 
 
+def test_an_erased_run_is_nobodys_run(app):
+    # Erasure (agent-core #275) leaves in-flight runs as tombstones with
+    # original_message {"erased": true}: a missing sender never matches.
+    tombstone = app.state.runtime.run_store.create({"erased": True})
+    with TestClient(app) as client:
+        assert client.post(f"/agent/runs/{tombstone}/cancel", headers=_h("operator", "c-1")).status_code == 404
+
+    assert app.state.cancels == []
+
+
+def test_a_cancel_that_took_effect_is_reported_even_if_its_audit_entry_fails(app, monkeypatch):
+    # cancel() writes the cancelled row first, then agent_run_cancelled.
+    rt = app.state.runtime
+    cancelled, untouched = _run(app, "operator-a"), _run(app, "operator-a")
+
+    async def cancel(run_id: str, *, reason: str = "", actor: str = "operator") -> dict:
+        if run_id == cancelled:
+            rt.run_store.update(run_id, {"status": "cancelled"})
+        raise AuditIntegrityError("audit chain cannot be written")
+
+    monkeypatch.setattr(rt.orchestrator, "cancel", cancel, raising=False)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        done = client.post(f"/agent/runs/{cancelled}/cancel", headers=_h("operator", "c-1"))
+        failed = client.post(f"/agent/runs/{untouched}/cancel", headers=_h("operator", "c-2"))
+
+    assert done.status_code == 200
+    assert done.json() == {"ok": True, "status": "cancelled", "run_id": cancelled, "audit_error": "AuditIntegrityError"}
+    assert failed.status_code == 503
+
+
 def test_an_operator_engages_the_stop_and_only_an_owner_releases_it(app):
     stop = app.state.runtime.emergency_stop
     with TestClient(app) as client:
