@@ -40,13 +40,16 @@ def run_browser_acceptance(*, output: Path, root: Path, env: dict, launch, reque
                     "-d", "sql:" + str(nss), "-i", str(cert)], check=True)
     origin = "https://127.0.0.1:18443"
     env["OMNI_WEB_PUBLIC_ORIGIN"] = origin
+    # Production refuses sessions without a seal secret. A fresh one per run,
+    # passed through the environment (`-e NAME` without a value), so it never
+    # appears in a command line, a process list or a log.
+    env["OMNI_WEB_SESSION_SECRET"] = secrets.token_urlsafe(48)
     launch(["docker", "run", "--rm", "--network", "host", "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges:true", "--tmpfs", "/tmp:size=64m,noexec,nosuid,nodev",
             "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
             "-e", "HOSTNAME=127.0.0.1", "-e", "PORT=13000",
             "-e", "OMNI_GATEWAY_URL=https://127.0.0.1:18789",
-            # Production refuses sessions without a configured seal secret.
-            "-e", "OMNI_WEB_SESSION_SECRET=" + secrets.token_urlsafe(48),
+            "-e", "OMNI_WEB_SESSION_SECRET",
             "-e", "OMNI_WEB_PUBLIC_ORIGIN=" + origin,
             "-e", "NODE_EXTRA_CA_CERTS=/run/ci-ca.crt",
             "-v", str(cert) + ":/run/ci-ca.crt:ro", env["WEB_FIRST_IMAGE"]], "web-image")
