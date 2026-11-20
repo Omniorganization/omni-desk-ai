@@ -41,6 +41,37 @@ def _ctx(permissions=None) -> ToolContext:
     return ToolContext(permissions=permissions or _RecordingPermissions())  # type: ignore[arg-type]
 
 
+def _fake_docker_on_path(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    (bin_dir / "docker").write_text(textwrap.dedent(f"""\
+        #!/bin/sh
+        echo "$@" >> {log}
+        if [ "$1" = "run" ]; then exec sleep 30; fi
+        exit 0
+        """))
+    (bin_dir / "docker").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return log
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX fake container runtime")
+def test_self_upgrade_runner_timeout_kills_the_container(tmp_path, monkeypatch):
+    from omnidesk_agent.self_upgrade.sandbox_runner import SandboxRunner
+
+    log = _fake_docker_on_path(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = asyncio.run(SandboxRunner(repo, backend="docker").run(["python", "-m", "compileall", "."], timeout=1))
+
+    assert not result.ok and "Timed out after 1s" in result.output
+    calls = log.read_text().splitlines()
+    name = calls[0].split()[2]
+    assert f"kill {name}" in calls and f"rm -f {name}" in calls
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX fake container runtime")
 def test_shell_docker_timeout_kills_the_container(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"

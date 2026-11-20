@@ -179,7 +179,7 @@ def test_path_values_may_not_reach_git_metadata_or_leave_workspace(argv, workspa
         ["ruff", "check", ".github/workflows", ".gitignore", "docs/.gitkeep"],
         ["git", "commit", "-m", "fix: keep .git out of reach"],
         ["git", "log", "--format=%H:%s"],
-        ["git", "push", "origin", "HEAD:codex/source-fix"],
+        ["git", "push", "origin", "HEAD:refs/heads/ai/source-fix"],
         # git never reads a path out of these values
         ["git", "commit", "-m", "See https://example.com/issue/1"],
         ["git", "commit", "-m", "fix:/tmp handling, costs $5"],
@@ -214,7 +214,7 @@ def test_symlinked_path_values_are_resolved(workspace, tmp_path):
 @pytest.mark.parametrize("name", ["origin", "origin.git"])
 @pytest.mark.parametrize(
     "argv",
-    [["git", "pull", "origin", "main"], ["git", "pull", "origin"], ["git", "push", "origin", "HEAD:codex/source-fix"]],
+    [["git", "pull", "origin", "main"], ["git", "pull", "origin"], ["git", "push", "origin", "HEAD:refs/heads/ai/source-fix"]],
 )
 def test_workspace_path_cannot_stand_in_for_the_origin_remote(argv, name, workspace):
     # Without a configured `origin` remote git would use this path instead.
@@ -226,8 +226,8 @@ def test_exec_hardening_pins_transport_programs():
     assert harden_exec_argv(["git", "pull", "origin", "main"]) == [
         "git", *GIT_EXEC_HARDENING_ARGS, "pull", "--upload-pack=git-upload-pack", "origin", "main",
     ]
-    assert harden_exec_argv(["git", "push", "origin", "HEAD:codex/x"]) == [
-        "git", *GIT_EXEC_HARDENING_ARGS, "push", "--receive-pack=git-receive-pack", "origin", "HEAD:codex/x",
+    assert harden_exec_argv(["git", "push", "origin", "HEAD:refs/heads/ai/x"]) == [
+        "git", *GIT_EXEC_HARDENING_ARGS, "push", "--receive-pack=git-receive-pack", "origin", "HEAD:refs/heads/ai/x",
     ]
     assert harden_exec_argv(["git", "diff", "--stat"]) == ["git", *GIT_EXEC_HARDENING_ARGS, "diff", "--no-ext-diff", "--stat"]
     assert harden_exec_argv(["git", "status"]) == ["git", *GIT_EXEC_HARDENING_ARGS, "status"]
@@ -274,7 +274,7 @@ def test_exec_hardening_ignores_repo_config_commands(tmp_path: Path):
     cases = [
         ("diff.external", "diff.external", str(hook("ext")), ["git", "diff", "f.txt"], "ext"),
         ("uploadpack", "remote.origin.uploadpack", f"{hook('upload')}; git-upload-pack", ["git", "pull", "--no-rebase", "--no-edit", "origin", "main"], "upload"),
-        ("receivepack", "remote.origin.receivepack", f"{hook('receive')}; git-receive-pack", ["git", "push", "origin", "HEAD:codex/hardening"], "receive"),
+        ("receivepack", "remote.origin.receivepack", f"{hook('receive')}; git-receive-pack", ["git", "push", "origin", "HEAD:refs/heads/ai/hardening"], "receive"),
         ("sequence.editor", "sequence.editor", str(hook("seq")), ["git", "pull"], "seq"),
     ]
     for label, key, value, argv, name in cases:
@@ -299,7 +299,7 @@ def test_exec_hardening_ignores_repo_config_commands(tmp_path: Path):
                 if label == "diff.external":
                     assert "+True" in result.stdout
         run("config", "--unset", key, cwd=work)
-    assert run("ls-remote", str(upstream), "refs/heads/codex/hardening", cwd=work).stdout.strip()
+    assert run("ls-remote", str(upstream), "refs/heads/ai/hardening", cwd=work).stdout.strip()
 
 
 def test_shell_tool_applies_git_scope(workspace):
@@ -310,3 +310,29 @@ def test_shell_tool_applies_git_scope(workspace):
     docker = tool._docker_argv(["git", "branch", "-a"])
     assert any("dst=/workspace" in part and part.endswith("readonly") for part in docker)
     assert not tool._is_readonly_command(["git", "branch", "-m", "main", "x"])
+
+
+@pytest.mark.parametrize("refspec", [
+    "+HEAD:refs/heads/ai/x",          # force push
+    "HEAD:refs/heads/main",           # main
+    "HEAD:main",
+    "HEAD:refs/heads/ai/x:main",      # second refspec smuggled in
+    "HEAD:refs/heads/ai/../main",
+    "HEAD:refs/tags/ai/x",            # another ref type
+    "HEAD:ai/x",                      # unqualified destination
+    "HEAD:codex/x",                   # old agent namespaces are gone
+    "HEAD:repair/x",
+    "HEAD:self-upgrade/x",
+    "HEAD:refs/heads/ai/",
+    "HEAD:refs/heads/ai/-x",
+    "main",
+    ":refs/heads/ai/x",               # delete
+])
+def test_agent_pushes_only_reach_plain_ai_branches(tmp_path, refspec):
+    """AGENTS.md: agent changes go through ai/* branches and PRs, never to main."""
+    assert not argv_allowed(["git", "push", "origin", refspec], UPGRADE_ALLOWED_PREFIXES, workspace_root=tmp_path)
+
+
+def test_agent_push_to_an_ai_branch_is_allowed(tmp_path):
+    assert argv_allowed(["git", "push", "origin", "HEAD:refs/heads/ai/fix-audit-20261121"], UPGRADE_ALLOWED_PREFIXES, workspace_root=tmp_path)
+    assert not argv_allowed(["git", "push", "upstream", "HEAD:refs/heads/ai/x"], UPGRADE_ALLOWED_PREFIXES, workspace_root=tmp_path)
