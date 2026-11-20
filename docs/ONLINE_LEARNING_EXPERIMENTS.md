@@ -106,9 +106,11 @@ success, and the report says so.
 
 ## 4. The hook
 
-`RuntimeLearningLoop` is the orchestrator's hook: `assign(msg)` returns the
-`PolicyAssignment`, `observe(assignment, RunOutcome)` feeds the rollout, and
-`after_plan(...)` feeds the shadow runner. Without a rollout controller it
+`RuntimeLearningLoop` is the orchestrator's hook: `assign_run(msg)` returns the
+`PolicyAssignment`, `observe_run(assignment, RunOutcome)` feeds the rollout, and
+`shadow_after_plan(...)` feeds the shadow runner. The wiring change exposes them
+as agent-core's `PlannerExperimentHook` (`assign`/`observe`/`after_plan` with the
+`omnidesk_agent.core.planner_policy` types). Without a rollout controller it
 changes nothing and records nothing; the default 10% "planner_learning_candidate"
 experiment, which compared two identical arms, is gone. The old
 `assign_policy` / `observe_result` call shape still works; its substring

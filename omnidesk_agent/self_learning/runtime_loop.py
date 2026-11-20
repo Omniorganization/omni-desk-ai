@@ -23,6 +23,11 @@ class RuntimeLearningLoop:
 
     ``assign_policy`` / ``observe_result`` keep the old call shape for the
     current orchestrator; they return and accept JSON-safe dicts.
+
+    The methods are deliberately not named ``assign``/``observe``/``after_plan``:
+    the agent-core orchestrator switches to its PlannerExperimentHook protocol
+    (core.planner_policy types) when it sees those names. The wiring change adds
+    them with the core types; until then the orchestrator uses the legacy calls.
     """
 
     MAX_LIVE_ASSIGNMENTS = 10_000
@@ -45,7 +50,7 @@ class RuntimeLearningLoop:
         self._live: dict[str, PolicyAssignment] = {}
 
     # ------------------------------------------------------------- new hook
-    def assign(self, msg: Any) -> PolicyAssignment:
+    def assign_run(self, msg: Any) -> PolicyAssignment:
         try:
             if self.rollout is not None:
                 assignment = self.rollout.assign(msg)
@@ -61,7 +66,7 @@ class RuntimeLearningLoop:
             self._metric("omnidesk_learning_experiment_assignments_total", arm=assignment.arm)
         return assignment
 
-    def observe(self, assignment: Optional[PolicyAssignment], outcome: RunOutcome) -> Optional[dict[str, Any]]:
+    def observe_run(self, assignment: Optional[PolicyAssignment], outcome: RunOutcome) -> Optional[dict[str, Any]]:
         if assignment is None or self.rollout is None or assignment.arm == "none":
             return None
         decision = self.rollout.observe(assignment, outcome)
@@ -70,13 +75,13 @@ class RuntimeLearningLoop:
             self._metric("omnidesk_learning_rollout_rollbacks_total")
         return decision
 
-    def after_plan(self, msg: Any, assignment: Optional[PolicyAssignment], plan: Any, *, run_key: str) -> None:
+    def shadow_after_plan(self, msg: Any, assignment: Optional[PolicyAssignment], plan: Any, *, run_key: str) -> None:
         if self.shadow is not None and (assignment is None or assignment.arm != "treatment"):
             self.shadow.after_plan(msg, plan, run_key=run_key)
 
     # ----------------------------------------------------- legacy call shape
     def assign_policy(self, msg: Any) -> dict[str, Any]:
-        assignment = self.assign(msg)
+        assignment = self.assign_run(msg)
         payload = assignment.to_dict()
         if assignment.arm != "none":
             token = f"{assignment.rollout_id}:{assignment.unit_hash}:{time.time_ns()}"
@@ -111,7 +116,7 @@ class RuntimeLearningLoop:
             safety_events=classify_safety_events(results or []),
             steps_executed=int(result_count or 0),
         )
-        return self.observe(live, outcome)
+        return self.observe_run(live, outcome)
 
     def _metric(self, name: str, **labels: Any) -> None:
         inc = getattr(getattr(self, "metrics", None), "inc", None)

@@ -118,13 +118,13 @@ def _drive(loop, *, n, p_control, p_treatment, rng, cost=0.01, latency=900.0, tr
     """A scripted world: the run outcome depends on the policy the planner got."""
     decisions = []
     for i in range(n):
-        assignment = loop.assign(Msg("telegram", f"u{i % 50}", "check price", thread_id=f"t{i}"))
+        assignment = loop.assign_run(Msg("telegram", f"u{i % 50}", "check price", thread_id=f"t{i}"))
         treated = "browser.extract" in assignment.policy.skills_block
         p = p_treatment if treated else p_control
         success = rng.random() < p
         events = ("permission_denied",) if treated and rng.random() < treatment_safety else ()
         outcome = RunOutcome(status="completed" if success else "failed", latency_ms=latency, model_cost_usd=cost, safety_events=events)
-        decision = loop.observe(assignment, outcome)
+        decision = loop.observe_run(assignment, outcome)
         if decision:
             decisions.append(decision)
             if decision["status"] != "running":
@@ -151,7 +151,7 @@ def test_treatment_runs_get_the_candidate_policy_and_control_runs_do_not(tmp_pat
     loop = RuntimeLearningLoop(rollout=controller)
     arms = {}
     for i in range(200):
-        a = loop.assign(Msg("telegram", "u1", "secret text 42", thread_id=f"t{i}"))
+        a = loop.assign_run(Msg("telegram", "u1", "secret text 42", thread_id=f"t{i}"))
         arms.setdefault(a.arm, set()).add(a.policy.version)
         assert "secret" not in (a.unit_hash or "")
     assert set(arms) == {"control", "treatment"}
@@ -190,7 +190,7 @@ def test_canary_rolls_back_automatically_when_the_candidate_causes_safety_events
     assert registry.get(artifact.artifact_id).status == "rolled_back"  # needs new evaluation and approval
     assert registry.history()[0]["action"] == "experiment_rollback"
     # After the rollback every run gets the active policy again.
-    assert RuntimeLearningLoop(rollout=controller).assign(Msg("c", "u", "t", thread_id="z")).arm == "none"
+    assert RuntimeLearningLoop(rollout=controller).assign_run(Msg("c", "u", "t", thread_id="z")).arm == "none"
     store.close()
 
 
@@ -202,9 +202,9 @@ def test_canary_rolls_back_on_an_slo_breach_in_the_current_stage(tmp_path):
     rng = random.Random(5)
     result = None
     for i in range(2000):
-        a = loop.assign(Msg("c", "u", "t", thread_id=f"t{i}"))
+        a = loop.assign_run(Msg("c", "u", "t", thread_id=f"t{i}"))
         latency = 5000.0 if a.arm == "treatment" else 800.0
-        result = loop.observe(a, RunOutcome(status="completed" if rng.random() < 0.9 else "failed", latency_ms=latency, model_cost_usd=0.01))
+        result = loop.observe_run(a, RunOutcome(status="completed" if rng.random() < 0.9 else "failed", latency_ms=latency, model_cost_usd=0.01))
         if result and result["status"] != "running":
             break
     assert result["status"] == "rolled_back" and "p95 latency" in result["finished_reason"]
@@ -265,7 +265,7 @@ def test_shadow_plans_with_the_candidate_but_never_executes(tmp_path):
 
     async def scenario():
         loop = RuntimeLearningLoop(shadow=shadow)
-        loop.after_plan(Msg("c", "u", "private text", thread_id="t"), None, production, run_key="run-1")
+        loop.shadow_after_plan(Msg("c", "u", "private text", thread_id="t"), None, production, run_key="run-1")
         await shadow.drain()
 
     asyncio.run(scenario())
@@ -355,8 +355,8 @@ def test_the_last_canary_stage_needs_its_minimum_samples(tmp_path):
     loop = RuntimeLearningLoop(rollout=controller)
     rng = random.Random(1)
     for i in range(1200):
-        a = loop.assign(Msg("c", "u", "t", thread_id=f"t{i}"))
-        loop.observe(a, RunOutcome(status="completed" if rng.random() < 0.99 else "failed", latency_ms=100.0, model_cost_usd=0.01))
+        a = loop.assign_run(Msg("c", "u", "t", thread_id=f"t{i}"))
+        loop.observe_run(a, RunOutcome(status="completed" if rng.random() < 0.99 else "failed", latency_ms=100.0, model_cost_usd=0.01))
     state = controller.current()
     assert state is not None and state["status"] == "running"  # < 1000 treatment runs in the stage so far
     assert state["stage"]["n"] < 1000
@@ -372,12 +372,12 @@ def test_latency_slo_uses_the_most_recent_runs(tmp_path):
     result = None
     i = 0
     while treated < 2400:
-        a = loop.assign(Msg("c", "u", "t", thread_id=f"t{i}"))
+        a = loop.assign_run(Msg("c", "u", "t", thread_id=f"t{i}"))
         i += 1
         latency = 100.0 if treated < 2000 else 10_000.0
         if a.arm == "treatment":
             treated += 1
-        result = loop.observe(a, RunOutcome(status="completed", latency_ms=latency if a.arm == "treatment" else 100.0, model_cost_usd=0.01))
+        result = loop.observe_run(a, RunOutcome(status="completed", latency_ms=latency if a.arm == "treatment" else 100.0, model_cost_usd=0.01))
         if result and result["status"] != "running":
             break
     assert result and result["status"] == "rolled_back" and "p95 latency" in result["finished_reason"]
@@ -406,3 +406,12 @@ def test_production_outcome_that_arrives_first_is_joined_later(tmp_path):
     assert asyncio.run(scenario()) is None  # shadow still planning
     assert shadow.report(candidate.version)["joins"] == {"diverged_before_failure": 1}
     store.close()
+
+
+
+def test_the_loop_does_not_claim_the_core_hook_protocol_before_the_wiring_change():
+    # agent-core's orchestrator switches to PlannerExperimentHook when these exist;
+    # the types differ until the wiring change adopts core.planner_policy.
+    loop = RuntimeLearningLoop()
+    assert not any(hasattr(loop, name) for name in ("assign", "observe", "after_plan"))
+    assert callable(loop.assign_policy) and callable(loop.observe_result)
