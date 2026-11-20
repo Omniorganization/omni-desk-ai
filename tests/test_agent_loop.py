@@ -38,6 +38,7 @@ from omnidesk_agent.security.audit_errors import AuditIntegrityError
 from omnidesk_agent.security.permissions import PermissionManager
 from omnidesk_agent.security.provenance import requires_fresh_approval
 from omnidesk_agent.skills.registry import SkillRegistry
+from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.tools.base import ToolContext, permission_guarded, proposal
 from omnidesk_agent.tools.files import FilesTool
 from omnidesk_agent.tools.registry import ToolRegistry
@@ -1057,3 +1058,134 @@ def test_a_cancel_stands_when_its_audit_entry_cannot_be_written(harness):
 
     assert result["ok"] is True and result["status"] == "cancelled" and "AuditIntegrityError" in result["audit_error"]
     assert h.runs.get(first["run_id"])["status"] == "cancelled"
+
+
+# --------------------------------------------------------------------------- approval plane
+
+
+class Listener:
+    """An approval plane that records what it was told, and what was stored at that moment."""
+
+    def __init__(self, h: "Harness", *, fail: bool = False):
+        self.h = h
+        self.fail = fail
+        self.events: list[Any] = []
+        self.seen: list[tuple[Optional[str], Optional[str]]] = []
+
+    def on_approval_wait(self, event):
+        self.events.append(event)
+        run = self.h.runs.get(event.run_id)
+        approval = self.h.approvals.get(event.approval_id)
+        self.seen.append((run["status"] if run else None, approval["status"] if approval else None))
+        if self.fail:
+            raise RuntimeError("push service down")
+
+
+def plane(h: "Harness", listener: Optional[Listener] = None) -> Orchestrator:
+    orchestrator = h.build()
+    orchestrator.approval_listener = listener  # attached after construction, as the gateway does
+    return orchestrator
+
+
+def test_a_pause_tells_the_approval_plane_once_the_approval_and_the_run_are_saved(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    listener = Listener(h)
+    first = asyncio.run(plane(h, listener).handle_message(ChannelMessage(channel="local-cli", sender_id="owner", text="save the quarterly report")))
+
+    assert first["status"] == "waiting_approval" and len(listener.events) == 1
+    event = listener.events[0]
+    # Called after both were persisted, so an approver who acts at once finds them.
+    assert listener.seen == [("waiting_approval", "pending")]
+    assert (event.run_id, event.approval_id, event.channel) == (first["run_id"], first["approval_id"], "local-cli")
+    # The proposal as the approval store holds it: what approvers may be shown.
+    assert event.proposal == h.approvals.get(first["approval_id"])["proposal"]
+    assert event.requester == "owner" and "owner" in {event.proposal.get(f) for f in ("created_by", "proposer", "actor")}
+    assert event.risk == "high" and event.requires_dual_approval is False and event.expires_at
+    assert json.loads(json.dumps(event.to_dict()))["approval_id"] == first["approval_id"]
+
+
+def test_a_failing_approval_plane_never_breaks_the_pause(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    first = asyncio.run(plane(h, Listener(h, fail=True)).handle_message(ChannelMessage(channel="local-cli", sender_id="owner", text="save the quarterly report")))
+
+    assert first["status"] == "waiting_approval" and h.runs.get(first["run_id"])["status"] == "waiting_approval"
+    h.approvals.decide(first["approval_id"], "approved")
+    assert h.resume(first, orchestrator=h.build())["status"] == "completed"
+
+
+def test_an_approved_decision_resumes_the_run_without_its_token_exactly_once(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    first = h.run("save the quarterly report")
+    h.approvals.decide(first["approval_id"], "approved")
+
+    # A new process, as the gateway's decide route runs in the server.
+    resumed = asyncio.run(plane(h).resume_by_approval(first["approval_id"]))
+
+    assert resumed["status"] == "completed" and (h.workspace / "report.txt").read_text(encoding="utf-8") == "quarterly"
+    # The bearer token is spent with it, and a repeated decision does nothing more.
+    assert h.resume(first)["status"] == "resume_denied"
+    again = asyncio.run(plane(h).resume_by_approval(first["approval_id"]))
+    assert (again["ok"], again["status"], again["already_handled"]) == (True, "completed", True)
+    assert len(h.approvals.list()) == 1 and len(h.script.requests) == 2
+
+
+def test_a_decision_that_loses_the_race_to_another_resume_does_not_start_the_run_again(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    first = h.run("save the quarterly report")
+    h.approvals.decide(first["approval_id"], "approved")
+    orchestrator = plane(h)
+    # This caller read the run while it still waited; meanwhile another resume took it out of waiting.
+    stale = h.runs.get_by_approval(first["approval_id"])
+    h.runs.consume_resume_token(first["run_id"], first["resume_token"])
+    orchestrator.run_store.get_by_approval = lambda approval_id: stale  # type: ignore[union-attr]
+
+    result = asyncio.run(orchestrator.resume_by_approval(first["approval_id"]))
+
+    assert (result["ok"], result["status"], result["already_handled"]) == (True, "resuming", True)
+    assert len(h.script.requests) == 1 and not (h.workspace / "report.txt").exists()  # nothing ran a second time
+    assert h.approvals.get(first["approval_id"])["status"] == "approved"  # and the approval was not used up
+
+
+def test_a_pending_decision_leaves_the_run_waiting_and_resumable(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    first = h.run("save the quarterly report")
+
+    early = asyncio.run(plane(h).resume_by_approval(first["approval_id"]))
+
+    assert early["status"] == "approval_pending" and h.runs.get(first["run_id"])["status"] == "waiting_approval"
+    h.approvals.decide(first["approval_id"], "approved")
+    assert h.resume(first)["status"] == "completed"  # the token was left unused
+
+
+def test_a_denied_decision_ends_the_run_instead_of_leaving_it_paused(harness):
+    hook = Hook(None)
+    h = harness(write_then_done, approval_mode="remote_approval", hook=hook)
+    first = h.run("save the quarterly report")
+    h.approvals.decide(first["approval_id"], "denied")
+
+    ended = asyncio.run(plane(h).resume_by_approval(first["approval_id"]))
+
+    assert ended["status"] == "failed" and ended["termination"]["reason"] == "approval_denied"
+    assert h.runs.get(first["run_id"])["status"] == "failed" and not (h.workspace / "report.txt").exists()
+    last = hook.outcomes[-1]
+    assert (last.final, last.termination) == (True, "approval_denied") and "approval_denied" in last.safety_events
+    assert h.resume(first)["status"] == "resume_denied"
+    again = asyncio.run(plane(h).resume_by_approval(first["approval_id"]))
+    assert (again["status"], again["already_handled"]) == ("failed", True)
+
+
+def test_an_expired_approval_ends_the_run(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    first = h.run("save the quarterly report")
+    with connect_sqlite(h.approvals.db_path) as con:
+        con.execute("UPDATE approvals SET expires_at=? WHERE id=?", (time.time() - 1, first["approval_id"]))
+
+    ended = asyncio.run(plane(h).resume_by_approval(first["approval_id"]))
+
+    assert ended["status"] == "failed" and ended["termination"]["reason"] == "approval_expired"
+    assert h.runs.get(first["run_id"])["status"] == "failed" and not (h.workspace / "report.txt").exists()
+
+
+def test_an_unknown_approval_is_not_found(harness):
+    h = harness(write_then_done, approval_mode="remote_approval")
+    assert asyncio.run(plane(h).resume_by_approval("no-such-approval"))["status"] == "not_found"

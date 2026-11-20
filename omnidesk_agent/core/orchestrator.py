@@ -30,6 +30,7 @@ from omnidesk_agent.core.agent_loop import (
     task_item,
     tool_output_item,
 )
+from omnidesk_agent.core.approval_plane import ApprovalWaitEvent
 from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep, ToolResult
 from omnidesk_agent.core.planner_policy import PlannerPolicy, PolicyAssignment, RunOutcome
 from omnidesk_agent.core.run_control import EmergencyStop
@@ -75,6 +76,7 @@ class Orchestrator:
         dual_approval_store: Optional[Any] = None,
         loop_budget: Optional[LoopBudget] = None,
         emergency_stop: Optional[EmergencyStop] = None,
+        approval_listener: Optional[Any] = None,
     ):
         self.planner = planner
         self.tools = tools
@@ -92,6 +94,8 @@ class Orchestrator:
         self.dual_approval_store = dual_approval_store
         self.loop_budget = loop_budget or LoopBudget()
         self.emergency_stop = emergency_stop
+        # core.approval_plane.ApprovalListener; may also be attached after construction.
+        self.approval_listener = approval_listener
 
     # ------------------------------------------------------------------ entry points
 
@@ -114,7 +118,71 @@ class Orchestrator:
             return {"ok": False, "status": "resume_denied", "run_id": run_id, "error": str(exc)}
         if run["status"] != "waiting_approval":
             return {"ok": False, "status": run["status"], "message": "run is not waiting for approval"}
+        return await self._resume_waiting(run, resume_token)
 
+    async def resume_by_approval(self, approval_id: str) -> dict:
+        """Resume or end the run waiting for `approval_id`, by the decision recorded for it.
+
+        For the approval plane: its decide route records a device-signed decision
+        (dual for critical) in the ApprovalStore and then calls this, so no resume
+        token is involved. Internal only; no HTTP route may expose it. Idempotent:
+
+        - pending: nothing happens (`approval_pending`);
+        - approved: the run continues from the blocked step, as with resume();
+        - denied or expired: the run ends `failed` (`approval_denied` / `approval_expired`);
+        - no run waits for it any more: the run's current status, `already_handled`.
+        """
+        if self.run_store is None or self.approval_store is None:
+            return {"ok": False, "status": "resume_unavailable", "approval_id": approval_id}
+        get = getattr(self.approval_store, "get", None)
+        approval = await asyncio.to_thread(get, approval_id) if callable(get) else None
+        if not isinstance(approval, dict):
+            return {"ok": False, "status": "not_found", "approval_id": approval_id}
+        run = await asyncio.to_thread(self.run_store.get_by_approval, approval_id)
+        if run is None or run.get("status") != "waiting_approval":
+            return await self._approval_already_handled(approval_id, approval, run)
+        expires_at = approval.get("expires_at")
+        expired = bool(expires_at) and time.time() > float(expires_at)
+        if approval.get("status") == "pending" and not expired:
+            return {"ok": False, "status": "approval_pending", "run_id": run["id"], "approval_id": approval_id, "message": "the approval has not been decided yet"}
+        if expired or approval.get("status") == "denied":
+            return await self._end_unapproved(run, approval_id, "approval_expired" if expired else "approval_denied")
+        return await self._resume_waiting(run, run.get("resume_token"), claimed_elsewhere=lambda: self._approval_already_handled(approval_id, approval, None))
+
+    async def _approval_already_handled(self, approval_id: str, approval: dict[str, Any], run: Optional[dict[str, Any]]) -> dict:
+        run_id = (run or {}).get("id") or approval.get("consumed_by_run_id") or (approval.get("proposal") or {}).get("run_id")
+        current = await asyncio.to_thread(self.run_store.get, str(run_id)) if run_id and self.run_store is not None else None
+        if current is None:
+            return {"ok": False, "status": "not_found", "run_id": run_id, "approval_id": approval_id}
+        return {"ok": True, "status": current["status"], "run_id": current["id"], "approval_id": approval_id, "already_handled": True}
+
+    async def _end_unapproved(self, run: dict[str, Any], approval_id: str, reason: str) -> dict:
+        """End a waiting run whose approval was denied or expired."""
+        runs, approvals = self.run_store, self.approval_store
+        if runs is None or approvals is None:
+            return {"ok": False, "status": "resume_unavailable", "approval_id": approval_id}
+        run_id = str(run["id"])
+        state = self._restore_state(run)
+        try:
+            # Take the run out of waiting first, so a resume racing this cannot start it.
+            await asyncio.to_thread(runs.consume_resume_token, run_id, run.get("resume_token"))
+        except (KeyError, PermissionError):
+            approval = await asyncio.to_thread(approvals.get, approval_id)
+            return await self._approval_already_handled(approval_id, approval or {}, None)
+        if reason == "approval_denied":
+            state.note_safety_event("approval_denied")
+        msg = message_from_dict(run["original_message"])
+        return await self._finish(msg, state, "failed", reason, time.time(), detail=f"approval {approval_id}")
+
+    async def _resume_waiting(self, run: dict[str, Any], resume_token: Optional[str], *, claimed_elsewhere: Optional[Any] = None) -> dict:
+        """Continue a run waiting for an approval that was decided; `resume_token` takes it out of waiting.
+
+        `claimed_elsewhere`: what to return when another resume took it out of waiting first.
+        """
+        runs = self.run_store
+        if runs is None:
+            return {"ok": False, "status": "resume_unavailable", "message": "RunStore is not configured"}
+        run_id = str(run["id"])
         approval_id = run.get("waiting_approval_id")
         if not approval_id:
             return {"ok": False, "status": "missing_approval_id"}
@@ -133,7 +201,12 @@ class Orchestrator:
         resume_started = False
         try:
             with trace_span("orchestrator.resume.consume_token", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), run_id=run_id, approval_id=approval_id):
-                await asyncio.to_thread(self.run_store.consume_resume_token, run_id, resume_token)
+                try:
+                    await asyncio.to_thread(runs.consume_resume_token, run_id, resume_token)
+                except PermissionError:
+                    if claimed_elsewhere is None:
+                        raise
+                    return await claimed_elsewhere()
             resume_started = True
             proposal = run.get("approval_proposal") or {}
             if proposal.get("requires_dual_approval"):
@@ -149,11 +222,11 @@ class Orchestrator:
                 await asyncio.to_thread(self.approval_store.require_approved, approval_id, proposal)
             if hasattr(self.permissions, "allow_approved_proposal"):
                 await asyncio.to_thread(self.permissions.allow_approved_proposal, run.get("approval_proposal") or {})
-            await asyncio.to_thread(self.run_store.update, run_id, {"status": "running", "waiting_approval_id": None})
+            await asyncio.to_thread(runs.update, run_id, {"status": "running", "waiting_approval_id": None})
         except PermissionError as exc:
             audit_failed = isinstance(exc, AuditIntegrityError)
-            if resume_started and hasattr(self.run_store, "mark_resume_failed"):
-                await asyncio.to_thread(self.run_store.mark_resume_failed, run_id, str(exc))
+            if resume_started and hasattr(runs, "mark_resume_failed"):
+                await asyncio.to_thread(runs.mark_resume_failed, run_id, str(exc))
             if resume_started:
                 if not audit_failed:
                     state.note_safety_event("approval_denied")
@@ -512,6 +585,8 @@ class Orchestrator:
         if self.run_store and state.run_id:
             resume_token = await asyncio.to_thread(self.run_store.save_waiting, state.run_id, state.plan_json(), blocked, results, approval.approval_id, approval.proposal)
         state.termination = {"reason": "approval_wait", "detail": approval.approval_id}
+        if resume_token is not None:
+            await self._notify_approval_wait(msg, state, approval)
         self._observe(state, status="waiting_approval", final=False)
         return {
             "status": "waiting_approval",
@@ -526,6 +601,33 @@ class Orchestrator:
             "loop": self._loop_summary(state),
             "learning_assignment": state.learning_assignment,
         }
+
+    async def _notify_approval_wait(self, msg: ChannelMessage, state: LoopState, approval: ApprovalRequired) -> None:
+        """Tell the approval listener; the approval is recorded and the run saved by now."""
+        notify = getattr(self.approval_listener, "on_approval_wait", None)
+        if not callable(notify):
+            return
+        try:
+            get = getattr(self.approval_store, "get", None)
+            record = await asyncio.to_thread(get, approval.approval_id) if callable(get) else None
+            stored: dict[str, Any] = record if isinstance(record, dict) else {}
+            # The stored record, not the in-memory proposal: it is what approvers may see.
+            proposal = dict(stored.get("proposal") or approval.proposal or {})
+            event = ApprovalWaitEvent(
+                run_id=state.run_id,
+                approval_id=approval.approval_id,
+                proposal=proposal,
+                requester=str(proposal.get("created_by") or proposal.get("actor") or ""),
+                channel=msg.channel,
+                risk=str(proposal.get("risk") or "medium"),
+                requires_dual_approval=bool(proposal.get("requires_dual_approval")),
+                created_at=stored.get("created_at"),
+                expires_at=stored.get("expires_at"),
+            )
+            await asyncio.to_thread(notify, event)
+        except Exception:
+            # The run waits either way; a failed notification only means no push to approvers.
+            self._metric("omnidesk_approval_listener_errors_total")
 
     async def _finish(self, msg: ChannelMessage, state: LoopState, status: str, reason: str, segment_started: float, *, detail: str = "", error: Optional[BaseException] = None, audit: bool = True) -> dict:
         self._release_actuators(state)

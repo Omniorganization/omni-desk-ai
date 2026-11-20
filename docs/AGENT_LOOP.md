@@ -88,6 +88,20 @@ The run store gets a checkpoint after every turn and every step: `status=running
 
 Tool permission decisions are audited by the permission manager as before. Loop lifecycle entries (`agent_turn_planned`, `agent_step_finished`, `agent_run_finished`, `agent_run_cancelled`; ids, counts and outcomes, never tool output) are written to the same hash-chained audit log when the permission manager provides `record_event(event, payload)`; until it does, they are only in the run store.
 
+### Approval plane
+
+Approvers can decide on their devices (gateway-clients' AppSync plane) instead of calling `resume()` with the bearer token.
+
+- **Notification.** On every pause, once the approval is recorded and the run saved, `Orchestrator.approval_listener` gets `on_approval_wait(ApprovalWaitEvent)` (`core/approval_plane.py`), in a worker thread. The listener is a constructor argument, or an attribute attached after construction.
+  - The event holds `run_id`, `approval_id`, `requester`, `channel`, `risk`, `requires_dual_approval`, `created_at` and `expires_at`.
+  - Its proposal is the approval record as the ApprovalStore holds it: redacted, with the requester stamped where `security.dual_approval.proposal_requesters` reads it.
+  - Listener errors are counted (`omnidesk_approval_listener_errors_total`) and never break the run.
+- **Decision.** The plane records the decision in the ApprovalStore, which stays the ledger, and then calls `await orchestrator.resume_by_approval(approval_id)`. This is internal: no HTTP route exposes it.
+  - Pending: nothing changes (`approval_pending`).
+  - Approved: the run resumes as with `resume()`, and the bearer token is spent with it.
+  - Denied or expired: the run ends `failed`, with `approval_denied` or `approval_expired`.
+  - Called again, or after the run was handled another way: the run's current status, with `already_handled`. Of several racing resumes only one starts the run, because the resume token's single transition decides.
+
 When the audit log cannot be written (`security.audit_errors.AuditIntegrityError`, from a tool's permission check or from `record_event`), nothing more runs: the registry re-raises it instead of reporting a refusal to the planner, and the loop ends the run `failed` with termination `audit_unavailable` without trying to audit that end. `agent_run_finished` is written before the run is stored as finished, so a run whose end cannot be audited is `failed`, not `completed`. A resume whose grant cannot be audited returns `audit_unavailable` (not an approval denial). A cancel takes effect either way and reports `audit_error` when its entry is missing.
 
 ## Experiment hook
