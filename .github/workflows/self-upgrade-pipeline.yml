@@ -58,12 +58,14 @@ jobs:
           [[ "$ISSUE" =~ ^[0-9]{1,7}$ ]] || { echo "issue must be a number"; exit 2; }
           mkdir -p work
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json number,title,body,labels > work/issue.json
-      - name: Ask the model for a diff
-        env:
-          OMNIDESK_UPGRADE_MODEL_API_KEY: ${{ secrets.OMNIDESK_UPGRADE_MODEL_API_KEY }}
-          PROVIDER: ${{ inputs.provider }}
-          MODEL: ${{ inputs.model }}
-        run: python -m omnidesk_agent.self_upgrade.pipeline propose --issue work/issue.json --out work --provider "$PROVIDER" --model "$MODEL"
+      # Credentials are not wired: the owner has not approved the credential
+      # design (docs/SELF_UPGRADE_PIPELINE.md) yet. After approval, a follow-up
+      # change passes OMNIDESK_UPGRADE_MODEL_API_KEY from the `self-upgrade`
+      # environment to this step and runs `pipeline propose`.
+      - name: Model credential pending owner approval
+        run: |
+          echo "::error::self-upgrade credentials are not wired yet; see docs/SELF_UPGRADE_PIPELINE.md"
+          exit 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: self-upgrade-proposal-${{ github.run_id }}
@@ -121,18 +123,12 @@ jobs:
         with:
           name: self-upgrade-evidence-${{ github.run_id }}
           path: work
-      - id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
-        with:
-          app-id: ${{ vars.OMNIDESK_UPGRADE_APP_ID }}
-          private-key: ${{ secrets.OMNIDESK_UPGRADE_APP_PRIVATE_KEY }}
-          repositories: omni-desk-ai
-          permission-contents: write
-          permission-pull-requests: write
-      - name: Open the ai/* pull request
-        env:
-          OMNIDESK_UPGRADE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+      # After owner approval, a follow-up change mints a one-hour GitHub App
+      # installation token here (actions/create-github-app-token, narrowed to
+      # this repository with contents + pull-requests write) and runs
+      # `pipeline publish`. Until then this job only re-checks the evidence.
+      - name: Re-check the verified patch (no credential)
         run: >-
           python -m omnidesk_agent.self_upgrade.pipeline publish
           --issue work/issue.json --diff work/proposal.diff --evidence work/evidence.json
-          --proposal work/proposal.json --repo "$GITHUB_REPOSITORY"
+          --proposal work/proposal.json --repo "$GITHUB_REPOSITORY" --dry-run

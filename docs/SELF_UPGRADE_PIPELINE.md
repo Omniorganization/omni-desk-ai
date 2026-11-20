@@ -128,5 +128,8 @@ Locally, the same steps run with
 
 ## Status
 
-No real pipeline run and no real self-upgrade PR yet: the App and secrets do
-not exist until the owner approves and creates them.
+The workflow does not reference any secret yet. Its credential steps (the
+model key in `propose`, the App token in `publish`) are added in a follow-up
+change after the owner approves this design; until then `propose` stops with
+an error and `publish` only re-checks the evidence (`--dry-run`). No real
+pipeline run and no real self-upgrade PR exist yet.
