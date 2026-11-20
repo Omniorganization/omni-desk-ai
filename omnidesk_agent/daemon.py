@@ -47,7 +47,8 @@ from omnidesk_agent.repositories.runtime import build_repository_factory, storag
 from omnidesk_agent.security.admin_auth import AdminAuth
 from omnidesk_agent.security.audit_worm import WormAuditCheckpoint
 from omnidesk_agent.security.permissions import PermissionManager
-from omnidesk_agent.self_learning.runtime_loop import RuntimeLearningLoop
+from omnidesk_agent.self_learning.wiring import build_learning_runtime
+from omnidesk_agent.self_healing.runtime import build_healing_supervisor
 from omnidesk_agent.self_upgrade.governance import GovernedSelfImprovement
 from omnidesk_agent.self_upgrade.auto_update import AutoUpdateRunner, SignatureVerifier, UpdateManifestClient
 from omnidesk_agent.skills.registry import SkillRegistry
@@ -87,7 +88,9 @@ class OmniDeskRuntime:
         self.job_queue = self.repository_factory.job_queue()
         self.outbound_messages = self.repository_factory.outbound_messages()
         self.learning_experiments = self.repository_factory.learning_experiments()
-        self.learning_loop = RuntimeLearningLoop(self.learning_experiments)
+        # Self-learning hook (autonomy): active learned policy + operator-started rollouts.
+        self.learning_runtime = build_learning_runtime(cfg.workspace.root, self.learning_experiments)
+        self.learning_loop = self.learning_runtime.hook
         self.admin_auth = AdminAuth(
             admin_token_env=cfg.gateway.admin_token_env,
             viewer_token_env=cfg.gateway.viewer_token_env,
@@ -148,6 +151,9 @@ class OmniDeskRuntime:
         )
         self.orchestrator.storage_plan = self.storage_plan
         self.webhook_worker: Optional[WebhookWorker] = WebhookWorker(self.job_queue, self.orchestrator)
+        # Self-healing (autonomy): observe mode unless OMNIDESK_SELF_HEALING_MODE says otherwise.
+        self.healing = build_healing_supervisor(cfg.workspace.root, job_queue=self.job_queue, router=self.model_router, workers=[("webhook", self.webhook_worker)])
+        self._healing_task: asyncio.Task | None = None
         self.outbound_dispatcher: Optional[OutboundDispatcher] = OutboundDispatcher(self.outbound_messages, self.adapters)
         self.learning_job = DailySelfLearningJob(self.memory, cfg.workspace.root, sandbox_cfg=cfg.sandbox)
         self.governance = GovernedSelfImprovement(cfg.workspace.root, Path.cwd(), sandbox_cfg=cfg.sandbox)
@@ -237,8 +243,13 @@ class OmniDeskRuntime:
         if self._should_start_reconnect_loop():
             self.reconnect_worker = self._build_reconnect_worker()
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        if self.healing.mode != "off":
+            self._healing_task = asyncio.create_task(self.healing.run_forever())
 
     async def aclose(self) -> None:
+        if self._healing_task is not None:
+            self.healing.stop()
+            await asyncio.gather(self._healing_task, return_exceptions=True)
         if self._reconnect_task is not None:
             self._reconnect_task.cancel()
             try:
@@ -256,7 +267,7 @@ class OmniDeskRuntime:
         for resource in (
             self.memory,
             self.governance,
-            self.learning_loop,
+            self.learning_runtime,
             self.learning_experiments,
             self.model_router,
             self.model_cost_store,
