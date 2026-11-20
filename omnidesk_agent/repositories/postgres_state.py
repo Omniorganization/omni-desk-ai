@@ -218,6 +218,49 @@ class _PostgresJsonState:
                     )
                 return [_loads(row[0]) for row in cur.fetchall()]
 
+    def page_by_status(
+        self, namespace: str, status: str, *, limit: int, before: Optional[tuple[float, str]] = None, error_class: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """Rows of one status, newest first by their own created_at, then id.
+
+        ``before`` is the (created_at, id) of the last row of the previous page;
+        ``error_class`` keeps one error class. Every value is a bound parameter.
+        """
+        from psycopg import sql
+
+        clauses = [sql.SQL("namespace=%s"), sql.SQL("value_json->>'status'=%s")]
+        params: list[Any] = [namespace, status]
+        if error_class:
+            clauses.append(sql.SQL("value_json->>'error_class'=%s"))
+            params.append(error_class)
+        if before is not None:
+            clauses.append(sql.SQL(
+                "((value_json->>'created_at')::double precision < %s"
+                " OR ((value_json->>'created_at')::double precision = %s AND value_json->>'id' < %s))"
+            ))
+            params.extend([before[0], before[0], before[1]])
+        query = sql.SQL(
+            "SELECT value_json FROM omnidesk_core_state WHERE {conditions}"
+            " ORDER BY (value_json->>'created_at')::double precision DESC, value_json->>'id' DESC LIMIT %s"
+        ).format(conditions=sql.SQL(" AND ").join(clauses))
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(query, (*params, max(1, int(limit))))
+                return [_loads(row[0]) for row in cur.fetchall()]
+
+    def count_by_json_field(self, namespace: str, status: str, field: str) -> dict[str, int]:
+        """Rows of one status per value of a JSON field ('unknown' when absent)."""
+        if field != "error_class":
+            raise ValueError(f"unsupported JSON group field: {field}")
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT COALESCE(value_json->>'error_class', 'unknown'), COUNT(*) FROM omnidesk_core_state"
+                    " WHERE namespace=%s AND value_json->>'status'=%s GROUP BY 1",
+                    (namespace, status),
+                )
+                return {str(name): int(count) for name, count in cur.fetchall()}
+
     def count_by_field(self, namespace: str, field: str, value: str) -> int:
         if field != "task_id":
             raise ValueError(f"unsupported JSON count field: {field}")
@@ -1003,12 +1046,38 @@ class PostgresJobQueue:
                     "locked_at": None,
                     "updated_at": time.time(),
                     "last_error": str(error)[:4000],
+                    # The exception class, so dead letters can be grouped without matching text.
+                    "error_class": type(error).__name__ if isinstance(error, BaseException) else None,
                 }
             )
             return row
 
         row = self.state.update_locked_by_field(self.namespace, "id", job_id, upd)
         return {"job_id": row["id"], "status": row["status"], "retry_count": row["retry_count"], "next_retry_at": row["next_retry_at"]}
+
+    def page_dead_letters(self, *, limit: int = 100, cursor: Optional[str] = None, error_class: Optional[str] = None) -> dict[str, Any]:
+        """Dead letters newest first, ``limit`` per page, optionally of one error class.
+
+        The same contract as the SQLite ``JobQueue.page_dead_letters``: pass the
+        returned ``next_cursor`` for the following page; it is None on the last
+        page, and pages stay stable while new dead letters arrive.
+        """
+        limit = max(1, min(int(limit), 500))
+        before: Optional[tuple[float, str]] = None
+        if cursor:
+            created, _, job_id = str(cursor).partition("|")
+            try:
+                before = (float(created), job_id)
+            except ValueError as exc:
+                raise ValueError(f"invalid dead-letter cursor: {cursor!r}") from exc
+        rows = self.state.page_by_status(self.namespace, "dead_letter", limit=limit + 1, before=before, error_class=error_class)
+        items = [{**row, "error_class": row.get("error_class")} for row in rows[:limit]]
+        next_cursor = f"{float(items[-1]['created_at'])!r}|{items[-1]['id']}" if len(rows) > limit else None
+        return {"items": items, "next_cursor": next_cursor}
+
+    def dead_letter_counts(self) -> dict[str, int]:
+        """Dead letters per error class ('unknown' when none was recorded)."""
+        return self.state.count_by_json_field(self.namespace, "dead_letter", "error_class")
 
     def get(self, job_id: str) -> Optional[dict[str, Any]]:
         return self.state.find_by_field(self.namespace, "id", job_id)
