@@ -121,6 +121,18 @@ fn device_sign_request(
     device_keys::sign(&private_jwk, &message)
 }
 
+/// Signs the gateway's enrollment challenge with the device key, so a fresh
+/// install can become challenge-verified. Only the challenge format is signed.
+#[tauri::command]
+fn device_sign_challenge(signing_message: String) -> Result<String, String> {
+    let message = device_keys::challenge_message(&signing_message)?;
+    let private_jwk = keychain_read(DEVICE_PRIVATE_KEY_KEY)?;
+    if private_jwk.is_empty() {
+        return Err("desktop device private key is not initialized".to_string());
+    }
+    device_keys::sign(&private_jwk, &message)
+}
+
 struct IdentityStoreLock(fs::File);
 
 impl Drop for IdentityStoreLock {
@@ -348,6 +360,7 @@ fn main() {
             secure_set,
             device_identity,
             device_sign_request,
+            device_sign_challenge,
             read_workspace_file,
             list_workspace_directory
         ])

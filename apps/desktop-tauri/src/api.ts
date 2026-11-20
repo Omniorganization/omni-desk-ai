@@ -260,7 +260,15 @@ export class OmniApiClient {
   }
 
   completeEnrollment(enrollmentId: string, pairingCode: string, deviceId: string, publicKey: string) {
-    return this.request<any>(`/app/devices/enrollment/${enrollmentId}/complete`, { method: 'POST', body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId, public_key: publicKey }) });
+    return this.request<any>(`/app/devices/enrollment/${encodeURIComponent(enrollmentId)}/complete`, { method: 'POST', body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId, public_key: publicKey }) });
+  }
+
+  enrollmentChallenge(enrollmentId: string, deviceId: string) {
+    return this.request<any>(`/app/devices/enrollment/${encodeURIComponent(enrollmentId)}/challenge`, { method: 'POST', body: JSON.stringify({ device_id: deviceId }) });
+  }
+
+  verifyEnrollment(enrollmentId: string, challengeId: string, deviceId: string, signature: string) {
+    return this.request<any>(`/app/devices/enrollment/${encodeURIComponent(enrollmentId)}/verify`, { method: 'POST', body: JSON.stringify({ challenge_id: challengeId, device_id: deviceId, signature }) });
   }
 
   sync(sinceSeq = 0) { return this.request<any>(`/app/sync?since_seq=${sinceSeq}`); }

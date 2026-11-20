@@ -4,10 +4,40 @@ Tauri client that executes approved, scoped desktop tasks and chats with the gat
 
 Primary duties:
 
-- Register the desktop device with `/app/devices/register`.
+- Register the desktop device with `/app/devices/register`, and become challenge-verified through an owner's enrollment (below).
 - Send runtime heartbeat to `/app/runtime/desktop/heartbeat`.
 - Reflect pending approvals and task state from `/app/bootstrap` and `/app/sync`.
 - Claim approved tasks it can execute, run their action, and report the outcome (`src/executor.ts`).
+
+## Enrollment
+
+A production gateway accepts a desktop's signed calls (heartbeat, claims,
+status reports) only from a challenge-verified device, so a fresh install has
+to be enrolled once:
+
+1. An **owner** starts an enrollment for a desktop — `POST
+   /app/devices/enrollment/start` with `device_type: "desktop"` and a pairing
+   code of at least 8 characters — and hands the operator the enrollment id
+   (`enroll_` + 16 hex digits) and the pairing code.
+2. The desktop connects; when the gateway answers
+   `device_not_challenge_verified`, it shows the "设备注册" panel and pauses
+   its background heartbeat and claims.
+3. The **operator** enters the id and code there. The desktop binds its device
+   id and public key to the enrollment (`…/complete`), asks for a challenge
+   (`…/challenge`), signs it with its device key and sends the signature
+   (`…/verify`). It resumes once the gateway reports `challenge_verified`.
+
+The challenge is signed by the native command `device_sign_challenge`: the
+private key stays in the OS keychain and in Rust, and the command signs only
+the gateway's challenge format
+(`omnidesk-device-challenge:v2:chal_<16 hex>:hmac-sha256:device_challenge_nonce:<64 hex>`),
+refusing any other input, so it cannot be used to sign requests. The gateway
+records each step in its admin audit log and as `device.enrollment_*` /
+`device.challenge_verified` events. Code: `src/enrollment.ts`,
+`src-tauri/src/device_keys.rs` (`challenge_message`); tests:
+`tests/enrollment.test.ts`, the Rust unit tests in `device_keys.rs`, and the
+gateway protocol test `tests/test_desktop_gateway_e2e.py` at the repository
+root.
 
 ## What a desktop task can do
 

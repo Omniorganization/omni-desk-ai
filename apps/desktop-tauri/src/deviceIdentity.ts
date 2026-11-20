@@ -38,6 +38,11 @@ export async function signDesktopDeviceRequest(deviceId: string, method: string,
   };
 }
 
+/** Signs the gateway's enrollment challenge in Rust; Rust refuses any other message. */
+export async function signEnrollmentChallenge(signingMessage: string): Promise<string> {
+  return `base64:${await invoke<string>('device_sign_challenge', { signingMessage })}`;
+}
+
 export function createDesktopDeviceRequestSigner(deviceId: string) {
   return (method: string, path: string, body = '') => signDesktopDeviceRequest(deviceId, method, path, body);
 }
