@@ -7,7 +7,6 @@ from fastapi import Request
 from omnidesk_agent.security.resource_guard import (
     ApiResourceGuard,
     _clean,
-    _client_key,
     _path_key,
 )
 
@@ -26,25 +25,7 @@ class ChatAwareApiResourceGuard(ApiResourceGuard):
     """ApiResourceGuard with a static, import-order-independent route taxonomy."""
 
     async def before_request(self, request: Request) -> Callable[[], None]:
-        if not self._enabled():
-            return lambda: None
-        client = _client_key(request, self.cfg)
-        path = _path_key(request.url.path)
-        window = int(getattr(self.cfg, "window_seconds", 60))
-        self._check_rate(
-            f"ip:{client}",
-            int(getattr(self.cfg, "max_requests_per_ip", 300)),
-            window,
-            "ip",
-        )
-        self._check_rate(
-            f"ip-path:{client}:{path}",
-            int(getattr(self.cfg, "max_requests_per_endpoint", 120)),
-            window,
-            "endpoint",
-        )
-        release = self._acquire(route_class(request.url.path))
-        return await self._ingest_admitted(request, release)
+        return await self._admit(request, route_class(request.url.path))
 
     def check_authenticated(
         self, request: Request, *, actor: str, role: str, organization: str | None = None

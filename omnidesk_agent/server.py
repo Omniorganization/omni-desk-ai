@@ -232,7 +232,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         if not decision.ok:
             raise HTTPException(status_code=403, detail=decision.reason)
         actor = getattr(decision, "actor", "unknown")
-        resource_guard.check_authenticated(
+        await resource_guard.check_authenticated_async(
             request,
             actor=actor,
             role=getattr(decision, "role", role),

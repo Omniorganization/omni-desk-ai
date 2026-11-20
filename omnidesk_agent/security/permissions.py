@@ -9,6 +9,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from omnidesk_agent.config import PermissionConfig
+from omnidesk_agent.privacy.redaction import redact_secret_values
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.dual_approval import stamp_requester
 
@@ -143,10 +144,16 @@ class PermissionManager:
         elif proposal_dict.get("requires_dual_approval"):
             self._audit("denied_no_requester", proposal_dict)
             raise PermissionError("dual approval requires an authenticated requester")
-        approval_id = self.approval_store.create(proposal_dict)
-        self._audit("approval_required", {"approval_id": approval_id, **proposal_dict})
+        # Approval records and the run's stored copy keep the content the approver
+        # judges, minus credentials inside it. Binding is unaffected: it uses the
+        # scope hash, which the tool computed over the unredacted arguments.
+        stored = dict(proposal_dict)
+        if "args" in stored:
+            stored["args"] = redact_secret_values(stored["args"])
+        approval_id = self.approval_store.create(stored)
+        self._audit("approval_required", {"approval_id": approval_id, **stored})
         self._metric("omnidesk_approval_required_total", tool=str(proposal_dict.get("tool", "")), risk=str(proposal_dict.get("risk", "medium")))
-        raise ApprovalRequired(approval_id=approval_id, proposal=proposal_dict)
+        raise ApprovalRequired(approval_id=approval_id, proposal=stored)
 
     def _audit(self, event: str, payload: dict[str, Any]) -> None:
         clean = self._redact(payload)
@@ -239,14 +246,25 @@ class PermissionManager:
 
     @staticmethod
     def _redact(value: Any) -> Any:
+        """What the audit log may keep of a proposal.
+
+        Secret-named keys are dropped, credentials inside strings are redacted, and
+        content bound by a digest (``x`` next to ``x_sha256``: typed text, file
+        bodies, messages, scripts, plugin arguments) is withheld: the digest and the
+        approval record identify it, and the long-lived audit log never holds it.
+        """
         if isinstance(value, dict):
             out = {}
             for k, v in value.items():
                 if re.search(r"(token|secret|password|api_key|authorization)", str(k), re.I):
                     out[k] = "[REDACTED]"
+                elif f"{k}_sha256" in value and not str(k).endswith("_sha256"):
+                    out[k] = "[CONTENT_WITHHELD]"
                 else:
                     out[k] = PermissionManager._redact(v)
             return out
         if isinstance(value, list):
             return [PermissionManager._redact(v) for v in value]
+        if isinstance(value, str):
+            return redact_secret_values(value)
         return value

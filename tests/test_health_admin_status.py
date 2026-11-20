@@ -135,10 +135,12 @@ def test_api_resource_guard_limits_public_requests(tmp_path):
     cfg.ensure_dirs()
     app = create_app(cfg)
     with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
-        limited = client.get("/health")
+        assert client.get("/openapi.json").status_code == 200
+        limited = client.get("/openapi.json")
         assert limited.status_code == 429
         assert limited.json()["detail"] == "ip rate limit exceeded"
+        # Liveness keeps answering for a client whose quota is used up.
+        assert client.get("/health").status_code == 200
 
 
 def test_api_resource_guard_rejects_oversized_body(tmp_path, monkeypatch):

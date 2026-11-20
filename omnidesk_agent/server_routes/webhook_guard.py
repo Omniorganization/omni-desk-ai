@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+from typing import cast
 
 from fastapi import HTTPException, Request
 
@@ -209,3 +210,89 @@ def enqueue_webhook_message(runtime, message) -> dict:
 def enqueue_webhook_messages(runtime, messages: list) -> dict:
     jobs = [enqueue_webhook_message(runtime, message) for message in messages]
     return {"ok": True, "queued": True, "count": len(messages), "jobs": jobs}
+
+
+# Route channel name -> (channels.<config attribute>, runtime.adapters key).
+SELF_TEST_CHANNELS: dict[str, tuple[str, str]] = {
+    "telegram": ("telegram", "telegram"),
+    "whatsapp": ("whatsapp_cloud", "whatsapp_cloud"),
+    "meta": ("meta_graph", "meta_graph"),
+    "wechat": ("wechat_official", "wechat_official"),
+    "dingtalk": ("dingtalk", "dingtalk"),
+    "lark": ("lark", "lark"),
+    "feishu": ("feishu", "feishu"),
+    "line": ("line", "line"),
+    "x": ("x", "x"),
+    "slack": ("slack", "slack"),
+    "discord": ("discord", "discord"),
+    "google_chat": ("google_chat", "google_chat"),
+    "signal": ("signal", "signal"),
+    "imessage": ("imessage", "imessage"),
+    "microsoft_teams": ("microsoft_teams", "microsoft_teams"),
+    "matrix": ("matrix", "matrix"),
+    "qq": ("qq", "qq"),
+}
+
+
+class _SelfTestRequest:
+    def __init__(self, headers: dict[str, str]):
+        from starlette.datastructures import Headers, QueryParams
+
+        self.headers = Headers(headers)
+        self.query_params = QueryParams("")
+
+
+def self_test_webhook_signatures(cfg: AppConfig, runtime, environ=None) -> dict:
+    """Check, through the live verification path, that inbound webhooks need a valid signature.
+
+    For every enabled inbound channel: the secret variables it is configured with
+    must be set, and an unsigned delivery and one signed with a wrong secret must
+    both be refused by WebhookGuard.verify_required_signature, the code the
+    webhook routes run. Accepting a correctly signed delivery needs each
+    provider's signing key and is covered by the channel tests, not here.
+    """
+    import secrets as _secrets
+
+    env = os.environ if environ is None else environ
+    guard = WebhookGuard(cfg, runtime)
+    enforced = bool(getattr(cfg.gateway, "require_webhook_signatures", True))
+    channels: dict[str, dict] = {}
+    for route_channel, (config_attr, adapter_key) in SELF_TEST_CHANNELS.items():
+        channel_cfg = getattr(cfg.channels, config_attr, None)
+        if channel_cfg is None or not bool(getattr(channel_cfg, "enabled", False)):
+            continue
+        missing = [
+            str(getattr(channel_cfg, field))
+            for field in type(channel_cfg).model_fields
+            if field.endswith("_env") and getattr(channel_cfg, field) and not str(env.get(str(getattr(channel_cfg, field)), "")).strip()
+        ]
+        adapter = getattr(runtime, "adapters", {}).get(adapter_key)
+        body = json.dumps({"omnidesk_selftest": _secrets.token_hex(8)}).encode("utf-8")
+        forged = "sha256=" + hmac.new(_secrets.token_bytes(32), body, hashlib.sha256).hexdigest()
+        attempts = {
+            "unsigned": {},
+            "wrong_secret": {
+                "x-omnidesk-webhook-signature-256": forged,
+                "x-hub-signature-256": forged,
+                "x-telegram-bot-api-secret-token": _secrets.token_hex(16),
+                "x-line-signature": _secrets.token_hex(16),
+            },
+        }
+        results = {}
+        for name, headers in attempts.items():
+            try:
+                request = cast(Request, _SelfTestRequest(headers))  # headers and query_params only
+                guard.verify_required_signature(route_channel, adapter, request, body, json.loads(body))
+            except Exception as exc:  # any refusal counts; the route turns it into 403 or 500
+                results[name] = f"refused ({type(exc).__name__})"
+            else:
+                results[name] = "ACCEPTED"
+        ok = enforced and not missing and adapter is not None and all(v.startswith("refused") for v in results.values())
+        channels[route_channel] = {"ok": ok, "missing_env": missing, "adapter": adapter is not None, **results}
+    ok = enforced and all(item["ok"] for item in channels.values())
+    return {
+        "ok": ok,
+        "require_webhook_signatures": enforced,
+        "channels": channels,
+        "note": "no inbound channel is enabled" if not channels else "unsigned and wrongly signed deliveries must be refused",
+    }

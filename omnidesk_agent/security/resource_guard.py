@@ -16,6 +16,10 @@ from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
 _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9@._:/-]+")
+# Liveness and readiness probes are cheap, unauthenticated and must keep answering
+# while the API is saturated or the rate-limit store is down; they are never
+# rate limited and never take an in-flight slot.
+PROBE_PATHS = frozenset({"/health", "/ready"})
 
 
 @dataclass(frozen=True)
@@ -113,11 +117,22 @@ class SQLiteRateLimiter:
 
 
 class PostgresRateLimiter:
+    """Shared fixed-window limiter in PostgreSQL.
+
+    Each worker thread keeps one autocommit connection and reconnects once on
+    failure, instead of opening a connection per check; expired windows are
+    pruned periodically so the table stays bounded.
+    """
+
     backend = "postgres"
+    prune_interval_seconds = 300.0
 
     def __init__(self, *, dsn_env: str, clock: Callable[[], float] | None = None):
         self.dsn_env = dsn_env
         self.clock = clock or time.time
+        self._local = threading.local()
+        self._prune_lock = threading.Lock()
+        self._last_prune = 0.0
         self._init_schema()
 
     def _dsn(self) -> str:
@@ -146,15 +161,53 @@ class PostgresRateLimiter:
                     """
                 )
 
+    def _connection(self):  # type: ignore[no-untyped-def]
+        con = getattr(self._local, "con", None)
+        if con is None or getattr(con, "closed", False):
+            con = self._connect()
+            con.autocommit = True
+            self._local.con = con
+        return con
+
+    def _drop_connection(self) -> None:
+        con = getattr(self._local, "con", None)
+        self._local.con = None
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    def _run(self, work):  # type: ignore[no-untyped-def]
+        # A broken pooled connection is replaced once; a second failure propagates
+        # (fail closed: the request is refused, not let through unmetered).
+        for attempt in (0, 1):
+            try:
+                with self._connection().cursor() as cur:
+                    return work(cur)
+            except Exception:
+                self._drop_connection()
+                if attempt:
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
+
+    def _maybe_prune(self, now: float, window_seconds: int) -> None:
+        with self._prune_lock:
+            if now - self._last_prune < self.prune_interval_seconds:
+                return
+            self._last_prune = now
+        cutoff = now - 2 * window_seconds
+        self._run(lambda cur: cur.execute("DELETE FROM omnidesk_api_resource_rate_limits WHERE window_started < %s", (cutoff,)))
+
     def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
         if limit <= 0:
             return False
         now = self.clock()
         window_seconds = max(1, int(window_seconds))
-        with self._connect() as con:
-            with con.cursor() as cur:
-                cur.execute(
-                    """
+
+        def upsert(cur):  # type: ignore[no-untyped-def]
+            cur.execute(
+                """
                     INSERT INTO omnidesk_api_resource_rate_limits(key, window_started, count)
                     VALUES (%s, %s, 1)
                     ON CONFLICT (key) DO UPDATE SET
@@ -168,21 +221,26 @@ class PostgresRateLimiter:
                         END
                     RETURNING count
                     """,
-                    (key, now, now, window_seconds, now, now, window_seconds),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    raise RuntimeError("PostgreSQL rate limiter did not return a count")
-                return int(row[0]) <= limit
+                (key, now, now, window_seconds, now, now, window_seconds),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError("PostgreSQL rate limiter did not return a count")
+            return int(row[0])
+
+        count = self._run(upsert)
+        self._maybe_prune(now, window_seconds)
+        return count <= limit
 
     def size(self) -> int:
-        with self._connect() as con:
-            with con.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM omnidesk_api_resource_rate_limits")
-                row = cur.fetchone()
-                if row is None:
-                    raise RuntimeError("PostgreSQL rate limiter size query returned no row")
-                return int(row[0])
+        def count(cur):  # type: ignore[no-untyped-def]
+            cur.execute("SELECT COUNT(*) FROM omnidesk_api_resource_rate_limits")
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError("PostgreSQL rate limiter size query returned no row")
+            return int(row[0])
+
+        return self._run(count)
 
 
 class ApiResourceGuard:
@@ -199,15 +257,34 @@ class ApiResourceGuard:
         return bool(getattr(self.cfg, "enabled", True))
 
     async def before_request(self, request: Request) -> Callable[[], None]:
-        if not self._enabled():
+        return await self._admit(request, _route_class(request.url.path))
+
+    async def _admit(self, request: Request, route_class: str) -> Callable[[], None]:
+        if not self._enabled() or request.url.path in PROBE_PATHS:
             return lambda: None
         client = _client_key(request, self.cfg)
         path = _path_key(request.url.path)
         window = int(getattr(self.cfg, "window_seconds", 60))
-        self._check_rate(f"ip:{client}", int(getattr(self.cfg, "max_requests_per_ip", 300)), window, "ip")
-        self._check_rate(f"ip-path:{client}:{path}", int(getattr(self.cfg, "max_requests_per_endpoint", 120)), window, "endpoint")
-        release = self._acquire(_route_class(request.url.path))
+        await self._check_rates_async(
+            [
+                (f"ip:{client}", int(getattr(self.cfg, "max_requests_per_ip", 300)), "ip"),
+                (f"ip-path:{client}:{path}", int(getattr(self.cfg, "max_requests_per_endpoint", 120)), "endpoint"),
+            ],
+            window,
+        )
+        release = self._acquire(route_class)
         return await self._ingest_admitted(request, release)
+
+    async def _check_rates_async(self, checks: list[tuple[str, int, str]], window_seconds: int) -> None:
+        if getattr(self.rate, "backend", "memory") == "memory":
+            self._check_rates(checks, window_seconds)
+            return
+        # Shared stores do network or disk I/O; keep it off the event loop.
+        await asyncio.to_thread(self._check_rates, checks, window_seconds)
+
+    def _check_rates(self, checks: list[tuple[str, int, str]], window_seconds: int) -> None:
+        for key, limit, label in checks:
+            self._check_rate(key, limit, window_seconds, label)
 
     async def _ingest_admitted(self, request: Request, release: Callable[[], None]) -> Callable[[], None]:
         try:
@@ -216,6 +293,12 @@ class ApiResourceGuard:
             release()
             raise
         return release
+
+    async def check_authenticated_async(self, request: Request, *, actor: str, role: str, organization: str | None = None) -> None:
+        if getattr(self.rate, "backend", "memory") == "memory":
+            self.check_authenticated(request, actor=actor, role=role, organization=organization)
+            return
+        await asyncio.to_thread(self.check_authenticated, request, actor=actor, role=role, organization=organization)
 
     def check_authenticated(self, request: Request, *, actor: str, role: str, organization: str | None = None) -> None:
         if not self._enabled():
