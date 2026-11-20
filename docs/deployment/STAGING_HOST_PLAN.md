@@ -56,7 +56,8 @@ timedatectl
   new to 80/443 in that case. Only if 80/443 are free, run Caddy with the
   owner's approval.
 - **Postgres** runs as a rootless Podman container with its volume in the
-  `omnidesk` home. Backups cover only OmniDesk's database and config.
+  `omnidesk` home. Backups cover only OmniDesk's database and config, and are
+  kept at most 35 days (see "Backups and restores" below).
 - **Drills touch only OmniDesk:**
   - soak: at most 4 requests/s from one client, the gateway's own per-IP quotas;
   - failure injection and rollback: only OmniDesk units and containers;
@@ -71,8 +72,12 @@ Caddy, node_exporter, Prometheus and Alertmanager), an idempotent bootstrap, and
 a forced-command deploy key that can run only a root helper. That helper
 deploys by digest with automatic rollback, smoke-tests, backs up, runs the
 restore drill and does maintenance. The design is rehearsed on a disposable CI
-VM. Known fix before reuse: `systemctl --user` for the runner user needs its
-bus address (`DBUS_SESSION_BUS_ADDRESS`) through sudo.
+VM. Known fixes before reuse:
+- `systemctl --user` for the runner user needs its bus address
+  (`DBUS_SESSION_BUS_ADDRESS`) through sudo.
+- Its backup runs `pg_dump` itself and keeps the newest 7 dumps with no age
+  limit. Replace it with `scripts/backup_postgres.py --retention-days 35`
+  (`tests/test_backup_retention_policy.py` fails on it until then).
 
 Host-level points that also apply to any dedicated VM:
 - The host firewall must allow **NTP (UDP 123)**. Otherwise the clock drifts
@@ -106,6 +111,20 @@ Host-level points that also apply to any dedicated VM:
   `OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY` (required in production at all times),
   `OMNIDESK_MEMORY_ENCRYPTION_KEY`, `OMNIDESK_SANDBOX_RUNNER_TOKEN`,
   `OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET`, and the Postgres password.
+- **Backups and restores** (privacy rules in SECURITY.md):
+  - A daily timer runs `scripts/backup_postgres.py --encrypt --sign-manifest
+    --retention-days 35 --metrics-file <node_exporter textfile dir>/omnidesk_backup.prom`.
+    Erasure does not rewrite backups, so backups holding personal data are kept
+    at most 35 days. The scripts default to `--retention-days 0` (keep
+    everything), so the flag is required; `tests/test_backup_retention_policy.py`
+    fails on a scheduled backup without it or above 35.
+    `web_first_host.py backup` stays a manual one-off: it never deletes old dumps.
+  - After every restore, the drill included, the restored gateway serves no
+    traffic until each erasure logged since the backup was taken
+    (`privacy.subject_erased` in the security audit log) has been applied
+    again. Use security's re-apply command once it exists; until then, repeat
+    each erasure request with a new dual approval. The drill records how many
+    erasures it re-applied.
 - **Public webhook endpoint** for the channels session's live WhatsApp tests:
   the gateway's webhook routes behind the same TLS host name, opened only
   after the owner approves the host. Its host name goes to the coordinator.
@@ -122,7 +141,8 @@ Host-level points that also apply to any dedicated VM:
 3. Send the TLS host name for the channels webhooks to the coordinator.
 4. Run the drills on the host and keep raw outputs with run URLs: deploy,
    rollback (including a failed rollout), backup and restore with measured
-   RPO/RTO, alert delivery to Slack, maintenance, product soak and the
+   RPO/RTO (logged erasures re-applied before the restored instance serves
+   traffic), alert delivery to Slack, maintenance, product soak and the
    Postgres multi-instance soak, and the self-healing drill.
 5. Import only real outputs as evidence. Never hand-edit evidence, and never
    weaken the external GA evidence gate.
