@@ -3,6 +3,7 @@ from typing import Optional
 
 from dataclasses import dataclass
 
+from omnidesk_agent.self_learning.forbidden_intent import forbidden_intents, tokens
 from omnidesk_agent.self_upgrade.models import UpgradeRequest
 
 
@@ -36,6 +37,14 @@ class UpgradeApprovalGate:
         files = [f.lower() for f in files_to_change or []]
         if any(forbidden in lower for forbidden in FORBIDDEN_ACTIONS):
             return UpgradeGateDecision(False, "forbidden", "Forbidden self-upgrade action")
+        # The literal tokens above miss plain-language forms such as
+        # "force push to main and enable auto merge".
+        intents = forbidden_intents(action)
+        words = tokens(action)
+        if any(w in {"restart", "restarts", "restarting", "reboot"} for w in words) and "daemon" in words:
+            intents.append("auto_restart_daemon")
+        if intents:
+            return UpgradeGateDecision(False, "forbidden", f"Forbidden self-upgrade action: {', '.join(sorted(set(intents)))}")
         if any(keyword in lower for keyword in HIGH_RISK_KEYWORDS) or any(
             f.startswith("omnidesk_agent/security/") or f.startswith("omnidesk_agent/core/") or f.startswith("omnidesk_agent/self_upgrade/")
             for f in files
