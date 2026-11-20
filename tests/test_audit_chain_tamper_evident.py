@@ -503,3 +503,11 @@ def test_monitor_treats_an_unreadable_log_as_a_failure(tmp_path, monkeypatch):
     assert monitor.check_once() is False
 
     assert failures and "OSError" in failures[0]
+
+
+def test_everything_that_boots_production_passes_the_audit_key():
+    """Production refuses to start without the key, so every shipped production boot path must pass it."""
+    for path in ("deploy/docker/docker-compose.yml", "deploy/docker/docker-compose.full.yml"):
+        assert "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY: " in (REPO_ROOT / path).read_text(encoding="utf-8"), path
+    for script in ("scripts/isolated_cloud_acceptance.py", "scripts/web_first_host.py", "scripts/init_production_config.py"):
+        assert "AUDIT_CHECKPOINT_HMAC_KEY" in (REPO_ROOT / script).read_text(encoding="utf-8"), script

@@ -82,6 +82,7 @@ def test_outbound_dispatcher_classifies_non_retryable_channel_errors(tmp_path):
 
 def test_production_requires_remote_runner_or_digest_pinned_local_docker(monkeypatch):
     cfg = AppConfig()
+    cfg.permissions.approval_mode = "remote_approval"
     cfg.plugins.enabled = False
     cfg.channels.chrome.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True

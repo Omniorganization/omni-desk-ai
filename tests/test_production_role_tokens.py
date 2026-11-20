@@ -14,6 +14,7 @@ ROLE_ENVS = {
 
 def _hardened_config() -> AppConfig:
     cfg = AppConfig()
+    cfg.permissions.approval_mode = "remote_approval"
     cfg.plugins.enabled = False
     cfg.channels.chrome.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True

@@ -45,6 +45,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional
 
+# One class for callers on every branch of the API (security/audit_errors.py).
+from omnidesk_agent.security.audit_errors import AuditIntegrityError
+
 if sys.platform == "win32":  # pragma: no cover - Windows
     import msvcrt
 else:
@@ -59,10 +62,6 @@ _KEY_ID_LABEL = b"omnidesk/audit-chain/key-id"
 _TAIL_CHUNK_BYTES = 8192
 _PRODUCTION_ENV_VALUES = frozenset({"prod", "production"})
 _ENTRY_FIELDS = frozenset({"chain", "seq", "ts", "event", "payload", "previous_hash", "key_id", "hash"})
-
-
-class AuditIntegrityError(PermissionError):
-    """The audit log cannot be extended or trusted; the audited action must not run."""
 
 
 # --- keys ------------------------------------------------------------------------------------

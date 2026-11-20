@@ -14,6 +14,9 @@ from omnidesk_agent.security.dual_approval import stamp_requester
 from omnidesk_agent.security.provenance import proposal_taint, requires_fresh_approval
 
 
+# Upper bound for one agent-loop audit payload (record_event).
+AGENT_EVENT_MAX_BYTES = 16_384
+
 # Risks that may only run after two distinct owners approved the exact
 # proposal through the remote approval store, whatever the configuration says.
 # Configuration can add risks (require_dual_approval_for_risks), never remove these.
@@ -230,15 +233,23 @@ class PermissionManager:
         """Audit an agent-loop lifecycle event (agent_turn_planned, agent_step_finished, ...).
 
         Only ``agent_``-prefixed names are accepted, so loop events can never pose
-        as approval decisions. Payloads pass the same redaction as proposals and
-        should hold ids, counts and digests, not tool output. Raises
-        AuditIntegrityError when the entry cannot be written: stop the run then.
+        as approval decisions, policy blocks or break-glass transitions. The
+        payload must be JSON-serialisable and at most AGENT_EVENT_MAX_BYTES; it
+        passes the same redaction as proposals and should hold ids, counts,
+        digests and statuses, never tool output text. Raises AuditIntegrityError
+        when the entry cannot be written: stop the run then.
         """
         name = str(event or "")
         if not re.fullmatch(r"agent_[a-z0-9_]{1,60}", name):
             raise ValueError("agent loop audit events must be named agent_<lower_snake_case>")
         if not isinstance(payload, dict):
             raise TypeError("agent loop audit payload must be a dict")
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("agent loop audit payload must be JSON-serialisable") from exc
+        if len(encoded.encode("utf-8")) > AGENT_EVENT_MAX_BYTES:
+            raise ValueError(f"agent loop audit payload exceeds {AGENT_EVENT_MAX_BYTES} bytes")
         self._audit(name, payload)
 
     def mark_audit_integrity_failure(self, message: str) -> None:
