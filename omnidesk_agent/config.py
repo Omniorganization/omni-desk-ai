@@ -555,6 +555,18 @@ class MemoryPrivacyConfig(BaseModel):
     encryption_key_id: str = "default"
 
 
+class MemoryRetrievalConfig(BaseModel):
+    """Planner memory retrieval: BM25 ranking of the actor's memories, optionally
+    blended with embedding similarity (local model, `vector` extra)."""
+
+    candidate_window: int = Field(default=500, ge=10, le=5000)  # most recent memories ranked
+    fts_candidates: int = Field(default=200, ge=0, le=2000)  # older full-text matches added
+    embeddings_enabled: bool = False
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_weight: float = Field(default=0.5, ge=0, le=1)
+    min_embedding_similarity: float = Field(default=0.35, ge=0, le=1)
+
+
 class SandboxConfig(BaseModel):
     backend: Literal["argv", "docker", "remote_docker"] = "docker"
     docker_image: str = DEFAULT_SANDBOX_IMAGE
@@ -601,6 +613,7 @@ class AppConfig(BaseModel):
     api_resource_guard: ApiResourceGuardConfig = Field(default_factory=ApiResourceGuardConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     memory_privacy: MemoryPrivacyConfig = Field(default_factory=MemoryPrivacyConfig)
+    memory_retrieval: MemoryRetrievalConfig = Field(default_factory=MemoryRetrievalConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
     def model_post_init(self, __context: Any) -> None:
