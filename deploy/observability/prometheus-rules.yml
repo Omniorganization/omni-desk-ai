@@ -1,6 +1,115 @@
+# OmniDesk alerting and recording rules.
+#
+# Every rule below watches a metric the gateway actually emits
+# (tests/test_alert_rules_contract.py enforces this). Rules for metrics no code
+# increments were removed rather than left as false assurance: backup
+# verification moved to deploy/observability/prometheus-rules.host.yml, fed by
+# the out-of-process backup job; sandbox timeouts and self-upgrade invalid
+# transitions need instrumentation in their owning modules first. Behaviour is
+# pinned by promtool tests in deploy/observability/prometheus-rules.test.yml.
+#
+# SLOs (docs/SLO.md):
+#   availability: 99.5% of API requests (probes and the metrics scrape excluded) return non-5xx, 30 days.
+#   latency:      99% of control-plane API requests finish within 1s, 30 days
+#                 (model-bound chat/agent routes and probes excluded).
+# Burn-rate alerts follow the multi-window, multi-burn-rate scheme of the
+# Google SRE workbook (14.4x/6x page, 3x/1x ticket).
 groups:
-  - name: omnidesk-industrial-ga
+  - name: omnidesk-slo-recording
+    interval: 30s
     rules:
+      # Unhandled exceptions are counted in omnidesk_http_errors_total and not in
+      # omnidesk_http_requests_total, so both feed the error ratio.
+      - record: omnidesk:api_errors:rate5m
+        expr: sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[5m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[5m]))
+      - record: omnidesk:api_requests:rate5m
+        expr: sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[5m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[5m]))
+      - record: omnidesk:api_error_ratio:rate5m
+        expr: omnidesk:api_errors:rate5m / omnidesk:api_requests:rate5m
+      - record: omnidesk:api_error_ratio:rate30m
+        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[30m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[30m]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[30m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[30m])))
+      - record: omnidesk:api_error_ratio:rate1h
+        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[1h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1h]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[1h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1h])))
+      - record: omnidesk:api_error_ratio:rate2h
+        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[2h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[2h]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[2h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[2h])))
+      - record: omnidesk:api_error_ratio:rate6h
+        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[6h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[6h]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[6h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[6h])))
+      - record: omnidesk:api_error_ratio:rate1d
+        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[1d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1d]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[1d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1d])))
+      - record: omnidesk:api_error_ratio:rate3d
+        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[3d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[3d]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[3d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[3d])))
+      # Share of control-plane requests slower than the 1s latency objective.
+      - record: omnidesk:api_slow_ratio:rate5m
+        expr: 1 - (sum(rate(omnidesk_http_request_duration_seconds_bucket{le="1.0",path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[5m])) / sum(rate(omnidesk_http_request_duration_seconds_count{path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[5m])))
+      - record: omnidesk:api_slow_ratio:rate30m
+        expr: 1 - (sum(rate(omnidesk_http_request_duration_seconds_bucket{le="1.0",path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[30m])) / sum(rate(omnidesk_http_request_duration_seconds_count{path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[30m])))
+      - record: omnidesk:api_slow_ratio:rate1h
+        expr: 1 - (sum(rate(omnidesk_http_request_duration_seconds_bucket{le="1.0",path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[1h])) / sum(rate(omnidesk_http_request_duration_seconds_count{path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[1h])))
+      - record: omnidesk:api_slow_ratio:rate6h
+        expr: 1 - (sum(rate(omnidesk_http_request_duration_seconds_bucket{le="1.0",path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[6h])) / sum(rate(omnidesk_http_request_duration_seconds_count{path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[6h])))
+
+  - name: omnidesk-slo-alerts
+    rules:
+      - alert: OmniDeskGatewayDown
+        expr: up{job="omnidesk-agent"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OmniDesk gateway target {{ $labels.instance }} is down or refusing the metrics scrape
+          description: Prometheus cannot scrape /admin/metrics. Either the gateway is down, or the scrape token was rejected (403). Check /health, /ready and the metrics viewer token.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskgatewaydown
+      - alert: OmniDeskGatewayAbsent
+        expr: absent(up{job="omnidesk-agent"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No OmniDesk gateway scrape target exists
+          description: Prometheus has no omnidesk-agent target at all, so every other OmniDesk alert is blind. Check the scrape configuration or service discovery.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskgatewayabsent
+      - alert: OmniDeskAvailabilityBudgetFastBurn
+        expr: (omnidesk:api_error_ratio:rate1h > (14.4 * 0.005) and omnidesk:api_error_ratio:rate5m > (14.4 * 0.005)) or (omnidesk:api_error_ratio:rate6h > (6 * 0.005) and omnidesk:api_error_ratio:rate30m > (6 * 0.005))
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: OmniDesk is burning its 99.5% availability error budget fast
+          description: 'API 5xx ratio is {{ $value | humanizePercentage }}; at this rate the 30-day error budget is gone within days. Check recent deploys, Postgres and the sandbox runner.'
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskavailabilitybudgetfastburn
+      - alert: OmniDeskAvailabilityBudgetSlowBurn
+        expr: (omnidesk:api_error_ratio:rate1d > (3 * 0.005) and omnidesk:api_error_ratio:rate2h > (3 * 0.005)) or (omnidesk:api_error_ratio:rate3d > 0.005 and omnidesk:api_error_ratio:rate6h > 0.005)
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: OmniDesk availability error budget is burning faster than it refills
+          description: 'API 5xx ratio is {{ $value | humanizePercentage }} over the long window; the 30-day 99.5% objective will be missed if this continues.'
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskavailabilitybudgetslowburn
+      - alert: OmniDeskLatencyBudgetFastBurn
+        expr: (omnidesk:api_slow_ratio:rate1h > (14.4 * 0.01) and omnidesk:api_slow_ratio:rate5m > (14.4 * 0.01)) or (omnidesk:api_slow_ratio:rate6h > (6 * 0.01) and omnidesk:api_slow_ratio:rate30m > (6 * 0.01))
+        for: 5m
+        labels:
+          severity: critical
+          slo: latency
+        annotations:
+          summary: OmniDesk control-plane API latency objective is burning fast
+          description: '{{ $value | humanizePercentage }} of control-plane requests take longer than 1s (objective: at most 1%). Check event-loop stalls, Postgres latency and the rate limiter backend.'
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesklatencybudgetfastburn
+
+  - name: omnidesk-runtime-safety
+    rules:
+      - alert: OmniDeskToolCallLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(omnidesk_span_duration_seconds_bucket{span="tool.call"}[10m]))) > 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'OmniDesk tool-call p95 latency is {{ $value | humanizeDuration }}'
+          description: Agent tool calls are slow (p95 over 30s for 15 minutes). Check the sandbox runner queue, container image pulls and model latency.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesktoolcalllatencyhigh
       - alert: OmniDeskApprovalResumeFailures
         expr: increase(omnidesk_approval_resume_failures_total[10m]) > 0
         for: 5m
@@ -9,6 +118,7 @@ groups:
         annotations:
           summary: OmniDesk approval resume failures detected
           description: Approval/resume failures indicate possible stale approvals, invalid tokens, or workflow regressions.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskapprovalresumefailures
       - alert: OmniDeskOutboundAmbiguousSend
         expr: increase(omnidesk_outbound_ambiguous_send_total[10m]) > 0
         for: 1m
@@ -17,6 +127,7 @@ groups:
         annotations:
           summary: OmniDesk outbound send requires reconciliation
           description: A best-effort provider send failed ambiguously; verify provider state before requeueing.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskoutboundambiguoussend
       - alert: OmniDeskOutboundDeadLetterRate
         expr: increase(omnidesk_outbound_dead_letter_total[30m]) > 0
         for: 5m
@@ -25,22 +136,16 @@ groups:
         annotations:
           summary: OmniDesk outbound messages entered dead letter
           description: Review outbound provider credentials, recipient validity, rate limits, and policy errors.
-      - alert: OmniDeskSandboxTimeouts
-        expr: increase(omnidesk_sandbox_timeout_total[15m]) > 3
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskoutbounddeadletterrate
+      - alert: OmniDeskJobsDeadLettered
+        expr: increase(omnidesk_jobs_dead_lettered_total[30m]) > 0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: OmniDesk sandbox timeout spike
-          description: Sandbox jobs are timing out; check runner CPU, memory, image pull status, and command policy.
-      - alert: OmniDeskSelfUpgradeInvalidTransition
-        expr: increase(omnidesk_self_upgrade_invalid_transition_total[30m]) > 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: OmniDesk self-upgrade state machine rejected a transition
-          description: Self-upgrade proposals must be reviewed; invalid transition means governance ordering drifted.
+          summary: OmniDesk background jobs entered dead letter
+          description: Jobs exhausted their retries. Inspect /admin/jobs/dead-letter before requeueing.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskjobsdeadlettered
       - alert: OmniDeskWebhookSignatureFailures
         expr: increase(omnidesk_webhook_signature_failures_total[10m]) > 0
         for: 1m
@@ -49,15 +154,28 @@ groups:
         annotations:
           summary: OmniDesk webhook signature or replay guard failures detected
           description: Webhook requests failed signature, verification-token, or replay-guard validation.
-      - alert: OmniDeskBackupVerifyFailure
-        expr: increase(omnidesk_backup_verify_failure_total[24h]) > 0
-        for: 1m
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskwebhooksignaturefailures
+      - alert: OmniDeskWebhookEnqueueFailures
+        expr: increase(omnidesk_webhook_enqueue_failures_total[10m]) > 0
+        for: 2m
         labels:
           severity: critical
         annotations:
-          summary: OmniDesk backup verification failed
-          description: Backup integrity checks failed; validate RPO/RTO assumptions and restore readiness.
+          summary: OmniDesk failed to enqueue verified inbound webhooks
+          description: Verified inbound messages could not be persisted to the job queue; customers' messages may be lost. Check Postgres.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskwebhookenqueuefailures
+      - alert: OmniDeskRequestsThrottled
+        expr: sum(rate(omnidesk_http_resource_guard_denials_total[5m])) / (sum(rate(omnidesk_http_requests_total[5m])) + sum(rate(omnidesk_http_resource_guard_denials_total[5m]))) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 20% of OmniDesk requests are rejected by admission control
+          description: 'The resource guard rejected {{ $value | humanizePercentage }} of requests. With trusted_proxy_ips unset, all users behind one ingress share one rate-limit bucket.'
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskrequeststhrottled
 
+  - name: omnidesk-telemetry-pipeline
+    rules:
       - alert: OmniDeskTraceSpanFailures
         expr: increase(omnidesk_trace_span_failures_total[15m]) > 0
         for: 2m
@@ -65,17 +183,38 @@ groups:
           severity: warning
         annotations:
           summary: OmniDesk traced operation failures detected
-          description: Trace spans failed; inspect correlated run_id, job_id, approval_id, sandbox_request_id and outbound_id fields in JSON logs.
-
+          description: Trace spans failed (approval pauses are not counted); inspect correlated run_id, job_id, approval_id, sandbox_request_id and outbound_id fields in JSON logs.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesktracespanfailures
       - alert: OmniDeskTraceExportFailures
-        expr: increase(omnidesk_trace_export_failures_total[15m]) > 0
-        for: 2m
+        expr: sum by (reason) (increase(omnidesk_trace_export_failures_total[15m])) > 0
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: OmniDesk OTLP trace export failures detected
-          description: OTLP collector/exporter path is failing; inspect OMNIDESK_OTLP_ENDPOINT, collector health, and network policy.
+          summary: 'OmniDesk OTLP trace export failing ({{ $labels.reason }})'
+          description: Spans are being lost on the way to the collector. http_4xx means the collector rejected the payload; connection/timeout means it is unreachable (check OMNIDESK_OTLP_ENDPOINT, the collector and network policy).
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesktraceexportfailures
+      - alert: OmniDeskTraceSpansDropped
+        expr: increase(omnidesk_trace_export_dropped_total[15m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk trace export queue is dropping spans
+          description: The in-process OTLP queue overflowed, usually because the collector is slow or unreachable.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesktracespansdropped
+      - alert: OmniDeskMetricSeriesDropped
+        expr: increase(omnidesk_metrics_dropped_series_updates_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OmniDesk metrics registry hit its series cap
+          description: New label combinations are being discarded, so some alerts may stop seeing their signal. Look for an unbounded label value.
+          runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskmetricseriesdropped
 
+  - name: omnidesk-bigseller
+    rules:
       - alert: OmniDeskBigSellerWebhookRejected
         expr: increase(omnidesk_bigseller_webhook_rejected_total[10m]) > 0
         for: 1m
@@ -84,7 +223,6 @@ groups:
         annotations:
           summary: BigSeller webhook requests rejected
           description: BigSeller webhook requests failed signature, replay, or body-size enforcement.
-
       - alert: OmniDeskBigSellerWebhookDuplicates
         expr: increase(omnidesk_bigseller_webhook_duplicate_total[10m]) > 10
         for: 2m
@@ -93,7 +231,6 @@ groups:
         annotations:
           summary: BigSeller duplicate webhook spike
           description: BigSeller event-id dedupe is suppressing repeated webhook deliveries.
-
       - alert: OmniDeskBigSellerDeadLetterCurrent
         expr: omnidesk_bigseller_dead_letter_current > 0
         for: 5m
