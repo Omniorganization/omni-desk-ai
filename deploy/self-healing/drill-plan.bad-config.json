@@ -1,0 +1,20 @@
+{
+  "environment": "staging",
+  "health_url": "http://127.0.0.1:18789/health",
+  "post_checks": 5,
+  "injections": [
+    {
+      "name": "bad-config-deploy",
+      "description": "Deploy a gateway config the production validator refuses at boot, then restart the gateway. The watchdog (deploy/systemd/omnidesk-watchdog.service) must restore its last known-good snapshot and restart. Precondition: the watchdog has seen the current config healthy for --good-after (300 s).",
+      "inject": [
+        ["/opt/omnidesk/venv/bin/python", "/opt/omnidesk/deploy/self-healing/make_bad_config.py", "/etc/omnidesk/config.yaml", "/var/lib/omnidesk-watchdog/drill/bad-config.yaml"],
+        ["/usr/bin/install", "-m", "0640", "/var/lib/omnidesk-watchdog/drill/bad-config.yaml", "/etc/omnidesk/config.yaml"],
+        ["/usr/bin/systemctl", "restart", "omnidesk-agent.service"]
+      ],
+      "audit_log": "/var/lib/omnidesk-watchdog/watchdog.jsonl",
+      "event": "recovered",
+      "action": "rollback_config_and_restart",
+      "timeout_seconds": 300
+    }
+  ]
+}
