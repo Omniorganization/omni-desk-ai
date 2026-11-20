@@ -77,8 +77,14 @@ class DiffPolicy:
                 continue
             if line.startswith(("--- ", "+++ ")):
                 path = line[4:].strip()
-                if path != "/dev/null" and not path.startswith(("a/", "b/")):
-                    report.violations.append(f"unexpected path header: {path}")
+                if path == "/dev/null":
+                    if line.startswith("+++ "):
+                        report.violations.append(f"file deletion is not allowed: {current}")
+                    continue
+                prefix = "a/" if line.startswith("--- ") else "b/"
+                # git apply may use these names; they must be the file the git header names.
+                if not path.startswith(prefix) or current is None or path[2:] != current:
+                    report.violations.append(f"path header {path!r} does not match diff --git header {current!r}")
                 continue
             if line.startswith("+") and not line.startswith("+++"):
                 report.added_lines += 1

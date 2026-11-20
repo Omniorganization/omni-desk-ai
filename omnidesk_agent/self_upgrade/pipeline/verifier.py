@@ -35,6 +35,7 @@ class EvidenceBundle:
     changed_files: list[str] = field(default_factory=list)
     targeted_tests: list[str] = field(default_factory=list)
     steps: list[dict[str, Any]] = field(default_factory=list)
+    full_suite_passed: bool = False
     produced_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,7 +96,9 @@ def verify(
             return _stamp(bundle)
         bundle.changed_files = tree.changed_files()
         if sorted(bundle.changed_files) != sorted(report.files):
+            # Never run code from a patch that touched files the policy did not check.
             bundle.reasons.append(f"applied files {bundle.changed_files} differ from the diff headers {report.files}")
+            return _stamp(bundle)
         bundle.targeted_tests = select_targeted_tests(tree.path, bundle.changed_files, issue)  # type: ignore[arg-type]
         if not bundle.targeted_tests:
             bundle.reasons.append("no test covers the change; the diff must add or touch a test")
@@ -123,6 +126,7 @@ def verify(
             if full.exit_code != 0:
                 bundle.reasons.append("full test suite fails")
     bundle.ok = not bundle.reasons
+    bundle.full_suite_passed = any(step["name"] == "full_suite" and step["exit_code"] == 0 for step in bundle.steps)
     return _stamp(bundle)
 
 

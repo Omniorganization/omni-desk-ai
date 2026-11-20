@@ -15,6 +15,9 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+import os
+import re
+import secrets
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -27,9 +30,12 @@ from omnidesk_agent.self_upgrade.pipeline.verifier import patch_sha256, verify
 from omnidesk_agent.self_upgrade.pipeline.workspace import IsolatedWorktree
 
 
-def branch_name(issue_slug: str, *, today: Optional[dt.date] = None) -> str:
+def branch_name(issue: Any, *, today: Optional[dt.date] = None, attempt: Optional[str] = None) -> str:
+    """ai/self-upgrade-<ref>-<slug>-<yyyymmdd>-<attempt>; unique per publication attempt."""
     day = (today or dt.datetime.now(dt.timezone.utc).date()).strftime("%Y%m%d")
-    return f"ai/self-upgrade-{issue_slug}-{day}"
+    ref = re.sub(r"[^a-z0-9]+", "", str(issue.reference).lower())[:12] or "manual"
+    token = re.sub(r"[^a-z0-9]+", "", (attempt or os.getenv("GITHUB_RUN_ID") or secrets.token_hex(3)).lower())[:12]
+    return f"ai/self-upgrade-{ref}-{issue.slug()[:30].strip('-')}-{day}-{token}"
 
 
 def pr_body(issue: Any, proposal: dict[str, Any], evidence: dict[str, Any]) -> str:
@@ -108,6 +114,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not evidence.get("ok") or evidence.get("patch_sha256") != patch_sha256(diff):
         print(json.dumps({"published": False, "reason": "evidence is not passing or does not belong to this patch"}))
         return 5
+    if not any(step.get("name") == "full_suite" and step.get("exit_code") == 0 for step in evidence.get("steps", [])):
+        print(json.dumps({"published": False, "reason": "evidence has no passing full-suite run (verify ran with --no-full-suite?)"}))
+        return 5
     report = DiffPolicy().check(diff)
     if not report.ok:
         print(json.dumps({"published": False, "reason": "diff policy", "violations": report.violations}))
@@ -118,7 +127,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 5
         files = {path: tree.read(path) for path in tree.changed_files()}
     proposal = json.loads(Path(args.proposal).read_text(encoding="utf-8")) if args.proposal else {}
-    branch = branch_name(issue.slug())
+    branch = branch_name(issue)
     title = f"fix(self-upgrade): {issue.title}"[:120]
     body = pr_body(issue, proposal, evidence)
     if args.dry_run:

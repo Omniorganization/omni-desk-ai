@@ -181,3 +181,47 @@ def test_publish_step_refuses_evidence_for_another_patch(repo, tmp_path, monkeyp
     code = cli.main(["--repo-root", str(repo), "publish", "--issue", str(issue_file), "--diff", str(diff_file),
                      "--evidence", str(evidence), "--repo", "o/r", "--dry-run"])
     assert code == 5
+
+
+# ------------------------------------------------ review findings on #240
+
+SMUGGLED = """diff --git a/omnidesk_agent/demo/calc.py b/omnidesk_agent/demo/calc.py
+--- a/omnidesk_agent/security/permissions.py
++++ b/omnidesk_agent/security/permissions.py
+@@ -1 +1 @@
+-x
++y
+"""
+
+
+def test_path_headers_must_agree_with_the_git_header(repo):
+    report = DiffPolicy().check(SMUGGLED)
+    assert not report.ok and any("does not match diff --git header" in v for v in report.violations)
+    bundle = verify(repo, SMUGGLED, UpgradeIssue(title="x", body="b", source="manual"), run_full_suite=False)
+    assert bundle.steps == []  # refused before anything is applied or run
+
+
+def test_publish_requires_a_passing_full_suite_in_the_evidence(repo, tmp_path):
+    issue_file = tmp_path / "issue.json"
+    issue_file.write_text(json.dumps(ISSUE.to_dict()))
+    diff_file = tmp_path / "proposal.diff"
+    diff_file.write_text(FIX_DIFF)
+    partial = verify(repo, FIX_DIFF, ISSUE, run_full_suite=False)
+    assert partial.ok and not partial.full_suite_passed
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(json.dumps(partial.to_dict()))
+    args = ["--repo-root", str(repo), "publish", "--issue", str(issue_file), "--diff", str(diff_file),
+            "--evidence", str(evidence), "--repo", "o/r", "--dry-run"]
+    assert cli.main(args) == 5
+    full = verify(repo, FIX_DIFF, ISSUE)
+    evidence.write_text(json.dumps(full.to_dict()))
+    assert full.full_suite_passed and cli.main(args) == 0
+
+
+def test_branch_names_are_unique_per_attempt_and_name_the_issue():
+    first = cli.branch_name(ISSUE, attempt="111")
+    second = cli.branch_name(ISSUE, attempt="222")
+    assert first != second and first.startswith("ai/self-upgrade-1-clamp-ignores-the-upper-bound-")
+    check_branch(first)
+    other = UpgradeIssue(title=ISSUE.title, body="b", source="github_issue", reference="#2")
+    assert cli.branch_name(other, attempt="111") != first

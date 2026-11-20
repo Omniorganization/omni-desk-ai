@@ -22,7 +22,8 @@ issue's `scope:` paths (60 000 characters at most) and must answer with one
 diff between `BEGIN_DIFF` and `END_DIFF`. The answer is data. It is not run.
 
 **diff policy** (`diff_policy.py`), checked in all three jobs: plain text edits
-only (no deletions, renames, mode changes, binaries, path traversal), at most
+only (no deletions, renames, mode changes, binaries, path traversal; the
+`---`/`+++` names must be the file the `diff --git` header names), at most
 10 files and 400 changed lines, inside the issue's scope plus `tests/`, and
 never in `.github/`, `scripts/`, `deploy/`, `infra/`, `release/`, `packaging/`,
 `omnidesk_agent/security|sandbox|plugins|api|self_upgrade|self_healing/`,
@@ -34,16 +35,16 @@ a change there needs a human. The pipeline cannot change itself.
 **verify** (`workspace.py`, `verifier.py`): a fresh `git worktree` of the
 base commit; commands get only `PATH`, `HOME`, locale and `PYTHONPATH`. It
 passes only if the issue's named failing tests fail before the change, the
-diff applies and changes exactly its declared files, at least one test covers
+diff applies and changes exactly its declared files (otherwise it stops before running anything), at least one test covers
 the change and the targeted tests pass with `-W error`, `git diff --check`,
 ruff, bandit (medium and up) and compileall pass on the changed files, and
 the full suite passes. The result is `evidence.json`
 (`omnidesk-self-upgrade-evidence/v1`) with every command, exit code and
 duration, and the patch SHA-256.
 
-**publish** (`publisher.py`): refuses unless the evidence passed and its
-patch hash matches. It applies the patch in a fresh worktree without running
-anything, then: create `ai/self-upgrade-<slug>-<yyyymmdd>` at the base commit,
+**publish** (`publisher.py`): refuses unless the evidence passed, includes a
+passing full-suite run, and its patch hash matches. It applies the patch in a fresh worktree without running
+anything, then: create `ai/self-upgrade-<issue>-<slug>-<yyyymmdd>-<run id>` (unique per attempt) at the base commit,
 add one commit through GraphQL `createCommitOnBranch` (signed by GitHub,
 attributed to the App), open a **draft** PR into `main` with the evidence
 summary, risk and rollback notes and a machine-readable list of the targeted
