@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from omnidesk_agent.core.subject_records import erasure_transaction
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from typing import Any, Optional
@@ -24,6 +25,9 @@ class RunStore:
         "waiting_approval_id": "waiting_approval_id",
     }
     UPDATE_FIELDS = set(UPDATE_FIELD_COLUMNS)
+    FINISHED_STATUSES = frozenset({"completed", "failed", "cancelled", "resume_failed"})
+    # original_message of a run erased while it was still in flight.
+    ERASED_MESSAGE = json.dumps({"erased": True})
 
     def __init__(self, db_path: Path):
         self.db_path = db_path.expanduser()
@@ -54,6 +58,7 @@ class RunStore:
         for name, ddl in {
             "approval_proposal_json": "ALTER TABLE runs ADD COLUMN approval_proposal_json TEXT",
             "resume_token": "ALTER TABLE runs ADD COLUMN resume_token TEXT",
+            "erased_at": "ALTER TABLE runs ADD COLUMN erased_at REAL",
         }.items():
             if name not in cols:
                 con.execute(ddl)
@@ -176,7 +181,8 @@ class RunStore:
         values = list(fields.values()) + [run_id]
         with connect_sqlite(self.db_path) as con:
             # Column names are fixed internal constants selected by UPDATE_FIELD_COLUMNS.
-            con.execute(f"UPDATE runs SET {assignments} WHERE id = ?", values)  # nosec B608
+            # An erased run's row takes no more writes (see erase_subject).
+            con.execute(f"UPDATE runs SET {assignments} WHERE id = ? AND erased_at IS NULL", values)  # nosec B608
 
     def get(self, run_id: str) -> Optional[dict[str, Any]]:
         with connect_sqlite(self.db_path) as con:
@@ -208,3 +214,58 @@ class RunStore:
         with connect_sqlite(self.db_path) as con:
             row = con.execute("SELECT id FROM runs WHERE waiting_approval_id=?", (approval_id,)).fetchone()
         return self.get(row[0]) if row else None
+
+    # ------------------------------------------------------------------ data-subject requests
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Every run `actor` asked for (message, plan, results, pending proposal); never resume tokens."""
+        with connect_sqlite(self.db_path) as con:
+            run_ids = self._subject_run_ids(con, str(actor))
+        runs = []
+        for run_id in run_ids:
+            run = self.get(run_id)
+            if run is not None:
+                run.pop("resume_token", None)
+                runs.append(run)
+        return runs
+
+    def erase_subject(self, actor: str) -> int:
+        """Erase the runs `actor` asked for; returns how many.
+
+        A finished run is deleted. A run still in flight becomes a cancelled
+        tombstone without its content: its loop stops before the next step or
+        turn (it reads the status), nobody can resume it, and update() ignores
+        the row, so a loop that is still running cannot write the content back.
+        """
+        now = time.time()
+        erased = 0
+        with erasure_transaction(self.db_path) as con:
+            for run_id in self._subject_run_ids(con, str(actor)):
+                row = con.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()
+                if row is not None and row[0] in self.FINISHED_STATUSES:
+                    con.execute("DELETE FROM runs WHERE id=?", (run_id,))
+                else:
+                    con.execute(
+                        """
+                        UPDATE runs SET status='cancelled', original_message=?, plan_json=NULL, results_json='[]',
+                               waiting_approval_id=NULL, approval_proposal_json=NULL, resume_token=NULL,
+                               erased_at=?, updated_at=?
+                        WHERE id=?
+                        """,
+                        (self.ERASED_MESSAGE, now, now, run_id),
+                    )
+                erased += 1
+        return erased
+
+    @staticmethod
+    def _subject_run_ids(con: sqlite3.Connection, actor: str) -> list[str]:
+        """Ids of the runs whose original message came from `actor` (sender_id), on any channel."""
+        run_ids = []
+        for run_id, message in con.execute("SELECT id, original_message FROM runs WHERE erased_at IS NULL"):
+            try:
+                sender = json.loads(message).get("sender_id")
+            except (ValueError, AttributeError):
+                continue
+            if sender is not None and str(sender) == actor:
+                run_ids.append(str(run_id))
+        return run_ids

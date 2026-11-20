@@ -8,6 +8,7 @@ import weakref
 from pathlib import Path
 from typing import Any, Optional
 from omnidesk_agent.config import MemoryPrivacyConfig, MemoryRetrievalConfig
+from omnidesk_agent.core.subject_records import ERASED_ACTOR, erasure_transaction, json_object
 from omnidesk_agent.privacy.encryption import EncryptionProvider
 from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter
 from omnidesk_agent.memory.governed_writer import GovernedMemoryWriter
@@ -665,6 +666,58 @@ class ExperienceStore:
             "namespace_filter_applied": namespace_filter_applied,
         }
 
+    # ------------------------------------------------------------------ data-subject requests
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Every memory record about `actor` on any channel, decrypted (data-subject access).
+
+        Experiences, structured experiences, interaction profiles and the memory
+        governance audit entries that name the actor. Embedding vectors are
+        derived from the exported experiences and are not exported themselves.
+        """
+        actor = str(actor)
+        records: list[dict[str, Any]] = []
+        with connect_sqlite(self.db_path) as con:
+            con.row_factory = sqlite3.Row
+            for row in con.execute("SELECT * FROM experiences WHERE actor=? ORDER BY id", (actor,)).fetchall():
+                records.append({"kind": "experience", **self._decode_legacy(dict(row))})
+            for row in con.execute("SELECT * FROM structured_experiences WHERE actor=? ORDER BY id", (actor,)).fetchall():
+                records.append({"kind": "structured_experience", **self._decode_structured(dict(row))})
+            for row in con.execute("SELECT * FROM interaction_profiles WHERE actor=? ORDER BY namespace", (actor,)).fetchall():
+                records.append({"kind": "interaction_profile", **self._decode_interaction_profile(dict(row))})
+            for row in con.execute("SELECT id, created_at, event_json FROM memory_governance_audit ORDER BY id").fetchall():
+                event = json_object(row["event_json"])
+                if _governance_event_names(event, actor):
+                    records.append({"kind": "memory_governance_audit", "id": row["id"], "created_at": row["created_at"], "event": event})
+        return records
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete `actor`'s memory on every channel; returns the records deleted or anonymised.
+
+        Experiences, structured experiences (with their embeddings) and
+        interaction profiles are deleted. The full-text indexes are rebuilt:
+        they index external content and would otherwise keep the words. Memory
+        governance audit entries stay, as the record of each decision, with the
+        actor id replaced.
+        """
+        actor = str(actor)
+        with erasure_transaction(self.db_path) as con:
+            experience_ids = [int(row[0]) for row in con.execute("SELECT id FROM structured_experiences WHERE actor=?", (actor,)).fetchall()]
+            erased = con.execute("DELETE FROM experiences WHERE actor=?", (actor,)).rowcount
+            erased += con.execute("DELETE FROM structured_experiences WHERE actor=?", (actor,)).rowcount
+            erased += con.execute("DELETE FROM interaction_profiles WHERE actor=?", (actor,)).rowcount
+            con.executemany("DELETE FROM structured_experience_embeddings WHERE experience_id=?", [(i,) for i in experience_ids])
+            for row in con.execute("SELECT id, event_json FROM memory_governance_audit").fetchall():
+                event = json_object(row[1])
+                if _governance_event_names(event, actor):
+                    con.execute("UPDATE memory_governance_audit SET event_json=? WHERE id=?", (json.dumps(_without_actor(event, actor), ensure_ascii=False, sort_keys=True, default=str), row[0]))
+                    erased += 1
+            for table in ("experiences_fts", "structured_experiences_fts"):
+                if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    # Fixed table names; 'rebuild' re-indexes from the remaining rows.
+                    con.execute(f"INSERT INTO {table}({table}) VALUES('rebuild')")  # nosec B608
+        return erased
+
     def record_interaction_profile(
         self,
         *,
@@ -901,6 +954,22 @@ class ExperienceStore:
         if "last_task" in row:
             row["last_task"] = self._decrypt_text(row["last_task"])
         return row
+
+
+def _governance_event_names(event: dict[str, Any], actor: str) -> bool:
+    """Does a memory governance audit event name `actor` (its actor, or the actor part of channel:actor)?"""
+    namespace = str(event.get("namespace") or "")
+    return str(event.get("actor") or "") == actor or (":" in namespace and namespace.split(":", 1)[1] == actor)
+
+
+def _without_actor(event: dict[str, Any], actor: str) -> dict[str, Any]:
+    event = dict(event)
+    if str(event.get("actor") or "") == actor:
+        event["actor"] = ERASED_ACTOR
+    namespace = str(event.get("namespace") or "")
+    if ":" in namespace and namespace.split(":", 1)[1] == actor:
+        event["namespace"] = f"{namespace.split(':', 1)[0]}:{ERASED_ACTOR}"
+    return event
 
 
 # User-facing alias requested in architecture notes.

@@ -131,7 +131,8 @@ class ChannelSendTool:
             self._require_channel_enabled(adapter, channel)
             if self.outbound_store:
                 # The dispatcher refuses a queued row whose text no longer matches this digest.
-                outbound_id = self.outbound_store.create(channel=channel, recipient=recipient, payload={"type": "text", "text": text, "text_sha256": text_sha256, "options": options})
+                # requested_by: whose request this is, so a data-subject request finds it.
+                outbound_id = self.outbound_store.create(channel=channel, recipient=recipient, payload={"type": "text", "text": text, "text_sha256": text_sha256, "options": options, "requested_by": ctx.actor})
                 return ToolResult(True, data={"outbound_id": outbound_id, "status": "pending"}, summary=f"queued text via {channel} to {recipient}")
             await adapter.send_text(recipient, text, **options)
             return ToolResult(True, data={"outbound_id": None, "status": "sent"}, summary=f"sent text via {channel} to {recipient}")
