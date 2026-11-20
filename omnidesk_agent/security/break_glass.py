@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from typing import Any, Callable
 
 from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain
 from omnidesk_agent.storage.sqlite import connect_sqlite
+
+log = logging.getLogger(__name__)
 
 STATUS_ACTIVE = "active"
 STATUS_PENDING = "pending_second_approval"
@@ -118,7 +121,13 @@ def audit_transition(chain: AuditChain, event: str, fields: dict[str, Any], *, r
     except Exception:
         session_id = fields.get("session_id") or getattr(fields.get("session"), "session_id", None)
         if session_id and event != "break_glass.revoke":
-            revoke(str(session_id))
+            try:
+                revoke(str(session_id))
+            except Exception as revoke_error:
+                # The audit failure stays the error raised (a missing row would
+                # otherwise surface as a KeyError); the session stays unusable
+                # while the log is broken, since every elevation is audited first.
+                log.error("break-glass session %s not revoked after an audit failure: %s", session_id, type(revoke_error).__name__)
         raise
 
 

@@ -511,3 +511,25 @@ def test_everything_that_boots_production_passes_the_audit_key():
         assert "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY: " in (REPO_ROOT / path).read_text(encoding="utf-8"), path
     for script in ("scripts/isolated_cloud_acceptance.py", "scripts/web_first_host.py", "scripts/init_production_config.py"):
         assert "AUDIT_CHECKPOINT_HMAC_KEY" in (REPO_ROOT / script).read_text(encoding="utf-8"), script
+
+
+def test_a_failed_revoke_never_hides_the_audit_failure():
+    # gateway-clients' review: a revoke of a missing row raised KeyError and
+    # would have replaced the AuditIntegrityError the caller has to see.
+    from omnidesk_agent.security.audit_errors import AuditIntegrityError
+    from omnidesk_agent.security.break_glass import audit_transition
+
+    class BrokenChain:
+        def append(self, event, fields):
+            raise AuditIntegrityError("audit log cannot be written")
+
+    revoked: list[str] = []
+
+    def revoke_missing_row(session_id: str) -> None:
+        revoked.append(session_id)
+        raise KeyError(session_id)
+
+    with pytest.raises(AuditIntegrityError):
+        audit_transition(BrokenChain(), "break_glass.open", {"session_id": "bg-1"}, revoke=revoke_missing_row)  # type: ignore[arg-type]
+
+    assert revoked == ["bg-1"]  # the revoke was still attempted
