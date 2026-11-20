@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
 from typing import Any, Iterable, Optional, cast
+from omnidesk_agent.core.agent_loop import LoopView, PlannerTurn
 from omnidesk_agent.core.llm import LLM
 from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep
 from omnidesk_agent.channels.ecosystem import resolve_channel
@@ -17,8 +18,11 @@ class HierarchicalPlanner:
         self.tools = tools
 
     async def plan(self, msg: ChannelMessage) -> Plan:
+        return await self._plan(msg)
+
+    async def _plan(self, msg: ChannelMessage, *, retrieve_memory: bool = True) -> Plan:
         retrieve = getattr(self.memory, "retrieve_for_task", None)
-        experiences = self.memory.retrieve_for_task(msg.text, limit=4, channel=msg.channel, actor=msg.sender_id) if callable(retrieve) else []
+        experiences = self.memory.retrieve_for_task(msg.text, limit=4, channel=msg.channel, actor=msg.sender_id) if retrieve_memory and callable(retrieve) else []
         skills_context = self.skills.prompt_block(msg.text, max_chars=6000)
         profile: Optional[dict[str, Any]] = None
         get_profile = getattr(self.memory, "get_interaction_profile", None)
@@ -31,6 +35,10 @@ class HierarchicalPlanner:
                 profile = None
         interaction = infer_interaction_signal(msg.text, source_channel=msg.channel, actor=msg.sender_id, learned_profile=profile)
         return self._available_steps_only(self._rule_plan(msg, experiences, skills_context, interaction))
+
+    async def next_turn(self, view: LoopView) -> PlannerTurn:
+        """The rule plan as the run's only planned turn; the loop finishes the run once its steps ran."""
+        return PlannerTurn.from_plan(await self._plan(view.msg, retrieve_memory=view.retrieve_memory), source="rule")
 
     def _available_steps_only(self, plan: Plan) -> Plan:
         """Drop rule steps whose tool action is not registered, and say so in the rationale.

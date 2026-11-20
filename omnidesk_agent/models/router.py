@@ -333,6 +333,8 @@ class ModelRouter:
                 input_tokens=decision.estimated_input_tokens,
                 output_tokens=estimated_output_tokens,
             )
+        # A 0.0 estimate for a model the price table does not know is not "free".
+        usage.setdefault("cost_known", bool(usage.get("cost_usd")) or self.pricing_table.has_price(provider=str(resp.provider), model=str(resp.model)))
         self.cost_ledger.record(
             task_id=request.task_id,
             task=request.task,
@@ -344,6 +346,8 @@ class ModelRouter:
         )
         if decision.cache_key and not subscription:
             self.token_budget.put_cached(cache_key=decision.cache_key, model=f"{profile}:{resp.model}", response=resp.text)
+        # Callers see what the ledger recorded, including the cost estimate.
+        resp.usage = usage
         return resp
 
     async def _repair_structured_output_if_needed(self, request: ModelRequest, profile: str, provider: Any, resp: ModelResponse) -> ModelResponse:

@@ -57,6 +57,15 @@ LIST_PLAN = json.dumps({
 })
 
 
+DONE = json.dumps({"status": "done", "goal": "list the workspace", "final_answer": "listed", "success_criteria": "listing returned"})
+
+
+def plan_then_done(profile: str, request: ModelRequest) -> str:
+    """A planner that lists the workspace, then reports done once it has seen the result."""
+    history = json.loads(request.user).get("history") or []
+    return DONE if any(turn.get("steps") for turn in history) else LIST_PLAN
+
+
 def scripted_provider(reply: Callable[[str, ModelRequest], Any]) -> tuple[type, list[tuple[str, ModelRequest]]]:
     """A provider class whose answer per (profile, request) comes from `reply`.
 
@@ -117,7 +126,7 @@ def cli_message(text: str) -> ChannelMessage:
 
 
 def test_cli_tasks_without_ids_keep_llm_planning_past_the_per_task_cap(monkeypatch, tmp_path):
-    router, calls = build_router(monkeypatch, tmp_path, lambda profile, request: LIST_PLAN, cap=16)
+    router, calls = build_router(monkeypatch, tmp_path, plan_then_done, cap=16)
     orchestrator, memory, runs = build_runtime(tmp_path, router)
 
     async def run_all():
@@ -130,14 +139,18 @@ def test_cli_tasks_without_ids_keep_llm_planning_past_the_per_task_cap(monkeypat
 
     # 20 tasks is past the cap of 16 that every id-less task used to share.
     assert [r["status"] for r in results] == ["completed"] * 20
-    assert all(r["rationale"] == "LLM structured plan validated" for r in results)
-    assert len(calls) == 20
-    assert len({request.task_id for _, request in calls}) == 20
+    assert all(r["rationale"] == "LLM planner turn validated" for r in results)
+    # Each run plans twice (list, then done) under its own key.
+    assert len(calls) == 40
+    keys = [request.task_id for _, request in calls]
+    assert len(set(keys)) == 20
+    assert keys == [f"planner-{r['run_id']}" for r in results for _ in range(2)]
     assert all(runs.get(r["run_id"])["status"] == "completed" for r in results)
 
 
 def test_planner_repair_counts_against_the_same_cap_key(monkeypatch, tmp_path):
-    answers = iter(["{}", LIST_PLAN])
+    # Valid JSON with an invalid status: the router accepts it, the planner repairs it.
+    answers = iter([json.dumps({"status": "maybe"}), LIST_PLAN, DONE])
     router, calls = build_router(monkeypatch, tmp_path, lambda profile, request: next(answers))
     orchestrator, memory, _runs = build_runtime(tmp_path, router)
     try:
@@ -146,8 +159,9 @@ def test_planner_repair_counts_against_the_same_cap_key(monkeypatch, tmp_path):
         memory.close()
 
     assert result["status"] == "completed"
-    assert len(calls) == 2
-    assert calls[0][1].task_id == calls[1][1].task_id
+    assert result["loop"]["llm_calls"] == 3
+    assert len(calls) == 3
+    assert {request.task_id for _, request in calls} == {f"planner-{result['run_id']}"}
 
 
 def test_call_cap_counts_only_the_recent_window(tmp_path, monkeypatch):
@@ -347,7 +361,7 @@ def test_malformed_model_output_falls_back_and_says_why(monkeypatch, tmp_path):
     finally:
         memory.close()
 
-    assert plan.rationale.startswith("rule fallback (model planner failed: All model profiles failed for task=planner")
+    assert plan.rationale.startswith("rule fallback (model plan rejected: model output was not valid JSON: All model profiles failed for task=planner")
     assert [(s.tool, s.action) for s in plan.steps] == [("files", "write_text")]
     # Each profile answered once plus one schema repair; nothing retried forever.
     assert 0 < len(calls) <= 12

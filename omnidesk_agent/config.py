@@ -38,6 +38,25 @@ class LLMConfig(BaseModel):
     require_approval_above_estimated_tokens: int = 20000
 
 
+class AgentLoopConfig(BaseModel):
+    """Per-run limits of the plan -> act -> observe -> re-plan loop.
+
+    The first exhausted limit ends the run as failed with its name as the
+    reason. Planner calls also count against llm.per_task_max_llm_calls.
+    """
+
+    max_turns: int = Field(default=8, ge=1, le=100)
+    max_steps: int = Field(default=20, ge=1, le=500)
+    max_llm_calls: int = Field(default=12, ge=1, le=500)
+    max_cost_usd: Optional[float] = Field(default=1.0, ge=0)
+    max_consecutive_failures: int = Field(default=3, ge=1, le=50)
+    max_active_seconds: float = Field(default=900.0, gt=0, le=86400)
+    max_steps_per_turn: int = Field(default=8, ge=1, le=50)
+    # Characters of one step's output shown to the planner, and of all outputs per call.
+    observation_chars: int = Field(default=4000, ge=0, le=50000)
+    history_chars: int = Field(default=24000, ge=1000, le=200000)
+
+
 class ModelProfileConfig(BaseModel):
     enabled: bool = True
     provider: str = "openai"
@@ -589,6 +608,7 @@ class LearningConfig(BaseModel):
 class AppConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    agent: AgentLoopConfig = Field(default_factory=AgentLoopConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     updates: UpdateConfig = Field(default_factory=UpdateConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)

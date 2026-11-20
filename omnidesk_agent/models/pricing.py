@@ -22,6 +22,10 @@ class ModelPricingTable:
         if prices:
             self._prices.update(prices)
 
+    def has_price(self, *, provider: str, model: str) -> bool:
+        """Whether estimate() knows this model; unknown models estimate to 0.0."""
+        return (provider.lower(), model.lower()) in self._prices or (provider.lower(), "*") in self._prices
+
     def estimate(
         self,
         *,

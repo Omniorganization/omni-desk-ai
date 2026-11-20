@@ -52,7 +52,10 @@ class ToolRegistry:
             raise
         except Exception as exc:
             self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="exception")
-            return ToolResult(False, error=f"{type(exc).__name__}: {exc}", summary=f"{tool_name}.{action} failed")
+            # The class, not just the message, so callers can tell a permission
+            # refusal from a tool failure without matching text.
+            data = {"error_class": type(exc).__name__, "permission_denied": isinstance(exc, PermissionError)}
+            return ToolResult(False, data=data, error=f"{type(exc).__name__}: {exc}", summary=f"{tool_name}.{action} failed")
 
     def _metric(self, name: str, **labels: Any) -> None:
         metrics = getattr(self, "metrics", None)

@@ -155,4 +155,7 @@ class VisionGroundingTool:
             parsed = json.loads(text)
         except Exception:
             parsed = {"summary": text, "elements": [], "target": None, "confidence": 0}
-        return ToolResult(True, data={"grounding": parsed, "provider": resp.provider, "model": resp.model}, summary="vision grounding completed")
+        usage = resp.usage or {}
+        cost = usage.get("cost_usd") or usage.get("estimated_cost_usd") or 0.0
+        model_usage = {"calls": 1, "cost_usd": float(cost), "cost_known": bool(usage.get("cache_hit") or usage.get("cost_known"))}
+        return ToolResult(True, data={"grounding": parsed, "provider": resp.provider, "model": resp.model, "model_usage": model_usage}, summary="vision grounding completed")
