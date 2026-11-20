@@ -225,3 +225,20 @@ def test_daemon_runs_the_poller_only_in_polling_mode(monkeypatch, tmp_path):
 
     asyncio.run(run_case())
     assert len(started) == 1
+
+
+def test_whatsapp_status_callbacks_get_their_own_rate_bucket_and_event_ids():
+    # Status callbacks have no "from"; they all landed in the "unknown" bucket
+    # (60/min across every customer) and could be throttled with 403.
+    from omnidesk_agent.channels.whatsapp_cloud import WhatsAppCloudChannel
+    from omnidesk_agent.config import WhatsAppCloudConfig
+
+    channel = WhatsAppCloudChannel(WhatsAppCloudConfig())
+
+    def status(state):
+        return {"entry": [{"changes": [{"value": {"metadata": {"phone_number_id": "10950"}, "statuses": [{"id": "wamid.1", "status": state, "timestamp": "1700000000", "recipient_id": "1555"}]}}]}]}
+
+    sent, delivered = channel.extract_envelope(status("sent")), channel.extract_envelope(status("delivered"))
+    assert sent.source_key == "1555" and sent.message_id == "status:wamid.1:sent"
+    assert delivered.message_id != sent.message_id
+    assert channel.parse_webhook(status("read")) == []  # statuses are not tasks
