@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import time
 
@@ -44,6 +45,8 @@ def run_browser_acceptance(*, output: Path, root: Path, env: dict, launch, reque
             "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
             "-e", "HOSTNAME=127.0.0.1", "-e", "PORT=13000",
             "-e", "OMNI_GATEWAY_URL=https://127.0.0.1:18789",
+            # Production refuses sessions without a configured seal secret.
+            "-e", "OMNI_WEB_SESSION_SECRET=" + secrets.token_urlsafe(48),
             "-e", "OMNI_WEB_PUBLIC_ORIGIN=" + origin,
             "-e", "NODE_EXTRA_CA_CERTS=/run/ci-ca.crt",
             "-v", str(cert) + ":/run/ci-ca.crt:ro", env["WEB_FIRST_IMAGE"]], "web-image")

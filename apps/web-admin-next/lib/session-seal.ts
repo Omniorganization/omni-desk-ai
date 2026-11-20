@@ -30,12 +30,14 @@ function keyMaterial(env: SealEnv): Uint8Array<ArrayBuffer> {
     if (configured.length < 32) throw new Error('OMNI_WEB_SESSION_SECRET must be at least 32 characters');
     return new TextEncoder().encode(configured);
   }
-  // Without a configured secret, sessions last until this process restarts.
+  // A per-process random key would end every session at each restart and fail
+  // across replicas, so production refuses to seal or accept sessions without one.
+  if (env.NODE_ENV === 'production') {
+    throw new Error('OMNI_WEB_SESSION_SECRET is required in production (at least 32 characters, the same on every replica)');
+  }
+  // Development only: sessions last until this process restarts.
   // globalThis is shared by the proxy and route bundles of one Node server.
   const holder = globalThis as typeof globalThis & { [FALLBACK_KEY]?: Uint8Array<ArrayBuffer> };
-  if (!holder[FALLBACK_KEY] && env.NODE_ENV === 'production') {
-    console.warn('OMNI_WEB_SESSION_SECRET is not set: web admin sessions end when this process restarts');
-  }
   holder[FALLBACK_KEY] ??= crypto.getRandomValues(new Uint8Array(32));
   return holder[FALLBACK_KEY];
 }

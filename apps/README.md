@@ -15,7 +15,7 @@ All clients use the same Gateway API namespace: `/app/*`.
 | --- | --- | --- |
 | Desktop App | execution endpoint for approved scoped actions | enrollment with an owner's pairing code, heartbeat, claiming tasks it can execute, reading files and listing directories in `~/OmniDesktopWorkspace`, reporting results |
 | Mobile App | mobile control endpoint | chat, approval, notifications, task status |
-| Web Admin | governance endpoint | user/device/channel/approval/audit/runtime management |
+| Web Admin | governance endpoint | approve or reject, device list and revoke, starting a desktop enrollment, the AppSync activity feed, channel status, chat; no user management or security-audit-log view yet |
 
 ## Local development
 

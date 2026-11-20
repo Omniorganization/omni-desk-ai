@@ -97,6 +97,29 @@
       },
       "required": ["task_id", "title", "action"]
     },
+    "Device": {
+      "type": "object",
+      "properties": {
+        "device_id": {"type": "string"},
+        "device_type": {"type": "string"},
+        "credential_status": {"type": "string"},
+        "name": {"type": "string"},
+        "trust_level": {"type": ["string", "null"]},
+        "revoked_at": {"type": ["number", "null"]}
+      },
+      "required": ["device_id", "device_type", "credential_status"]
+    },
+    "SyncEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {"type": "integer"},
+        "event_type": {"type": "string"},
+        "actor": {"type": "string"},
+        "ts": {"type": "number"},
+        "payload": {"type": "object"}
+      },
+      "required": ["seq", "event_type", "actor", "ts"]
+    },
     "TaskAction": {
       "type": "object",
       "properties": {
@@ -131,9 +154,13 @@
             "items": {"$ref": "#/schemas/Notification"}
           },
           "runtime_status": {"type": "array"},
-          "devices": {"type": "array"}
+          "devices": {
+            "type": "array",
+            "items": {"$ref": "#/schemas/Device"}
+          },
+          "sync_seq": {"type": "integer"}
         },
-        "required": ["pending_approvals", "notifications", "runtime_status", "devices"]
+        "required": ["pending_approvals", "notifications", "runtime_status", "devices", "sync_seq"]
       }
     },
     {
@@ -509,8 +536,19 @@
       "method": "GET",
       "path": "/app/sync",
       "role": "viewer",
-      "client_surfaces": ["desktop"],
-      "response": {"type": "object"}
+      "client_surfaces": ["desktop", "web_admin"],
+      "response": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {"$ref": "#/schemas/SyncEvent"}
+          },
+          "head_seq": {"type": "integer"},
+          "has_more": {"type": "boolean"}
+        },
+        "required": ["events", "head_seq", "has_more"]
+      }
     },
     {
       "method": "POST",
@@ -690,8 +728,21 @@
       "path": "/app/devices/{device_id}/revoke",
       "description": "Revoke a desktop/mobile/web_admin device credential.",
       "role": "owner",
-      "client_surfaces": [],
-      "signed_device_required_in_production": ["mobile", "web_admin"]
+      "client_surfaces": ["web_admin"],
+      "signed_device_required_in_production": ["mobile", "web_admin"],
+      "request": {
+        "type": "object",
+        "properties": {
+          "reason": {"type": "string"}
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "device": {"$ref": "#/schemas/Device"}
+        },
+        "required": ["device"]
+      }
     },
     {
       "method": "GET",

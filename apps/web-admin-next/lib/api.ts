@@ -231,6 +231,25 @@ export class OmniAdminApi {
     }, key);
   }
 
+  /** Revokes a device's credential; the gateway requires this console's device signature. */
+  async revokeDevice(deviceId: string, reason: string) {
+    const gatewayPath = `/app/devices/${encodeURIComponent(deviceId)}/revoke`;
+    const body = JSON.stringify({ reason });
+    const signedHeaders = this.session.deviceSigner
+      ? await this.session.deviceSigner('POST', gatewayPath, body)
+      : {};
+    return this.request<any>(`/api/omni/devices/${encodeURIComponent(deviceId)}/revoke`, {
+      method: 'POST',
+      body,
+      headers: signedHeaders,
+    }, `web-admin-revoke-${deviceId}-${Date.now()}`);
+  }
+
+  /** The AppSync event feed after `sinceSeq`, oldest first. */
+  activity(sinceSeq: number) {
+    return this.request<any>(`/api/omni/sync?since_seq=${Math.max(0, Math.floor(sinceSeq))}`);
+  }
+
   startDeviceEnrollment(deviceType: 'desktop' | 'mobile' | 'web_admin', pairingCode: string) {
     return this.request<any>('/api/omni/devices/enrollment/start', {
       method: 'POST',

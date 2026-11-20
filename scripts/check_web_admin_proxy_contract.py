@@ -24,6 +24,8 @@ WEB_ADMIN_ROUTE_MAP = {
     "/app/devices/enrollment/{enrollment_id}/verify": "devices/enrollment/[enrollmentId]/verify/route.ts",
     "/api/chat/stream": "chat/stream/route.ts",
     "/admin/channels/ecosystem": "channels/ecosystem/route.ts",
+    "/app/sync": "sync/route.ts",
+    "/app/devices/{device_id}/revoke": "devices/[deviceId]/revoke/route.ts",
 }
 
 # Gateway routes Web Admin's server calls itself, never on the browser's behalf.

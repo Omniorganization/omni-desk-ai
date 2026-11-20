@@ -27,6 +27,11 @@ const Map<String, List<ContractRequirement>> responseRequirements = <String, Lis
     ContractRequirement("notifications[].body", <String>["string"]),
     ContractRequirement("runtime_status", <String>["array"]),
     ContractRequirement("devices", <String>["array"]),
+    ContractRequirement("devices[]", <String>["object"]),
+    ContractRequirement("devices[].device_id", <String>["string"]),
+    ContractRequirement("devices[].device_type", <String>["string"]),
+    ContractRequirement("devices[].credential_status", <String>["string"]),
+    ContractRequirement("sync_seq", <String>["integer"]),
   ],
   "GET /app/projects": <ContractRequirement>[
     ContractRequirement("", <String>["object"]),
@@ -110,6 +115,14 @@ const Map<String, List<ContractRequirement>> responseRequirements = <String, Lis
   ],
   "GET /app/sync": <ContractRequirement>[
     ContractRequirement("", <String>["object"]),
+    ContractRequirement("events", <String>["array"]),
+    ContractRequirement("events[]", <String>["object"]),
+    ContractRequirement("events[].seq", <String>["integer"]),
+    ContractRequirement("events[].event_type", <String>["string"]),
+    ContractRequirement("events[].actor", <String>["string"]),
+    ContractRequirement("events[].ts", <String>["number"]),
+    ContractRequirement("head_seq", <String>["integer"]),
+    ContractRequirement("has_more", <String>["boolean"]),
   ],
   "POST /app/devices/{device_id}/push-token": <ContractRequirement>[
     ContractRequirement("", <String>["object"]),
@@ -135,6 +148,13 @@ const Map<String, List<ContractRequirement>> responseRequirements = <String, Lis
     ContractRequirement("", <String>["object"]),
     ContractRequirement("credential", <String>["object"]),
     ContractRequirement("credential.trust_level", <String>["string"]),
+  ],
+  "POST /app/devices/{device_id}/revoke": <ContractRequirement>[
+    ContractRequirement("", <String>["object"]),
+    ContractRequirement("device", <String>["object"]),
+    ContractRequirement("device.device_id", <String>["string"]),
+    ContractRequirement("device.device_type", <String>["string"]),
+    ContractRequirement("device.credential_status", <String>["string"]),
   ],
   "GET /admin/session/identity": <ContractRequirement>[
     ContractRequirement("", <String>["object"]),
@@ -220,6 +240,9 @@ const Map<String, List<ContractRequirement>> requestRequirements = <String, List
     ContractRequirement("challenge_id", <String>["string"]),
     ContractRequirement("device_id", <String>["string"]),
     ContractRequirement("signature", <String>["string"]),
+  ],
+  "POST /app/devices/{device_id}/revoke": <ContractRequirement>[
+    ContractRequirement("", <String>["object"]),
   ],
 };
 

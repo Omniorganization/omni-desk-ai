@@ -21,6 +21,11 @@ export const RESPONSE_REQUIREMENTS: Readonly<Record<string, readonly ContractReq
     ["notifications[].body", ["string"]],
     ["runtime_status", ["array"]],
     ["devices", ["array"]],
+    ["devices[]", ["object"]],
+    ["devices[].device_id", ["string"]],
+    ["devices[].device_type", ["string"]],
+    ["devices[].credential_status", ["string"]],
+    ["sync_seq", ["integer"]],
   ],
   "GET /app/projects": [
     ["", ["object"]],
@@ -104,6 +109,14 @@ export const RESPONSE_REQUIREMENTS: Readonly<Record<string, readonly ContractReq
   ],
   "GET /app/sync": [
     ["", ["object"]],
+    ["events", ["array"]],
+    ["events[]", ["object"]],
+    ["events[].seq", ["integer"]],
+    ["events[].event_type", ["string"]],
+    ["events[].actor", ["string"]],
+    ["events[].ts", ["number"]],
+    ["head_seq", ["integer"]],
+    ["has_more", ["boolean"]],
   ],
   "POST /app/devices/{device_id}/push-token": [
     ["", ["object"]],
@@ -129,6 +142,13 @@ export const RESPONSE_REQUIREMENTS: Readonly<Record<string, readonly ContractReq
     ["", ["object"]],
     ["credential", ["object"]],
     ["credential.trust_level", ["string"]],
+  ],
+  "POST /app/devices/{device_id}/revoke": [
+    ["", ["object"]],
+    ["device", ["object"]],
+    ["device.device_id", ["string"]],
+    ["device.device_type", ["string"]],
+    ["device.credential_status", ["string"]],
   ],
   "GET /admin/session/identity": [
     ["", ["object"]],
@@ -214,6 +234,9 @@ export const REQUEST_REQUIREMENTS: Readonly<Record<string, readonly ContractRequ
     ["challenge_id", ["string"]],
     ["device_id", ["string"]],
     ["signature", ["string"]],
+  ],
+  "POST /app/devices/{device_id}/revoke": [
+    ["", ["object"]],
   ],
 };
 

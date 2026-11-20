@@ -56,6 +56,7 @@ void main() {
         'notifications': <dynamic>[],
         'runtime_status': <dynamic>[],
         'devices': <dynamic>[],
+        'sync_seq': 3,
       }),
       <String>['pending_approvals[0].approval_id: expected string, got integer'],
     );
