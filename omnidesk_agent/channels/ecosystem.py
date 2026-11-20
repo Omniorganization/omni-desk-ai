@@ -266,10 +266,11 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         ("gmail", "email", "mail"),
         True,
         True,
-        ("oauth", "pubsub_summary", "compose_gate"),
+        ("oauth", "pubsub_push", "compose_gate"),
         _BASE_CONTROLS + ("oauth_scope_minimization",),
         risk="high",
         ui_bridge_app="Gmail",
+        notes="Inbound via users.watch -> Cloud Pub/Sub push to /webhooks/gmail (OIDC-verified) once push_audience and push_service_account_email are set; watch must be renewed at least weekly.",
     ),
     ChannelEcosystemEntry(
         "ui_bridge",
