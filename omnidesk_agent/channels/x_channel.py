@@ -71,6 +71,9 @@ def oauth1_authorization(
     normalized = "&".join(f"{k}={v}" for k, v in sorted((_pct(k), _pct(v)) for k, v in pairs))
     base_string = "&".join([method.upper(), _pct(base_url), _pct(normalized)])
     signing_key = f"{_pct(consumer_secret)}&{_pct(token_secret)}"
+    # HMAC-SHA1 is the signature method OAuth 1.0a defines (RFC 5849 §3.4.2) and
+    # the only one X accepts for user-context requests. The secrets are an HMAC
+    # key for signing this request, not a password being hashed for storage.
     signature = base64.b64encode(hmac.new(signing_key.encode("utf-8"), base_string.encode("utf-8"), hashlib.sha1).digest()).decode("ascii")
     oauth_params["oauth_signature"] = signature
     return "OAuth " + ", ".join(f'{_pct(k)}="{_pct(v)}"' for k, v in sorted(oauth_params.items()))
