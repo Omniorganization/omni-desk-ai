@@ -15,6 +15,11 @@ This is a source-gated production GA candidate. It must not be represented as cu
 - Release artifacts must include portable checksums and release manifests.
 - Customer-distribution releases require signed artifacts, SBOM/provenance, image digests, and real external evidence.
 
+## Approval Record Visibility
+
+- `GET /approvals` lists only approvals whose requester belongs to the caller's organization, as the gateway resolves it, never as the client states it.
+- Owners, who decide, and the requester see the full proposal. Every other caller, viewers included, sees what is asked: tool, action, risk, run, plan, step, scope hash and requester. Argument content is withheld; only digests and lengths are shown.
+
 ## Reporting
 
 Do not include secrets, credentials, private keys, tokens, customer data, or production evidence payloads in public issues. Use a private security channel controlled by the repository owner.
