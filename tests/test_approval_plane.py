@@ -23,7 +23,7 @@ from typing import Any, Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-from omnidesk_agent.appsync.agent_approvals import AppSyncApprovalListener, decide_agent_approval, refuse_break_glass_for_critical
+from omnidesk_agent.appsync.agent_approvals import LEDGER_ACTOR, AppSyncApprovalListener, decide_agent_approval, refuse_break_glass_for_critical
 from omnidesk_agent.appsync.store import push_text
 from omnidesk_agent.appsync.strict_json_store import StrictJsonAppSyncStore
 from omnidesk_agent.config import AppConfig
@@ -168,13 +168,17 @@ SECOND_OWNER = {"authorization": "Bearer admin-token"}
 OPERATOR = {"authorization": "Bearer operator-token"}
 
 
-@pytest.fixture
-def plane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any, ApprovalStore, FakeOrchestrator]]:
+def _tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, value in (("OWNER", "owner"), ("ADMIN", "admin"), ("OPERATOR", "operator")):
         monkeypatch.setenv(f"OMNIDESK_{name}_TOKEN", f"{value}-token")
     monkeypatch.setenv("OMNIDESK_OWNER_ACTOR", "olivia-owner")
     monkeypatch.setenv("OMNIDESK_ADMIN_ACTOR", "adam-admin")
     monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", "oscar-operator")
+
+
+@pytest.fixture
+def plane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any, ApprovalStore, FakeOrchestrator]]:
+    _tokens(monkeypatch)
     app = create_app(_cfg(tmp_path))
     ledger, orchestrator = _ledger(tmp_path), FakeOrchestrator()
     app.state.runtime.approval_store = ledger
@@ -332,3 +336,96 @@ async def test_another_owner_on_a_decided_approval_gets_a_conflict(tmp_path: Pat
     await _owner_decides(store, ledger, orchestrator, ledger_id)
     with pytest.raises(ValueError, match="already decided"):
         await _owner_decides(store, ledger, orchestrator, ledger_id, actor="adam-admin", decision="rejected", key="k9")
+
+
+# ------------------------------------------- a ledger decided outside the plane ---
+# Security's own routes (/approvals/{id}/approve, /deny, /dual-approve) and the
+# CLI decide the ledger directly and record ``decided_by``. The mirror must name
+# who the ledger names, never whoever calls the plane next.
+
+
+@pytest.fixture
+def ledger_plane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any, Any, FakeOrchestrator]]:
+    """The plane beside security's /approvals/* routes, both on the runtime's own approval store."""
+    _tokens(monkeypatch)
+    app = create_app(_cfg(tmp_path))
+    orchestrator = FakeOrchestrator()
+    app.state.runtime.orchestrator = orchestrator
+    with TestClient(app) as client:
+        yield client, app.state.runtime.app_sync, app.state.runtime.approval_store, orchestrator
+
+
+def _outside(client: TestClient, ledger_id: str, auth: dict[str, str], route: str, key: str) -> Any:
+    return client.post(f"/approvals/{ledger_id}/{route}", headers={**auth, "idempotency-key": key}, json={"reason": "decided at the console"})
+
+
+def _decided_by_events(store: Any, approval_id: str) -> list[str]:
+    events = store.sync_since(0, limit=500)["events"]
+    return [event["actor"] for event in events if event["event_type"] == "approval.decided" and event["payload"].get("approval_id") == approval_id]
+
+
+def test_a_ledger_approved_outside_the_plane_names_its_approver_not_the_caller(ledger_plane: Any) -> None:
+    client, store, ledger, orchestrator = ledger_plane
+    ledger_id = _pause(ledger_plane)
+    assert _outside(client, ledger_id, SECOND_OWNER, "approve", "o1").status_code == 200
+    # Another owner then rejects in the app: the ledger's approval stands, and the caller is told so.
+    refused = _decide(client, ledger_id, OWNER, "rejected", "r1")
+    assert refused.status_code == 409 and "already decided: approved" in refused.text
+    mirrored = store.get_approval(f"agt_{ledger_id}", actor="olivia-owner")
+    assert (mirrored["status"], mirrored["approved_by"], mirrored["decided_by"]) == ("approved", ["adam-admin"], "adam-admin")
+    assert mirrored["decision_reason"] == "decided at the console"
+    assert _decided_by_events(store, f"agt_{ledger_id}") == ["adam-admin"]
+    # Still mirrored and resumed: the run does not wait for a decision already made.
+    assert _stored(ledger, ledger_id)["status"] == "approved" and orchestrator.resumed == [ledger_id]
+
+
+def test_a_ledger_denied_outside_the_plane_names_who_denied_it(ledger_plane: Any) -> None:
+    client, store, _, orchestrator = ledger_plane
+    ledger_id = _pause(ledger_plane)
+    assert _outside(client, ledger_id, SECOND_OWNER, "deny", "o2").status_code == 200
+    refused = _decide(client, ledger_id, OWNER, "approved", "a2")
+    assert refused.status_code == 409 and "already decided: rejected" in refused.text
+    mirrored = store.get_approval(f"agt_{ledger_id}", actor="olivia-owner")
+    assert (mirrored["status"], mirrored["decided_by"], mirrored["approved_by"]) == ("rejected", "adam-admin", [])
+    assert orchestrator.resumed == [ledger_id]
+
+
+def test_the_owner_who_decided_outside_the_plane_gets_their_own_decision(ledger_plane: Any) -> None:
+    client, _, _, _ = ledger_plane
+    ledger_id = _pause(ledger_plane)
+    assert _outside(client, ledger_id, OWNER, "approve", "o3").status_code == 200
+    again = _decide(client, ledger_id, OWNER, "approved", "a3")
+    assert again.status_code == 200, again.text
+    assert again.json()["approval"]["approved_by"] == ["olivia-owner"]
+
+
+def test_a_dual_approval_made_outside_the_plane_names_both_approvers(ledger_plane: Any) -> None:
+    client, _, _, _ = ledger_plane
+    ledger_id = _pause(ledger_plane, dual=True, risk="critical")
+    for auth, key in ((OWNER, "d1"), (SECOND_OWNER, "d2")):
+        assert client.post(f"/approvals/{ledger_id}/dual-approve", headers={**auth, "idempotency-key": key}, json={}).status_code == 200
+    assert _outside(client, ledger_id, SECOND_OWNER, "approve", "o4").status_code == 200
+    mirrored = _decide(client, ledger_id, OWNER, "approved", "a4")
+    assert mirrored.status_code == 200, mirrored.text
+    assert mirrored.json()["approval"]["approved_by"] == ["olivia-owner", "adam-admin"]
+
+
+@pytest.mark.asyncio
+async def test_a_ledger_decision_that_names_nobody_is_mirrored_as_the_ledger(tmp_path: Path) -> None:
+    store, ledger, orchestrator, ledger_id = _plane_parts(tmp_path)
+    ledger.decide(ledger_id, "approved", {})
+    with pytest.raises(ValueError, match="already decided: approved"):
+        await _owner_decides(store, ledger, orchestrator, ledger_id)
+    mirrored = store.get_approval(f"agt_{ledger_id}", actor="olivia-owner")
+    assert (mirrored["approved_by"], mirrored["decided_by"]) == ([LEDGER_ACTOR], LEDGER_ACTOR)
+    assert orchestrator.resumed == [ledger_id]
+
+
+def test_the_mirror_records_the_ledgers_outcome(store: Any) -> None:
+    AppSyncApprovalListener(store).on_approval_wait(_event("ledger-1", _proposal(dual=True, risk="critical")))
+    mirrored = store.mirror_agent_decision(approval_id="agt_ledger-1", outcome="approved", deciders=["olivia-owner", "adam-admin"], reason="console")
+    assert (mirrored["status"], mirrored["approved_by"], mirrored["decided_by"], mirrored["decision_reason"]) == ("approved", ["olivia-owner", "adam-admin"], "adam-admin", "console")
+    # A decided approval stays as it is, and only agent approvals mirror a ledger.
+    assert store.mirror_agent_decision(approval_id="agt_ledger-1", outcome="rejected", deciders=["oscar"])["status"] == "approved"
+    with pytest.raises(ValueError):
+        store.mirror_agent_decision(approval_id="appr_desktop", outcome="approved", deciders=["oscar"])

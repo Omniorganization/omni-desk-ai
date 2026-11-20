@@ -20,6 +20,9 @@ Now:
   - the approver must be in the run's organization.
   Only then does AppSync mirror the decision. ``resume_by_approval`` then
   resumes the run, or ends it on a rejection.
+- A ledger already decided elsewhere (``/approvals/*``, the CLI) is mirrored
+  as the ledger records it, naming its deciders and never the caller; a
+  caller whose decision it was not gets a conflict (409).
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 _REQUESTER_FIELDS = ("created_by", "proposer", "actor")
 _RUN_SUMMARY_FIELDS = ("ok", "status", "run_id", "approval_id", "already_handled")
+# Named as the decider of a ledger decision that records nobody; never the caller.
+LEDGER_ACTOR = "ledger"
 
 
 def is_agent_approval(approval_id: str) -> bool:
@@ -87,6 +92,27 @@ class AppSyncApprovalListener:
         )
 
 
+def ledger_deciders(ledger: dict[str, Any], *, dual_status: Any = None) -> list[str]:
+    """Who decided a ledger approval, as the ledger records it; ``ledger`` when it names nobody.
+
+    The plane records ``approved_by`` or ``denied_by``; the ledger's own routes
+    (``/approvals/*``) and the CLI record ``decided_by``; a dual approval's two
+    approvers are in the dual-approval store. Every recorded name is kept, in
+    that order.
+    """
+    raw = ledger.get("result")
+    result: dict[str, Any] = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+    if ledger.get("status") == "denied":
+        names: list[Any] = [result.get("denied_by") or result.get("decided_by")]
+    else:
+        listed = result.get("approved_by")
+        names = [getattr(dual_status, "first_approver", None), getattr(dual_status, "second_approver", None)]
+        names += list(cast(list[Any], listed)) if isinstance(listed, list) else []
+        names.append(result.get("decided_by"))
+    deciders = list(dict.fromkeys(str(name).strip() for name in names if str(name or "").strip()))
+    return deciders or [LEDGER_ACTOR]
+
+
 def _ledger_error(exc: PermissionError) -> Exception:
     # The ledger refuses an expired or already decided approval with
     # PermissionError; to the client that is a conflict, not a lack of rights.
@@ -114,8 +140,9 @@ async def decide_agent_approval(
     source_id = str((approval.get("action_detail") or {}).get("source_approval_id") or "")
     if not source_id:
         raise KeyError("agent approval has no ledger record")
+    conflict: Optional[str] = None
     if approval.get("status") == "pending":
-        record = await _decide_pending(
+        record, conflict = await _decide_pending(
             store=store, approval_store=approval_store, approval=approval, source_id=source_id, actor=actor,
             decision=decision, reason=reason, break_glass=break_glass,
             idempotency_key=idempotency_key, idempotency_payload=idempotency_payload,
@@ -141,6 +168,9 @@ async def decide_agent_approval(
             termination = result.get("termination")
             if isinstance(termination, dict) and termination.get("reason"):
                 run["termination_reason"] = termination["reason"]
+    if conflict:
+        # Mirrored and resumed, but this caller's decision was not the one recorded.
+        raise ValueError(conflict)
     return {"approval": record, "run": run}
 
 
@@ -156,69 +186,81 @@ async def _decide_pending(
     break_glass: bool,
     idempotency_key: Optional[str],
     idempotency_payload: Optional[dict[str, Any]],
-) -> dict[str, Any]:
-    """Writes the ledger, then mirrors it. Safe to repeat after a failure in between.
+) -> tuple[dict[str, Any], Optional[str]]:
+    """Writes the ledger, then mirrors it. Returns the record, and a conflict for the caller.
 
-    An attempt that decided the ledger but failed before the mirror must not
-    leave the approval stuck: the retry reads the ledger first and, when it is
-    already decided, mirrors its outcome (with every approver it recorded)
-    instead of writing it again.
+    The ledger is read first. Already decided (outside this plane through
+    ``/approvals/*`` or the CLI, or by an attempt whose mirror failed), it is
+    mirrored as it stands, naming the deciders it records and never the caller;
+    the conflict then tells a caller whose decision was not the one recorded.
     """
     approval_id = str(approval["approval_id"])
     mirrored = list(approval.get("approved_by") or [])
     ledger: dict[str, Any] = dict(await run_blocking(approval_store.get, source_id) or {})
-    ledger_status = str(ledger.get("status") or "")
-    if ledger_status not in {"approved", "denied"}:
+    if str(ledger.get("status") or "") in {"approved", "denied"}:
+        return await _mirror_decided_ledger(store=store, approval_store=approval_store, approval=approval, source_id=source_id, ledger=ledger, actor=actor, decision=decision)
+    try:
+        if decision == "approved":
+            refuse_break_glass_for_critical(approval, break_glass=break_glass)
+            if actor in _requesters(approval):
+                raise PermissionError("the requester cannot approve their own request")
+            if actor in mirrored:
+                raise PermissionError("this approver has already approved; a different approver must decide")
+            # Two approvals for a critical step, counted here and, when the ledger
+            # opened a dual approval, recorded there first (it decides readiness).
+            ready = len(mirrored) + 1 >= int(approval.get("required_approvals") or 1)
+            if (approval.get("action_detail") or {}).get("ledger_dual"):
+                dual = getattr(approval_store, "dual_approval_store", None)
+                if dual is None:
+                    raise PermissionError("a critical step needs the dual-approval store")
+                status = await run_blocking(dual.status, source_id)
+                if actor in {status.first_approver, status.second_approver}:
+                    dual_ready = bool(status.ready)  # recorded by an attempt whose mirror failed
+                else:
+                    dual_ready = bool((await run_blocking(dual.approve, source_id, actor)).ready)
+                ready = dual_ready and ready
+            if not ready:
+                partial = await run_blocking(
+                    store.decide_approval, approval_id=approval_id, actor=actor, decision="approved",
+                    reason=reason, idempotency_key=idempotency_key, idempotency_payload=idempotency_payload,
+                    break_glass=break_glass,
+                )
+                return partial, None
+            await run_blocking(approval_store.decide, source_id, "approved", {"approved_by": [*mirrored, actor], "plane": "appsync"})
+        else:
+            await run_blocking(approval_store.decide, source_id, "denied", {"denied_by": actor, "reason": reason, "plane": "appsync"})
+    except PermissionError as exc:
+        raise _ledger_error(exc) from exc
+    record = await run_blocking(
+        store.decide_approval, approval_id=approval_id, actor=actor, decision="approved" if decision == "approved" else "rejected",
+        reason=reason, idempotency_key=idempotency_key, idempotency_payload=idempotency_payload,
+    )
+    return record, None
+
+
+async def _mirror_decided_ledger(
+    *, store: Any, approval_store: Any, approval: dict[str, Any], source_id: str, ledger: dict[str, Any], actor: str, decision: str,
+) -> tuple[dict[str, Any], Optional[str]]:
+    """Mirrors a ledger decided before this call; a conflict unless it is the caller's own decision."""
+    outcome = "approved" if ledger.get("status") == "approved" else "rejected"
+    dual_status: Any = None
+    dual = getattr(approval_store, "dual_approval_store", None)
+    if outcome == "approved" and dual is not None and (approval.get("action_detail") or {}).get("ledger_dual"):
         try:
-            if decision == "approved":
-                refuse_break_glass_for_critical(approval, break_glass=break_glass)
-                if actor in _requesters(approval):
-                    raise PermissionError("the requester cannot approve their own request")
-                if actor in mirrored:
-                    raise PermissionError("this approver has already approved; a different approver must decide")
-                # Two approvals for a critical step, counted here and, when the ledger
-                # opened a dual approval, recorded there first (it decides readiness).
-                ready = len(mirrored) + 1 >= int(approval.get("required_approvals") or 1)
-                if (approval.get("action_detail") or {}).get("ledger_dual"):
-                    dual = getattr(approval_store, "dual_approval_store", None)
-                    if dual is None:
-                        raise PermissionError("a critical step needs the dual-approval store")
-                    status = await run_blocking(dual.status, source_id)
-                    if actor in {status.first_approver, status.second_approver}:
-                        dual_ready = bool(status.ready)  # recorded by an attempt whose mirror failed
-                    else:
-                        dual_ready = bool((await run_blocking(dual.approve, source_id, actor)).ready)
-                    ready = dual_ready and ready
-                if not ready:
-                    return await run_blocking(
-                        store.decide_approval, approval_id=approval_id, actor=actor, decision="approved",
-                        reason=reason, idempotency_key=idempotency_key, idempotency_payload=idempotency_payload,
-                        break_glass=break_glass,
-                    )
-                await run_blocking(approval_store.decide, source_id, "approved", {"approved_by": [*mirrored, actor], "plane": "appsync"})
-                ledger_status, ledger = "approved", {"result": {"approved_by": [*mirrored, actor]}}
-            else:
-                await run_blocking(approval_store.decide, source_id, "denied", {"denied_by": actor, "reason": reason, "plane": "appsync"})
-                ledger_status, ledger = "denied", {"result": {"denied_by": actor}}
-        except PermissionError as exc:
-            raise _ledger_error(exc) from exc
-    # Mirror the ledger's outcome, filling in approvers whose mirror was lost.
-    raw_result = ledger.get("result")
-    result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
-    if ledger_status == "denied":
-        return await run_blocking(
-            store.decide_approval, approval_id=approval_id, actor=str(result.get("denied_by") or actor), decision="rejected",
-            reason=reason, idempotency_key=idempotency_key, idempotency_payload=idempotency_payload,
-        )
-    approvers = [str(name) for name in (result.get("approved_by") or [actor]) if str(name) not in mirrored] or [actor]
-    record: dict[str, Any] = approval
-    for index, approver in enumerate(approvers):
-        last = index == len(approvers) - 1
-        record = await run_blocking(
-            store.decide_approval, approval_id=approval_id, actor=approver, decision="approved", reason=reason,
-            idempotency_key=idempotency_key if last else None, idempotency_payload=idempotency_payload if last else None,
-        )
-    return record
+            dual_status = await run_blocking(dual.status, source_id)
+        except KeyError:
+            dual_status = None
+    deciders = ledger_deciders(ledger, dual_status=dual_status)
+    raw = ledger.get("result")
+    reason = cast(dict[str, Any], raw).get("reason") if isinstance(raw, dict) else None
+    record = await run_blocking(
+        store.mirror_agent_decision, approval_id=str(approval["approval_id"]), outcome=outcome, deciders=deciders,
+        reason=str(reason) if reason is not None else None,
+    )
+    # A retry completing the caller's own decision (its mirror was lost) succeeds.
+    if actor in deciders and decision == outcome:
+        return record, None
+    return record, f"already decided: {outcome}"
 
 
 def attach_approval_plane(rt: Any) -> None:

@@ -32,6 +32,7 @@ from typing import Any, Literal, Optional, TypeVar, cast
 from omnidesk_agent.appsync.postgres_migrations import assert_appsync_schema_current
 from omnidesk_agent.appsync import subject_data as subject
 from omnidesk_agent.appsync.store import (
+    AGENT_APPROVAL_PREFIX,
     LEGACY_HMAC_KEY_REFUSED,
     SYNC_PAGE_LIMIT,
     TERMINAL_TASK_STATUSES,
@@ -58,6 +59,7 @@ from omnidesk_agent.appsync.store import (
     agent_approval_record,
     apply_approval_decision,
     approvals_required,
+    mirror_ledger_outcome,
     push_text,
     UserProfile,
     _approval_decision_message,
@@ -1964,6 +1966,24 @@ class MigratedMultiInstancePostgresAppSyncStore:
             result = self._record(approval)
             self._idempotency_store(tx, actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload, response={"approval": result})
             return result
+
+        return self._transaction(body)
+
+    def mirror_agent_decision(self, *, approval_id: str, outcome: Literal["approved", "rejected"], deciders: list[str], reason: Optional[str] = None) -> dict[str, Any]:
+        """Record on an agent approval the outcome its ledger already holds
+        (see :meth:`AppSyncStore.mirror_agent_decision`), in one transaction."""
+        if not approval_id.startswith(AGENT_APPROVAL_PREFIX):
+            raise ValueError("only an agent approval mirrors its ledger")
+
+        def body(tx: _Tx) -> dict[str, Any]:
+            approval: Optional[ApprovalRecord] = self._get(tx, APPROVALS, approval_id, for_update=True)
+            if not approval:
+                raise KeyError("approval not found")
+            if approval.status == "pending":
+                mirror_ledger_outcome(approval, outcome=outcome, deciders=deciders, reason=reason, now=tx.now)
+                self._update(tx, APPROVALS, approval)
+                self._event(tx, "approval.decided", str(approval.decided_by), {"approval_id": approval_id, "decision": outcome, "task_id": approval.task_id, "organization_id": approval.organization_id})
+            return self._record(approval)
 
         return self._transaction(body)
 
