@@ -26,6 +26,10 @@ class GateConfig:
     noninferiority_margin: float = 0.02
     max_cost_increase: float = 0.20
     max_latency_increase: float = 0.25
+    # Relative limits apply only past these absolute differences, so noise on
+    # tiny values (1.5 ms vs 1.8 ms, $0 vs $0.000001) cannot block or pass a gate.
+    min_latency_delta_ms: float = 50.0
+    min_cost_delta_usd: float = 0.0001
     require_cost_measurement: bool = True
     min_measured_fraction: float = 0.9
     harm_min_samples_per_arm: int = 30
@@ -125,12 +129,12 @@ class SequentialGate:
         elif control.mean_cost is not None and treatment.mean_cost is not None:
             increase = (treatment.mean_cost - control.mean_cost) / max(control.mean_cost, 1e-9)
             checks["cost_increase"] = round(increase, 6)
-            if increase > cfg.max_cost_increase:
+            if increase > cfg.max_cost_increase and treatment.mean_cost - control.mean_cost > cfg.min_cost_delta_usd:
                 blockers.append("cost_increase")
         if control.mean_latency is not None and treatment.mean_latency is not None:
             latency_increase = (treatment.mean_latency - control.mean_latency) / max(control.mean_latency, 1e-9)
             checks["latency_increase"] = round(latency_increase, 6)
-            if latency_increase > cfg.max_latency_increase:
+            if latency_increase > cfg.max_latency_increase and treatment.mean_latency - control.mean_latency > cfg.min_latency_delta_ms:
                 blockers.append("latency_increase")
         checks["blockers"] = blockers
 

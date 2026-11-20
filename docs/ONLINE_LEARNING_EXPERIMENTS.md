@@ -74,7 +74,9 @@ would be identical, so the start is refused.
     Bounds use the Newcombe hybrid score method, which does not collapse at
     0% or 100% success the way a Wald interval does.
     Both also need: safety rate not above control, cost measured on at least
-    90% of runs and at most +20%, latency at most +25%.
+    90% of runs and at most +20%, latency at most +25% (the relative limits
+    apply only past 50 ms and $0.0001 of absolute difference, so noise on tiny
+    values cannot decide).
 - Canary stages (default 1, 5, 10, 25, 50% of traffic): a passing look moves
   to the next stage once the stage has `min_stage_samples` runs, and the last
   stage also needs them before `ready_to_promote`. Within a stage the
@@ -101,7 +103,8 @@ risk and approval deltas, planning latency, planner errors) and, once the
 production run ends (in either order; whichever side arrives second makes the
 join), a join: `identical_plan`, `would_fail_same` (identical
 through the failing step), `diverged_before_failure`,
-`production_succeeded_shadow_diverged`. Divergence is not evidence of
+`production_succeeded_shadow_diverged`. Outcomes of runs that were not
+shadowed (not sampled or over a cap) are not stored. Divergence is not evidence of
 success, and the report says so.
 
 ## 4. The hook

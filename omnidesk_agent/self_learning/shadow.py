@@ -91,6 +91,7 @@ class ShadowRunner:
         self.rng = rng or random.Random()  # nosec B311
         self.candidate: Optional[PlannerPolicy] = None
         self._in_flight: set[asyncio.Task] = set()
+        self._scheduled: dict[str, float] = {}  # run keys that got a shadow plan
         self._init()
 
     def _connect(self) -> sqlite3.Connection:
@@ -124,6 +125,9 @@ class ShadowRunner:
             if len(self._in_flight) >= self.max_in_flight or self._count_today() >= self.max_per_day:
                 return None
             loop = asyncio.get_running_loop()
+            self._scheduled[self._id(run_key)] = time.time()
+            while len(self._scheduled) > 10_000:
+                self._scheduled.pop(next(iter(self._scheduled)))
             task = loop.create_task(self._shadow(msg, production_plan, candidate, run_key))
             self._in_flight.add(task)
             task.add_done_callback(self._in_flight.discard)
@@ -160,6 +164,9 @@ class ShadowRunner:
 
     def observe_production(self, run_key: str, outcome: RunOutcome, *, failed_step_index: Optional[int] = None) -> Optional[str]:
         """Record the production outcome; join now, or when the shadow plan arrives."""
+        if self._id(run_key) not in self._scheduled:
+            return None  # this run was not shadowed (not sampled, or over the caps)
+        self._scheduled.pop(self._id(run_key), None)
         production = {"status": outcome.status, "success": outcome.success, "failed_step_index": failed_step_index}
         try:
             with self._connect() as con:
