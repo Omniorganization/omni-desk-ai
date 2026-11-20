@@ -26,6 +26,8 @@ It keeps these rows, without the person:
   completed is revoked, so its pairing code can no longer enrol a device.
 - Notifications they caused on someone else's records: the actor becomes
   ``[erased]``.
+- Projects they own stay with their organization; ``owner_actor`` becomes
+  ``[erased]``, in the project store's local backups too.
 - Approvals they decided for someone else: decided_by and approved_by become
   ``[erased]``, and their reason is removed. On an approval still pending,
   their partial approval is withdrawn instead: an approver nobody can identify
@@ -35,8 +37,7 @@ It keeps these rows, without the person:
   only identifiers and states.
 
 Not covered here: security's audit logs (kept by design, see
-``privacy.data_subject``); the approval ledger, which erases its own rows;
-projects (``GatewayProjectStore``), whose ``owner_actor`` is not erased.
+``privacy.data_subject``); the approval ledger, which erases its own rows.
 """
 
 from __future__ import annotations

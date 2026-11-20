@@ -161,13 +161,15 @@ hash or pairing code hash.
 | Device enrollments they started | `requested_by` becomes `[erased]`. One not completed is revoked, so its pairing code cannot enrol a device |
 | Approvals they decided for someone else | `decided_by`/`approved_by` become `[erased]`, and their reason is removed. On a pending approval their partial approval is withdrawn: an approver nobody can identify must not count toward four eyes |
 | Notifications they caused on someone else's records | Actor becomes `[erased]` |
+| Projects they own | Kept with their organization; `owner_actor` becomes `[erased]`, also in the project store's local backups. Every project operation is scoped by organization, so the project stays usable |
 | Sync events | Numbers kept, so cursors stay valid. Actor `[erased]`. Events by the person or about an erased record keep only identifiers and states |
 
-Not covered: the security audit logs (kept by design); projects
-(`GatewayProjectStore`), whose `owner_actor` stays; and the PostgreSQL twins of
-the agent-core stores in `repositories/postgres_state.py`. An erasure on a
-local-first daemon store does not reach the remote gateway; run it on each.
-Backups taken before an erasure still hold the data until they are rotated out.
+Not covered:
+- the security audit logs, kept by design;
+- the PostgreSQL twins of the agent-core stores in `repositories/postgres_state.py` (#286);
+- the remote gateway, when erasing on a local-first daemon store: run the erasure on each;
+- backups taken before an erasure, until they are rotated out;
+- quarantined copies of a corrupt state file, kept for an operator to inspect.
 
 ## Approvals: four eyes
 

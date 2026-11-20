@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
+from omnidesk_agent.appsync.projects import GatewayProjectStore
 from omnidesk_agent.appsync.strict_json_store import StrictJsonAppSyncStore
 from omnidesk_agent.appsync.subject_data import ERASED_ACTOR
 
@@ -77,9 +78,17 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Any]:
 
 
 def _mentions(store: Any, needle: str) -> list[str]:
-    """Every stored row (or JSON line) of this store that contains ``needle``."""
+    """Every stored row of this store that contains ``needle``: on JSON, every line
+    of its state file and of the files beside it (the project store and its backups)."""
     if hasattr(store, "path"):
-        return [line.strip() for line in Path(store.path).read_text(encoding="utf-8").splitlines() if needle in line]
+        state = Path(store.path)
+        return [
+            f"{path.name}: {line.strip()}"
+            for path in sorted(state.parent.glob(f"{state.name}*"))
+            if path.is_file()
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if needle in line
+        ]
     import psycopg
     from psycopg import sql
 
@@ -117,10 +126,14 @@ def _world(store: Any) -> dict[str, Any]:
     store.register_device(actor=SUBJECT, device_id=DESKTOP, device_type="desktop", name="Sam's MacBook", platform="macos")
     store.heartbeat_runtime(actor=SUBJECT, device_id=DESKTOP, status="online", hostname=SUBJECT_TEXT[3])
     store.record_sync_cursor(actor=SUBJECT, remote="primary", since_seq=3, device_id=PHONE)
+    # A project the subject owns, changed twice so the local store also keeps backups naming them.
+    projects = GatewayProjectStore(store)
+    project = projects.create_project(actor=SUBJECT, name="Clinic paperwork", description="forms")
+    projects.update_project(actor=SUBJECT, project_id=project["project_id"], patch={"description": "forms and letters"})
     other_conversation = store.create_conversation(actor=OTHER, title="Shared build")
     other = store.add_message_and_task(actor=OTHER, conversation_id=other_conversation["conversation_id"], content=OTHER_TASK, requires_desktop_runtime=True, risk="high")
     store.decide_approval(approval_id=other["approval"]["approval_id"], actor=SUBJECT, decision="approved", reason=f"fine by {SUBJECT}")
-    return {"conversation_id": conversation_id, "task_id": mine["task"]["task_id"], "approval_id": mine["approval"]["approval_id"], "other": other, "other_conversation_id": other_conversation["conversation_id"]}
+    return {"conversation_id": conversation_id, "task_id": mine["task"]["task_id"], "approval_id": mine["approval"]["approval_id"], "other": other, "other_conversation_id": other_conversation["conversation_id"], "project_id": project["project_id"]}
 
 
 def _kinds(records: list[dict[str, Any]]) -> set[str]:
@@ -131,7 +144,8 @@ def test_an_export_has_the_subjects_records_and_nobody_elses(store: Any) -> None
     world = _world(store)
     records = store.export_subject(SUBJECT)
     assert {"user", "device", "runtime", "conversation", "message", "task", "approval", "approval_decision", "notification", "push",
-            "device_enrollment", "local_outbox", "sync_cursor", "operation_log", "sync_event", "idempotency"} <= _kinds(records)
+            "device_enrollment", "local_outbox", "sync_cursor", "operation_log", "sync_event", "idempotency", "project"} <= _kinds(records)
+    assert [record["project_id"] for record in records if record["record"] == "project"] == [world["project_id"]]
     text = json.dumps(records)  # JSON-safe, as the privacy service returns it
     for content in SUBJECT_TEXT[:4]:
         assert content in text
@@ -167,6 +181,11 @@ def test_after_an_erasure_the_subject_is_nowhere_and_everyone_else_stays(store: 
     kept = store.get_approval(world["other"]["approval"]["approval_id"], actor=OTHER)
     assert kept["status"] == "approved" and kept["decided_by"] == ERASED_ACTOR and kept["approved_by"] == [ERASED_ACTOR]
     assert store.get_task(world["other"]["task"]["task_id"], actor=OTHER)["status"] == "queued"
+    # The project stays with the organization, owned by nobody named, and still usable.
+    projects = GatewayProjectStore(store)
+    [project] = [item for item in projects.list_projects(actor=OTHER) if item["project_id"] == world["project_id"]]
+    assert project["owner_actor"] == ERASED_ACTOR and project["description"] == "forms and letters"
+    assert projects.update_project(actor=OTHER, project_id=world["project_id"], patch={"archived": True})["archived"] is True
     # The subject's task is gone: a desktop still holding it cannot write a result back.
     with pytest.raises(KeyError):
         store.update_task_status(task_id=world["task_id"], actor=SUBJECT, status="completed", result_summary="done")

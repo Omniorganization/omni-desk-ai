@@ -1630,6 +1630,7 @@ class AppSyncStore:
             records += [subject.exported("operation_log", entry) for entry in self.operation_log if self._subject_log_entry(entry, scope)]
             records += [subject.exported("sync_event", event) for event in self.events if event.get("actor") == actor]
             records += [subject.exported_idempotency(row) for row in self.idempotency.values() if row.get("actor") == actor]
+            records += [subject.exported("project", project) for project in self._subject_projects().export_subject(actor)]
             return records
 
     def erase_subject(self, actor: str) -> int:
@@ -1685,7 +1686,13 @@ class AppSyncStore:
                     event["actor"], event["payload"] = scrubbed
                     count += 1
             self._persist()
-            return count
+            return count + self._subject_projects().erase_subject(actor)
+
+    def _subject_projects(self) -> Any:
+        """The project store kept beside this one (GatewayProjectStore)."""
+        from omnidesk_agent.appsync.projects import GatewayProjectStore
+
+        return GatewayProjectStore(cast(Any, self))
 
     def _conversation_owner(self, conversation_id: str) -> Optional[str]:
         conversation = self.conversations.get(conversation_id)

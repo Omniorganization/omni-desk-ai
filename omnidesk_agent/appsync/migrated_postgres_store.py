@@ -1756,7 +1756,13 @@ class MigratedMultiInstancePostgresAppSyncStore:
             records += [subject.exported_idempotency({"endpoint": row[0], "created_at": row[1]}) for row in tx.cur.fetchall()]
             return records
 
-        return self._read(body)
+        return self._read(body) + [subject.exported("project", project) for project in self._subject_projects().export_subject(actor)]
+
+    def _subject_projects(self) -> Any:
+        """The project store on this namespace (GatewayProjectStore)."""
+        from omnidesk_agent.appsync.projects import GatewayProjectStore
+
+        return GatewayProjectStore(cast(Any, self))
 
     def erase_subject(self, actor: str) -> int:
         """Delete or anonymise what this namespace holds about ``actor``
@@ -1792,7 +1798,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
                     count += 1
             return count
 
-        return self._transaction(body)
+        return self._transaction(body) + self._subject_projects().erase_subject(actor)
 
     def get_conversation(self, conversation_id: str, *, actor: str) -> dict[str, Any]:
         return self._record(self._read(lambda tx: self._owned_conversation(tx, conversation_id, actor)))
