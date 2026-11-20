@@ -19,25 +19,28 @@ groups:
     interval: 30s
     rules:
       # Unhandled exceptions are counted in omnidesk_http_errors_total and not in
-      # omnidesk_http_requests_total, so both feed the error ratio.
+      # omnidesk_http_requests_total, so both feed the error ratio. Each sum falls
+      # back to 0 (`or vector(0)`): adding an empty vector would make the whole
+      # ratio empty and the alert silent when only one kind of failure occurs.
+      # No traffic at all gives 0/0 = NaN, which no threshold matches.
       - record: omnidesk:api_errors:rate5m
-        expr: sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[5m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[5m]))
+        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[5m])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[5m])) or vector(0))
       - record: omnidesk:api_requests:rate5m
-        expr: sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[5m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[5m]))
+        expr: (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[5m])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[5m])) or vector(0))
       - record: omnidesk:api_error_ratio:rate5m
         expr: omnidesk:api_errors:rate5m / omnidesk:api_requests:rate5m
       - record: omnidesk:api_error_ratio:rate30m
-        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[30m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[30m]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[30m])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[30m])))
+        expr: ((sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[30m])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[30m])) or vector(0))) / ((sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[30m])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[30m])) or vector(0)))
       - record: omnidesk:api_error_ratio:rate1h
-        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[1h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1h]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[1h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1h])))
+        expr: ((sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[1h])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1h])) or vector(0))) / ((sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[1h])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1h])) or vector(0)))
       - record: omnidesk:api_error_ratio:rate2h
-        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[2h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[2h]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[2h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[2h])))
+        expr: ((sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[2h])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[2h])) or vector(0))) / ((sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[2h])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[2h])) or vector(0)))
       - record: omnidesk:api_error_ratio:rate6h
-        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[6h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[6h]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[6h])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[6h])))
+        expr: ((sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[6h])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[6h])) or vector(0))) / ((sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[6h])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[6h])) or vector(0)))
       - record: omnidesk:api_error_ratio:rate1d
-        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[1d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1d]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[1d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1d])))
+        expr: ((sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[1d])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1d])) or vector(0))) / ((sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[1d])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[1d])) or vector(0)))
       - record: omnidesk:api_error_ratio:rate3d
-        expr: (sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[3d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[3d]))) / (sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[3d])) + sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[3d])))
+        expr: ((sum(rate(omnidesk_http_requests_total{status=~"5..",path!~"/health|/ready|/admin/metrics"}[3d])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[3d])) or vector(0))) / ((sum(rate(omnidesk_http_requests_total{path!~"/health|/ready|/admin/metrics"}[3d])) or vector(0)) + (sum(rate(omnidesk_http_errors_total{path!~"/health|/ready|/admin/metrics"}[3d])) or vector(0)))
       # Share of control-plane requests slower than the 1s latency objective.
       - record: omnidesk:api_slow_ratio:rate5m
         expr: 1 - (sum(rate(omnidesk_http_request_duration_seconds_bucket{le="1.0",path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[5m])) / sum(rate(omnidesk_http_request_duration_seconds_count{path!~"/health|/ready|/admin/metrics|/api/chat.*|/agent/run|/app/conversations/.*"}[5m])))

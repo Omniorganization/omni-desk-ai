@@ -25,7 +25,7 @@ RUNBOOK = ROOT / "docs" / "runbooks" / "ALERTS.md"
 EXTERNAL_PREFIXES = ("up", "node_", "omnidesk_backup_last_")
 PROMQL_WORDS = {
     "sum", "rate", "increase", "by", "without", "and", "or", "unless", "on", "ignoring",
-    "abs", "absent", "time", "histogram_quantile", "le", "bool", "max", "min", "avg", "count",
+    "abs", "absent", "time", "histogram_quantile", "le", "bool", "max", "min", "avg", "count", "vector",
 }
 
 
