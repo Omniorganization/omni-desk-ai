@@ -78,6 +78,40 @@ def _loads(value: Any) -> dict[str, Any]:
     return json.loads(json.dumps(value, default=str))
 
 
+# --- data-subject requests (privacy/data_subject.py) -------------------------
+# The PostgreSQL twins below follow the SQLite stores' rules: security's
+# ApprovalStore (#270) and agent-core's run store, job queue, outbound messages
+# and memory (#275, docs/DATA_SUBJECT_STORES.md). Matching is by actor id.
+
+# Written where a row must stay but must no longer name the person.
+ERASED_ACTOR = "[erased]"
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    """``value`` (a JSON text or a dict) as a dict, or {} when it is not a JSON object."""
+    try:
+        parsed = json.loads(value) if isinstance(value, (str, bytes)) else value
+    except ValueError:
+        return {}
+    return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else {}
+
+
+def _governance_event_names(event: dict[str, Any], actor: str) -> bool:
+    """Does a memory governance audit event name ``actor`` (its actor, or the actor part of channel:actor)?"""
+    namespace = str(event.get("namespace") or "")
+    return str(event.get("actor") or "") == actor or (":" in namespace and namespace.split(":", 1)[1] == actor)
+
+
+def _governance_event_without_actor(event: dict[str, Any], actor: str) -> dict[str, Any]:
+    event = dict(event)
+    if str(event.get("actor") or "") == actor:
+        event["actor"] = ERASED_ACTOR
+    namespace = str(event.get("namespace") or "")
+    if ":" in namespace and namespace.split(":", 1)[1] == actor:
+        event["namespace"] = f"{namespace.split(':', 1)[0]}:{ERASED_ACTOR}"
+    return event
+
+
 class _PostgresJsonState:
     def __init__(self, dsn_or_pool: str | SharedPostgresConnectionPool):
         self._owns_pool = isinstance(dsn_or_pool, str)
@@ -353,6 +387,49 @@ class _PostgresJsonState:
                 return updated
 
 
+    def values(self, namespace: str) -> list[dict[str, Any]]:
+        """Every value of a namespace, oldest first. Data-subject requests must see all rows, not a page."""
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute("SELECT value_json FROM omnidesk_core_state WHERE namespace=%s ORDER BY created_at, key", (namespace,))
+                return [_loads(row[0]) for row in cur.fetchall()]
+
+    def erase_where(self, namespace: str, concerns, *, replacement=None) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
+        """Delete, in one transaction, every row of ``namespace`` that ``concerns`` matches.
+
+        Where ``replacement`` returns a value for a matched row, the row is
+        replaced by it instead of deleted. Returns the matched rows as they were.
+        The rows stay locked until the commit, so no concurrent update writes a
+        matched row back.
+        """
+        matched: list[dict[str, Any]] = []
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute("SELECT key, value_json FROM omnidesk_core_state WHERE namespace=%s ORDER BY created_at, key FOR UPDATE", (namespace,))
+                rows = [(str(row[0]), _loads(row[1])) for row in cur.fetchall()]
+                now = time.time()
+                for key, value in rows:
+                    if not concerns(value):
+                        continue
+                    kept = replacement(dict(value)) if replacement is not None else None
+                    if kept is None:
+                        cur.execute("DELETE FROM omnidesk_core_state WHERE namespace=%s AND key=%s", (namespace, key))
+                    else:
+                        cur.execute(
+                            "UPDATE omnidesk_core_state SET value_json=%s::jsonb, updated_at=%s WHERE namespace=%s AND key=%s",
+                            (json.dumps(kept, ensure_ascii=False, default=str), now, namespace, key),
+                        )
+                    matched.append(value)
+        return matched
+
+    def delete_keys(self, namespace: str, keys: list[str]) -> int:
+        if not keys:
+            return 0
+        with self._connect() as con:
+            with con.cursor() as cur:
+                cur.execute("DELETE FROM omnidesk_core_state WHERE namespace=%s AND key = ANY(%s)", (namespace, list(keys)))
+                return int(cur.rowcount or 0)
+
     def claim_ready_by_status(
         self,
         namespace: str,
@@ -489,6 +566,10 @@ class PostgresDualApprovalStore:
             bool(first and second), approval_id, first, second, "ready" if first and second else "waiting_for_second_approver"
         )
 
+    def erase_approvals(self, approval_ids: list[str]) -> int:
+        """Delete the dual-approval rows of erased approval records (data-subject erasure)."""
+        return self.state.delete_keys(self.namespace, [str(approval_id) for approval_id in approval_ids])
+
 
 class PostgresApprovalStore:
     namespace = "approvals"
@@ -529,6 +610,22 @@ class PostgresApprovalStore:
 
     def list(self, status: Optional[str] = None) -> list[dict[str, Any]]:
         return self.state.list(self.namespace, status=status, limit=1000)
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Approval records the actor requested (as security.approval_store.ApprovalStore)."""
+        from omnidesk_agent.security.dual_approval import proposal_requesters
+
+        return [row for row in self.state.values(self.namespace) if actor in proposal_requesters(row.get("proposal") or {})]
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete the approval records the actor requested, and their dual-approval rows."""
+        from omnidesk_agent.security.dual_approval import proposal_requesters
+
+        erased = self.state.erase_where(self.namespace, lambda row: actor in proposal_requesters(row.get("proposal") or {}))
+        erase_dual = getattr(self.dual_approval_store, "erase_approvals", None)
+        if erased and callable(erase_dual):
+            erase_dual([str(row.get("id")) for row in erased])
+        return len(erased)
 
     def decide(self, approval_id: str, status: str, result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         if status not in {"approved", "denied"}:
@@ -717,6 +814,9 @@ class PostgresRunStore:
             raise ValueError(f"unsupported run update field(s): {', '.join(sorted(unknown))}")
 
         def update(row: dict[str, Any]) -> dict[str, Any]:
+            if row.get("erased_at"):
+                # An erased run takes no more writes (see erase_subject).
+                return row
             for key, value in fields.items():
                 if key == "plan_json":
                     row["plan_json"] = value if isinstance(value, dict) or value is None else json.loads(value)
@@ -736,6 +836,43 @@ class PostgresRunStore:
 
     def get_by_approval(self, approval_id: str) -> Optional[dict[str, Any]]:
         return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)
+
+    FINISHED_STATUSES = frozenset({"completed", "failed", "cancelled", "resume_failed"})
+
+    @staticmethod
+    def _requested_by(run: dict[str, Any], actor: str) -> bool:
+        """A run whose original message came from ``actor`` (sender_id), on any channel; never an erased one."""
+        if run.get("erased_at"):
+            return False
+        sender = _json_object(run.get("original_message")).get("sender_id")
+        return sender is not None and str(sender) == actor
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Every run ``actor`` asked for (message, plan, results, pending proposal); never resume tokens."""
+        runs = [run for run in self.state.values(self.namespace) if self._requested_by(run, actor)]
+        for run in runs:
+            run.pop("resume_token", None)
+        return runs
+
+    def erase_subject(self, actor: str) -> int:
+        """Erase the runs ``actor`` asked for; returns how many (as core.run_store.RunStore).
+
+        A finished run is deleted. A run still in flight becomes a cancelled
+        tombstone without its content: its loop stops before the next step or
+        turn (it reads the status), nobody can resume it, and update() ignores
+        the row, so a loop that is still running cannot write the content back.
+        """
+        now = time.time()
+
+        def tombstone(run: dict[str, Any]) -> Optional[dict[str, Any]]:
+            if run.get("status") in self.FINISHED_STATUSES:
+                return None
+            return {
+                **run, "status": "cancelled", "original_message": {"erased": True}, "plan_json": None, "results": [],
+                "waiting_approval_id": None, "approval_proposal": None, "resume_token": None, "erased_at": now, "updated_at": now,
+            }
+
+        return len(self.state.erase_where(self.namespace, lambda run: self._requested_by(run, actor), replacement=tombstone))
 
 class PostgresBreakGlassStore:
     """PostgreSQL twin of security.break_glass.BreakGlassStore; same rules, shared helpers."""
@@ -1120,6 +1257,32 @@ class PostgresJobQueue:
     def stats(self) -> dict[str, int]:
         return self.state.stats_by_status(self.namespace)
 
+    _SUBJECT_FIELDS = ("id", "channel", "status", "retry_count", "created_at", "updated_at", "last_error")
+
+    @staticmethod
+    def _sent_by(job: dict[str, Any], actor: str) -> bool:
+        return str(_json_object(job.get("payload_json")).get("sender_id") or "") == actor
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Every queued, running, finished or dead-lettered task message ``actor`` sent, with its result."""
+        return [
+            {
+                **{field: job.get(field) for field in self._SUBJECT_FIELDS},
+                "message": _json_object(job.get("payload_json")),
+                "result": _json_object(job.get("result_json")) if job.get("result_json") else None,
+            }
+            for job in self.state.values(self.namespace)
+            if self._sent_by(job, actor)
+        ]
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete the jobs of messages ``actor`` sent; returns how many. A queued one then never runs.
+
+        A job a worker is running at this moment finishes; its run is the run
+        store's to erase.
+        """
+        return len(self.state.erase_where(self.namespace, lambda job: self._sent_by(job, actor)))
+
 
 class PostgresOutboundMessageStore:
     namespace = "outbound_messages"
@@ -1325,6 +1488,26 @@ class PostgresOutboundMessageStore:
 
     def list_ambiguous(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self.list(status="ambiguous", limit=limit)
+
+    @staticmethod
+    def _concerns(message: dict[str, Any], actor: str) -> bool:
+        payload = _json_object(message.get("payload_json"))
+        return str(message.get("recipient") or "") == actor or str(payload.get("requested_by") or "") == actor
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Messages to ``actor`` (recipient) or queued for them (payload requested_by), any status."""
+        return [
+            {**{key: value for key, value in message.items() if key != "payload_json"}, "payload": _json_object(message.get("payload_json"))}
+            for message in self.state.values(self.namespace)
+            if self._concerns(message, actor)
+        ]
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete those messages; returns how many. A queued one is then never sent.
+
+        A message a dispatcher is sending at this moment is still delivered.
+        """
+        return len(self.state.erase_where(self.namespace, lambda message: self._concerns(message, actor)))
 
     def stats(self) -> dict[str, int]:
         return self.state.stats_by_status(self.namespace)
@@ -2000,6 +2183,44 @@ class PostgresExperienceStore:
         totals["days"] = days
         totals["daily"] = rows
         return totals
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Every memory record about ``actor`` on any channel, decrypted (data-subject access).
+
+        Experiences, structured experiences, and the memory governance audit
+        entries that name the actor. Learning metrics are daily totals without
+        an actor.
+        """
+        records = [{"kind": "experience", **self._decode_legacy(row)} for row in self.state.values(self.namespace_legacy) if str(row.get("actor") or "") == actor]
+        records += [
+            {"kind": "structured_experience", **self._decode_structured(row)}
+            for row in self.state.values(self.namespace_structured)
+            if str(row.get("actor") or "") == actor
+        ]
+        records += [
+            {"kind": "memory_governance_audit", "created_at": event.get("created_at"), "event": event}
+            for event in self.state.values(self.namespace_audit)
+            if _governance_event_names(event, actor)
+        ]
+        return records
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete ``actor``'s memory on every channel; returns the records deleted or anonymised.
+
+        Experiences and structured experiences are deleted. Memory governance
+        audit entries stay, as the record of each decision, with the actor id
+        replaced.
+        """
+        erased = len(self.state.erase_where(self.namespace_legacy, lambda row: str(row.get("actor") or "") == actor))
+        erased += len(self.state.erase_where(self.namespace_structured, lambda row: str(row.get("actor") or "") == actor))
+        erased += len(
+            self.state.erase_where(
+                self.namespace_audit,
+                lambda event: _governance_event_names(event, actor),
+                replacement=lambda event: _governance_event_without_actor(event, actor),
+            )
+        )
+        return erased
 
     def close(self) -> None:
         return None
