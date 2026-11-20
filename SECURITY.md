@@ -35,7 +35,7 @@ What isolates code the agent runs (`omnidesk_agent/sandbox`, `plugins`, `tools/s
   - execute from `/tmp`;
   - setuid, chroot, mount or unshare;
   - exceed the pids limit;
-  - read gateway secrets or masked state;
+  - read gateway secrets, or read or change masked state (writes to a mask go to `/dev/null`);
   - outlive a timeout.
   `OMNIDESK_REQUIRE_CONTAINER_TESTS=1` turns a missing runtime into a failure. The rootless runner itself is exercised in `isolated-cloud-acceptance`.
 - Known limits:
