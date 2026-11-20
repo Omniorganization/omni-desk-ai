@@ -446,3 +446,60 @@ def test_runtime_keeps_admin_audit_and_checkpoints_out_of_the_workspace(tmp_path
         assert rt.admin_auth.audit_chain is not None and rt.admin_auth.audit_chain.key_env == cfg.permissions.audit_checkpoint_hmac_key_env
     finally:
         rt.close()
+
+
+def test_verify_and_rotate_commands_in_process(tmp_path, monkeypatch, capsys):
+    from omnidesk_agent.security import audit_chain
+
+    pm = _manager(tmp_path, monkeypatch)
+    pm.verify(_low())
+    assert audit_chain.main(["verify", str(pm.audit_log)]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+    with pm.audit_log.open("a") as handle:
+        handle.write("garbage\n")
+    assert audit_chain.main(["verify", str(pm.audit_log)]) == 1
+    capsys.readouterr()
+
+    assert audit_chain.main(["rotate", str(pm.audit_log), "--reason", "drill"]) == 0
+    rotated = json.loads(capsys.readouterr().out)
+    assert Path(rotated["sealed_file"]).exists() and rotated["sealed_verification"]["ok"] is False
+    assert audit_chain.main(["verify", str(pm.audit_log), "--checkpoint-dir", str(tmp_path / "anchors")]) == 0
+    capsys.readouterr()
+
+    monkeypatch.delenv(KEY_ENV)
+    monkeypatch.setenv("OMNIDESK_ENV", "production")
+    assert audit_chain.main(["verify", str(pm.audit_log)]) == 2
+
+
+def test_rotate_requires_a_reason_and_an_existing_log(tmp_path):
+    with pytest.raises(ValueError, match="reason"):
+        rotate(tmp_path / "audit.log", reason=" ", key=KEY)
+    with pytest.raises(FileNotFoundError):
+        rotate(tmp_path / "missing.log", reason="x", key=KEY)
+
+
+def test_verifier_reports_missing_empty_and_unchained_logs(tmp_path):
+    assert verify_audit_log(tmp_path / "missing.log", KEY).error == "audit log does not exist"
+    (tmp_path / "empty.log").write_text("")
+    assert verify_audit_log(tmp_path / "empty.log", KEY).error == "audit log is empty"
+    (tmp_path / "legacy.log").write_text('{"event": "old"}\n')
+    assert verify_audit_log(tmp_path / "legacy.log", KEY).error == "audit log has no keyed chain entries"
+    log = tmp_path / "chain.log"
+    chain = AuditChain(log, key=KEY)
+    chain.append("a", {})
+    report = verify_audit_log(log, KEY)
+    _write_lines(log, [])
+    assert "shorter than the last verified point" in verify_audit_log(log, KEY, start=report.last).error
+
+
+def test_monitor_treats_an_unreadable_log_as_a_failure(tmp_path, monkeypatch):
+    pm = _manager(tmp_path, monkeypatch)
+    pm.verify(_low())
+    failures: list[str] = []
+    monitor = AuditIntegrityMonitor([pm.audit_log], on_failure=failures.append)
+    monkeypatch.setattr("omnidesk_agent.security.audit_chain.verify_audit_log", lambda *a, **k: (_ for _ in ()).throw(OSError("I/O error")))
+
+    assert monitor.check_once() is False
+
+    assert failures and "OSError" in failures[0]
