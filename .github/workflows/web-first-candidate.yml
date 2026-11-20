@@ -1,21 +1,14 @@
 name: Web First Candidate
+# Real browser, Postgres and rootless Podman against the packaged web-first
+# gateway. It runs on every pull request, in the merge queue and on every main
+# commit (3-6 minutes), so a regression outside apps/web-admin-next or
+# deploy/web-first can no longer skip it, it can become a required check, and
+# web-first-release.yml finds a push candidate for any main commit.
 on:
   push:
     branches: [main]
-    paths:
-      - 'apps/web-admin-next/**'
-      - 'deploy/web-first/**'
-      - 'scripts/web_first*.py'
-      - 'scripts/isolated_cloud_acceptance.py'
-      - '.github/workflows/web-first-candidate.yml'
   pull_request:
-    paths:
-      - 'apps/web-admin-next/**'
-      - 'deploy/web-first/**'
-      - 'scripts/web_first*.py'
-      - 'scripts/isolated_cloud_acceptance.py'
-      - 'tests/test_web_first*.py'
-      - '.github/workflows/web-first-candidate.yml'
+  merge_group:
   workflow_dispatch:
 permissions:
   contents: read
