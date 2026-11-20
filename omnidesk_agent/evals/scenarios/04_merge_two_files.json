@@ -1,0 +1,99 @@
+{
+  "id": "merge_two_files",
+  "title": "Combine two files into a third",
+  "task": "Write notes/combined.txt containing the line from notes/a.txt followed by the line from notes/b.txt.",
+  "files": {
+    "notes/a.txt": "alpha: the build is green\n",
+    "notes/b.txt": "beta: the release is on Friday\n"
+  },
+  "approve": [
+    {
+      "tool": "files",
+      "action": "read_text",
+      "path_prefix": "notes/"
+    },
+    {
+      "tool": "files",
+      "action": "write_text",
+      "path_prefix": "notes/combined.txt"
+    }
+  ],
+  "success": [
+    {
+      "type": "status_in",
+      "values": [
+        "completed"
+      ]
+    },
+    {
+      "type": "file_contains",
+      "path": "notes/combined.txt",
+      "value": [
+        "the build is green",
+        "the release is on Friday"
+      ]
+    }
+  ],
+  "tags": [
+    "files",
+    "write",
+    "observe"
+  ],
+  "script": [
+    {
+      "status": "continue",
+      "goal": "combine the two lines",
+      "steps": [
+        {
+          "description": "read a",
+          "tool": "files",
+          "action": "read_text",
+          "args": {
+            "path": "notes/a.txt"
+          },
+          "risk": "medium",
+          "requires_approval": true,
+          "expected_result": "line a"
+        },
+        {
+          "description": "read b",
+          "tool": "files",
+          "action": "read_text",
+          "args": {
+            "path": "notes/b.txt"
+          },
+          "risk": "medium",
+          "requires_approval": true,
+          "expected_result": "line b"
+        }
+      ],
+      "success_criteria": "both lines in notes/combined.txt"
+    },
+    {
+      "status": "continue",
+      "goal": "combine the two lines",
+      "steps": [
+        {
+          "description": "write the combined file",
+          "tool": "files",
+          "action": "write_text",
+          "args": {
+            "path": "notes/combined.txt",
+            "text": "alpha: the build is green\nbeta: the release is on Friday\n"
+          },
+          "risk": "high",
+          "requires_approval": true,
+          "expected_result": "combined file written"
+        }
+      ],
+      "success_criteria": "both lines in notes/combined.txt"
+    },
+    {
+      "status": "done",
+      "goal": "combine the two lines",
+      "steps": [],
+      "success_criteria": "both lines in notes/combined.txt",
+      "final_answer": "notes/combined.txt now holds both lines."
+    }
+  ]
+}

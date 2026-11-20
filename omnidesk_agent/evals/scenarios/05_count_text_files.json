@@ -1,0 +1,55 @@
+{
+  "id": "count_text_files",
+  "title": "Count files in a folder",
+  "task": "How many .txt files are in the notes folder? Answer with the number.",
+  "files": {
+    "notes/one.txt": "1",
+    "notes/two.txt": "2",
+    "notes/three.txt": "3",
+    "notes/image.png.md": "not a txt file"
+  },
+  "allow_write": false,
+  "success": [
+    {
+      "type": "status_in",
+      "values": [
+        "completed"
+      ]
+    },
+    {
+      "type": "final_answer_contains",
+      "value": "3"
+    }
+  ],
+  "tags": [
+    "files",
+    "list"
+  ],
+  "script": [
+    {
+      "status": "continue",
+      "goal": "count the txt files",
+      "steps": [
+        {
+          "description": "list notes",
+          "tool": "files",
+          "action": "list",
+          "args": {
+            "path": "notes"
+          },
+          "risk": "low",
+          "requires_approval": false,
+          "expected_result": "the folder listing"
+        }
+      ],
+      "success_criteria": "count reported"
+    },
+    {
+      "status": "done",
+      "goal": "count the txt files",
+      "steps": [],
+      "success_criteria": "count reported",
+      "final_answer": "There are 3 .txt files in notes."
+    }
+  ]
+}

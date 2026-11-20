@@ -1,0 +1,89 @@
+{
+  "id": "chinese_task_first_todo",
+  "title": "Chinese task: copy the first to-do item",
+  "task": "读取 notes/待办.txt，把第一项待办（不含序号）写入 notes/今天.txt。",
+  "files": {
+    "notes/待办.txt": "1. 给客户回电话\n2. 整理发票\n3. 预订会议室\n"
+  },
+  "approve": [
+    {
+      "tool": "files",
+      "action": "read_text",
+      "path_prefix": "notes/"
+    },
+    {
+      "tool": "files",
+      "action": "write_text",
+      "path_prefix": "notes/今天.txt"
+    }
+  ],
+  "success": [
+    {
+      "type": "status_in",
+      "values": [
+        "completed"
+      ]
+    },
+    {
+      "type": "file_contains",
+      "path": "notes/今天.txt",
+      "value": "给客户回电话"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "notes/今天.txt",
+      "value": "整理发票"
+    }
+  ],
+  "tags": [
+    "files",
+    "write",
+    "zh"
+  ],
+  "script": [
+    {
+      "status": "continue",
+      "goal": "写入第一项待办",
+      "steps": [
+        {
+          "description": "读取待办",
+          "tool": "files",
+          "action": "read_text",
+          "args": {
+            "path": "notes/待办.txt"
+          },
+          "risk": "medium",
+          "requires_approval": true,
+          "expected_result": "待办内容"
+        }
+      ],
+      "success_criteria": "今天.txt 含第一项"
+    },
+    {
+      "status": "continue",
+      "goal": "写入第一项待办",
+      "steps": [
+        {
+          "description": "写入第一项",
+          "tool": "files",
+          "action": "write_text",
+          "args": {
+            "path": "notes/今天.txt",
+            "text": "给客户回电话"
+          },
+          "risk": "high",
+          "requires_approval": true,
+          "expected_result": "已写入"
+        }
+      ],
+      "success_criteria": "今天.txt 含第一项"
+    },
+    {
+      "status": "done",
+      "goal": "写入第一项待办",
+      "steps": [],
+      "success_criteria": "今天.txt 含第一项",
+      "final_answer": "已把“给客户回电话”写入 notes/今天.txt。"
+    }
+  ]
+}
