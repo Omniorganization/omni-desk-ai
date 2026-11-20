@@ -222,20 +222,3 @@ def test_malformed_notifications_are_rejected():
         with pytest.raises(ValueError):
             GmailChannel.parse_push(payload)
     assert asyncio.iscoroutinefunction(GmailChannel.fetch_new_messages)
-
-
-def test_gmail_libraries_have_their_own_lock_and_stay_out_of_production_locks():
-    # The Google client stack pulls in requests/urllib3, which the default
-    # production locks deliberately exclude; Gmail deployments use their own lock.
-    import re
-    from pathlib import Path
-
-    gmail_lock = Path("requirements.gmail.lock").read_text(encoding="utf-8")
-    for package in ("google-auth-oauthlib", "google-api-python-client"):
-        assert re.search(rf"^{package}==", gmail_lock, re.MULTILINE)
-    urllib3 = re.search(r"^urllib3==(\d+)\.(\d+)\.(\d+)", gmail_lock, re.MULTILINE)
-    assert urllib3 and tuple(map(int, urllib3.groups())) >= (2, 8, 0)
-    assert "--hash=sha256:" in gmail_lock
-    for production in ("requirements.runtime.lock", "requirements.enterprise.lock"):
-        text = Path(production).read_text(encoding="utf-8")
-        assert not re.search(r"^(?:google-api-python-client|urllib3)==", text, re.MULTILINE), production

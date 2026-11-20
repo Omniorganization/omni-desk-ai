@@ -57,6 +57,8 @@ LOCKFILES = [
     "requirements.dev.lock",
     "requirements.security.lock",
     "requirements.enterprise.lock",
+    # Opt-in Gmail deployment lock (runtime + the gmail extra); audited like the rest.
+    "requirements.gmail.lock",
 ]
 
 DOCKER_SCAN_SNIPPETS = [

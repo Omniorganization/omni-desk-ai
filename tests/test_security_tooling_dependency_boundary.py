@@ -20,6 +20,23 @@ def test_optional_audit_dependencies_do_not_enter_production_locks(filename: str
     assert not re.search(r"^(?:filelock|urllib3)==", lock, re.MULTILINE)
 
 
+def _pins(filename: str) -> dict[str, str]:
+    return dict(re.findall(r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)", Path(filename).read_text(encoding="utf-8"), re.MULTILINE))
+
+
+def test_gmail_deployment_lock_is_the_explicit_urllib3_allowance() -> None:
+    # Explicit exception to the ban above: requirements.gmail.lock is opt-in
+    # for deployments that enable Gmail, whose Google client stack needs
+    # requests/urllib3. It must carry the patched urllib3, no audit tooling,
+    # and exactly the image's (enterprise) pins for everything it shares, so
+    # installing it after the default locks only adds the Gmail packages.
+    gmail, enterprise = _pins("requirements.gmail.lock"), _pins("requirements.enterprise.lock")
+    assert tuple(map(int, gmail["urllib3"].split("."))) >= (2, 8, 0)
+    assert "filelock" not in gmail and "pip-audit" not in gmail and "bandit" not in gmail
+    assert {"google-auth-oauthlib", "google-api-python-client"} <= gmail.keys()
+    assert {name: (gmail[name], enterprise[name]) for name in gmail.keys() & enterprise.keys() if gmail[name] != enterprise[name]} == {}
+
+
 @pytest.mark.parametrize("filename", ["requirements.lock", "requirements.dev.lock", "requirements.security.lock", "requirements.runtime.lock", "requirements.enterprise.lock"])
 def test_anyio_constraint_is_realized_in_all_affected_locks(filename: str) -> None:
     constraints = Path("requirements.security-constraints.in").read_text(encoding="utf-8")

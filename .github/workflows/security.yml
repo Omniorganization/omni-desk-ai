@@ -33,6 +33,7 @@ jobs:
           python scripts/check_lock_hashes.py requirements.dev.lock
           python scripts/check_lock_hashes.py requirements.security.lock
           python scripts/check_lock_hashes.py requirements.enterprise.lock
+          python scripts/check_lock_hashes.py requirements.gmail.lock
       - run: python -m pip install --require-hashes -r requirements.dev.lock
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - name: Prepare security evidence directory
@@ -74,7 +75,8 @@ jobs:
             requirements.bootstrap.lock \
             requirements.dev.lock \
             requirements.security.lock \
-            requirements.enterprise.lock; do
+            requirements.enterprise.lock \
+            requirements.gmail.lock; do
             stem="${lockfile%.lock}"
             stem="${stem//./-}"
             pip-audit --disable-pip \
@@ -92,6 +94,16 @@ jobs:
           echo "status=$aggregate" >> "$GITHUB_OUTPUT"
           exit 0
       - run: python scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json
+      - name: License policy for the Gmail deployment lock
+        # requirements.gmail.lock is resolved separately from the dev lock, so
+        # its licenses are inspected from its own installed environment. The
+        # hash-locked bootstrap tools provide `packaging`, which the checker
+        # needs to evaluate platform markers (pyobjc/python3-xlib).
+        run: |
+          python -m venv "$RUNNER_TEMP/gmail-lock"
+          "$RUNNER_TEMP/gmail-lock/bin/python" -m pip install --require-hashes -r requirements.bootstrap.lock
+          "$RUNNER_TEMP/gmail-lock/bin/python" -m pip install --require-hashes -r requirements.gmail.lock
+          "$RUNNER_TEMP/gmail-lock/bin/python" scripts/check_license_policy.py --lockfile requirements.gmail.lock --policy release/license-policy.json
       - run: python scripts/check_security_workflow_policy.py .
       - run: python scripts/check_security_attack_surface.py .
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

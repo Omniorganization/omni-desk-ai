@@ -8,7 +8,22 @@
 python -m pip install --require-hashes -r requirements.gmail.lock
 ```
 
-The dev and test locks include the extra, so CI's license and vulnerability audits cover these packages. Gmail stays disabled unless `channels.gmail.enabled` is set, and an enabled channel needs `OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY` (tokens are encrypted at rest).
+`requirements.gmail.lock` is the explicit exception to the production-lock urllib3 ban, and it is audited on its own: the Security workflow hash-checks it, runs `pip-audit` on it, and runs the license gate in an environment installed from it (`scripts/check_security_workflow_policy.py` requires all three). `tests/test_security_tooling_dependency_boundary.py` pins its terms: patched urllib3, no audit tooling, and exactly the enterprise lock's versions for every package they share. The dev and test locks also include the extra so the test suite runs against the real libraries. Gmail stays disabled unless `channels.gmail.enabled` is set, and an enabled channel needs `OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY` (tokens are encrypted at rest).
+
+### Container image
+
+The default image built from `Dockerfile` does **not** include the Gmail libraries: its runtime stage installs `requirements.bootstrap.lock`, `requirements.runtime.lock` and `requirements.enterprise.lock`, then removes pip, so Gmail cannot be added to a finished image. With `channels.gmail.enabled: true` that image fails at the first Gmail call with "Install google-auth-oauthlib …".
+
+A Gmail-enabled deployment builds its own image from the same Dockerfile with two lines changed in the runtime stage, copying the lock in and installing it right after the enterprise lock:
+
+```Dockerfile
+COPY requirements.bootstrap.lock requirements.runtime.lock requirements.enterprise.lock requirements.gmail.lock /tmp/
+# ...
+    && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.enterprise.lock \
+    && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.gmail.lock \
+```
+
+and adds `/tmp/requirements.gmail.lock` to the `rm -rf` cleanup. Because the Gmail lock pins every shared package at the enterprise lock's version, that extra install only adds the 19 Gmail packages and changes nothing else in the image. Scan and sign that image like the default one before promoting it.
 
 ## Inbound: push notifications through Cloud Pub/Sub
 
