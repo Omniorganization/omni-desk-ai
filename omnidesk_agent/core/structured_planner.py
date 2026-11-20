@@ -55,6 +55,22 @@ def _call_cost(usage: Optional[dict[str, Any]]) -> tuple[float, bool]:
     return 0.0, bool(usage.get("cost_known", False))
 
 
+def _call_tokens(usage: Optional[dict[str, Any]]) -> int:
+    """Input + output tokens of one router response (provider counts, else the router's estimate)."""
+    usage = usage or {}
+    if usage.get("cache_hit"):
+        return 0
+
+    def first(*keys: str) -> int:
+        for key in keys:
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return int(value)
+        return 0
+
+    return first("input_tokens", "prompt_tokens", "estimated_input_tokens") + first("output_tokens", "completion_tokens", "estimated_output_tokens")
+
+
 def _is_invalid_output(exc: BaseException) -> bool:
     """True when the router gave up because the model answered with invalid JSON."""
     seen: set[int] = set()
@@ -92,10 +108,11 @@ class LLMStructuredPlanner:
         system, user, tools_context = self._turn_prompt(view)
         # All planner calls of one run share one call-cap key; outside a run each turn has its own.
         task_id = f"planner-{view.run_id}" if view.run_id else f"planner-{uuid4().hex}"
-        calls, cost, cost_known = 0, 0.0, True
+        calls, tokens, cost, cost_known = 0, 0, 0.0, True
         try:
             raw = await self._complete(system, user, task_id)
             calls += 1
+            tokens = _call_tokens(raw.usage)
             cost, cost_known = _call_cost(raw.usage)
         except PermissionError:
             raise
@@ -112,6 +129,7 @@ class LLMStructuredPlanner:
             try:
                 repaired = await self._complete(REPAIR_SYSTEM_PROMPT, self._repair_payload(raw.text, tools_context, msg), task_id)
                 calls += 1
+                tokens += _call_tokens(repaired.usage)
                 repair_cost, repair_known = _call_cost(repaired.usage)
                 cost, cost_known = cost + repair_cost, cost_known and repair_known
                 schema = PlannerTurnSchema.model_validate_json(repaired.text)
@@ -119,10 +137,12 @@ class LLMStructuredPlanner:
                 raise
             except Exception as exc:
                 errors = [f"model output did not match the turn schema: {type(first_error).__name__}", f"repair failed: {type(exc).__name__}"]
-                return self._invalid(view, errors, calls=calls, cost=cost, cost_known=cost_known)
+                invalid = self._invalid(view, errors, calls=calls, cost=cost, cost_known=cost_known)
+                invalid.tokens = tokens
+                return invalid
 
         turn = self._validated(schema, view)
-        turn.llm_calls, turn.cost_usd, turn.cost_known = calls, cost, cost_known
+        turn.llm_calls, turn.tokens, turn.cost_usd, turn.cost_known = calls, tokens, cost, cost_known
         return turn
 
     async def plan(self, msg: ChannelMessage) -> Plan:

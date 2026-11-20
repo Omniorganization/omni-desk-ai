@@ -48,6 +48,7 @@ class AgentLoopConfig(BaseModel):
     max_turns: int = Field(default=8, ge=1, le=100)
     max_steps: int = Field(default=20, ge=1, le=500)
     max_llm_calls: int = Field(default=12, ge=1, le=500)
+    max_tokens: int = Field(default=200_000, ge=1000, le=10_000_000)
     max_cost_usd: Optional[float] = Field(default=1.0, ge=0)
     max_consecutive_failures: int = Field(default=3, ge=1, le=50)
     max_active_seconds: float = Field(default=900.0, gt=0, le=86400)

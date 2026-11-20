@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -11,10 +12,43 @@ from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
 
 
+class DesktopLease:
+    """One run drives the desktop at a time.
+
+    The first run to use the desktop holds it until it finishes, pauses for an
+    approval, or leaves it unused for `idle_seconds`; other runs' actions are
+    refused meanwhile, so two runs never interleave clicks and keystrokes.
+    """
+
+    def __init__(self, idle_seconds: float = 120.0):
+        self.idle_seconds = float(idle_seconds)
+        self._owner: Optional[str] = None
+        self._last_used = 0.0
+        self._lock = threading.Lock()
+
+    def acquire(self, owner: str) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if self._owner not in (None, owner) and now - self._last_used < self.idle_seconds:
+                raise PermissionError(f"the desktop is in use by another run ({self._owner}); retry when it finishes")
+            self._owner = owner
+            self._last_used = now
+
+    def release(self, owner: str) -> None:
+        with self._lock:
+            if self._owner == owner:
+                self._owner = None
+
+    @property
+    def owner(self) -> Optional[str]:
+        return self._owner
+
+
 class ComputerTool:
     name = "computer"
 
-    def __init__(self, screenshot_dir: Optional[Path] = None):
+    def __init__(self, screenshot_dir: Optional[Path] = None, *, lease: Optional[DesktopLease] = None):
+        self.lease = lease or DesktopLease()
         self._last_screenshot_hash: Optional[str] = None
         self._last_screenshot_at: float = 0.0
         self.screenshot_dir = (screenshot_dir or Path("~/.omnidesk/screenshots")).expanduser()
@@ -58,8 +92,13 @@ class ComputerTool:
             },
         )
 
+    def release_run(self, run_id: str) -> None:
+        self.lease.release(run_id)
+
     @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if action in {"screenshot", "click", "type_text", "hotkey", "move"}:
+            self.lease.acquire(ctx.run_id or f"{ctx.source}:{ctx.actor}")
         if action == "screenshot":
             return await self.screenshot(args, ctx)
         if action == "click":

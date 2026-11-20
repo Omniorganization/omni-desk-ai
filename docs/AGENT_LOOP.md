@@ -42,12 +42,19 @@ Configured under `agent:` (`AgentLoopConfig`); the first one exhausted ends the 
 | `max_turns` | 8 | `budget_turns` |
 | `max_steps` | 20 | `budget_steps` |
 | `max_llm_calls` | 12 planner requests (a schema repair counts) | `budget_llm_calls` |
+| `max_tokens` | 200000 planner input + output tokens | `budget_tokens` |
 | `max_cost_usd` | 1.0 | `budget_cost` (checked before each turn, only when the cost is known) |
 | `max_consecutive_failures` | 3 (failed steps or rejected turns in a row) | `repeated_failure` |
 | `max_active_seconds` | 900 (approval waits excluded) | `deadline` |
 | `max_steps_per_turn` | 8 | extra steps are dropped with a warning |
 
-Other reasons: `goal_reached`, `gave_up`, `planner_error` (the model provider failed after the first turn), `blocked` (a `PermissionError` while planning, such as a prompt-injection refusal) and `approval_wait`.
+Other reasons: `goal_reached`, `gave_up`, `planner_error` (the model provider failed after the first turn), `blocked` (a `PermissionError` while planning, such as a prompt-injection refusal), `approval_wait`, `cancelled` and `emergency_stop`. A plan or turn may list at most 50 steps (`MAX_PLAN_STEPS`); a longer one fails validation.
+
+## Stopping runs
+
+- `Orchestrator.cancel(run_id, reason=, actor=)` (CLI `omnidesk cancel <run_id>`): sets the run's row to `cancelled`. A running loop reads the row before every step and turn and ends the run there (a tool call already running finishes); a run waiting for approval can no longer be resumed, and its pending approval is denied.
+- Emergency stop (CLI `omnidesk stop --reason ...`, `--status`, `--release`): a file `emergency_stop.json` next to the audit log, outside the workspace. While it exists, loops end between steps (`emergency_stop`), new runs end at once, the tool registry refuses every call, and a step that asks for approval withdraws the request. An unreadable stop file counts as engaged. The CLI records each change in the audit log through `record_event` when the permission manager provides it.
+- The desktop is leased to one run at a time (`tools.computer.DesktopLease`): another run's screenshot, click, typing or key presses are refused until the holder finishes, pauses for an approval, or leaves the desktop idle for 120 s.
 
 All planner calls of a run share the call-cap key `planner-<run_id>`, and vision calls `vision-<run_id>`; `llm.per_task_max_llm_calls` applies to each over `llm.per_task_window_seconds`.
 

@@ -46,6 +46,9 @@ class FakeRunStore:
     def update(self, run_id, fields):
         assert run_id == "run-1"
 
+    def get(self, run_id):
+        return {"id": run_id, "status": "running"}
+
 
 def test_orchestrator_delegates_sync_run_store_calls_to_thread(monkeypatch):
     calls: list[str] = []
@@ -63,7 +66,7 @@ def test_orchestrator_delegates_sync_run_store_calls_to_thread(monkeypatch):
     # An empty plan did nothing, so the run is 'failed', never 'completed'.
     assert result["status"] == "failed"
     # Every run-store call, including the loop's checkpoint, went through to_thread.
-    assert calls == ["create", "update", "complete"]
+    assert calls == ["create", "update", "get", "update", "complete"]
     assert [(run_id, status) for run_id, status, _ in run_store.completed] == [("run-1", "failed")]
     assert run_store.completed[0][2][0]["error"] == "plan has no executable steps"
     assert len(orchestrator.memory.writes) == 2

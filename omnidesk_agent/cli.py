@@ -83,6 +83,20 @@ def _production_check_output(cfg: AppConfig, result: dict) -> dict:
     }
 
 
+def _audit_stop_change(cfg: AppConfig, *, engaged: bool, reason: str) -> str:
+    """Record an emergency stop change in the audit log; the stop itself never depends on it."""
+    from omnidesk_agent.security.permissions import PermissionManager
+
+    try:
+        record = getattr(PermissionManager(cfg.permissions), "record_event", None)
+        if not callable(record):
+            return "not recorded: the audit log has no record_event"
+        record("agent_emergency_stop", {"engaged": engaged, "actor": "local-cli", "reason": reason[:500]})
+        return "recorded"
+    except Exception as exc:
+        return f"not recorded: {type(exc).__name__}: {exc}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="omnidesk")
     parser.add_argument("--config", default="~/.omnidesk/config.yaml")
@@ -147,6 +161,14 @@ def main() -> None:
     serve_p = sub.add_parser("serve")
     serve_p.add_argument("--host")
     serve_p.add_argument("--port", type=int)
+    cancel_p = sub.add_parser("cancel", help="cancel a run: it stops before its next step, or can no longer be resumed")
+    cancel_p.add_argument("run_id")
+    cancel_p.add_argument("--reason", default="")
+    stop_p = sub.add_parser("stop", help="emergency stop: halt every run between steps and refuse all tool calls")
+    stop_p.add_argument("--reason", default="")
+    stop_mode = stop_p.add_mutually_exclusive_group()
+    stop_mode.add_argument("--release", action="store_true", help="lift the emergency stop")
+    stop_mode.add_argument("--status", action="store_true", help="show whether the stop is engaged")
     args = parser.parse_args()
     try:
         cfg = load_config(args.config, ensure_dirs=args.cmd != "production-check")
@@ -295,6 +317,31 @@ def main() -> None:
     if args.cmd == "search":
         with runtime_context(cfg) as rt:
             print(json.dumps(rt.memory.search(args.query), ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "cancel":
+        with runtime_context(cfg) as rt:
+            result = asyncio.run(rt.orchestrator.cancel(args.run_id, reason=args.reason, actor="local-cli"))
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if result.get("ok") else 1)
+
+    if args.cmd == "stop":
+        from omnidesk_agent.core.run_control import EmergencyStop
+
+        # No runtime needed: the stop is a file every process reads.
+        switch = EmergencyStop(cfg.permissions.audit_log.expanduser().parent / EmergencyStop.FILE_NAME)
+        if args.status:
+            state = switch.status()
+        elif args.release:
+            state = switch.release()
+        else:
+            if not args.reason.strip():
+                parser.error("stop needs --reason (it is recorded with the stop)")
+            state = switch.engage(reason=args.reason, actor="local-cli")
+        output = state.to_dict()
+        if not args.status:
+            output["audit"] = _audit_stop_change(cfg, engaged=state.engaged, reason=args.reason)
+        print(json.dumps(output, ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "serve":

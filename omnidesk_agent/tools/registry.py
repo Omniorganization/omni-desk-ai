@@ -12,6 +12,8 @@ class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, Any] = {}
         self.metrics: Any = None
+        # core.run_control.EmergencyStop; while engaged every call is refused.
+        self.emergency_stop: Any = None
 
     def register(self, tool: Any) -> None:
         if not getattr(tool, "name", None):
@@ -41,6 +43,8 @@ class ToolRegistry:
 
     async def call(self, tool_name: str, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
+            if self.emergency_stop is not None:
+                self.emergency_stop.check()
             # Inside the try: a plan naming an unregistered tool is a failed step,
             # not an exception that escapes the run.
             tool = self.get(tool_name)
@@ -56,6 +60,13 @@ class ToolRegistry:
             # refusal from a tool failure without matching text.
             data = {"error_class": type(exc).__name__, "permission_denied": isinstance(exc, PermissionError)}
             return ToolResult(False, data=data, error=f"{type(exc).__name__}: {exc}", summary=f"{tool_name}.{action} failed")
+
+    def release_run(self, run_id: str) -> None:
+        """Give up what `run_id` holds exclusively (the desktop lease)."""
+        for tool in self._tools.values():
+            release = getattr(tool, "release_run", None)
+            if callable(release):
+                release(run_id)
 
     def _metric(self, name: str, **labels: Any) -> None:
         metrics = getattr(self, "metrics", None)

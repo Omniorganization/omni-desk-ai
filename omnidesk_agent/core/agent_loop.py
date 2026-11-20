@@ -48,6 +48,7 @@ class LoopBudget:
     max_turns: int = 8
     max_steps: int = 20
     max_llm_calls: int = 12
+    max_tokens: int = 200_000  # planner input + output tokens per run
     max_cost_usd: Optional[float] = 1.0
     max_consecutive_failures: int = 3
     max_active_seconds: float = 900.0
@@ -63,6 +64,7 @@ class LoopBudget:
             max_turns=int(cfg.max_turns),
             max_steps=int(cfg.max_steps),
             max_llm_calls=int(cfg.max_llm_calls),
+            max_tokens=int(cfg.max_tokens),
             max_cost_usd=None if cfg.max_cost_usd is None else float(cfg.max_cost_usd),
             max_consecutive_failures=int(cfg.max_consecutive_failures),
             max_active_seconds=float(cfg.max_active_seconds),
@@ -84,6 +86,7 @@ class PlannerTurn:
     success_criteria: str = ""
     source: str = "llm"
     llm_calls: int = 0
+    tokens: int = 0
     cost_usd: float = 0.0
     cost_known: bool = True
     errors: list[str] = field(default_factory=list)
@@ -128,6 +131,7 @@ class TurnRecord:
     success_criteria: str = ""
     step_indexes: list[int] = field(default_factory=list)
     llm_calls: int = 0
+    tokens: int = 0
     cost_usd: float = 0.0
     cost_known: bool = True
     errors: list[str] = field(default_factory=list)
@@ -144,6 +148,7 @@ class LoopState:
     pending: list[int] = field(default_factory=list)
     order: list[int] = field(default_factory=list)  # step indexes in execution order
     llm_calls: int = 0  # planner requests
+    tokens: int = 0  # planner input + output tokens
     tool_model_calls: int = 0  # model calls made inside tools (vision)
     cost_usd: float = 0.0
     cost_known: bool = True
@@ -346,6 +351,7 @@ def budget_left(state: LoopState, budget: LoopBudget) -> dict[str, Any]:
         "turns": max(0, budget.max_turns - len(state.turns)),
         "steps": max(0, budget.max_steps - state.steps_executed),
         "llm_calls": max(0, budget.max_llm_calls - state.llm_calls),
+        "tokens": max(0, budget.max_tokens - state.tokens),
         "cost_usd": None if budget.max_cost_usd is None or not state.cost_known else max(0.0, budget.max_cost_usd - state.cost_usd),
     }
 
@@ -363,6 +369,8 @@ def budget_exhausted(state: LoopState, budget: LoopBudget, *, segment_started_at
             return "budget_turns"
         if state.llm_calls >= budget.max_llm_calls:
             return "budget_llm_calls"
+        if state.tokens >= budget.max_tokens:
+            return "budget_tokens"
         # Spend happens in model calls, so the cost limit stops the next turn;
         # steps already planned and paid for still run. An unknown cost cannot be checked.
         if budget.max_cost_usd is not None and state.cost_known and state.cost_usd >= budget.max_cost_usd:

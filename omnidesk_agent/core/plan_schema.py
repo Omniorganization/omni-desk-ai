@@ -4,6 +4,9 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
+# Upper bound on the steps one plan or turn may list; the loop runs at most
+# agent.max_steps_per_turn of them per turn.
+MAX_PLAN_STEPS = 50
 TaskType = Literal["chat", "file", "browser", "desktop", "channel", "code", "self_upgrade", "gmail", "unknown"]
 PlanStatus = Literal["planned", "waiting_approval", "running", "verifying", "retrying", "completed", "failed", "rolled_back"]
 
@@ -44,7 +47,7 @@ class StructuredPlan(BaseModel):
     goal: str
     task_type: TaskType = "unknown"
     risk: RiskLevel = "medium"
-    steps: list[PlanStepSchema]
+    steps: list[PlanStepSchema] = Field(max_length=MAX_PLAN_STEPS)
     success_criteria: str
     rollback_plan: Optional[str] = None
 
@@ -71,7 +74,7 @@ class PlannerTurnSchema(BaseModel):
     goal: str = ""
     task_type: TaskType = "unknown"
     risk: RiskLevel = "medium"
-    steps: list[PlanStepSchema] = Field(default_factory=list)
+    steps: list[PlanStepSchema] = Field(default_factory=list, max_length=MAX_PLAN_STEPS)
     success_criteria: str = ""
     final_answer: str = ""
     rollback_plan: Optional[str] = None

@@ -29,6 +29,7 @@ from omnidesk_agent.core.agent_loop import (
 )
 from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep, ToolResult
 from omnidesk_agent.core.planner_policy import PlannerPolicy, PolicyAssignment, RunOutcome
+from omnidesk_agent.core.run_control import EmergencyStop
 from omnidesk_agent.core.run_store import RunStore
 from omnidesk_agent.core.serialization import message_from_dict, plan_from_dict
 from omnidesk_agent.core.vision_executor import VisionActionExecutor
@@ -42,6 +43,9 @@ from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
 from omnidesk_agent.observability_tracing import trace_span
+
+
+_FINISHED_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "resume_failed"})
 
 
 class Orchestrator:
@@ -65,6 +69,7 @@ class Orchestrator:
         learning_loop: Optional[Any] = None,
         dual_approval_store: Optional[Any] = None,
         loop_budget: Optional[LoopBudget] = None,
+        emergency_stop: Optional[EmergencyStop] = None,
     ):
         self.planner = planner
         self.tools = tools
@@ -81,6 +86,7 @@ class Orchestrator:
         self.learning_loop = learning_loop
         self.dual_approval_store = dual_approval_store
         self.loop_budget = loop_budget or LoopBudget()
+        self.emergency_stop = emergency_stop
 
     # ------------------------------------------------------------------ entry points
 
@@ -162,14 +168,58 @@ class Orchestrator:
             state.policy = policy.to_dict()
         return await self._turn_planner().next_turn(self._view(msg, state, retrieve_memory=False))
 
+    async def cancel(self, run_id: str, *, reason: str = "", actor: str = "operator") -> dict:
+        """Cancel a run. A running loop stops before its next step or turn; a run waiting
+        for approval can no longer be resumed and its pending approval is denied."""
+        if self.run_store is None:
+            return {"ok": False, "status": "cancel_unavailable", "message": "RunStore is not configured"}
+        run = await asyncio.to_thread(self.run_store.get, run_id)
+        if not run:
+            return {"ok": False, "status": "not_found", "run_id": run_id}
+        previous = str(run["status"])
+        if previous in _FINISHED_RUN_STATUSES:
+            return {"ok": False, "status": previous, "run_id": run_id, "message": "run already finished"}
+        approval_id = run.get("waiting_approval_id")
+        await asyncio.to_thread(self.run_store.update, run_id, {"status": "cancelled", "resume_token": None, "waiting_approval_id": None})
+        if approval_id and self.approval_store is not None:
+            await asyncio.to_thread(self._deny_pending, str(approval_id), actor, reason)
+        self._audit_event("agent_run_cancelled", {"run_id": run_id, "previous_status": previous, "actor": str(actor)[:200], "reason": str(reason)[:500]})
+        self._metric("omnidesk_agent_cancellations_total", previous=previous)
+        return {"ok": True, "status": "cancelled", "run_id": run_id, "previous_status": previous}
+
+    def _deny_pending(self, approval_id: str, actor: str, reason: str) -> None:
+        get = getattr(self.approval_store, "get", None)
+        approval = get(approval_id) if callable(get) else None
+        if isinstance(approval, dict) and approval.get("status") == "pending":
+            try:
+                self.approval_store.decide(approval_id, "denied", {"decided_by": str(actor), "reason": f"run cancelled: {reason}"[:500]})  # type: ignore[union-attr]
+            except (KeyError, PermissionError):
+                pass  # expired or decided meanwhile: nothing left to deny
+
+    async def _stop_reason(self, state: LoopState) -> Optional[str]:
+        """'emergency_stop' or 'cancelled' when the run must stop before its next step or turn."""
+        if self.emergency_stop is not None and self.emergency_stop.status().engaged:
+            return "emergency_stop"
+        if self.run_store is not None and state.run_id is not None:
+            row = await asyncio.to_thread(self.run_store.get, state.run_id)
+            if row is not None and row.get("status") == "cancelled":
+                return "cancelled"
+        return None
+
     # ------------------------------------------------------------------ the loop
 
     async def _run(self, msg: ChannelMessage, state: LoopState) -> dict:
         budget = self.loop_budget
         segment_started = time.time()
         base_ctx = ToolContext(permissions=self.permissions, source=msg.channel, actor=msg.sender_id, run_id=state.run_id, plan_id=state.plan_id)
+        if self.run_store is not None and state.run_id is not None:
+            # Checkpoints never write the status, so a cancel made while a step runs is not overwritten.
+            await asyncio.to_thread(self.run_store.update, state.run_id, {"status": "running"})
         try:
             while True:
+                halt = await self._stop_reason(state)
+                if halt is not None:
+                    return await self._finish(msg, state, "cancelled" if halt == "cancelled" else "failed", halt, segment_started)
                 if state.pending:
                     stop = budget_exhausted(state, budget, segment_started_at=segment_started, before="step")
                     if stop:
@@ -253,6 +303,7 @@ class Orchestrator:
             final_answer=turn.final_answer[:4000],
             success_criteria=turn.success_criteria[:1000],
             llm_calls=turn.llm_calls,
+            tokens=turn.tokens,
             cost_usd=turn.cost_usd,
             cost_known=turn.cost_known,
             errors=list(turn.errors),
@@ -260,6 +311,7 @@ class Orchestrator:
         )
         state.turns.append(record)
         state.llm_calls += turn.llm_calls
+        state.tokens += turn.tokens
         state.cost_usd += turn.cost_usd
         state.cost_known = state.cost_known and turn.cost_known
         state.last_errors = list(turn.errors)
@@ -396,13 +448,19 @@ class Orchestrator:
             return
         current = state.pending[0] if state.pending else (state.order[-1] if state.order else 0)
         await asyncio.to_thread(self.run_store.update, state.run_id, {
-            "status": "running",
             "plan_json": json.dumps(state.plan_json(), ensure_ascii=False, default=str),
             "current_step_index": current,
             "results_json": json.dumps(state.results(), ensure_ascii=False, default=str),
         })
 
     async def _pause(self, msg: ChannelMessage, state: LoopState, approval: ApprovalRequired, segment_started: float) -> dict:
+        halt = await self._stop_reason(state)
+        if halt is not None:
+            # Stopped while this step asked for approval: withdraw the request instead of waiting.
+            if self.approval_store is not None:
+                await asyncio.to_thread(self._deny_pending, approval.approval_id, "system", halt)
+            return await self._finish(msg, state, "cancelled" if halt == "cancelled" else "failed", halt, segment_started)
+        self._release_actuators(state)
         state.active_seconds += time.time() - segment_started
         self._metric("omnidesk_approval_waiting_runs_total", tool=str(approval.proposal.get("tool", "")) if isinstance(approval.proposal, dict) else "unknown")
         blocked = state.pending[0] if state.pending else 0
@@ -427,6 +485,7 @@ class Orchestrator:
         }
 
     async def _finish(self, msg: ChannelMessage, state: LoopState, status: str, reason: str, segment_started: float, *, detail: str = "", error: Optional[BaseException] = None) -> dict:
+        self._release_actuators(state)
         state.active_seconds += time.time() - segment_started
         state.termination = {"reason": reason, "detail": detail[:2000]}
         if error is not None:
@@ -469,6 +528,12 @@ class Orchestrator:
             "learning_assignment": state.learning_assignment,
         }
 
+    def _release_actuators(self, state: LoopState) -> None:
+        # The desktop lease is per run: free it whenever the run stops driving it.
+        release = getattr(self.tools, "release_run", None)
+        if callable(release) and state.run_id:
+            release(state.run_id)
+
     def _restore_state(self, run: dict[str, Any]) -> LoopState:
         plan_json = run["plan_json"] or {}
         loop = plan_json.get("agent_loop") if isinstance(plan_json, dict) else None
@@ -503,6 +568,7 @@ class Orchestrator:
             "turns": len(state.turns),
             "steps_executed": state.steps_executed,
             "llm_calls": state.llm_calls,
+            "tokens": state.tokens,
             "model_calls": state.llm_calls + state.tool_model_calls,
             "cost_usd": round(state.cost_usd, 6) if state.cost_known else None,
             "replans": max(0, len(state.turns) - 1),
