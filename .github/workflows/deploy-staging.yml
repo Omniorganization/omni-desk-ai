@@ -7,9 +7,9 @@ on:
         description: Release workflow run id containing dist-and-sbom artifact
         required: true
       artifact_name:
-        description: GitHub Actions artifact name
+        description: "GitHub Actions artifact name: server-release-dist (server-release job) or dist-and-sbom (full release)"
         required: true
-        default: dist-and-sbom
+        default: server-release-dist
       expected_version:
         description: Expected package version
         required: true
@@ -95,6 +95,34 @@ jobs:
           done
           cosign verify-attestation "$wheel" --type slsaprovenance --certificate dist/slsa.intoto.pem --signature dist/slsa.intoto.sig --certificate-identity-regexp "$RELEASE_SIGNER_IDENTITY_REGEXP" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
+      - name: Verify the release images (signatures, attestations, signed digests)
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Digests come only from the Ed25519-signed, attested release_metadata.json;
+          # each image is then checked against the release.yml@main identity.
+          verify_image() {
+            local name="$1" digest="$2"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "invalid image digest for $name" >&2; exit 65; }
+            cosign verify "$name@$digest" --certificate-identity-regexp "$RELEASE_SIGNER_IDENTITY_REGEXP" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > /dev/null
+            gh attestation verify "oci://$name@$digest" --repo "$GITHUB_REPOSITORY" --signer-workflow "$RELEASE_SIGNER_WORKFLOW" --source-ref "$RELEASE_SOURCE_REF" --deny-self-hosted-runners > /dev/null
+            echo "verified $name@$digest"
+          }
+          app_ref="$(python scripts/read_release_metadata.py dist image.ref)"
+          test "$(python scripts/read_release_metadata.py dist image.digest)" = "$OMNIDESK_IMAGE_DIGEST"
+          verify_image "${app_ref%:*}" "$OMNIDESK_IMAGE_DIGEST"
+          cosign verify-attestation "${app_ref%:*}@$OMNIDESK_IMAGE_DIGEST" --type slsaprovenance --certificate-identity-regexp "$RELEASE_SIGNER_IDENTITY_REGEXP" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > /dev/null
+          scope="$(python scripts/read_release_metadata.py dist release_scope 2>/dev/null || echo full)"
+          if [[ "$scope" == "server-staging-only" ]]; then
+            runner_ref="$(python scripts/read_release_metadata.py dist sandbox_runner_image.ref)"
+            runner_digest="$(python scripts/read_release_metadata.py dist sandbox_runner_image.digest)"
+            verify_image "${runner_ref%:*}" "$runner_digest"
+            echo "OMNIDESK_SANDBOX_RUNNER_IMAGE_DIGEST=$runner_digest" >> "$GITHUB_ENV"
+          fi
+          echo "OMNIDESK_RELEASE_SCOPE=$scope" >> "$GITHUB_ENV"
+          echo "release scope: $scope" >> "$GITHUB_STEP_SUMMARY"
       - name: Verify artifact attestation
         env:
           GH_TOKEN: ${{ github.token }}

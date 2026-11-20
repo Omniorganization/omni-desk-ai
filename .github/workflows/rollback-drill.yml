@@ -10,9 +10,9 @@ on:
         description: Release run id for the previous artifact to roll back to
         required: true
       artifact_name:
-        description: GitHub Actions artifact name
+        description: "GitHub Actions artifact name: server-release-dist (server-release job) or dist-and-sbom (full release)"
         required: true
-        default: dist-and-sbom
+        default: server-release-dist
       current_version:
         description: Expected current version
         required: true

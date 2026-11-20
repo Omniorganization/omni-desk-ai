@@ -717,3 +717,183 @@ jobs:
             reports/release/main-verification-live-artifact.json
             reports/release/external-ga-evidence-audit.json
             reports/release/external-ga-evidence-summary.json
+
+  server-release:
+    # Server/staging-only release: the gateway wheel (built once), the app image
+    # built FROM that exact wheel with its real sha256 baked in, and the
+    # sandbox-runner image, all signed and attested by this workflow identity
+    # (release.yml@refs/heads/main) with the build job's permissions. It does not
+    # wait for the native apps, so staging can be deployed before signing
+    # material exists for them. Its metadata says release_scope
+    # server-staging-only: promote-production refuses it, and it never runs the
+    # Real GA / Customer GA gate, which stays with the build job.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      OMNIDESK_REQUIRE_ED25519_RELEASE_SIGNATURES: "1"
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - run: PYTHONPATH=. python -m pytest -q -W error --timeout=60 --timeout-method=thread
+      - run: |
+          python scripts/check_lock_hashes.py requirements.lock
+          python scripts/check_lock_hashes.py requirements.runtime.lock
+          python scripts/check_lock_hashes.py requirements.bootstrap.lock
+          python scripts/check_lock_hashes.py requirements.dev.lock
+          python scripts/check_lock_hashes.py requirements.security.lock
+          python scripts/check_lock_hashes.py requirements.enterprise.lock
+      - run: python scripts/check_production_install_policy.py .
+      - name: Build the server release wheel once
+        run: bash scripts/build_release.sh
+        env:
+          # Metadata needs the image digests and is written below; signing comes
+          # last, once every file that ships in dist/ exists.
+          OMNIDESK_RELEASE_DEFER_METADATA: "1"
+          OMNIDESK_RELEASE_DEFER_SIGNING: "1"
+      - name: Build the app image FROM that wheel and push it
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          artifact_sha="$(sha256sum "$wheel" | awk '{print $1}')"
+          context="$RUNNER_TEMP/release-wheel"
+          mkdir -p "$context"
+          cp -- "$wheel" "$context/"
+          repo_lc="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${repo_lc}/omnidesk-agent:server-${GITHUB_SHA}"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # The named context replaces the Dockerfile's wheel stage, so the image
+          # installs this exact file; the build fails if its sha256 differs.
+          docker build \
+            --build-context wheel="$context" \
+            --build-arg OMNIDESK_VERSION="$EXPECTED_VERSION" \
+            --build-arg OMNIDESK_BUILD_SHA="$GITHUB_SHA" \
+            --build-arg OMNIDESK_ARTIFACT_SHA256="$artifact_sha" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "omnidesk.release.scope=server-staging-only" \
+            -t "$image_ref" .
+          docker push "$image_ref"
+          digest="$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "registry did not return a valid digest for $image_ref: $digest" >&2; exit 65; }
+          # The pushed image must run the signed wheel and report it.
+          docker run --rm --entrypoint python "$image_ref@$digest" -c 'import importlib.metadata as m, os, sys; v=m.version("omnidesk-agent"); s=os.environ["OMNIDESK_ARTIFACT_SHA256"]; print(v, s); sys.exit(0 if v == os.environ["OMNIDESK_VERSION"] and s == sys.argv[1] else 1)' "$artifact_sha"
+          {
+            echo "OMNIDESK_IMAGE_NAME=${image_ref%:*}"
+            echo "OMNIDESK_IMAGE_REF=$image_ref"
+            echo "OMNIDESK_IMAGE_DIGEST=$digest"
+            echo "OMNIDESK_ARTIFACT_SHA256=$artifact_sha"
+          } >> "$GITHUB_ENV"
+      - name: Build the sandbox-runner image and push it
+        run: |
+          set -euo pipefail
+          repo_lc="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          runner_ref="ghcr.io/${repo_lc}/omnidesk-sandbox-runner:server-${GITHUB_SHA}"
+          docker build -f deploy/sandbox-runner/Dockerfile \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "omnidesk.release.scope=server-staging-only" \
+            -t "$runner_ref" .
+          docker push "$runner_ref"
+          runner_digest="$(docker buildx imagetools inspect "$runner_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$runner_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "registry did not return a valid digest for $runner_ref: $runner_digest" >&2; exit 65; }
+          # The runner image must be able to import the runner it ships.
+          docker run --rm --entrypoint python "$runner_ref@$runner_digest" -c 'import omnidesk_agent.sandbox.runner_server'
+          {
+            echo "OMNIDESK_SANDBOX_RUNNER_IMAGE_NAME=${runner_ref%:*}"
+            echo "OMNIDESK_SANDBOX_RUNNER_IMAGE_REF=$runner_ref"
+            echo "OMNIDESK_SANDBOX_RUNNER_IMAGE_DIGEST=$runner_digest"
+          } >> "$GITHUB_ENV"
+      - name: Write server release metadata (server-staging-only)
+        run: |
+          python scripts/write_release_metadata.py dist \
+            --build-sha "$GITHUB_SHA" \
+            --image-ref "$OMNIDESK_IMAGE_REF" --image-digest "$OMNIDESK_IMAGE_DIGEST" \
+            --sandbox-runner-image-ref "$OMNIDESK_SANDBOX_RUNNER_IMAGE_REF" \
+            --sandbox-runner-image-digest "$OMNIDESK_SANDBOX_RUNNER_IMAGE_DIGEST" \
+            --release-scope server-staging-only
+      - name: Render locked Helm staging values
+        run: |
+          set -euo pipefail
+          python scripts/render_locked_helm_values.py \
+            --app-digest "$OMNIDESK_IMAGE_DIGEST" \
+            --sandbox-runner-digest "$OMNIDESK_SANDBOX_RUNNER_IMAGE_DIGEST" \
+            --output dist/values.staging.locked.yaml
+          python scripts/check_kubernetes_contract.py . --locked-values dist/values.staging.locked.yaml
+      - name: Write SLSA provenance for the server release payload
+        run: python scripts/write_slsa_provenance.py dist --builder-id "$GITHUB_WORKFLOW@$GITHUB_RUN_ID" --source-ref "$GITHUB_REF" --image-ref "$OMNIDESK_IMAGE_REF" --image-digest "$OMNIDESK_IMAGE_DIGEST"
+      - name: Install Cosign
+        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
+      - name: Cosign keyless sign and attest both images
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
+          cosign attest --yes --predicate dist/sbom.json --type spdx "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
+          cosign attest --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$OMNIDESK_IMAGE_REF@$OMNIDESK_IMAGE_DIGEST"
+          # The runner image's build provenance is the GitHub attestation below; the
+          # SLSA predicate above describes the app release and is not reused for it.
+          cosign sign --yes "$OMNIDESK_SANDBOX_RUNNER_IMAGE_REF@$OMNIDESK_SANDBOX_RUNNER_IMAGE_DIGEST"
+      - name: Cosign keyless sign the server release payload
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          python scripts/list_cosign_artifacts.py dist --null | while IFS= read -r -d '' artifact; do
+            cosign sign-blob --yes "$artifact" --output-signature "$artifact.cosign.sig" --output-certificate "$artifact.cosign.pem"
+          done
+      - name: Cosign attest the wheel's SBOM and SLSA provenance
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          cosign attest-blob --yes --predicate dist/sbom.json --type spdx "$wheel" --output-signature dist/sbom.intoto.sig --output-certificate dist/sbom.intoto.pem
+          cosign attest-blob --yes --predicate dist/slsa-provenance.json --type slsaprovenance "$wheel" --output-signature dist/slsa.intoto.sig --output-certificate dist/slsa.intoto.pem
+      - name: Sign and verify the server release payload with Ed25519
+        env:
+          OMNIDESK_RELEASE_SIGNING_ED25519_KEY: ${{ secrets.OMNIDESK_RELEASE_SIGNING_ED25519_KEY }}
+        run: |
+          set -euo pipefail
+          test -f release/release-signing-public-key.pem || { echo "commit release/release-signing-public-key.pem (scripts/generate_release_signing_key.py) before releasing" >&2; exit 1; }
+          python scripts/finalize_release_payload.py dist --expected-version "$EXPECTED_VERSION" --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+      - run: python scripts/verify_release_artifact.py dist --expected-version "$EXPECTED_VERSION" --require-signatures --require-metadata --expected-image-digest "$OMNIDESK_IMAGE_DIGEST"
+      - name: List the server release payload for GitHub artifact attestation
+        run: |
+          set -euo pipefail
+          test "$(python scripts/read_release_metadata.py dist release_scope)" = "server-staging-only"
+          find dist -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/server-attestation-subjects.sha256"
+          test -s "$RUNNER_TEMP/server-attestation-subjects.sha256"
+      - name: Attest the server release payload
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/server-attestation-subjects.sha256
+      - name: Attest the app image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ env.OMNIDESK_IMAGE_NAME }}
+          subject-digest: ${{ env.OMNIDESK_IMAGE_DIGEST }}
+      - name: Attest the sandbox-runner image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ env.OMNIDESK_SANDBOX_RUNNER_IMAGE_NAME }}
+          subject-digest: ${{ env.OMNIDESK_SANDBOX_RUNNER_IMAGE_DIGEST }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: server-release-dist
+          path: dist/**
+          if-no-files-found: error

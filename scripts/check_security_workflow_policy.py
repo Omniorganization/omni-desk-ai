@@ -124,7 +124,10 @@ SIGNER_IDENTITY_RE = re.compile(r"RELEASE_SIGNER_IDENTITY_REGEXP:\s*'([^']*)'")
 # is never triggered by a pull request or another run, and checks the source run
 # before downloading from it.
 ATTESTATION_SIGNER_JOBS: dict[str, dict[str, tuple[str, ...]]] = {
-    "release.yml": {"build": ()},
+    # server-release: the server/staging-only release (wheel + images built from
+    # it) under the same release.yml@main identity, main-only and in the release
+    # environment like build; it downloads nothing from other runs.
+    "release.yml": {"build": (), "server-release": ()},
     "web-first-release.yml": {"release": (".github/workflows/web-first-candidate.yml",)},
 }
 ATTESTATION_SIGNER_EVENTS = ("workflow_dispatch", "push")
