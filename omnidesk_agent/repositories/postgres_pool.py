@@ -58,7 +58,9 @@ class SharedPostgresConnectionPool:
 
     @staticmethod
     def _usable(connection: Any) -> bool:
-        return not bool(getattr(connection, 'closed', False))
+        # psycopg marks a connection broken after a lost server or a failed
+        # protocol exchange; it must not go back into the pool.
+        return not bool(getattr(connection, 'closed', False)) and not bool(getattr(connection, 'broken', False))
 
     @staticmethod
     def _close_connection(connection: Any) -> None:
