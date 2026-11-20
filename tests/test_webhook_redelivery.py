@@ -101,6 +101,24 @@ def test_a_verified_duplicate_gets_the_body_its_provider_expects(client, monkeyp
     assert len(runtime.job_queue.list()) == 1
 
 
+def test_a_duplicate_can_answer_with_the_providers_own_response(client, monkeypatch):
+    # WeChat shows its user "该公众号暂时无法提供服务" for any reply but "success"
+    # or the passive XML, JSON included; a redelivery after a slow first
+    # response is exactly the duplicate path.
+    from fastapi.responses import PlainTextResponse
+
+    test_client, runtime = client
+    monkeypatch.setattr(runtime.adapters["telegram"], "webhook_response", lambda parsed, payload: PlainTextResponse("success"), raising=False)
+    body = _update(9)
+    assert _post(test_client, body).status_code == 200
+
+    again = _post(test_client, body)
+
+    assert again.status_code == 200 and again.text == "success"
+    assert again.headers["content-type"].startswith("text/plain")
+    assert len(runtime.job_queue.list()) == 1
+
+
 def test_a_duplicate_body_the_adapter_refuses_is_403_not_500(client, monkeypatch):
     test_client, runtime = client
 
