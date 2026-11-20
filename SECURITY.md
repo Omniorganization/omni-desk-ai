@@ -31,7 +31,7 @@ What the code enforces today (`omnidesk_agent/security/permissions.py`, `approva
 
 What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_worm.py`):
 
-- The security audit log (`permissions.audit_log`: approval decisions, break-glass transitions, policy blocks) and the admin authentication log are HMAC-SHA256 hash chains.
+- The security audit log (`permissions.audit_log`: approval decisions, break-glass transitions, policy blocks, agent-loop `agent_*` events) and the admin authentication log (`admin_auth_audit.jsonl`, next to the security audit log, outside `workspace.root`) are HMAC-SHA256 hash chains.
   - Every entry carries a sequence number and the previous entry's MAC.
   - The MAC key is derived from `OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY` (the `permissions.audit_checkpoint_hmac_key_env` setting), which production must load from the secret store. The production validator refuses to start without it, and nothing in production falls back to a local key.
   - Outside production, when the variable is unset, a random per-log key is created once next to the log (`<log>.key`, mode 0600). It protects against accidents only.
@@ -46,7 +46,7 @@ What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_w
 - Known limits:
   - Anyone holding the key can rebuild the chain.
   - Without off-host anchor copies, deleting the newest entries is only caught by anchors that were not deleted with them.
-  - The admin authentication log still sits in `workspace.root`. Its chain detects edits; it does not prevent them.
+  - A chain detects edits; it does not prevent them. Logs written before this change, at `workspace.root/admin_auth_audit.jsonl`, are left where they are.
 
 ## Reporting
 

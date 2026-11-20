@@ -80,7 +80,9 @@ class OmniDeskRuntime:
             dual_approval_store=self.dual_approval_store,
         )
         self.break_glass_store = self.repository_factory.break_glass_store(audit_log=cfg.permissions.audit_log)
-        self.audit_checkpoint = WormAuditCheckpoint(cfg.workspace.root / "audit_checkpoints", hmac_key_env=cfg.permissions.audit_checkpoint_hmac_key_env)
+        # Security state lives next to the audit log, outside the agent's workspace.
+        audit_dir = cfg.permissions.audit_log.expanduser().parent
+        self.audit_checkpoint = WormAuditCheckpoint(audit_dir / "audit_checkpoints", hmac_key_env=cfg.permissions.audit_checkpoint_hmac_key_env)
         self.permissions = PermissionManager(cfg.permissions, self.approval_store)
         self.webhook_security = self.repository_factory.webhook_security()
         self.job_queue = self.repository_factory.job_queue()
@@ -95,9 +97,10 @@ class OmniDeskRuntime:
             legacy_secret_env=cfg.gateway.shared_secret_env if cfg.gateway.allow_legacy_gateway_secret_auth else None,
             allow_local_without_token=cfg.gateway.allow_local_admin_without_token,
             allowed_ips=cfg.gateway.admin_allowed_ips,
-            audit_log=cfg.workspace.root / "admin_auth_audit.jsonl",
+            audit_log=audit_dir / "admin_auth_audit.jsonl",
             break_glass_store=self.break_glass_store,
             break_glass_enabled=cfg.permissions.break_glass_enabled,
+            audit_key_env=cfg.permissions.audit_checkpoint_hmac_key_env,
         )
         self.memory = self.repository_factory.memory_store(cfg.memory_privacy)
         self.token_budget = self.repository_factory.token_budget_manager(
