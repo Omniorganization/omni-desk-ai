@@ -4,7 +4,7 @@ OmniDesk is organized as a root-level monorepo so source, applications, infrastr
 
 ## Repository Boundaries
 
-- `omnidesk_agent/` contains the Python API gateway, agent runtime, channel adapters, model router, approval, audit, memory, self-healing, and self-upgrade enforcement code.
+- `omnidesk_agent/` contains the Python API gateway, agent runtime, channel adapters, model router, approval, audit, memory, self-healing (see `docs/SELF_HEALING.md`; not yet started by the daemon), and self-upgrade enforcement code.
 - `apps/web-admin-next/` contains the Web Admin console for chat, approvals, channels, devices, runtime state, and audit-facing operations.
 - `apps/desktop-tauri/` contains the desktop control hub and local runtime shell for signed task execution.
 - `apps/mobile-flutter/` contains the mobile chat, approval, notification, and task status client.

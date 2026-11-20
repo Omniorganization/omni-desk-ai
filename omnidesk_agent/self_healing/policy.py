@@ -13,6 +13,10 @@ RecoveryAction = Literal[
     "rollback_release",
     "create_upgrade_proposal",
     "escalate_human_approval",
+    "restart_worker",
+    "recover_stale_jobs",
+    "requeue_dead_letters",
+    "rollback_config",
 ]
 
 
@@ -57,6 +61,7 @@ class RuntimeSelfHealingController:
 
     def decide(self, signal: RuntimeSignal) -> RecoveryDecision:
         component = signal.component.strip() or "unknown"
+        meta = signal.metadata or {}
         if signal.safety_violation:
             return RecoveryDecision(
                 action="disable_capability",
@@ -66,6 +71,17 @@ class RuntimeSelfHealingController:
                 requires_human_approval=True,
                 cooldown_seconds=3600,
             )
+        # A config snapshot is a rollback target too, but a cheaper and autonomous one.
+        if component == "config" and not signal.health_ok and signal.rollback_ref:
+            return RecoveryDecision(
+                action="rollback_config",
+                component=component,
+                reason="configuration failed validation or health; restore the last known-good snapshot",
+                autonomous=True,
+                requires_human_approval=False,
+                cooldown_seconds=900,
+                rollback_ref=signal.rollback_ref,
+            )
         if not signal.health_ok and signal.rollback_ref:
             return RecoveryDecision(
                 action="rollback_release",
@@ -74,6 +90,41 @@ class RuntimeSelfHealingController:
                 autonomous=False,
                 requires_human_approval=True,
                 rollback_ref=signal.rollback_ref,
+            )
+        if component.startswith("worker:") and (not signal.health_ok or meta.get("hung_seconds")):
+            return RecoveryDecision(
+                action="restart_worker",
+                component=component,
+                reason="worker is not running" if not signal.health_ok else f"worker made no progress for {meta.get('hung_seconds')}s",
+                autonomous=True,
+                requires_human_approval=False,
+                cooldown_seconds=60,
+            )
+        if component == "queue:stale_jobs" and int(meta.get("stale_count") or 0) > 0:
+            return RecoveryDecision(
+                action="recover_stale_jobs",
+                component=component,
+                reason="running jobs outlived their lease; return them to retry or dead-letter",
+                autonomous=True,
+                requires_human_approval=False,
+                cooldown_seconds=60,
+            )
+        if component == "queue:dead_letters" and int(meta.get("transient_count") or 0) > 0:
+            if not meta.get("dependency_healthy"):
+                return RecoveryDecision(
+                    action="none",
+                    component=component,
+                    reason="dead-lettered jobs failed transiently but their dependency is still unhealthy; wait",
+                    autonomous=True,
+                    requires_human_approval=False,
+                )
+            return RecoveryDecision(
+                action="requeue_dead_letters",
+                component=component,
+                reason="jobs dead-lettered by transient errors; their dependency is healthy again",
+                autonomous=True,
+                requires_human_approval=False,
+                cooldown_seconds=300,
             )
         if component.startswith("model") and signal.consecutive_failures >= self.failure_threshold:
             return RecoveryDecision(
