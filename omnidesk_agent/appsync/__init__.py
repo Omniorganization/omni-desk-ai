@@ -13,6 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from omnidesk_agent.appsync.chat_routes import register_first_class_chat_routes
 from omnidesk_agent.appsync.contract import CONTRACT_HEADER, ContractVersionMiddleware
+from omnidesk_agent.validation.production import is_production_mode
 from omnidesk_agent.appsync.projects import register_project_routes
 from omnidesk_agent.appsync.routes import register_appsync_routes as _register_appsync_routes
 from omnidesk_agent.appsync.store import AppSyncStore
@@ -93,27 +94,32 @@ DESKTOP_REQUEST_HEADERS = (
     "x-omnidesk-contract",
 )
 _ORIGIN_RE = re.compile(r"^(https?|tauri)://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+_LOOPBACK_HTTP_RE = re.compile(r"^http://(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$")
 
 
-def desktop_webview_origins() -> list[str]:
+def desktop_webview_origins(*, production: bool = False) -> list[str]:
     """The Tauri origins plus OMNIDESK_DESKTOP_WEBVIEW_ORIGINS (comma-separated,
     for example the Vite dev server ``http://127.0.0.1:5173``). An entry that is
-    not a bare origin (a wildcard, a path) is refused."""
+    not a bare origin (a wildcard, a path) is refused, and so, in production, is
+    plain http to anything but loopback."""
     extra = [item.strip() for item in os.getenv("OMNIDESK_DESKTOP_WEBVIEW_ORIGINS", "").split(",") if item.strip()]
     for origin in extra:
         if not _ORIGIN_RE.fullmatch(origin):
             raise RuntimeError(f"OMNIDESK_DESKTOP_WEBVIEW_ORIGINS: {origin!r} is not an origin like https://host:port")
+        if production and origin.startswith("http://") and not _LOOPBACK_HTTP_RE.fullmatch(origin):
+            raise RuntimeError(f"OMNIDESK_DESKTOP_WEBVIEW_ORIGINS: {origin!r} is plain http; production allows only https or loopback origins")
     return [*DESKTOP_WEBVIEW_ORIGINS, *extra]
 
 
-def register_desktop_webview_cors(app: FastAPI) -> None:
+def register_desktop_webview_cors(app: FastAPI, *, production: bool = False) -> None:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=desktop_webview_origins(),
+        allow_origins=desktop_webview_origins(production=production),
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=list(DESKTOP_REQUEST_HEADERS),
-        # The webview reads the gateway's contract version from every answer.
-        expose_headers=[CONTRACT_HEADER],
+        # The webview reads the gateway's contract version from every answer,
+        # and the backoff of 429 and 503 database_busy answers.
+        expose_headers=[CONTRACT_HEADER, "retry-after"],
         allow_credentials=False,
         max_age=600,
     )
@@ -133,7 +139,7 @@ def register_appsync_routes(
     # Added before CORS, so CORS stays outermost: preflights are answered first,
     # and a 426 for an incompatible client still carries CORS headers.
     app.add_middleware(ContractVersionMiddleware)
-    register_desktop_webview_cors(app)
+    register_desktop_webview_cors(app, production=is_production_mode(cfg))
     register_first_class_chat_routes(app, cfg, rt, metrics, admin)
     _register_appsync_routes(app, cfg, rt, metrics, admin)
     _remove_shadowed_chat_routes(app)

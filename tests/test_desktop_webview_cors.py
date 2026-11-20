@@ -86,3 +86,22 @@ def test_a_dev_origin_can_be_added_but_not_a_wildcard(tmp_path: Path, monkeypatc
         monkeypatch.setenv("OMNIDESK_DESKTOP_WEBVIEW_ORIGINS", bad)
         with pytest.raises(RuntimeError, match="OMNIDESK_DESKTOP_WEBVIEW_ORIGINS"):
             create_app(_cfg(tmp_path))
+
+
+def test_the_webview_can_read_retry_after(client: TestClient) -> None:
+    # Retry-After is not CORS-safelisted: without this the desktop cannot back
+    # off on 429 or on a 503 database_busy.
+    response = client.get("/app/bootstrap", headers={"origin": "tauri://localhost", "authorization": "Bearer operator-token", "x-omnidesk-actor": "desk-operator"})
+    assert "retry-after" in response.headers["access-control-expose-headers"].lower()
+
+
+def test_production_allows_only_https_or_loopback_dev_origins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omnidesk_agent.appsync import desktop_webview_origins
+
+    monkeypatch.setenv("OMNIDESK_DESKTOP_WEBVIEW_ORIGINS", "https://desk.example.com,http://127.0.0.1:5173,http://localhost:1420")
+    assert desktop_webview_origins(production=True)[-3:] == ["https://desk.example.com", "http://127.0.0.1:5173", "http://localhost:1420"]
+    monkeypatch.setenv("OMNIDESK_DESKTOP_WEBVIEW_ORIGINS", "http://192.168.1.5:5173")
+    with pytest.raises(RuntimeError, match="production allows only https or loopback"):
+        desktop_webview_origins(production=True)
+    # Development keeps any bare origin.
+    assert desktop_webview_origins(production=False)[-1] == "http://192.168.1.5:5173"
