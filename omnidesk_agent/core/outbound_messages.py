@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.core.subject_records import erasure_transaction, json_object
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
@@ -370,6 +371,36 @@ class OutboundMessageStore:
             "delivery_deadline_at", "last_error", "error_category", "created_at", "updated_at",
         ]
         return dict(zip(keys, row))
+
+    # ------------------------------------------------------------------ data-subject requests
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Messages to `actor` (recipient) or queued for them (payload requested_by), any status."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute(self._select_sql() + " ORDER BY created_at").fetchall()
+        records = []
+        for row in rows:
+            message = self._row(row)
+            payload = json_object(message.pop("payload_json"))
+            if self._concerns(message, payload, str(actor)):
+                records.append({**message, "payload": payload})
+        return records
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete those messages; returns how many. A queued one is then never sent.
+
+        Rows are deleted rather than kept for deduplication: messages queued here
+        carry no caller idempotency key (channels.send_text uses the row id). A
+        message a dispatcher is sending at this moment is still delivered.
+        """
+        with erasure_transaction(self.db_path) as con:
+            ids = [str(row[0]) for row in con.execute(self._select_sql()).fetchall() if self._concerns(self._row(row), json_object(row[4]), str(actor))]
+            con.executemany("DELETE FROM outbound_messages WHERE id=?", [(message_id,) for message_id in ids])
+        return len(ids)
+
+    @staticmethod
+    def _concerns(message: dict[str, Any], payload: dict[str, Any], actor: str) -> bool:
+        return str(message.get("recipient") or "") == actor or str(payload.get("requested_by") or "") == actor
 
     def _metric(self, name: str, **labels: Any) -> None:
         inc = getattr(getattr(self, "metrics", None), "inc", None)
