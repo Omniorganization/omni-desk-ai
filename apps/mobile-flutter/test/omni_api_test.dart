@@ -283,6 +283,37 @@ void main() {
     client.close();
   });
 
+  test('a desktop task carries the scoped action its approval will bind', () async {
+    final client = OmniApiClient(
+      baseUrl: 'https://gateway.example.test',
+      token: 'operator-token',
+      actor: 'mobile-operator',
+      httpClient: MockClient((http.Request request) async {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['requires_desktop_runtime'], true);
+        expect(body['action'], <String, dynamic>{
+          'capability': 'workspace.read_file',
+          'scope': <String, dynamic>{'workspace': '.', 'relative_path': 'reports/q3.md'},
+        });
+        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+      }),
+    );
+    await client.sendMessage('conv_1', 'send me the report',
+        action: desktopAction('workspace.read_file', ' reports/q3.md '));
+    client.close();
+    expect(() => desktopAction('shell.run', 'x'), throwsArgumentError);
+    expect(
+      describeApprovalAction(<String, dynamic>{
+        'action_detail': <String, dynamic>{
+          'capability': 'workspace.list_directory',
+          'scope': <String, dynamic>{'workspace': '.', 'relative_path': 'reports'},
+        },
+      }),
+      'Action: workspace.list_directory → ./reports',
+    );
+    expect(describeApprovalAction(<String, dynamic>{'action_detail': <String, dynamic>{}}), '');
+  });
+
   test('base URL rejects non-loopback cleartext transport', () {
     expect(
       () => OmniApiClient(

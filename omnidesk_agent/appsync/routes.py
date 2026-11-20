@@ -16,6 +16,8 @@ from omnidesk_agent.appsync.store import (
     AppSyncStore,
     IdempotencyConflict,
     is_legacy_hmac_device_key,
+    normalize_task_action,
+    normalize_task_result,
     public_device_view,
 )
 from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
@@ -495,6 +497,12 @@ def register_appsync_routes(
         content = str(payload.get("content") or "").strip()
         if not content:
             raise HTTPException(422, "content is required")
+        action = payload.get("action")
+        if action is not None:
+            try:
+                normalize_task_action(action)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         try:
             result = await run_blocking(store.add_message_and_task,
                 actor=_actor(decision),
@@ -507,6 +515,7 @@ def register_appsync_routes(
                 risk=payload.get("risk") or "medium",
                 idempotency_key=_require_idempotency(cfg, request, payload),
                 idempotency_payload=payload,
+                action=action,
             )
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc
@@ -696,6 +705,10 @@ def register_appsync_routes(
         }:
             raise HTTPException(422, "invalid task status")
         try:
+            normalize_task_result(payload.get("result"))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
             task = await run_blocking(store.update_task_status,
                 task_id=task_id,
                 actor=actor,
@@ -705,6 +718,7 @@ def register_appsync_routes(
                 device_id=reporting_device_id or None,
                 idempotency_key=_require_idempotency(cfg, request, payload),
                 idempotency_payload=payload,
+                result=payload.get("result"),
             )
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc

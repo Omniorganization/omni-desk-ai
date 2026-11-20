@@ -33,6 +33,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   final tokenController = TextEditingController();
   final actorController = TextEditingController(text: 'mobile-operator');
   final taskController = TextEditingController(text: '请检查今天的任务状态');
+  final desktopPathController = TextEditingController(text: '.');
+  // null: a free-text request (not executable by the desktop).
+  String? desktopCapability;
   final projectController = TextEditingController();
   final reasonController = TextEditingController(
     text: 'Approved from Omni Mobile with biometric/PIN confirmation',
@@ -82,6 +85,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     tokenController.dispose();
     actorController.dispose();
     taskController.dispose();
+    desktopPathController.dispose();
     projectController.dispose();
     reasonController.dispose();
     super.dispose();
@@ -381,11 +385,13 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   Future<void> sendTask() async {
     try {
       final conv = await client.createConversation('Mobile Chat');
+      final capability = desktopCapability;
       await client.sendMessage(
         conv['conversation']['conversation_id'] as String,
         taskController.text,
         requiresDesktopRuntime: true,
         risk: 'high',
+        action: capability == null ? null : desktopAction(capability, desktopPathController.text),
       );
       snapshot = await client.bootstrap();
       if (mounted) setState(() {});
@@ -793,6 +799,23 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
               ),
             ),
             const SizedBox(height: 12),
+            DropdownButton<String?>(
+              value: desktopCapability,
+              items: const <DropdownMenuItem<String?>>[
+                DropdownMenuItem<String?>(value: null, child: Text('桌面任务：仅文字（不可执行）')),
+                DropdownMenuItem<String?>(value: 'workspace.read_file', child: Text('桌面任务：读取文件')),
+                DropdownMenuItem<String?>(value: 'workspace.list_directory', child: Text('桌面任务：列出目录')),
+              ],
+              onChanged: (value) => setState(() => desktopCapability = value),
+            ),
+            if (desktopCapability != null)
+              TextField(
+                controller: desktopPathController,
+                decoration: const InputDecoration(
+                  labelText: '~/OmniDesktopWorkspace 内的相对路径',
+                ),
+              ),
+            const SizedBox(height: 12),
             Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -920,7 +943,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
                   child: ListTile(
                     title: Text(approval['action']?.toString() ?? 'Approval'),
                     subtitle: Text(
-                      'Risk: ${approval['risk']}\nReason: ${approval['reason']}\nExpires: ${approval['expires_at'] ?? 'n/a'}',
+                      'Risk: ${approval['risk']}\nReason: ${approval['reason']}\n${describeApprovalAction(Map<String, dynamic>.from(approval as Map))}\nExpires: ${approval['expires_at'] ?? 'n/a'}',
                     ),
                     isThreeLine: true,
                     trailing: Wrap(

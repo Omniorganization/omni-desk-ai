@@ -65,5 +65,9 @@ def test_desktop_shell_sandbox_executor_has_workspace_policy() -> None:
     assert "read_workspace_file" in executor
     assert "list_workspace_directory" in executor
     assert "run_workspace_command" not in executor
-    assert "workspace_only" in executor
+    # Only the two read-only workspace capabilities exist, and nothing runs
+    # unless the task's action hashes to the one its approval bound.
+    assert "const CAPABILITIES: RuntimeCapability[] = ['workspace.read_file', 'workspace.list_directory'];" in executor
+    assert "the action does not match the one that was approved" in executor
+    assert "DryRunExecutor" not in executor
     assert "OmniDesktopWorkspace" in main_rs
