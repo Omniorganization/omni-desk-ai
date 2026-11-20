@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import struct
@@ -61,22 +62,66 @@ class BackupError(RuntimeError):
 # ------------------------------------------------------------------ tools ---
 
 
-def pg_tool(name: str) -> str:
-    """Locate a PostgreSQL client tool: ``OMNIDESK_PG_BIN`` first, then PATH."""
+# Client tools must be of the server's major version. A newer pg_dump writes
+# archives an older server cannot restore (pg_dump 17 sets transaction_timeout,
+# which PostgreSQL 16 rejects), and an older pg_restore cannot read a newer
+# archive format. So the usual install locations of the server's version are
+# searched as well as OMNIDESK_PG_BIN and PATH.
+_PG_BIN_LAYOUTS = (
+    "/usr/lib/postgresql/{major}/bin",  # Debian, Ubuntu
+    "/usr/pgsql-{major}/bin",  # RHEL, Fedora (PGDG packages)
+    "/opt/homebrew/opt/postgresql@{major}/bin",  # macOS Homebrew
+    "/usr/local/opt/postgresql@{major}/bin",
+)
+_TOOL_VERSION_RE = re.compile(r"\(PostgreSQL\)\s+([0-9]+)")
+
+
+def _tool_major(path: str) -> Optional[int]:
+    result = subprocess.run([path, "--version"], capture_output=True, text=True, check=False)  # nosec B603 - fixed tool, no shell
+    match = _TOOL_VERSION_RE.search(result.stdout)
+    return int(match.group(1)) if match else None
+
+
+def pg_tool(name: str, *, server_major: Optional[int] = None) -> str:
+    """Locate a PostgreSQL client tool: ``OMNIDESK_PG_BIN`` first, then PATH.
+
+    With ``server_major`` the tool must be of that major version; the usual
+    install locations of that version are searched too, and a mismatch fails.
+    """
     directory = os.getenv("OMNIDESK_PG_BIN", "").strip()
-    if directory:
-        candidate = Path(directory) / name
-        if candidate.is_file():
-            return str(candidate)
+    candidates = [str(Path(directory) / name)] if directory else []
+    if server_major is not None:
+        candidates += [str(Path(layout.format(major=server_major)) / name) for layout in _PG_BIN_LAYOUTS]
     found = shutil.which(name)
-    if not found:
+    if found:
+        candidates.append(found)
+    existing = [candidate for candidate in dict.fromkeys(candidates) if Path(candidate).is_file()]
+    if not existing:
         raise BackupError(f"{name} not found; install the PostgreSQL client tools or set OMNIDESK_PG_BIN")
-    return found
+    if server_major is None:
+        return existing[0]
+    majors = {candidate: _tool_major(candidate) for candidate in existing}
+    for candidate, major in majors.items():
+        if major == server_major:
+            return candidate
+    seen = ", ".join(f"{path} ({major or 'unknown version'})" for path, major in majors.items())
+    raise BackupError(
+        f"{name} must be PostgreSQL {server_major}'s, like the server; found {seen}. "
+        f"Install the PostgreSQL {server_major} client tools or set OMNIDESK_PG_BIN to their bin directory"
+    )
 
 
-def tool_version(name: str) -> str:
-    result = subprocess.run([pg_tool(name), "--version"], capture_output=True, text=True, check=False)  # nosec B603 - fixed tool, no shell
+def tool_version(name: str, *, server_major: Optional[int] = None) -> str:
+    result = subprocess.run([pg_tool(name, server_major=server_major), "--version"], capture_output=True, text=True, check=False)  # nosec B603 - fixed tool, no shell
     return result.stdout.strip()
+
+
+def server_major_of(dsn: str) -> int:
+    import psycopg  # type: ignore
+
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute("SELECT current_setting('server_version_num')::int / 10000")
+        return int(cur.fetchone()[0])
 
 
 def _connection_args(dsn: str) -> tuple[str, dict[str, str]]:
@@ -227,8 +272,8 @@ def schema_versions(cur: Any) -> dict[str, int]:
     return {str(row[0]): int(row[1]) for row in cur.fetchall()}
 
 
-def toc_entries(archive: Path) -> int:
-    listing = _run([pg_tool("pg_restore"), "--list", str(archive)], env=dict(os.environ), what="pg_restore --list")
+def toc_entries(archive: Path, *, server_major: Optional[int] = None) -> int:
+    listing = _run([pg_tool("pg_restore", server_major=server_major), "--list", str(archive)], env=dict(os.environ), what="pg_restore --list")
     return sum(1 for line in listing.stdout.splitlines() if line.strip() and not line.startswith(";"))
 
 
@@ -276,13 +321,13 @@ def _backup_database(target: Target, directory: Path, *, secret: Optional[str]) 
         conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
         conn.read_only = True
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_export_snapshot(), current_database(), current_setting('server_version')")
-            snapshot, database, server_version = cur.fetchone()
+            cur.execute("SELECT pg_export_snapshot(), current_database(), current_setting('server_version'), current_setting('server_version_num')::int / 10000")
+            snapshot, database, server_version, server_major = cur.fetchone()
             counts = row_counts(cur)
             versions = schema_versions(cur)
             # The dump reads the exported snapshot while this transaction holds it open.
             _run(
-                [pg_tool("pg_dump"), "--format=custom", "--no-owner", "--no-acl", f"--snapshot={snapshot}", "--file", str(plain), "--dbname", conninfo],
+                [pg_tool("pg_dump", server_major=int(server_major)), "--format=custom", "--no-owner", "--no-acl", f"--snapshot={snapshot}", "--file", str(plain), "--dbname", conninfo],
                 env=env, what=f"pg_dump of {target.name}",
             )
         conn.rollback()
@@ -291,8 +336,10 @@ def _backup_database(target: Target, directory: Path, *, secret: Optional[str]) 
         "dsn_env": target.dsn_env,
         "database": str(database),
         "server_version": str(server_version),
+        "server_major": int(server_major),
+        "pg_dump_version": tool_version("pg_dump", server_major=int(server_major)),
         "plaintext_sha256": sha256_file(plain),
-        "toc_entries": toc_entries(plain),
+        "toc_entries": toc_entries(plain, server_major=int(server_major)),
         "row_counts": counts,
         "schema_versions": versions,
         "encrypted": bool(secret),
@@ -329,7 +376,6 @@ def create_backup(
     manifest: dict[str, Any] = {
         "format": MANIFEST_FORMAT,
         "created_at": time.time(),
-        "pg_dump_version": tool_version("pg_dump"),
         "databases": [_backup_database(target, directory, secret=encryption_secret) for target in targets],
     }
     if signing_secret:
@@ -437,7 +483,9 @@ def verify_backup_set(manifest_path: Path, *, encryption_secret: Optional[str] =
     for entry in manifest.get("databases", []):
         readable = open_archive(manifest_path, entry, encryption_secret=encryption_secret)
         try:
-            entries = toc_entries(readable.path)
+            # The archive is read with the tools of the version that wrote it.
+            recorded = entry.get("server_major")
+            entries = toc_entries(readable.path, server_major=int(recorded) if recorded else None)
         finally:
             readable.close()
         if entries != entry.get("toc_entries"):
@@ -488,7 +536,7 @@ def restore_backup(
     readable = open_archive(manifest_path, entry, encryption_secret=encryption_secret)
     try:
         conninfo, env = _connection_args(target_dsn)
-        args = [pg_tool("pg_restore"), "--no-owner", "--no-acl", "--exit-on-error", "--single-transaction"]
+        args = [pg_tool("pg_restore", server_major=server_major_of(target_dsn)), "--no-owner", "--no-acl", "--exit-on-error", "--single-transaction"]
         if clean:
             args += ["--clean", "--if-exists"]
         _run([*args, "--dbname", conninfo, str(readable.path)], env=env, what=f"pg_restore of {database}")
