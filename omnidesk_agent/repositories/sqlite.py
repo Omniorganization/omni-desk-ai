@@ -128,6 +128,12 @@ class SQLiteRepositoryFactory:
 
         return BreakGlassStore(self.workspace_root / "break_glass.sqlite3", audit_log=audit_log)
 
+    def admin_session_store(self, *, path: Path, key_env: str):
+        # ``path`` sits next to the audit log, outside the agent's workspace.
+        from omnidesk_agent.security.admin_sessions import SQLiteAdminSessionStore
+
+        return SQLiteAdminSessionStore(path, key_env=key_env)
+
     def webhook_security(self):
         from omnidesk_agent.security.webhook_security import WebhookSecurity
 

@@ -33,6 +33,7 @@ from omnidesk_agent.observability_tracing import trace_span
 from omnidesk_agent.security.chat_resource_guard import ChatAwareApiResourceGuard
 from omnidesk_agent.self_upgrade.dashboard.upgrade_dashboard import create_dashboard_router
 from omnidesk_agent.server_routes.admin_routes import register_admin_routes
+from omnidesk_agent.server_routes.admin_session_routes import register_admin_session_routes
 from omnidesk_agent.server_routes.agent_routes import (
     register_agent_routes,
     register_break_glass_routes,
@@ -421,6 +422,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
     register_agent_routes(app, cfg, rt, approvals, _admin)
     register_appsync_routes(app, cfg, rt, metrics, _admin)
     register_break_glass_routes(app, cfg, rt, _admin)
+    register_admin_session_routes(app, cfg, rt, _admin)
     register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
     if _env_flag("BIGSELLER_REGISTER_ROUTES"):
         _register_optional_bigseller_routes(app, cfg, _admin)

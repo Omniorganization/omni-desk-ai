@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hmac
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.security.admin_sessions import SESSION_TOKEN_PREFIX
 from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain, AuditIntegrityError
 from omnidesk_agent.security.break_glass import has_required_approvals
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -20,6 +25,10 @@ class AdminAuthDecision:
     # Set when the role was raised by a break-glass session. Routes that need a
     # real owner (dual approval, approving or opening break-glass) refuse it.
     break_glass_session_id: Optional[str] = None
+    # Set when the request was authenticated with an admin session token
+    # (admin_sessions); the session's organization comes with it.
+    session_id: Optional[str] = None
+    organization: Optional[str] = None
 
 
 class AdminAuth:
@@ -29,6 +38,8 @@ class AdminAuth:
       - Authorization: Bearer <token>
       - X-OmniDesk-Admin-Token: <token>
       - X-OmniDesk-Gateway-Secret: legacy secret
+      - an admin session token (``omds_...``) in either of the first two, opened
+        with a role token through POST /admin/session/login
 
     Role model:
       - viewer: dashboard/status/metrics/read-only
@@ -57,6 +68,7 @@ class AdminAuth:
         break_glass_store: Any | None = None,
         break_glass_enabled: bool = False,
         audit_key_env: str = DEFAULT_KEY_ENV,
+        session_store: Any | None = None,
     ):
         self.admin_token_env = admin_token_env
         self.role_token_envs = {
@@ -77,6 +89,7 @@ class AdminAuth:
         self.audit_log = Path(audit_log).expanduser() if audit_log else None
         self.break_glass_store = break_glass_store
         self.break_glass_enabled = bool(break_glass_enabled)
+        self.session_store = session_store
         # Keyed hash chain, like the security audit log (audit_chain.AuditChain).
         self.audit_chain = AuditChain(self.audit_log, key_env=audit_key_env) if self.audit_log else None
         if self.audit_log:
@@ -102,6 +115,11 @@ class AdminAuth:
 
         if self.allowed_ips and client_host not in self.allowed_ips:
             decision = AdminAuthDecision(False, "client IP is not allowed", actor="unknown", role="unknown")
+            self._audit(decision, client_host, required_role, path)
+            return decision
+
+        if self.session_store is not None and provided.startswith(SESSION_TOKEN_PREFIX):
+            decision = self._session_decision(provided, headers, required_role, path)
             self._audit(decision, client_host, required_role, path)
             return decision
 
@@ -150,6 +168,27 @@ class AdminAuth:
         decision = AdminAuthDecision(False, "admin token is not configured", actor="unknown", role="unknown")
         self._audit(decision, client_host, required_role, path)
         return decision
+
+    def _session_decision(self, token: str, headers: Any, required_role: str, path: str) -> AdminAuthDecision:
+        assert self.session_store is not None
+        try:
+            session = self.session_store.resolve(token)
+        except Exception as exc:  # fail closed, and say why in the audit log
+            log.warning("admin session store unavailable: %s", type(exc).__name__)
+            return AdminAuthDecision(False, f"admin session store unavailable: {type(exc).__name__}", actor="unknown", role="unknown")
+        if session is None:
+            return AdminAuthDecision(False, "admin session expired or revoked", actor="unknown", role="unknown")
+        decision = self._role_decision(True, "admin session accepted", session.actor, session.role, required_role)
+        decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
+        return dataclasses.replace(decision, session_id=session.session_id, organization=session.organization)
+
+    def audit_event(self, event: str, payload: dict[str, Any]) -> None:
+        """Record an admin event (session login, revoke) in the chained admin audit log.
+
+        Raises AuditIntegrityError when the entry cannot be written.
+        """
+        if self.audit_chain is not None:
+            self.audit_chain.append(event, payload)
 
     async def verify_request(self, request: Any, required_role: str = "viewer") -> AdminAuthDecision:
         host = getattr(getattr(request, "client", None), "host", None)
@@ -250,5 +289,6 @@ class AdminAuth:
                 "required_role": required_role,
                 "client_host": client_host,
                 "path": path,
+                **({"session_id": decision.session_id} if decision.session_id else {}),
             },
         )

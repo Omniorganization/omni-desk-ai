@@ -101,6 +101,9 @@ class OmniDeskRuntime:
             break_glass_store=self.break_glass_store,
             break_glass_enabled=cfg.permissions.break_glass_enabled,
             audit_key_env=cfg.permissions.audit_checkpoint_hmac_key_env,
+            session_store=self.repository_factory.admin_session_store(
+                path=audit_dir / "admin_sessions.sqlite3", key_env=cfg.permissions.audit_checkpoint_hmac_key_env
+            ),
         )
         self.memory = self.repository_factory.memory_store(cfg.memory_privacy)
         self.token_budget = self.repository_factory.token_budget_manager(
