@@ -148,3 +148,42 @@ def test_self_approval_is_refused_by_the_gateway(tmp_path: Path, monkeypatch: py
         created = client.post(f"/app/conversations/{conversation['conversation_id']}/messages", headers={**owner, "idempotency-key": "m1"}, json={"content": "restart", "requires_desktop_runtime": True}).json()
         decided = client.post(f"/app/approvals/{created['approval']['approval_id']}/decide", headers={**owner, "idempotency-key": "d1"}, json={"decision": "approved"})
         assert decided.status_code == 403 and "requester cannot approve" in decided.text
+
+
+def test_break_glass_is_never_one_of_the_four_eyes(store: Any) -> None:
+    # An operator raised by break-glass may decide a single-approver action, never a critical one.
+    critical = _request(store, risk="critical")
+    with pytest.raises(PermissionError, match="break-glass"):
+        store.decide_approval(approval_id=critical["approval"]["approval_id"], actor=FIRST, decision="approved", break_glass=True)
+    assert store.get_task(critical["task"]["task_id"], actor=REQUESTER)["status"] == "blocked"
+    medium = _request(store, risk="medium")
+    assert store.decide_approval(approval_id=medium["approval"]["approval_id"], actor=FIRST, decision="approved", break_glass=True)["status"] == "approved"
+
+
+def test_the_gateway_refuses_an_elevated_critical_approval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
+    monkeypatch.setenv("OMNIDESK_OWNER_ACTOR", FIRST)
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", REQUESTER)
+    app = create_app(_cfg(tmp_path))
+    auth = app.state.runtime.admin_auth
+    verify = auth.verify_request
+
+    async def elevated(request: Any, required_role: str = "viewer") -> Any:
+        # Stands in for AdminAuth's break-glass elevation of this request.
+        decision = await verify(request, required_role=required_role)
+        if request.headers.get("x-test-elevated"):
+            decision.break_glass_session_id = "bg_test"
+        return decision
+
+    monkeypatch.setattr(auth, "verify_request", elevated)
+    operator, owner = {"authorization": "Bearer operator-token"}, {"authorization": "Bearer owner-token", "x-test-elevated": "1"}
+    with TestClient(app) as client:
+        conversation = client.post("/app/conversations", headers={**operator, "idempotency-key": "c1"}, json={"title": "ops"}).json()["conversation"]
+        path = f"/app/conversations/{conversation['conversation_id']}/messages"
+        critical = client.post(path, headers={**operator, "idempotency-key": "m1"}, json={"content": "wipe the cache", "requires_desktop_runtime": True, "risk": "critical"}).json()
+        medium = client.post(path, headers={**operator, "idempotency-key": "m2"}, json={"content": "read the log", "requires_desktop_runtime": True, "risk": "medium"}).json()
+        refused = client.post(f"/app/approvals/{critical['approval']['approval_id']}/decide", headers={**owner, "idempotency-key": "d1"}, json={"decision": "approved"})
+        assert refused.status_code == 403 and "break-glass" in refused.text
+        accepted = client.post(f"/app/approvals/{medium['approval']['approval_id']}/decide", headers={**owner, "idempotency-key": "d2"}, json={"decision": "approved"})
+        assert accepted.status_code == 200, accepted.text
