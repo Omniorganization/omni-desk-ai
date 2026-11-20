@@ -48,6 +48,7 @@ from omnidesk_agent.appsync.store import (
     NotificationRecord,
     Organization,
     PushOutboxRecord,
+    PushOutcome,
     RuntimeStatusRecord,
     SyncConflictRecord,
     SyncCursorRecord,
@@ -225,11 +226,11 @@ RETURNING {task_columns}
 PUSH_FANOUT_SQL = """
 INSERT INTO omnidesk_appsync_push_outbox(
     namespace, organization_id, push_id, device_id, platform, push_token, audience, title, body,
-    related_id, status, attempt_count, last_error, created_at, updated_at
+    related_id, status, attempt_count, last_error, created_at, updated_at, event_type, next_attempt_at
 )
 SELECT d.namespace, %(organization_id)s, 'push_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16),
        d.device_id, d.platform, d.push_token, %(audience)s, %(title)s, %(body)s,
-       %(related_id)s, 'pending', 0, NULL, %(now)s, %(now)s
+       %(related_id)s, 'pending', 0, NULL, %(now)s, %(now)s, %(event_type)s, %(now)s
 FROM omnidesk_appsync_devices d
 WHERE d.namespace = %(namespace)s AND d.organization_id = %(organization_id)s
   AND d.push_token IS NOT NULL AND d.push_token <> '' AND d.revoked_at IS NULL
@@ -257,6 +258,63 @@ WHERE p.namespace = %(namespace)s AND p.status = 'pending'
         AND d.push_token IS NOT NULL AND d.push_token <> '' AND d.revoked_at IS NULL
         AND d.credential_status = 'verified' AND d.trust_level = 'challenge_verified'
   )
+"""
+
+# A push is given up when its device can no longer receive it, when it is too
+# old to matter, or when its lease expired max_attempts times (a dispatcher
+# died while sending it).
+PUSH_GIVE_UP_SQL = """
+WITH stale AS (
+    SELECT p.push_id,
+           CASE WHEN d.device_id IS NULL THEN 'device_not_eligible'
+                WHEN p.created_at <= %(oldest)s THEN 'expired'
+                ELSE 'max_attempts' END AS reason
+    FROM omnidesk_appsync_push_outbox p
+    LEFT JOIN omnidesk_appsync_devices d
+      ON d.namespace = p.namespace AND d.device_id = p.device_id
+     AND d.push_token IS NOT NULL AND d.push_token <> '' AND d.revoked_at IS NULL
+     AND d.credential_status = 'verified' AND d.trust_level = 'challenge_verified'
+    WHERE p.namespace = %(namespace)s
+      AND (p.status = 'pending' OR (p.status = 'sending' AND p.lease_expires_at <= %(now)s))
+      AND (d.device_id IS NULL OR p.created_at <= %(oldest)s OR p.attempt_count >= %(max_attempts)s)
+    FOR UPDATE OF p SKIP LOCKED
+)
+UPDATE omnidesk_appsync_push_outbox p
+SET status = 'failed', last_error = stale.reason, claimed_by = NULL, lease_expires_at = NULL, updated_at = %(now)s
+FROM stale
+WHERE p.namespace = %(namespace)s AND p.push_id = stale.push_id
+"""
+
+# SKIP LOCKED: concurrent dispatchers (one per replica) lease disjoint pushes.
+# The target is the device's current push token, so a rotated FCM target is used
+# and a revoked device is skipped.
+PUSH_CLAIM_SQL = """
+WITH due AS (
+    SELECT p.push_id, d.push_token AS target
+    FROM omnidesk_appsync_push_outbox p
+    JOIN omnidesk_appsync_devices d ON d.namespace = p.namespace AND d.device_id = p.device_id
+    WHERE p.namespace = %(namespace)s
+      AND ((p.status = 'pending' AND p.next_attempt_at <= %(now)s)
+           OR (p.status = 'sending' AND p.lease_expires_at <= %(now)s))
+      AND d.push_token IS NOT NULL AND d.push_token <> '' AND d.revoked_at IS NULL
+      AND d.credential_status = 'verified' AND d.trust_level = 'challenge_verified'
+    ORDER BY p.created_at
+    LIMIT %(limit)s
+    FOR UPDATE OF p SKIP LOCKED
+)
+UPDATE omnidesk_appsync_push_outbox p
+SET status = 'sending', claimed_by = %(worker_id)s, lease_expires_at = %(lease_until)s,
+    attempt_count = p.attempt_count + 1, updated_at = %(now)s
+FROM due
+WHERE p.namespace = %(namespace)s AND p.push_id = due.push_id
+RETURNING {push_columns}, due.target
+"""
+
+INVALID_PUSH_TARGET_SQL = """
+UPDATE omnidesk_appsync_devices
+SET push_token = NULL
+WHERE namespace = %(namespace)s AND device_id = %(device_id)s AND push_token = %(target)s
+RETURNING organization_id
 """
 
 NONCE_SQL = """
@@ -455,6 +513,7 @@ SYNC_CURSORS = _Table("omnidesk_appsync_sync_cursors", SyncCursorRecord, "cursor
 SYNC_CONFLICTS = _Table("omnidesk_appsync_sync_conflicts", SyncConflictRecord, "conflict_id")
 
 CLAIM_NEXT_TASK = CLAIM_NEXT_TASK_SQL.format(task_columns=TASKS.column_list("t"))
+PUSH_CLAIM = PUSH_CLAIM_SQL.format(push_columns=PUSH_OUTBOX.column_list("p"))
 LEASE_RENEWAL = LEASE_RENEWAL_SQL.format(task_columns=TASKS.column_list())
 
 
@@ -1003,7 +1062,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
             PUSH_FANOUT_SQL,
             {
                 "namespace": self.namespace, "organization_id": organization_id, "audience": audience,
-                "title": title, "body": body, "related_id": related_id, "now": tx.now,
+                "title": title, "body": body, "related_id": related_id, "now": tx.now, "event_type": event_type,
                 "recipient": self._conversation_owner(tx, related_id),
             },
         )
@@ -1838,17 +1897,39 @@ class MigratedMultiInstancePostgresAppSyncStore:
 
         return self._transaction(body)
 
-    def mark_push_delivery(self, *, push_id: str, status: Literal["sent", "failed"], error: Optional[str] = None) -> dict[str, Any]:
-        def body(tx: _Tx) -> dict[str, Any]:
+    def claim_push_deliveries(self, *, worker_id: str, limit: int = 50, lease_seconds: float = 60.0, max_attempts: int = 5, max_age_seconds: float = 86_400.0) -> list[dict[str, Any]]:
+        """Leases due pushes to one dispatcher; see AppSyncStore.claim_push_deliveries."""
+
+        def body(tx: _Tx) -> list[dict[str, Any]]:
+            tx.cur.execute(PUSH_GIVE_UP_SQL, {"namespace": self.namespace, "now": tx.now, "oldest": tx.now - max_age_seconds, "max_attempts": int(max_attempts)})
+            tx.cur.execute(PUSH_CLAIM, {"namespace": self.namespace, "now": tx.now, "worker_id": worker_id, "lease_until": tx.now + lease_seconds, "limit": max(1, min(int(limit or 50), 500))})
+            claimed = []
+            for row in tx.cur.fetchall():
+                item = self._record(self._from_row(PUSH_OUTBOX, row[:-1]))
+                claimed.append({**item, "push_token": row[-1]})
+            return sorted(claimed, key=lambda value: value["created_at"])
+
+        return self._transaction(body)
+
+    def complete_push_delivery(self, *, push_id: str, worker_id: str, outcome: PushOutcome, provider: str, error: Optional[str] = None, provider_message_id: Optional[str] = None, retry_at: Optional[float] = None, invalid_target: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Records the lease holder's result; see AppSyncStore.complete_push_delivery."""
+
+        def body(tx: _Tx) -> Optional[dict[str, Any]]:
             item: Optional[PushOutboxRecord] = self._get(tx, PUSH_OUTBOX, push_id, for_update=True)
-            if not item:
-                raise KeyError("push outbox item not found")
-            item.status = status
-            item.attempt_count += 1
-            item.last_error = error
-            item.updated_at = tx.now
+            if item is None or item.status != "sending" or item.claimed_by != worker_id:
+                return None
+            item.status = "pending" if outcome == "retry" else outcome
+            if outcome == "retry":
+                item.next_attempt_at = float(retry_at if retry_at is not None else tx.now)
+            item.last_error, item.provider, item.provider_message_id = error, provider, provider_message_id
+            item.claimed_by, item.lease_expires_at, item.updated_at = None, None, tx.now
             self._update(tx, PUSH_OUTBOX, item)
-            self._event(tx, "push.delivery", "push-provider", {"push_id": push_id, "status": status, "organization_id": item.organization_id})
+            if invalid_target:
+                tx.cur.execute(INVALID_PUSH_TARGET_SQL, {"namespace": self.namespace, "device_id": item.device_id, "target": invalid_target})
+                if tx.cur.fetchone() is not None:
+                    self._event(tx, "device.push_token_invalidated", "push-provider", {"device_id": item.device_id, "organization_id": item.organization_id})
+            if outcome != "retry":
+                self._event(tx, "push.delivery", "push-provider", {"push_id": push_id, "status": item.status, "organization_id": item.organization_id})
             return self._record(item)
 
         return self._transaction(body)

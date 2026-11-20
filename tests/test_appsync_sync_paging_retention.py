@@ -166,7 +166,7 @@ def test_retention_rules_delete_only_expired_rows() -> None:
                     "INSERT INTO omnidesk_appsync_idempotency_keys(namespace, organization_id, actor, endpoint, key, payload_hash, response, created_at) VALUES (%s,'org_default','a','e',%s,'h','{}'::jsonb,%s)",
                     (namespace, key, created),
                 )
-            for push_id, status, updated in (("push_old_sent", "sent", old), ("push_old_pending", "pending", old), ("push_young_sent", "sent", young)):
+            for push_id, status, updated in (("push_old_sent", "sent", old), ("push_old_pending", "pending", old), ("push_young_sent", "sent", young), ("push_young_pending", "pending", young)):
                 cur.execute(
                     "INSERT INTO omnidesk_appsync_push_outbox(namespace, organization_id, push_id, device_id, platform, audience, title, body, status, created_at, updated_at) VALUES (%s,'org_default',%s,'d','ios','mobile','t','b',%s,%s,%s)",
                     (namespace, push_id, status, updated, updated),
@@ -185,14 +185,16 @@ def test_retention_rules_delete_only_expired_rows() -> None:
         report = run_retention(store)["tables"]
         assert report["idempotency_keys"]["deleted"] == 1
         assert report["push_outbox"]["deleted"] == 1
+        assert report["push_outbox_undelivered"]["deleted"] == 1
         assert report["device_enrollments"]["deleted"] == 1
         assert report["device_request_nonces"]["deleted"] == 1
         with store._connect() as conn, conn.cursor() as cur:
             cur.execute("SELECT key FROM omnidesk_appsync_idempotency_keys WHERE namespace = %s", (namespace,))
             assert cur.fetchall() == [("young",)]
             cur.execute("SELECT push_id FROM omnidesk_appsync_push_outbox WHERE namespace = %s ORDER BY push_id", (namespace,))
-            # A pending push is never dropped by age; only delivered or failed ones are.
-            assert cur.fetchall() == [("push_old_pending",), ("push_young_sent",)]
+            # A recent pending push still waits for the dispatcher. One that was never
+            # sent for days (no provider configured) is about a past event and goes.
+            assert cur.fetchall() == [("push_young_pending",), ("push_young_sent",)]
             cur.execute("SELECT enrollment_id FROM omnidesk_appsync_device_enrollments WHERE namespace = %s", (namespace,))
             # A completed enrollment is the record of which key a device was bound to.
             assert cur.fetchall() == [("enroll_old_completed",)]

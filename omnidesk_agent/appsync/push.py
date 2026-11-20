@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
+import secrets
+import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Optional, Protocol
+
+logger = logging.getLogger(__name__)
 
 # Push targets are stored as plain FCM registration tokens (legacy clients) or
 # as "fid:<Firebase Installation ID>" (firebase_messaging >= 17 register() /
@@ -48,6 +53,31 @@ class PushDeliveryResult:
     provider: str
     error: str | None = None
     provider_message_id: str | None = None
+    # A failure worth retrying later (quota, provider outage, network).
+    retryable: bool = False
+    # The provider no longer knows the target (FCM UNREGISTERED / sender mismatch).
+    invalid_target: bool = False
+
+
+class PushSendError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool, invalid_target: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.invalid_target = invalid_target
+
+
+# FCM HTTP v1 error statuses (https://firebase.google.com/docs/reference/fcm/rest/v1/ErrorCode).
+_FCM_INVALID_TARGET = frozenset({"UNREGISTERED", "SENDER_ID_MISMATCH"})
+_FCM_RETRYABLE = frozenset({"QUOTA_EXCEEDED", "UNAVAILABLE", "INTERNAL", "THIRD_PARTY_AUTH_ERROR"})
+
+
+def classify_fcm_error(http_status: int, status: str) -> PushSendError:
+    message = f"FCM send failed: HTTP {http_status} {status}".strip()
+    if status in _FCM_INVALID_TARGET or http_status == 404:
+        return PushSendError(message, retryable=False, invalid_target=True)
+    if status in _FCM_RETRYABLE or http_status == 429 or http_status >= 500:
+        return PushSendError(message, retryable=True)
+    return PushSendError(message, retryable=False)
 
 class PushProvider(Protocol):
     name: str
@@ -128,7 +158,7 @@ class FcmHttpV1Client:
                 "assertion": self._assertion(int(now)),
             })
             if response.status_code != 200:
-                raise RuntimeError(f"FCM OAuth token request failed: HTTP {response.status_code}")
+                raise PushSendError(f"FCM OAuth token request failed: HTTP {response.status_code}", retryable=True)
             payload = response.json()
             self._token = (str(payload["access_token"]), now + float(payload.get("expires_in", 3600)))
             return self._token[0]
@@ -143,10 +173,10 @@ class FcmHttpV1Client:
         )
         if response.status_code != 200:
             try:
-                status = response.json().get("error", {}).get("status", "")
+                status = str(response.json().get("error", {}).get("status", ""))
             except ValueError:
                 status = ""
-            raise RuntimeError(f"FCM send failed: HTTP {response.status_code} {status}".strip())
+            raise classify_fcm_error(response.status_code, status)
         return str(response.json().get("name", ""))
 
 
@@ -201,7 +231,12 @@ class FirebasePushProvider:
             if not stored:
                 raise ValueError("push token is required")
             kind, target = split_push_target(stored)
-            data = {"push_id": str(item.get("push_id") or ""), "related_id": str(item.get("related_id") or ""), "audience": str(item.get("audience") or "")}
+            data = {
+                "push_id": str(item.get("push_id") or ""),
+                "related_id": str(item.get("related_id") or ""),
+                "audience": str(item.get("audience") or ""),
+                "event_type": str(item.get("event_type") or ""),
+            }
             if not self._sdk_available():
                 name = self._http_v1().send(kind, target, {"title": str(item.get("title") or "Omni"), "body": str(item.get("body") or "")}, data)
                 return PushDeliveryResult(push_id=str(item.get("push_id")), ok=True, provider=self.name, provider_message_id=name)
@@ -212,8 +247,23 @@ class FirebasePushProvider:
             }
             message_id = messaging.send(_build_message(messaging, kind, target, content), app=self.app)
             return PushDeliveryResult(push_id=str(item.get("push_id")), ok=True, provider=self.name, provider_message_id=message_id)
-        except Exception as exc:
+        except PushSendError as exc:
+            return PushDeliveryResult(push_id=str(item.get("push_id")), ok=False, provider=self.name, error=str(exc), retryable=exc.retryable, invalid_target=exc.invalid_target)
+        except ValueError as exc:
             return PushDeliveryResult(push_id=str(item.get("push_id")), ok=False, provider=self.name, error=str(exc))
+        except Exception as exc:
+            # firebase_admin.messaging raises typed errors; anything unknown
+            # (network, provider outage) is retried until the attempts run out.
+            name = type(exc).__name__
+            return PushDeliveryResult(
+                push_id=str(item.get("push_id")), ok=False, provider=self.name, error=f"{name}: {exc}",
+                retryable=name not in _SDK_PERMANENT_ERRORS and name not in _SDK_INVALID_TARGET_ERRORS,
+                invalid_target=name in _SDK_INVALID_TARGET_ERRORS,
+            )
+
+
+_SDK_INVALID_TARGET_ERRORS = frozenset({"UnregisteredError", "SenderIdMismatchError"})
+_SDK_PERMANENT_ERRORS = frozenset({"InvalidArgumentError"})
 
 def _build_message(messaging: Any, kind: str, target: str, content: dict[str, Any]) -> Any:
     if kind == "fid":
@@ -248,11 +298,151 @@ def provider_from_env() -> PushProvider:
         return FirebasePushProvider()
     return DryRunPushProvider()
 
-def dispatch_pending_push(store: Any, provider: PushProvider | None = None, limit: int = 100) -> list[PushDeliveryResult]:
+PUSH_SEND_TIMEOUT_SECONDS = 15.0
+
+
+def _env_number(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+
+
+@dataclass(frozen=True)
+class PushRetryPolicy:
+    """Retries a retryable failure after 10 s, 20 s, 40 s ... (at most 15 min apart).
+
+    A push is given up after ``max_attempts`` sends, or when it is older than
+    ``max_age_seconds``: an approval request from yesterday is not worth a ping.
+    """
+
+    max_attempts: int = 5
+    base_delay_seconds: float = 10.0
+    max_delay_seconds: float = 900.0
+    max_age_seconds: float = 86_400.0
+
+    def retry_at(self, attempt: int, now: float) -> float:
+        return now + min(self.max_delay_seconds, self.base_delay_seconds * (2 ** max(0, attempt - 1)))
+
+
+def push_policy_from_env() -> PushRetryPolicy:
+    return PushRetryPolicy(
+        max_attempts=max(1, int(_env_number("OMNIDESK_PUSH_MAX_ATTEMPTS", 5))),
+        max_age_seconds=max(60.0, _env_number("OMNIDESK_PUSH_MAX_AGE_SECONDS", 86_400.0)),
+    )
+
+
+def new_dispatcher_id() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+
+
+def dispatch_pending_push(
+    store: Any,
+    provider: PushProvider | None = None,
+    limit: int = 100,
+    *,
+    worker_id: Optional[str] = None,
+    policy: Optional[PushRetryPolicy] = None,
+    clock: Callable[[], float] = time.time,
+) -> list[PushDeliveryResult]:
+    """Leases due pushes, sends each once, and records the outcome.
+
+    Delivery is at least once: if this process dies between the provider's
+    acceptance and the record, the lease expires and the push is sent again.
+    """
     provider = provider or provider_from_env()
+    policy = policy or push_policy_from_env()
+    worker = worker_id or new_dispatcher_id()
+    limit = max(1, min(int(limit), 500))
+    # The lease covers the whole batch, so no other dispatcher takes an item
+    # this one has not reached yet.
+    lease = 30.0 + limit * PUSH_SEND_TIMEOUT_SECONDS
     results: list[PushDeliveryResult] = []
-    for item in store.pending_push_outbox(limit=limit):
+    claimed = store.claim_push_deliveries(worker_id=worker, limit=limit, lease_seconds=lease, max_attempts=policy.max_attempts, max_age_seconds=policy.max_age_seconds)
+    for item in claimed:
         result = provider.send(item)
-        store.mark_push_delivery(push_id=result.push_id, status="sent" if result.ok else "failed", error=result.error)
+        attempt = int(item.get("attempt_count") or 1)
+        target = str(item.get("push_token") or "") or None
+        if result.ok:
+            outcome = "dry_run" if result.provider == DryRunPushProvider.name else "sent"
+        elif result.retryable and attempt < policy.max_attempts:
+            outcome = "retry"
+        else:
+            outcome = "failed"
+        store.complete_push_delivery(
+            push_id=result.push_id, worker_id=worker, outcome=outcome, provider=result.provider,
+            error=result.error, provider_message_id=result.provider_message_id,
+            retry_at=policy.retry_at(attempt, clock()) if outcome == "retry" else None,
+            invalid_target=target if result.invalid_target else None,
+        )
         results.append(result)
     return results
+
+
+class PushDispatcher:
+    """Sends due pushes every ``interval_seconds`` on a daemon thread.
+
+    Every replica runs one; leases keep them from sending the same push. A full
+    batch is followed by the next one at once, so a backlog drains quickly.
+    """
+
+    def __init__(self, store: Any, provider: PushProvider, *, interval_seconds: float = 5.0, batch_size: int = 20, policy: Optional[PushRetryPolicy] = None, metrics: Any = None) -> None:
+        self.store = store
+        self.provider = provider
+        self.interval_seconds = max(0.05, float(interval_seconds))
+        self.batch_size = max(1, int(batch_size))
+        self.policy = policy or push_policy_from_env()
+        self.metrics = metrics
+        self.worker_id = new_dispatcher_id()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="omnidesk-push-dispatch", daemon=True)
+            self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def run_once(self) -> list[PushDeliveryResult]:
+        results = dispatch_pending_push(self.store, self.provider, self.batch_size, worker_id=self.worker_id, policy=self.policy)
+        if self.metrics is not None:
+            for result in results:
+                self.metrics.inc("omnidesk_push_deliveries_total", provider=result.provider, outcome="sent" if result.ok else ("retryable" if result.retryable else "failed"))
+        return results
+
+    def _run(self) -> None:
+        delay = self.interval_seconds
+        while not self._stop.wait(delay):
+            try:
+                full = len(self.run_once()) >= self.batch_size
+            except Exception:
+                logger.exception("push dispatch failed")
+                if self.metrics is not None:
+                    self.metrics.inc("omnidesk_push_dispatch_failures_total")
+                full = False
+            delay = 0.0 if full else self.interval_seconds
+
+
+def start_push_dispatcher(store: Any, metrics: Any = None, provider: Optional[PushProvider] = None) -> Optional[PushDispatcher]:
+    """Starts automatic dispatch when a real provider is configured.
+
+    With the default dry-run provider nothing would reach a device, so nothing
+    is dispatched automatically; ``OMNIDESK_PUSH_DISPATCH_INTERVAL_SECONDS=0``
+    turns it off (an owner can still POST /app/push/dispatch).
+    """
+    provider = provider or provider_from_env()
+    if provider.name == DryRunPushProvider.name or not callable(getattr(store, "claim_push_deliveries", None)):
+        return None
+    interval = _env_number("OMNIDESK_PUSH_DISPATCH_INTERVAL_SECONDS", 5.0)
+    if interval <= 0:
+        return None
+    dispatcher = PushDispatcher(store, provider, interval_seconds=interval, metrics=metrics)
+    dispatcher.start()
+    return dispatcher

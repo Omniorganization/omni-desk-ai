@@ -9,7 +9,7 @@ from typing import Any, Iterable, Protocol, cast
 from omnidesk_agent.appsync.postgres_store import NORMALIZED_SCHEMA_SQL
 
 MIGRATION_TABLE = "omnidesk_appsync_schema_migrations"
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 
 class _Cursor(Protocol):
@@ -197,6 +197,21 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             "ALTER TABLE omnidesk_appsync_tasks ADD COLUMN IF NOT EXISTS result JSONB NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE omnidesk_appsync_approvals ADD COLUMN IF NOT EXISTS action_detail JSONB NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE omnidesk_appsync_approvals ADD COLUMN IF NOT EXISTS action_hash TEXT",
+        ),
+    ),
+    PostgresMigration(
+        8,
+        "push_dispatch_leases",
+        (
+            # Pushes are leased to one dispatcher at a time, retried with
+            # backoff, and record which provider delivered them.
+            "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS event_type TEXT",
+            "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS next_attempt_at DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS lease_expires_at DOUBLE PRECISION",
+            "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS claimed_by TEXT",
+            "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS provider TEXT",
+            "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS provider_message_id TEXT",
+            "CREATE INDEX IF NOT EXISTS omnidesk_push_outbox_due_idx ON omnidesk_appsync_push_outbox(namespace, status, next_attempt_at)",
         ),
     ),
 )

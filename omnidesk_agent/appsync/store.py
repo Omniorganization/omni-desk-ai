@@ -388,11 +388,24 @@ class PushOutboxRecord:
     body: str
     organization_id: str = "org_default"
     related_id: Optional[str] = None
-    status: Literal["pending", "sent", "failed"] = "pending"
+    # "sending" while one dispatcher holds the lease; "dry_run" when no real
+    # provider was configured, so nothing reached the device.
+    status: Literal["pending", "sending", "sent", "dry_run", "failed"] = "pending"
     attempt_count: int = 0
     last_error: Optional[str] = None
     created_at: float = field(default_factory=_now)
     updated_at: float = field(default_factory=_now)
+    event_type: Optional[str] = None
+    next_attempt_at: float = 0.0
+    lease_expires_at: Optional[float] = None
+    claimed_by: Optional[str] = None
+    provider: Optional[str] = None
+    provider_message_id: Optional[str] = None
+
+
+# What a dispatcher reports for a leased push: delivered, recorded as a dry run,
+# to be retried at ``retry_at``, or given up.
+PushOutcome = Literal["sent", "dry_run", "retry", "failed"]
 
 @dataclass
 class DeviceChallengeRecord:
@@ -1732,7 +1745,7 @@ class AppSyncStore:
             if recipient is not None and device.actor != recipient:
                 continue
             push_id = _id("push")
-            self.push_outbox[push_id] = PushOutboxRecord(push_id=push_id, device_id=device.device_id, platform=device.platform, audience=audience, title=title, body=body, organization_id=organization_id, related_id=related_id)
+            self.push_outbox[push_id] = PushOutboxRecord(push_id=push_id, device_id=device.device_id, platform=device.platform, audience=audience, title=title, body=body, organization_id=organization_id, related_id=related_id, event_type=event_type)
         self._event("notification.created", actor, {"notification_id": nid, "audience": audience, "event_type": event_type, "related_id": related_id, "organization_id": organization_id})
         return self._record(notification)
 
@@ -1976,20 +1989,66 @@ class AppSyncStore:
                 self._persist()
             return [self._record(v) for v in sorted(values, key=lambda item: item.created_at)[: max(1, min(limit, 500))]]
 
-    def mark_push_delivery(self, *, push_id: str, status: Literal["sent", "failed"], error: Optional[str] = None) -> dict[str, Any]:
+    def claim_push_deliveries(self, *, worker_id: str, limit: int = 50, lease_seconds: float = 60.0, max_attempts: int = 5, max_age_seconds: float = 86_400.0) -> list[dict[str, Any]]:
+        """Leases due pushes to one dispatcher, each with its device's current push target.
+
+        A push whose device is no longer eligible, that is older than
+        ``max_age_seconds``, or whose lease expired ``max_attempts`` times is
+        given up instead. The lease holder reports with complete_push_delivery.
+        """
+        with self._lock:
+            now = _now()
+            claimed: list[dict[str, Any]] = []
+            changed = False
+            for item in sorted(self.push_outbox.values(), key=lambda value: value.created_at):
+                lease_expired = item.status == "sending" and (item.lease_expires_at or 0.0) <= now
+                if not (lease_expired or (item.status == "pending" and item.next_attempt_at <= now)):
+                    continue
+                device = self.devices.get(item.device_id)
+                if device is None or not self._device_receives_push(device):
+                    reason: Optional[str] = "device_not_eligible"
+                elif item.created_at <= now - max_age_seconds:
+                    reason = "expired"
+                elif item.attempt_count >= max_attempts:
+                    reason = "max_attempts"
+                else:
+                    reason = None
+                if reason is not None or device is None:
+                    item.status, item.last_error, item.claimed_by, item.lease_expires_at, item.updated_at = "failed", reason, None, None, now
+                    changed = True
+                    continue
+                if len(claimed) >= max(1, limit):
+                    continue
+                item.status, item.claimed_by, item.lease_expires_at, item.updated_at = "sending", worker_id, now + lease_seconds, now
+                item.attempt_count += 1
+                changed = True
+                claimed.append({**self._record(item), "push_token": device.push_token})
+            if changed:
+                self._persist()
+            return claimed
+
+    def complete_push_delivery(self, *, push_id: str, worker_id: str, outcome: PushOutcome, provider: str, error: Optional[str] = None, provider_message_id: Optional[str] = None, retry_at: Optional[float] = None, invalid_target: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Records the lease holder's result; returns None if the lease was lost.
+
+        ``invalid_target`` is the push target the provider no longer knows; the
+        device stops receiving pushes until the app registers a new one.
+        """
         with self._lock:
             item = self.push_outbox.get(push_id)
-            if not item:
-                raise KeyError("push outbox item not found")
-            item.status = status
-            item.attempt_count += 1
-            item.last_error = error
-            item.updated_at = _now()
-            self._event(
-                "push.delivery",
-                "push-provider",
-                {"push_id": push_id, "status": status, "organization_id": item.organization_id},
-            )
+            if item is None or item.status != "sending" or item.claimed_by != worker_id:
+                return None
+            now = _now()
+            item.status = "pending" if outcome == "retry" else outcome
+            if outcome == "retry":
+                item.next_attempt_at = float(retry_at if retry_at is not None else now)
+            item.last_error, item.provider, item.provider_message_id = error, provider, provider_message_id
+            item.claimed_by, item.lease_expires_at, item.updated_at = None, None, now
+            device = self.devices.get(item.device_id)
+            if invalid_target and device is not None and device.push_token == invalid_target:
+                device.push_token = None
+                self._event("device.push_token_invalidated", "push-provider", {"device_id": device.device_id, "organization_id": device.organization_id})
+            if outcome != "retry":
+                self._event("push.delivery", "push-provider", {"push_id": push_id, "status": item.status, "organization_id": item.organization_id})
             self._persist()
             return self._record(item)
 

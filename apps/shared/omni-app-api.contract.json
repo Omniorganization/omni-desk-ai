@@ -275,7 +275,7 @@
     {
       "method": "POST",
       "path": "/app/push/dispatch",
-      "description": "Dispatch pending push outbox items through the configured provider.",
+      "description": "Send due push outbox items now through the configured provider; the gateway also dispatches automatically when a real provider is configured.",
       "role": "owner",
       "client_surfaces": []
     }
