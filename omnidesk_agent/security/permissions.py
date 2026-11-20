@@ -11,6 +11,7 @@ from omnidesk_agent.config import PermissionConfig
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain, AuditIntegrityError
 from omnidesk_agent.security.dual_approval import stamp_requester
+from omnidesk_agent.security.provenance import proposal_taint, requires_fresh_approval
 
 
 # Risks that may only run after two distinct owners approved the exact
@@ -52,7 +53,12 @@ class PermissionManager:
         tool = str(proposal_dict.get("tool", ""))
         action = str(proposal_dict.get("action", ""))
         fallback_scope = f"{tool}.{action}"
-        return f"{source}|{actor}|{risk}|{scope_hash or fallback_scope}"
+        key = f"{source}|{actor}|{risk}|{scope_hash or fallback_scope}"
+        taint = proposal_taint(proposal_dict)
+        if taint is not None:
+            # A grant covers the exact context the approver saw, untrusted inputs included.
+            key += f"|taint:{taint['digest']}"
+        return key
 
     def dual_approval_risks(self) -> frozenset[str]:
         return frozenset(getattr(self.cfg, "require_dual_approval_for_risks", None) or ()) | ALWAYS_DUAL_APPROVAL_RISKS
@@ -67,8 +73,16 @@ class PermissionManager:
         dual = risk in self.dual_approval_risks()
         if dual:
             proposal_dict["requires_dual_approval"] = True
+        # A model-proposed high/critical action taken while untrusted content was in
+        # its context needs a fresh human approval of this exact proposal (provenance.py).
+        fresh = requires_fresh_approval(proposal_dict)
+        if fresh:
+            proposal_dict["requires_fresh_approval"] = True
         self._audit("proposal", proposal_dict)
         self._metric("omnidesk_approval_proposals_total", tool=tool, risk=risk, source=source)
+        if fresh:
+            self._audit("fresh_approval_required_untrusted", proposal_dict)
+            self._metric("omnidesk_fresh_approval_required_total", tool=tool, risk=risk)
 
         if not dual and risk == "low" and source in getattr(self.cfg, "allow_low_risk_from", []):
             self._audit("allowed_low_risk", proposal_dict)
@@ -80,7 +94,7 @@ class PermissionManager:
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="resume_grant")
             return PermissionDecision(True, "allow", "remote approval resume grant")
 
-        if not dual and session_key in self.session_allows:
+        if not dual and not fresh and session_key in self.session_allows:
             self._audit("allowed_session", {"session_key": session_key, **proposal_dict})
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="session")
             return PermissionDecision(True, "allow", "session allow")
@@ -89,7 +103,7 @@ class PermissionManager:
         default_mode = getattr(self.cfg, "default_mode", "ask")
 
         if mode == "auto_policy":
-            if not dual and risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
+            if not dual and not fresh and risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
                 self._audit("allowed_auto_policy", proposal_dict)
                 self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="auto_policy")
                 return PermissionDecision(True, "allow", "auto_policy")
@@ -98,12 +112,12 @@ class PermissionManager:
         if mode == "remote_approval":
             return self._remote_or_deny(proposal_dict)
 
-        if default_mode == "allow":
-            if dual:
-                # default allow is a development convenience; it never stands
-                # in for the two remote owner approvals a dual-approval risk needs.
-                self._audit("dual_approval_required", proposal_dict)
-                return self._remote_or_deny(proposal_dict)
+        if default_mode == "allow" and dual:
+            # default allow is a development convenience; it never stands
+            # in for the two remote owner approvals a dual-approval risk needs.
+            self._audit("dual_approval_required", proposal_dict)
+            return self._remote_or_deny(proposal_dict)
+        if default_mode == "allow" and not fresh:
             self._audit("allowed_default", proposal_dict)
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="default")
             return PermissionDecision(True, "allow", "default allow")
@@ -132,6 +146,10 @@ class PermissionManager:
         print("\nPermission request:")
         print(json.dumps(proposal_dict, ensure_ascii=False, indent=2))
         ans = input("Allow? [y]es / [n]o / [s]ession / [d]ry-run: ").strip().lower()
+        if fresh and ans in {"y", "yes", "s", "session"}:
+            # Untrusted-derived action: this answer approves this one call only.
+            self._audit("allowed_interactive_fresh", proposal_dict)
+            return PermissionDecision(True, "allow", "interactive fresh approval")
         if ans in {"y", "yes"}:
             self._audit("allowed_interactive", proposal_dict)
             return PermissionDecision(True, "allow", "interactive")

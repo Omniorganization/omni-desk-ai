@@ -48,6 +48,26 @@ What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_w
   - Without off-host anchor copies, deleting the newest entries is only caught by anchors that were not deleted with them.
   - The admin authentication log still sits in `workspace.root`. Its chain detects edits; it does not prevent them.
 
+## Prompt-Injection Defences
+
+What the code provides today (`omnidesk_agent/security/provenance.py`, `prompt_injection.py`):
+
+- Text that reaches a model is tagged with its provenance:
+  - `system`: OmniDesk's own instructions;
+  - `user`: the authenticated requester's task;
+  - `untrusted`: anything else, including tool output, page, file or mail contents, third-party messages and retrieved memory.
+- `PromptEnvelope` keeps instructions and data apart. Only OmniDesk's instructions go into the system prompt. Each data item is fenced with a random per-envelope boundary that is removed from the data itself, so the data cannot close its fence. The planner's older `build_untrusted_task_payload` strips its own delimiter tags from the message for the same reason. Keyword detection (`detect_prompt_injection`) only adds informational flags; it does not decide trust.
+- `TaintTracker` records per run whether untrusted text reached the model. Its snapshot travels with each model-proposed tool call as `ActionProposal.provenance`. When it is tainted and the risk is `high` or `critical`, `PermissionManager.verify()` requires a fresh approval of that exact proposal:
+  - `default_mode=allow`, `auto_policy`, interactive session allows and earlier grants do not apply;
+  - a console answer approves one call only;
+  - in remote mode the approval record carries the provenance and `requires_fresh_approval`;
+  - grants are bound to the provenance digest;
+  - `critical` still needs two owners;
+  - malformed provenance counts as tainted.
+- Known limits:
+  - The agent loop must route model input through these helpers and set `ToolContext.provenance`. Until that wiring lands (agent-core), the rule applies only to proposals that carry provenance.
+  - Medium-risk actions derived from untrusted text follow the normal policy.
+
 ## Reporting
 
 Do not include secrets, credentials, private keys, tokens, customer data, or production evidence payloads in public issues. Use a private security channel controlled by the repository owner.
