@@ -9,7 +9,7 @@ OmniDesk ships configurable adapters for the messaging surfaces below. This page
 | Channel | Adapter key | Inbound route | Inbound authentication | Outbound recipient |
 |---|---|---|---|---|
 | WhatsApp Business Cloud | `whatsapp_cloud` / alias `whatsapp` | `/webhooks/whatsapp` | `X-Hub-Signature-256` (app secret) | WhatsApp id (phone number) |
-| Telegram | `telegram` | `/webhooks/telegram` | `X-Telegram-Bot-Api-Secret-Token` | chat id |
+| Telegram | `telegram` | `/webhooks/telegram`, or `getUpdates` polling (`mode: polling`) | `X-Telegram-Bot-Api-Secret-Token`; polling needs none (the bot token authenticates the pull) | chat id |
 | Meta Graph (Page / Instagram) | `meta_graph` | `/webhooks/meta` | `X-Hub-Signature-256` (app secret) | PSID / IGSID |
 | WeChat Official | `wechat_official` / alias `wechat` | `/webhooks/wechat` | SHA-1 token signature, freshness, single-use nonce (plaintext mode only) | openid |
 | LINE | `line` | `/webhooks/line` | `X-Line-Signature` (channel secret) | user / group / room id |
@@ -19,11 +19,11 @@ OmniDesk ships configurable adapters for the messaging surfaces below. This page
 | X | `x` | `/webhooks/x` (+ CRC `GET`) | `X-Twitter-Webhooks-Signature-OAuth2` / `X-Twitter-Webhooks-Signature` | `public` (post) or `dm:<user id>` |
 | Google Chat | `google_chat` | `/webhooks/google-chat` | Google-signed bearer JWT (required in production); channel-token header or bridge HMAC outside production | incoming-webhook space (see below) |
 | Matrix | `matrix` | `/webhooks/matrix` | Hook token in a header, or bridge HMAC | room id |
-| Discord | `discord` | `/webhooks/discord` | Ed25519 interaction signature when PyNaCl is installed (it is not a declared dependency), otherwise bridge HMAC | channel id |
-| Microsoft Teams | `microsoft_teams` / alias `teams` | `/webhooks/teams` | Static bearer token or bridge HMAC. Bot Framework JWT validation is not implemented, so Bot Connector traffic is refused | Bot Framework conversation id |
-| QQ Bot | `qq` | `/webhooks/qq` | Bridge HMAC only. QQ's Ed25519 signature and op 13 callback validation are not implemented | `group:`, `channel:`, or `c2c:` recipient |
-| Signal | `signal` | `/webhooks/signal` | Bridge HMAC (signal-cli has no signed webhook) | signal-cli REST bridge recipient |
-| iMessage | `imessage` | `/webhooks/imessage` | Bridge HMAC from a local relay | local macOS relay recipient |
+| Discord | `discord` | `/webhooks/discord` (interactions endpoint) | Ed25519 interaction signature (`DISCORD_PUBLIC_KEY`, verified with `cryptography`); without a public key, bridge HMAC | channel id |
+| Microsoft Teams | `microsoft_teams` / alias `teams` | `/webhooks/teams` | Bot Connector JWT (`MICROSOFT_TEAMS_APP_ID` set); otherwise the legacy static bearer or bridge HMAC | Bot Framework conversation id |
+| QQ Bot | `qq` | `/webhooks/qq` | QQ Ed25519 signature and op 13 validation (`QQ_BOT_SECRET` set); otherwise bridge HMAC | `group:`, `channel:`, or `c2c:` recipient |
+| Signal (bridge adapter) | `signal` | `/webhooks/signal` | Bridge HMAC only: signal-cli has no signed webhook, and no bridge ships | signal-cli REST bridge recipient |
+| iMessage (bridge adapter) | `imessage` | `/webhooks/imessage` | Bridge HMAC from a local relay; no relay ships | local macOS relay recipient |
 
 None of these adapters has been exercised against the real provider by a committed live run yet; the parsing, signing and error handling are tested against recorded provider payloads and the providers' documented examples.
 
@@ -70,6 +70,26 @@ Schema 2.0 events carry the verification token in `header.token`; legacy 1.0 eve
 ### X
 
 `X_WEBHOOK_CRC_TOKEN` holds the secret X signs with: the OAuth 2.0 client secret for `X-Twitter-Webhooks-Signature-OAuth2`, or the OAuth 1.0a consumer secret for the legacy `X-Twitter-Webhooks-Signature`. Event bodies must be JSON objects. Posts (`POST /2/tweets`, recipient `public`) and DMs (`POST /2/dm_conversations/with/{id}/messages`, recipient `dm:<user id>`) are signed with OAuth 1.0a user context from `X_API_KEY`/`X_API_SECRET`/`X_ACCESS_TOKEN`/`X_ACCESS_SECRET`. `X_BEARER_TOKEN` is used only when those are missing and only works if it holds an OAuth 2.0 user-context token; an app-only bearer token cannot post, and nothing refreshes a user token. Inbound DMs are threaded as `dm:<sender id>`, and echoes of the account's own DMs are ignored.
+
+### Telegram polling
+
+`channels.telegram.mode: polling` makes the runtime long-poll `getUpdates` (`poll_timeout_seconds`, 1–50, default 30) instead of waiting for `/webhooks/telegram`. Updates go through the same parser and `allowed_user_ids` as webhooks and into the durable job queue; an update is confirmed (next `offset`) only after it was queued, and the job queue deduplicates a re-read one. Telegram refuses `getUpdates` while a webhook is set: run `deleteWebhook` first. Only one poller per bot may run (a second one gets 409 Conflict), so use polling with a single replica.
+
+### Microsoft Teams
+
+Set `MICROSOFT_TEAMS_APP_ID`, `MICROSOFT_TEAMS_APP_PASSWORD` and, for single-tenant bots (every bot created after July 2025), `MICROSOFT_TEAMS_TENANT_ID`. Inbound activities then need a Bot Connector JWT: RS256, issuer `https://api.botframework.com`, audience the app id, 5 minutes of clock skew, a key from `login.botframework.com` endorsed for the activity's `channelId`, and a `serviceUrl` claim equal to the activity's `serviceUrl`. The legacy static inbound token is refused once the app id is set. Keys are cached and refreshed in the background like the Google Chat certificates, so the gateway needs egress to `login.botframework.com:443`. Sends use a client-credentials token for `https://api.botframework.com/.default` from `login.microsoftonline.com/<tenant>` (or `botframework.com` without a tenant), refreshed once on 401. `channels.microsoft_teams.service_url` stays pinned and must match the `serviceUrl` your tenant's activities carry.
+
+### QQ Bot
+
+Set `QQ_BOT_APP_ID` and `QQ_BOT_SECRET` (the AppSecret). The Ed25519 key is derived from the secret (repeated to 32 bytes); pushes must carry a valid `X-Signature-Ed25519` over `X-Signature-Timestamp` + body, op 13 callback validation is answered with the signed `plain_token`, and each push is answered with the op 12 ACK `{"op": 12, "d": 0}`. op 13 only signs digits and token characters, which can never form an event signature over a JSON body. Sends use an app access token from `https://api.bot.qq.com/app/getAppAccessToken` (`Authorization: QQBot <token>`) against `api_base`, now `https://api.bot.qq.com`. Inbound group messages thread as `group:<group_openid>`, C2C as `c2c:<user_openid>`; QQ caps active (non-reply) messages per user and group per day.
+
+### Discord
+
+With `DISCORD_PUBLIC_KEY` set, every interaction must carry a valid Ed25519 signature; Discord probes the endpoint with invalid ones and drops it if they are accepted. Application commands are answered at once with an ephemeral "received" notice (interaction type 4) and components with a deferred update (type 6); the reply follows through the approval-gated send to the channel. Gateway (websocket) message events are not received.
+
+### Signal and iMessage
+
+Neither provider offers a signed webhook. Both adapters accept inbound traffic only from a bridge that signs it with the OmniDesk HMAC (`x-omnidesk-webhook-signature-256`); no such bridge ships in this repository, so the catalog lists them as `bridge_adapter`.
 
 ### WeChat Official
 
@@ -120,6 +140,9 @@ When `GOOGLE_CHAT_WEBHOOK_URL` is set every send goes to that webhook, so the re
 4. X: make sure `X_WEBHOOK_CRC_TOKEN` (the secret X signs with) and `X_WEBHOOK_SECRET` (bridge HMAC, optional) differ. Set the four OAuth 1.0a user credentials to post; use recipient `public` for posts and `dm:<user id>` for DMs.
 5. DingTalk: set `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET` for callbacks and replies; recipients become `group:…`, `cid…`, `user:…` or `robot`.
 6. Lark / Feishu: if the app has an Encrypt Key, set `LARK_ENCRYPT_KEY`/`FEISHU_ENCRYPT_KEY`; plaintext events are then refused.
-7. Production with Google Chat, Matrix or X enabled requires `gateway.require_webhook_signatures: true`; `omnidesk production-check` lists all of the above.
+7. Teams: set `MICROSOFT_TEAMS_APP_ID`, `MICROSOFT_TEAMS_APP_PASSWORD` and `MICROSOFT_TEAMS_TENANT_ID`, and allow egress to `login.botframework.com` and `login.microsoftonline.com`. After that the static `MICROSOFT_TEAMS_INBOUND_TOKEN` is no longer accepted.
+8. QQ: set `QQ_BOT_SECRET`; a custom `api_base` pointing at `api.sgroup.qq.com` should move to `https://api.bot.qq.com`.
+9. Discord: with `DISCORD_PUBLIC_KEY` set, the Ed25519 signature is now required, and a request with only the bridge HMAC is refused.
+10. Production with Google Chat, Matrix or X enabled requires `gateway.require_webhook_signatures: true`; `omnidesk production-check` lists all of the above.
 
-Rollback: the previous release rejects unknown configuration keys, so remove `project_number`, `require_google_jwt`, `allow_query_token` and `allowed_outbound_spaces` from `channels.google_chat` and `allow_query_token` from `channels.matrix` before deploying it. Rolling back the delivery-semantics change restores transport-level resends of timed-out sends (duplicate messages) and HTTP-200 provider errors recorded as sent; rows marked `ambiguous` or dead-lettered meanwhile stay as they are.
+Rollback: the previous release rejects unknown configuration keys, so remove `project_number`, `require_google_jwt`, `allow_query_token` and `allowed_outbound_spaces` from `channels.google_chat`, `allow_query_token` from `channels.matrix`, `mode` and `poll_timeout_seconds` from `channels.telegram`, `app_id_env`/`app_password_env`/`tenant_id_env` from `channels.microsoft_teams` and `bot_secret_env` from `channels.qq` before deploying it. Rolling back the delivery-semantics change restores transport-level resends of timed-out sends (duplicate messages) and HTTP-200 provider errors recorded as sent; rows marked `ambiguous` or dead-lettered meanwhile stay as they are.

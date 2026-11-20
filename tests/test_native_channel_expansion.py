@@ -36,8 +36,6 @@ REQUIRED_NATIVE = {
     "slack",
     "discord",
     "google_chat",
-    "signal",
-    "imessage",
     "microsoft_teams",
     "matrix",
     "line",
@@ -52,6 +50,11 @@ def test_requested_channels_are_native_catalog_entries():
         assert matrix[name]["status"] == "native_adapter"
         assert matrix[name]["inbound"] is True
         assert matrix[name]["outbound"] is True
+    # Signal and iMessage have no provider-signed webhook: an adapter exists,
+    # but inbound needs a signing bridge, so the catalog must not call them native.
+    for name in ("signal", "imessage"):
+        assert matrix[name]["status"] == "bridge_adapter"
+    assert matrix["gmail"]["inbound"] is False
     assert resolve_channel("send this to Slack").status == "native_adapter"
     assert resolve_channel("通知 Teams").name == "microsoft_teams"
     assert resolve_channel("发到 QQ 群").name == "qq"

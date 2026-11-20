@@ -24,6 +24,7 @@ from omnidesk_agent.channels.native_messaging import (
     SlackChannel,
 )
 from omnidesk_agent.channels.telegram import TelegramChannel
+from omnidesk_agent.channels.telegram_polling import TelegramPoller
 from omnidesk_agent.channels.whatsapp_cloud import WhatsAppCloudChannel
 from omnidesk_agent.channels.wechat_official import WeChatOfficialChannel
 from omnidesk_agent.channels.x_channel import XChannel
@@ -151,6 +152,9 @@ class OmniDeskRuntime:
         self.proposal_store = self.governance.proposal_store
         self.reconnect_worker: ReconnectSyncWorker | None = None
         self._reconnect_task: asyncio.Task | None = None
+        self.telegram_poller: TelegramPoller | None = None
+        self._telegram_poll_task: asyncio.Task | None = None
+        self._telegram_poll_stop: asyncio.Event | None = None
 
 
     def _build_channel_adapters(self) -> dict:
@@ -234,8 +238,27 @@ class OmniDeskRuntime:
         if self._should_start_reconnect_loop():
             self.reconnect_worker = self._build_reconnect_worker()
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        telegram_cfg = self.cfg.channels.telegram
+        if telegram_cfg.enabled and telegram_cfg.mode == "polling" and self._telegram_poll_task is None:
+            # Polled updates take the webhook's path from parse_update on: the
+            # same allowlist, then the durable job queue.
+            self.telegram_poller = TelegramPoller(self.adapters["telegram"], self._enqueue_polled_message, timeout_seconds=telegram_cfg.poll_timeout_seconds)
+            self._telegram_poll_stop = asyncio.Event()
+            self._telegram_poll_task = asyncio.create_task(self.telegram_poller.run_forever(self._telegram_poll_stop))
+
+    def _enqueue_polled_message(self, message) -> dict:
+        return self.job_queue.enqueue(message, source_key=message.thread_id or message.sender_id or "unknown")
 
     async def aclose(self) -> None:
+        if self._telegram_poll_task is not None:
+            if self._telegram_poll_stop is not None:
+                self._telegram_poll_stop.set()
+            self._telegram_poll_task.cancel()
+            try:
+                await self._telegram_poll_task
+            except asyncio.CancelledError:
+                pass
+            self._telegram_poll_task = None
         if self._reconnect_task is not None:
             self._reconnect_task.cancel()
             try:
