@@ -141,13 +141,16 @@ jobs:
           OMNIDESK_DEPLOY_NAMESPACE: ${{ vars.OMNIDESK_PRODUCTION_NAMESPACE }}
           OMNIDESK_DEPLOYMENT_NAME: ${{ vars.OMNIDESK_PRODUCTION_DEPLOYMENT_NAME }}
           OMNIDESK_CONTAINER_NAME: ${{ vars.OMNIDESK_PRODUCTION_CONTAINER_NAME }}
-          OMNIDESK_IMAGE: ${{ vars.OMNIDESK_PRODUCTION_IMAGE }}
+          OMNIDESK_IMAGE_REPOSITORY: ${{ vars.OMNIDESK_PRODUCTION_IMAGE_REPOSITORY }}
           OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_PRODUCTION_HOST }}
           OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_PRODUCTION_USER }}
           OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_PRODUCTION_REMOTE_DEPLOY_SCRIPT }}
         run: |
           artifact="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$artifact"
+          # Image modes deploy <repository>@<this release's digest>; a fixed image
+          # variable could only ever match one release.
+          if [[ -n "${OMNIDESK_IMAGE_REPOSITORY:-}" ]]; then export OMNIDESK_IMAGE="$OMNIDESK_IMAGE_REPOSITORY@$OMNIDESK_IMAGE_DIGEST"; fi
           bash scripts/deploy_artifact.sh --artifact "$artifact" --environment production --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$EXPECTED_VERSION" --artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Production smoke
         env:
