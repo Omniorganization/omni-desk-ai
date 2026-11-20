@@ -6,6 +6,7 @@ from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, ToolSpecRegistry
 from omnidesk_agent.security.approval_required import ApprovalRequired
+from omnidesk_agent.security.audit_errors import AuditIntegrityError
 
 
 class ToolRegistry:
@@ -53,6 +54,10 @@ class ToolRegistry:
             return result
         except ApprovalRequired:
             self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="approval_required")
+            raise
+        except AuditIntegrityError:
+            # Not a refusal to report back to the planner: nothing may run until the audit log works.
+            self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="audit_unavailable")
             raise
         except Exception as exc:
             self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="exception")

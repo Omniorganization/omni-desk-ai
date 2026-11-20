@@ -160,6 +160,10 @@ def test_structured_planner_provider_context_is_actor_scoped(memory):
     router = Router()
     planner = LLMStructuredPlanner(router, memory, Skills(), Tools(), Fallback())
     asyncio.run(planner.plan(ChannelMessage(channel="chat", sender_id="alice", thread_id="t", message_id="m", text="shipment")))
-    context = json.loads(router.requests[0].user)["recent_experiences"]
-    assert context and all(row["actor"] == "alice" for row in context)
+    payload = json.loads(router.requests[0].user)
+    items = {item["id"]: item for item in payload["data"]}
+    refs = payload["recent_experiences"]
+    assert refs and all(items[ref]["trust"] == "untrusted" and items[ref]["source"] == "memory:experience" for ref in refs)
+    rows = [json.loads(items[ref]["content"].split("\n", 1)[1].rsplit("\n", 1)[0]) for ref in refs]
+    assert all(row["actor"] == "alice" for row in rows)
     assert "other actor confidential" not in router.requests[0].user

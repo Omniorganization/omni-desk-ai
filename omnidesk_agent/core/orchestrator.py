@@ -11,6 +11,7 @@ from omnidesk_agent.core.agent_loop import (
     ORIGIN_AUTO_GROUND,
     ORIGIN_PLANNER,
     ORIGIN_VERIFY,
+    SINGLE_PLAN_SOURCES,
     TURN_DONE,
     TURN_GIVE_UP,
     LegacyPlannerAdapter,
@@ -26,6 +27,7 @@ from omnidesk_agent.core.agent_loop import (
     finish_single_plan,
     history_for_planner,
     sanitize_tool_result,
+    tool_output_item,
 )
 from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep, ToolResult
 from omnidesk_agent.core.planner_policy import PlannerPolicy, PolicyAssignment, RunOutcome
@@ -38,7 +40,9 @@ from omnidesk_agent.learning.experience_extractor import ExperienceExtractor
 from omnidesk_agent.models.provider_errors import safe_error_text
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.approval_store import ApprovalStore
+from omnidesk_agent.security.audit_errors import AuditIntegrityError
 from omnidesk_agent.security.permissions import PermissionManager
+from omnidesk_agent.security.provenance import tag_untrusted
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
@@ -146,13 +150,15 @@ class Orchestrator:
                 await asyncio.to_thread(self.permissions.allow_approved_proposal, run.get("approval_proposal") or {})
             await asyncio.to_thread(self.run_store.update, run_id, {"status": "running", "waiting_approval_id": None})
         except PermissionError as exc:
+            audit_failed = isinstance(exc, AuditIntegrityError)
             if resume_started and hasattr(self.run_store, "mark_resume_failed"):
                 await asyncio.to_thread(self.run_store.mark_resume_failed, run_id, str(exc))
             if resume_started:
-                state.note_safety_event("approval_denied")
-                state.termination = {"reason": "approval_denied", "detail": safe_error_text(exc)[:2000]}
+                if not audit_failed:
+                    state.note_safety_event("approval_denied")
+                state.termination = {"reason": "audit_unavailable" if audit_failed else "approval_denied", "detail": safe_error_text(exc)[:2000]}
                 self._observe(state, status="failed", final=True, error_class=type(exc).__name__)
-            return {"ok": False, "status": "approval_not_satisfied", "approval_id": approval_id, "error": str(exc)}
+            return {"ok": False, "status": "audit_unavailable" if audit_failed else "approval_not_satisfied", "approval_id": approval_id, "error": str(exc)}
 
         msg = message_from_dict(run["original_message"])
         return await self._run(msg, state)
@@ -183,9 +189,14 @@ class Orchestrator:
         await asyncio.to_thread(self.run_store.update, run_id, {"status": "cancelled", "resume_token": None, "waiting_approval_id": None})
         if approval_id and self.approval_store is not None:
             await asyncio.to_thread(self._deny_pending, str(approval_id), actor, reason)
-        self._audit_event("agent_run_cancelled", {"run_id": run_id, "previous_status": previous, "actor": str(actor)[:200], "reason": str(reason)[:500]})
         self._metric("omnidesk_agent_cancellations_total", previous=previous)
-        return {"ok": True, "status": "cancelled", "run_id": run_id, "previous_status": previous}
+        result: dict[str, Any] = {"ok": True, "status": "cancelled", "run_id": run_id, "previous_status": previous}
+        try:
+            self._audit_event("agent_run_cancelled", {"run_id": run_id, "previous_status": previous, "actor": str(actor)[:200], "reason": str(reason)[:500]})
+        except AuditIntegrityError as exc:
+            # The run is cancelled either way; say that its audit entry is missing.
+            result["audit_error"] = f"{type(exc).__name__}: {safe_error_text(exc)}"[:500]
+        return result
 
     def _deny_pending(self, approval_id: str, actor: str, reason: str) -> None:
         get = getattr(self.approval_store, "get", None)
@@ -249,6 +260,8 @@ class Orchestrator:
                     return await self._finish(msg, state, "failed", stop, segment_started)
                 try:
                     turn = await self._plan_turn(msg, state)
+                except AuditIntegrityError:
+                    raise
                 except Exception as exc:
                     self._metric("omnidesk_planner_results_total", channel=msg.channel, status="error")
                     blocked = isinstance(exc, PermissionError)
@@ -271,6 +284,10 @@ class Orchestrator:
                 await self._checkpoint(state)
         except ApprovalRequired as approval:
             return await self._pause(msg, state, approval, segment_started)
+        except AuditIntegrityError as exc:
+            # Nothing may run unaudited: stop here, and do not try to audit the stop.
+            state.note_safety_event("audit_unavailable")
+            return await self._finish(msg, state, "failed", "audit_unavailable", segment_started, error=exc, audit=False)
 
     def _view(self, msg: ChannelMessage, state: LoopState, *, retrieve_memory: bool = True) -> LoopView:
         return LoopView(
@@ -315,12 +332,13 @@ class Orchestrator:
         state.cost_usd += turn.cost_usd
         state.cost_known = state.cost_known and turn.cost_known
         state.last_errors = list(turn.errors)
+        provenance = self._turn_provenance(state, turn)
         if turn.status not in {TURN_DONE, TURN_GIVE_UP} and not turn.errors:
             steps = turn.steps[: self.loop_budget.max_steps_per_turn]
             if len(turn.steps) > len(steps):
                 record.warnings.append(f"only the first {len(steps)} of {len(turn.steps)} steps were accepted")
             for step in steps:
-                added = state.add_step(step, turn=record.index)
+                added = state.add_step(step, turn=record.index, provenance=provenance)
                 record.step_indexes.append(added.index)
                 state.pending.append(added.index)
         self._metric("omnidesk_agent_turns_total", status=turn.status, source=turn.source)
@@ -339,11 +357,26 @@ class Orchestrator:
             self._after_first_plan(msg, state, turn)
         return record
 
+    @staticmethod
+    def _turn_provenance(state: LoopState, turn: PlannerTurn) -> Optional[dict[str, Any]]:
+        """The taint snapshot for the steps `turn` proposes, after recording what reached its model.
+
+        Rule and legacy plans are not model output and carry none, as operator
+        commands do. A model planner that does not report its input is assumed
+        to have seen untrusted text: unknown provenance cannot vouch for anything.
+        """
+        if turn.source in SINGLE_PLAN_SOURCES:
+            return None
+        inputs = list(turn.inputs) or [tag_untrusted("planner did not report its model input", source="agent:unreported_planner_input")]
+        return state.observe_inputs(inputs)
+
     # ------------------------------------------------------------------ steps
 
     async def _execute_step(self, state: LoopState, step: StepRecord, base_ctx: ToolContext) -> list[StepRecord]:
         """Run one step and record its result. Returns the steps it adds. Raises ApprovalRequired."""
-        ctx = replace(base_ctx, step_index=step.index)
+        # The step's own snapshot, fixed when it was planned: a resumed step
+        # proposes exactly what was approved, untrusted context included.
+        ctx = replace(base_ctx, step_index=step.index, provenance=step.provenance)
         args = step.args
         if "expected_result" not in args:
             args["expected_result"] = step.description or state.goal
@@ -358,7 +391,7 @@ class Orchestrator:
         try:
             with trace_span("tool.call", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), run_id=state.run_id, plan_id=state.plan_id, step_index=step.index, tool=step.tool, action=step.action):
                 result = await self._dispatch(state, step, args, ctx)
-        except ApprovalRequired:
+        except (ApprovalRequired, AuditIntegrityError):
             raise
         except Exception as exc:
             # Raised outside the registry's own handling (a direct permission check, a vision helper).
@@ -397,7 +430,8 @@ class Orchestrator:
             parent = state.step(step.parent) if step.parent is not None else None
             if parent is not None and parent.args.get("auto_click_grounded", False) and "computer" in names:
                 click = PlanStep("click the grounded target", "computer", "click_grounded", {"instruction": str(parent.args.get("expected_result") or state.goal), "expected_result": f"Click grounded target for: {parent.args.get('expected_result') or state.goal}"}, "high", True)
-                return [state.add_step(click, turn=step.turn, origin=ORIGIN_AUTO_CLICK, parent=step.index)]
+                # The click target is the vision model's reading of the screen: untrusted.
+                return [state.add_step(click, turn=step.turn, origin=ORIGIN_AUTO_CLICK, parent=step.index, provenance=state.observe_inputs([tool_output_item(step)]))]
             return []
         if step.origin != ORIGIN_PLANNER:
             return []
@@ -410,6 +444,11 @@ class Orchestrator:
         if verification and "vision" in names and "computer" in names:
             verify = PlanStep("verify the step result", "vision", "verify", {"instruction": expected, "verification": verification, "retry_policy": step.args.get("retry_policy"), "expected_result": f"Verify: {expected}"}, "medium", True)
             derived.append(state.add_step(verify, turn=step.turn, origin=ORIGIN_VERIFY, parent=step.index))
+        if derived:
+            # These steps send the step's output (a screenshot, the screen) to the vision model.
+            provenance = state.observe_inputs([tool_output_item(step)])
+            for record in derived:
+                record.provenance = dict(provenance)
         return derived
 
     def _store_result(self, state: LoopState, step: StepRecord, result: ToolResult) -> None:
@@ -484,9 +523,16 @@ class Orchestrator:
             "learning_assignment": state.learning_assignment,
         }
 
-    async def _finish(self, msg: ChannelMessage, state: LoopState, status: str, reason: str, segment_started: float, *, detail: str = "", error: Optional[BaseException] = None) -> dict:
+    async def _finish(self, msg: ChannelMessage, state: LoopState, status: str, reason: str, segment_started: float, *, detail: str = "", error: Optional[BaseException] = None, audit: bool = True) -> dict:
         self._release_actuators(state)
         state.active_seconds += time.time() - segment_started
+        if audit:
+            # Before the run is stored as finished: an outcome that cannot be audited is a failure.
+            try:
+                self._audit_event("agent_run_finished", {"run_id": state.run_id, "plan_id": state.plan_id, "status": status, "termination": reason, **self._loop_summary(state)})
+            except AuditIntegrityError as exc:
+                state.note_safety_event("audit_unavailable")
+                status, reason, detail, error = "failed", "audit_unavailable", "", exc
         state.termination = {"reason": reason, "detail": detail[:2000]}
         if error is not None:
             state.termination["error"] = f"{type(error).__name__}: {safe_error_text(error)}"[:2000]
@@ -494,7 +540,8 @@ class Orchestrator:
         if status != "completed" and not results:
             # Nothing ran: say why in the results, so the run row explains itself.
             if error is not None:
-                results.append({"ok": False, "summary": "planning failed", "error": state.termination["error"], "data": {"stage": "planning"}})
+                stage = "audit" if reason == "audit_unavailable" else "planning"
+                results.append({"ok": False, "summary": f"{stage} failed", "error": state.termination["error"], "data": {"stage": stage}})
             else:
                 rationale = state.turns[0].rationale if state.turns else ""
                 results.append({"ok": False, "summary": (rationale or reason)[:2000], "error": detail or reason, "data": {"stage": "planning"}})
@@ -510,7 +557,6 @@ class Orchestrator:
         self._observe(state, status=status, final=True, error_class=type(error).__name__ if error is not None else None)
         self._metric("omnidesk_agent_runs_total", channel=msg.channel, status=status)
         self._metric("omnidesk_agent_terminations_total", reason=reason)
-        self._audit_event("agent_run_finished", {"run_id": state.run_id, "plan_id": state.plan_id, "status": status, "termination": reason, **self._loop_summary(state)})
         first = state.turns[0] if state.turns else None
         return {
             "status": status,

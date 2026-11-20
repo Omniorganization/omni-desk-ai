@@ -18,9 +18,14 @@ A plain `StructuredPlan` object (no `status`) parses as `continue`. Steps are va
 
 ## What the model sees
 
-Each planner call (`LLMStructuredPlanner.next_turn`) sends the task (wrapped as untrusted channel content), the selected tool specs, skills, retrieved experiences and `history`: for every executed step its tool, action, compacted arguments, `ok`, summary, error and output.
+Each planner call (`LLMStructuredPlanner.next_turn`) sends the task, the selected tool specs, skills, retrieved experiences and `history`: for every executed step its tool, action, compacted arguments, `ok`, summary, error and output.
 
-- Tool output (file text, shell output, DOM text, grounding JSON) is untrusted data. Secrets are redacted with the memory privacy filter, the text is cut to `agent.observation_chars`, and it is wrapped as `{"trusted": false, "kind": "tool_output", ...}`. The system prompt tells the model never to follow instructions found there.
+The prompt is built with `security.provenance.PromptEnvelope`, so instructions and data travel apart:
+
+- The system prompt holds only OmniDesk's planner instructions, the reviewed policy addendum (see Experiment hook) and the envelope's data-handling policy.
+- The user payload is JSON. OmniDesk's own context is plain: `turn`, `channel`, `budget_left`, `available_tools`, `skills`, `learned_rules`, and the frame of each executed step (`step`, `origin`, `tool`, `action`, `ok`, `output_cut`). Everything else is a fenced data item in `data`, referenced by id: the task (`task`), each step's observation (`history[].steps[].observation`: arguments, summary, error, output), each retrieved experience (`recent_experiences`) and plan validation errors (`history[].errors`, `previous_turn_errors`). Each item carries its source, trust level and SHA-256, and is fenced with a random per-call boundary that its content cannot contain.
+- Trust levels: the task text is `user` from `local-cli` and `local-api` (requesters OmniDesk authenticates itself) and `untrusted` from every other channel, which can carry text from anyone. Tool output (`tool:<tool>.<action>`), memory (`memory:experience`), validation errors and a reply sent for JSON repair are `untrusted`.
+- Tool output (file text, shell output, DOM text, grounding JSON) is untrusted data. Secrets are redacted with the memory privacy filter and the text is cut to `agent.observation_chars` before it is fenced.
 - `agent.history_chars` caps all outputs of one call. Newer outputs are kept whole; older steps keep only their outcome.
 - Screenshots reach a model only through the approval-gated `vision.ground` tool. After a successful `computer`/`ui_bridge` step that saved a screenshot, the loop adds a `vision.ground` step on it (unless the step set `auto_ground: false`); its grounding output is what the planner sees.
 - Tool output now goes to the planner model provider. Deployments that must not send workspace content to an external model should route the `planner` task to a local profile or use `runtime.offline_mode`.
@@ -28,6 +33,15 @@ Each planner call (`LLMStructuredPlanner.next_turn`) sends the task (wrapped as 
 ## Steps
 
 Every step runs through `ToolRegistry.call`, so each tool's own permission check (`ctx.permissions.verify` with a content-bound proposal) runs on every call. The loop never decides risk; tools do.
+
+### Provenance of each step
+
+The run keeps a `security.provenance.TaintTracker` snapshot in `plan_json.agent_loop.taint`. After every model turn the loop records the turn's data items in it, and stamps that snapshot on each step the turn proposed (`StepRecord.provenance`). The step passes it to its tool as `ToolContext.provenance`, which `tools.base.proposal()` copies into `ActionProposal.provenance`. The permission manager can then require a fresh approval of that exact proposal for a high or critical action proposed while the context was tainted (`security.provenance.requires_fresh_approval`).
+
+- The snapshot is fixed when the step is planned. A step planned before any tool output reached the model stays clean even if it runs after other steps; a resumed step proposes exactly the snapshot that was approved, so the approval grant (keyed by its taint digest) matches.
+- `vision.ground`, grounded clicks and `vision.verify` steps that the loop derives from a step get a snapshot that includes that step's output: the vision model reads the screen, and a grounded click goes where it says.
+- Steps of rule and legacy plans carry no provenance: no model proposed them.
+- A model planner that does not report what it sent (`PlannerTurn.inputs`) gets tainted steps.
 
 - After a failed step the rest of that turn's steps are dropped (`steps_not_run` in history) and the model plans again.
 - The loop adds steps of its own (`origin` in results): `auto_ground` (above), `auto_click` when the planner step set `auto_click_grounded`, and `verify` for a step with a `verification` spec. They are separate steps so that an approval pause on one of them resumes that step, not the action before it.
@@ -70,7 +84,9 @@ Errors:
 
 The run store gets a checkpoint after every turn and every step: `status=running`, `plan_json.agent_loop` (all turns, steps, results, counters, policy) and `results_json`. An `ApprovalRequired` from any step saves that state with `save_waiting`. `resume()` checks the token, the approval (dual approval for critical) and then continues the loop from the blocked step, in any process. A resume before the approval is decided returns `approval_pending` and leaves the token unused. Runs saved by a release without the loop resume as a single plan from the saved step.
 
-Tool permission decisions are audited by the permission manager as before. Loop lifecycle entries (`agent_turn_planned`, `agent_step_finished`, `agent_run_finished`; ids, counts and outcomes, never tool output) are written to the same hash-chained audit log when the permission manager provides `record_event(event, payload)`; until it does, they are only in the run store.
+Tool permission decisions are audited by the permission manager as before. Loop lifecycle entries (`agent_turn_planned`, `agent_step_finished`, `agent_run_finished`, `agent_run_cancelled`; ids, counts and outcomes, never tool output) are written to the same hash-chained audit log when the permission manager provides `record_event(event, payload)`; until it does, they are only in the run store.
+
+When the audit log cannot be written (`security.audit_errors.AuditIntegrityError`, from a tool's permission check or from `record_event`), nothing more runs: the registry re-raises it instead of reporting a refusal to the planner, and the loop ends the run `failed` with termination `audit_unavailable` without trying to audit that end. `agent_run_finished` is written before the run is stored as finished, so a run whose end cannot be audited is `failed`, not `completed`. A resume whose grant cannot be audited returns `audit_unavailable` (not an approval denial). A cancel takes effect either way and reports `audit_error` when its entry is missing.
 
 ## Experiment hook
 
@@ -84,5 +100,5 @@ Tool permission decisions are audited by the permission manager as before. Loop 
 ## Known limits
 
 - `verify` steps take a new screenshot on every attempt. Under remote approval each attempt needs its own approval of that screenshot.
-- `ToolContext.provenance` / `ActionProposal.provenance` exist for the security session's taint tracking but the loop leaves them `None` until that module lands.
+- The loop supplies provenance; enforcing `requires_fresh_approval` is `PermissionManager.verify`'s job and arrives with the security change that adds it to `verify`. Until then a tainted proposal is decided like any other.
 - No live-model evaluation is part of this change; the eval suite measures task success separately.
