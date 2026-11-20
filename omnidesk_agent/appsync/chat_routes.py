@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from omnidesk_agent.appsync.blocking import run_blocking
 from omnidesk_agent.appsync.chat_service import ChatStreamEvent
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.industrial_chat_service import IndustrialChatTurnService as ChatTurnService
@@ -84,7 +85,8 @@ def register_first_class_chat_routes(app: FastAPI, cfg: Any, runtime: Any, metri
 
         actor = _actor(decision)
         role = str(getattr(decision, "role", "operator"))
-        prepared = stream_service.prepare_stream(
+        prepared = await run_blocking(
+            stream_service.prepare_stream,
             request=request, payload=payload, actor=actor, role=role,
             last_event_id=last_event_id,
         )

@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 
 from fastapi import HTTPException, Request
 
+from omnidesk_agent.appsync.blocking import run_blocking
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
@@ -433,13 +434,15 @@ class ChatTurnService:
             raise HTTPException(422, "JSON object body is required")
         self.content(payload)
         idempotency_key = self.require_idempotency(request, payload)
-        conversation_id = conversation_id or self.ensure_conversation(
+        conversation_id = conversation_id or await run_blocking(
+            self.ensure_conversation,
             actor=actor,
             payload=payload,
             idempotency_key=idempotency_key,
             default_title=default_title,
         )
-        cached = self._cached(
+        cached = await run_blocking(
+            self._cached,
             actor=actor,
             conversation_id=conversation_id,
             payload=payload,
@@ -447,7 +450,8 @@ class ChatTurnService:
         )
         if cached is not None:
             return cached
-        user_message, model_request, idem_payload = self._prepare_turn(
+        user_message, model_request, idem_payload = await run_blocking(
+            self._prepare_turn,
             actor=actor,
             role=role,
             conversation_id=conversation_id,
@@ -478,7 +482,8 @@ class ChatTurnService:
                     "trace_id": trace_id,
                 },
             ) from exc
-        return self._persist_result(
+        return await run_blocking(
+            self._persist_result,
             actor=actor,
             conversation_id=conversation_id,
             user_message=user_message,
@@ -497,7 +502,8 @@ class ChatTurnService:
         last_event_id: int = 0,
         default_title: str = "API streaming chat",
     ) -> AsyncIterator[ChatStreamEvent]:
-        prepared = self.prepare_stream(
+        prepared = await run_blocking(
+            self.prepare_stream,
             request=request,
             payload=payload,
             actor=actor,
@@ -545,7 +551,7 @@ class ChatTurnService:
                 "chat.started",
                 {"conversation_id": conversation_id},
             )
-            self._append_stream_event(actor=actor, prepared=prepared, event=event)
+            await run_blocking(self._append_stream_event, actor=actor, prepared=prepared, event=event)
             yield event
         sequence += 1
         text_parts: list[str] = []
@@ -582,7 +588,7 @@ class ChatTurnService:
                                     "native": delta.native,
                                 },
                             )
-                            self._append_stream_event(actor=actor, prepared=prepared, event=event)
+                            await run_blocking(self._append_stream_event, actor=actor, prepared=prepared, event=event)
                             yield event
                         sequence += 1
                     if delta.reasoning:
@@ -596,7 +602,7 @@ class ChatTurnService:
                                     "native": delta.native,
                                 },
                             )
-                            self._append_stream_event(actor=actor, prepared=prepared, event=event)
+                            await run_blocking(self._append_stream_event, actor=actor, prepared=prepared, event=event)
                             yield event
                         sequence += 1
                     if delta.usage:
@@ -609,11 +615,16 @@ class ChatTurnService:
                 "chat.failed",
                 {"code": "stream_interrupted"},
             )
-            self._append_stream_event(
-                actor=actor,
-                prepared=prepared,
-                event=event,
-                status="interrupted",
+            # Shielded: the interruption marker is recorded even if the
+            # request is cancelled again while it is written.
+            await asyncio.shield(
+                run_blocking(
+                    self._append_stream_event,
+                    actor=actor,
+                    prepared=prepared,
+                    event=event,
+                    status="interrupted",
+                )
             )
             logger.info(
                 "chat stream cancelled",
@@ -644,7 +655,8 @@ class ChatTurnService:
                         "trace_id": trace_id,
                     },
                 )
-                self._append_stream_event(
+                await run_blocking(
+                    self._append_stream_event,
                     actor=actor,
                     prepared=prepared,
                     event=event,
@@ -666,7 +678,8 @@ class ChatTurnService:
                 "reasoning": "".join(reasoning_parts),
             },
         )
-        persisted = self._persist_result(
+        persisted = await run_blocking(
+            self._persist_result,
             actor=actor,
             conversation_id=conversation_id,
             user_message=user_message,
@@ -680,7 +693,7 @@ class ChatTurnService:
                 "chat.usage",
                 usage,
             )
-            self._append_stream_event(actor=actor, prepared=prepared, event=event)
+            await run_blocking(self._append_stream_event, actor=actor, prepared=prepared, event=event)
             yield event
         sequence += 1
         if sequence > last_event_id:
@@ -695,7 +708,8 @@ class ChatTurnService:
                     "native": native,
                 },
             )
-            self._append_stream_event(
+            await run_blocking(
+                self._append_stream_event,
                 actor=actor,
                 prepared=prepared,
                 event=event,

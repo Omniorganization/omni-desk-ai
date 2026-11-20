@@ -104,7 +104,10 @@ def test_stream_route_shares_limit_and_never_drops_normal_terminator() -> None:
     assert "stream_service.stream_limit = service.stream_limit" in source
     assert "await queue.put(None)" in source
     assert "put_nowait(None)" not in source
-    assert "prepared = stream_service.prepare_stream" in source
+    # The reservation is prepared before the response starts (so conflicts are
+    # HTTP errors), and on the worker pool rather than the event loop.
+    assert "prepared = await run_blocking(\n            stream_service.prepare_stream," in source
+    assert source.index("stream_service.prepare_stream,") < source.index("StreamingResponse(events()")
     assert "last_event_id=last_event_id" in source
 
 

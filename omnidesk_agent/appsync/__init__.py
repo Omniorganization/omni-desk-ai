@@ -2,12 +2,49 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from omnidesk_agent.appsync.chat_routes import register_first_class_chat_routes
 from omnidesk_agent.appsync.projects import register_project_routes
 from omnidesk_agent.appsync.routes import register_appsync_routes as _register_appsync_routes
 from omnidesk_agent.appsync.store import AppSyncStore
+
+
+logger = logging.getLogger(__name__)
+
+# A request that waited too long for a row lock, a statement, or a pooled
+# connection is retryable: the database is busy, not the request wrong.
+DATABASE_BUSY_RETRY_AFTER_SECONDS = 2
+
+
+def _database_busy_exceptions() -> tuple[type[BaseException], ...]:
+    from omnidesk_agent.appsync.migrated_postgres_store import PoolTimeout
+
+    busy: list[type[BaseException]] = [PoolTimeout]
+    try:
+        from psycopg import errors  # type: ignore
+    except ModuleNotFoundError:
+        return tuple(busy)
+    return (*busy, errors.LockNotAvailable, errors.QueryCanceled)
+
+
+def register_database_busy_handler(app: FastAPI) -> None:
+    async def database_busy(request: Request, exc: Exception) -> JSONResponse:
+        logger.warning(
+            "database busy",
+            extra={"path": request.url.path, "error_type": type(exc).__name__},
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": {"code": "database_busy", "retry_after_seconds": DATABASE_BUSY_RETRY_AFTER_SECONDS}},
+            headers={"Retry-After": str(DATABASE_BUSY_RETRY_AFTER_SECONDS)},
+        )
+
+    for exception_type in _database_busy_exceptions():
+        app.add_exception_handler(exception_type, database_busy)
 
 
 CANONICAL_CHAT_ROUTE_KEYS = {
@@ -41,10 +78,25 @@ def register_appsync_routes(
     # Canonical chat routes are registered first and therefore own all chat
     # traffic. The legacy AppSync collection remains for non-chat endpoints while
     # it is split into smaller routers in subsequent maintenance work.
+    register_database_busy_handler(app)
     register_first_class_chat_routes(app, cfg, rt, metrics, admin)
     _register_appsync_routes(app, cfg, rt, metrics, admin)
     _remove_shadowed_chat_routes(app)
     register_project_routes(app, cfg, rt, metrics, admin)
+    _start_retention(getattr(rt, "app_sync", None), metrics)
+
+
+def _start_retention(store: Any, metrics: Any) -> None:
+    """PostgreSQL stores prune their tables in the background; 0 turns it off
+    (for example when a CronJob runs ``python -m omnidesk_agent.appsync.retention``)."""
+    start = getattr(store, "start_retention", None)
+    if not callable(start):
+        return
+    from omnidesk_agent.appsync.retention import retention_interval_seconds
+
+    interval = retention_interval_seconds()
+    if interval > 0:
+        start(interval_seconds=interval, metrics=metrics)
 
 
 __all__ = ["AppSyncStore", "register_appsync_routes"]

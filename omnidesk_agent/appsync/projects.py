@@ -14,6 +14,7 @@ from typing import Any, Iterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
+from omnidesk_agent.appsync.blocking import run_blocking
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.postgres_migrations import PROJECTS_SCHEMA_SQL
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
@@ -1064,7 +1065,7 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
     @app.get("/admin/projects/store/recovery")
     async def admin_project_store_recovery_status(request: Request):
         await admin(request, "owner")
-        return {"ok": True, "recovery": projects.public_recovery_status()}
+        return {"ok": True, "recovery": await run_blocking(projects.public_recovery_status)}
 
     @app.post("/admin/projects/store/recover")
     async def admin_recover_project_store(request: Request):
@@ -1075,7 +1076,7 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         raw_index = payload.get("backup_index")
         try:
             backup_index = int(raw_index) if raw_index is not None else None
-            result = projects.recover_from_backup(actor=_actor(decision), backup_index=backup_index)
+            result = await run_blocking(projects.recover_from_backup, actor=_actor(decision), backup_index=backup_index)
         except ProjectStoreCorruptionError as exc:
             raise HTTPException(
                 503,
@@ -1091,7 +1092,7 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         decision = await admin(request, "viewer")
         actor = _actor(decision)
         try:
-            result = projects.list_projects(actor=actor, include_deleted=include_deleted)
+            result = await run_blocking(projects.list_projects, actor=actor, include_deleted=include_deleted)
         except ProjectStoreCorruptionError as exc:
             raise HTTPException(
                 503,
@@ -1106,9 +1107,9 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         actor = _actor(decision)
         payload = await request.json()
         try:
-            projects.assert_available()
+            await run_blocking(projects.assert_available)
             idem_key = _require_idempotency(cfg, request, payload)
-            project = projects.create_project(
+            project = await run_blocking(projects.create_project,
                 actor=actor,
                 name=str(payload.get("name") or ""),
                 description=str(payload.get("description") or ""),
@@ -1135,9 +1136,9 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         actor = _actor(decision)
         payload = await request.json()
         try:
-            projects.assert_available()
+            await run_blocking(projects.assert_available)
             idem_key = _require_idempotency(cfg, request, payload)
-            project = projects.update_project(
+            project = await run_blocking(projects.update_project,
                 actor=actor,
                 project_id=project_id,
                 patch=payload,
@@ -1164,9 +1165,9 @@ def register_project_routes(app: FastAPI, cfg: Any, rt: Any, metrics: Any, admin
         actor = _actor(decision)
         payload = {"project_id": project_id}
         try:
-            projects.assert_available()
+            await run_blocking(projects.assert_available)
             idem_key = _require_idempotency(cfg, request, payload)
-            project = projects.delete_project(
+            project = await run_blocking(projects.delete_project,
                 actor=actor,
                 project_id=project_id,
                 idempotency_key=idem_key,

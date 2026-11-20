@@ -9,7 +9,7 @@ from typing import Any, Iterable, Protocol, cast
 from omnidesk_agent.appsync.postgres_store import NORMALIZED_SCHEMA_SQL
 
 MIGRATION_TABLE = "omnidesk_appsync_schema_migrations"
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 
 class _Cursor(Protocol):
@@ -164,6 +164,25 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             "CREATE INDEX IF NOT EXISTS omnidesk_tasks_org_claim_idx ON omnidesk_appsync_tasks(namespace, organization_id, requires_desktop_runtime, status, created_at)",
             # Projects were created by DDL on every project operation.
             *_split_sql(PROJECTS_SCHEMA_SQL),
+        ),
+    ),
+    PostgresMigration(
+        6,
+        "sync_feed_retention",
+        (
+            # Every event at or below pruned_through may be gone: a reader whose
+            # cursor is lower must re-bootstrap (sync_since reset_required).
+            "ALTER TABLE omnidesk_appsync_event_counters ADD COLUMN IF NOT EXISTS pruned_through BIGINT NOT NULL DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS omnidesk_idempotency_created_idx ON omnidesk_appsync_idempotency_keys(namespace, created_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_push_outbox_updated_idx ON omnidesk_appsync_push_outbox(namespace, updated_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_notifications_created_idx ON omnidesk_appsync_notifications(namespace, created_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_local_inbox_received_idx ON omnidesk_appsync_local_inbox(namespace, received_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_local_outbox_updated_idx ON omnidesk_appsync_local_outbox(namespace, updated_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_operation_log_created_idx ON omnidesk_appsync_operation_log(namespace, created_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_device_challenges_created_idx ON omnidesk_appsync_device_challenges(namespace, created_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_device_enrollments_created_idx ON omnidesk_appsync_device_enrollments(namespace, created_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_sync_conflicts_resolved_idx ON omnidesk_appsync_sync_conflicts(namespace, resolved_at)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_chat_requests_updated_idx ON omnidesk_appsync_chat_requests(namespace, updated_at)",
         ),
     ),
 )
