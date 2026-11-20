@@ -22,9 +22,70 @@ run "restricted_persistent_single_host" {
     error_message = "SSH must remain restricted to approved client IPs."
   }
   assert {
-    condition     = length([for rule in hcloud_firewall.acceptance.rule : rule if rule.direction == "out"]) == 4 && alltrue([for rule in hcloud_firewall.acceptance.rule : rule.direction != "out" || (rule.destination_ips == toset(var.outbound_cidrs) && (rule.protocol == "tcp" ? contains(["53", "80", "443"], rule.port) : rule.protocol == "udp" && rule.port == "53"))])
-    error_message = "Outbound access must be limited to approved destinations and TCP DNS/HTTP/HTTPS or UDP DNS."
+    condition     = length([for rule in hcloud_firewall.acceptance.rule : rule if rule.direction == "out"]) == 5 && alltrue([for rule in hcloud_firewall.acceptance.rule : rule.direction != "out" || (rule.destination_ips == toset(var.outbound_cidrs) && (rule.protocol == "tcp" ? contains(["53", "80", "443"], rule.port) : rule.protocol == "udp" && rule.port == "53")) || (rule.protocol == "udp" && rule.port == "123" && rule.destination_ips == toset(var.ntp_servers))])
+    error_message = "Outbound access must be limited to approved destinations (TCP DNS/HTTP/HTTPS, UDP DNS) plus UDP NTP to the listed time servers."
   }
+  assert {
+    condition     = length([for rule in hcloud_firewall.acceptance.rule : rule if rule.direction == "in" && rule.protocol == "udp"]) == 0
+    error_message = "Without enable_wireguard no UDP port may be open inbound."
+  }
+  assert {
+    condition     = hcloud_server.acceptance.server_type == "cx23"
+    error_message = "The default host stays the quoted cx23."
+  }
+}
+
+run "wireguard_opens_only_udp_51820" {
+  command = plan
+  variables {
+    enable_wireguard = true
+  }
+  assert {
+    condition     = length([for rule in hcloud_firewall.acceptance.rule : rule if rule.direction == "in"]) == 4 && length([for rule in hcloud_firewall.acceptance.rule : rule if rule.direction == "in" && rule.protocol == "udp" && rule.port == "51820"]) == 1
+    error_message = "enable_wireguard must add exactly one inbound rule: UDP 51820."
+  }
+  assert {
+    condition     = alltrue([for rule in hcloud_firewall.acceptance.rule : rule.port != "22" || rule.source_ips == toset(var.ssh_cidrs)])
+    error_message = "WireGuard must not widen SSH."
+  }
+}
+
+run "fallback_type_needs_raised_authorization" {
+  command = plan
+  variables {
+    server_type                   = "cpx22"
+    authorized_monthly_budget_usd = 25
+    quoted_total_usd              = 24.10
+  }
+  assert {
+    condition     = hcloud_server.acceptance.server_type == "cpx22"
+    error_message = "cpx22 is allowed when the owner raised the authorization."
+  }
+}
+
+run "reject_quote_above_authorization" {
+  command = plan
+  variables {
+    server_type      = "cpx22"
+    quoted_total_usd = 24.10
+  }
+  expect_failures = [var.quoted_total_usd]
+}
+
+run "reject_unquoted_server_type" {
+  command = plan
+  variables {
+    server_type = "ccx13"
+  }
+  expect_failures = [var.server_type]
+}
+
+run "reject_ntp_ranges" {
+  command = plan
+  variables {
+    ntp_servers = ["213.239.239.0/24"]
+  }
+  expect_failures = [var.ntp_servers]
 }
 
 run "reject_unknown_outbound_destinations" {

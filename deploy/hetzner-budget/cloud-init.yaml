@@ -12,6 +12,10 @@ packages:
   - slirp4netns
   - unattended-upgrades
   - jq
+  # podman --init for sandbox runs; WireGuard for the CI deploy tunnel (used only
+  # when enable_wireguard is set and the owner configured a peer).
+  - catatonit
+  - wireguard-tools
 write_files:
   - path: /etc/ssh/sshd_config.d/60-omnidesk.conf
     permissions: '0644'
@@ -21,11 +25,17 @@ write_files:
       PermitRootLogin prohibit-password
       X11Forwarding no
       AllowTcpForwarding no
+  - path: /etc/systemd/timesyncd.conf.d/60-omnidesk.conf
+    permissions: '0644'
+    content: |
+      [Time]
+      NTP=ntp1.hetzner.de ntp2.hetzner.de ntp3.hetzner.de
   - path: /etc/docker/daemon.json
     permissions: '0644'
     content: |
       {"log-driver":"local","log-opts":{"max-size":"10m","max-file":"3"}}
 runcmd:
+  - [systemctl, restart, systemd-timesyncd]
   - [systemctl, enable, --now, docker]
   - [systemctl, restart, ssh]
   - [install, -d, -m, '0700', /opt/omnidesk]

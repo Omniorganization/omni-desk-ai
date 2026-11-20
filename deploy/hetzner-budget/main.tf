@@ -47,13 +47,49 @@ variable "ssh_cidrs" {
   }
 }
 
+variable "server_type" {
+  description = "cx23 (2 vCPU/4 GB, fits USD 10) or cpx22 (2 vCPU/4 GB AMD, about EUR 20/month with backups) when cx23 is out of stock and the owner authorized the higher budget."
+  type        = string
+  default     = "cx23"
+  validation {
+    condition     = contains(["cx23", "cpx22"], var.server_type)
+    error_message = "Only the quoted cx23 or, with a raised authorization, cpx22 are allowed."
+  }
+}
+
+variable "authorized_monthly_budget_usd" {
+  description = "The owner's written monthly authorization for this host. Raise it only with a new owner approval."
+  type        = number
+  default     = 10
+  validation {
+    condition     = var.authorized_monthly_budget_usd > 0 && var.authorized_monthly_budget_usd <= 30
+    error_message = "The authorization must be positive and at most USD 30 for this single host."
+  }
+}
+
 variable "quoted_total_usd" {
-  description = "Console-verified MONTHLY GROSS total: CX23, IPv4, backups, tax and currency conversion. This is a quote gate, not a billing cap."
+  description = "Console-verified MONTHLY GROSS total: server, IPv4, backups, tax and currency conversion. This is a quote gate, not a billing cap."
   type        = number
   validation {
-    condition     = var.quoted_total_usd > 0 && var.quoted_total_usd <= 10
-    error_message = "The complete monthly quote must be positive and no more than the authorized USD 10."
+    condition     = var.quoted_total_usd > 0 && var.quoted_total_usd <= var.authorized_monthly_budget_usd
+    error_message = "The complete monthly quote must be positive and within the owner's authorized monthly budget."
   }
+}
+
+variable "ntp_servers" {
+  description = "NTP servers (UDP 123). Signed runner requests, device signatures, approval expiry and TLS need a synchronised clock. Defaults are ntp1-3.hetzner.de."
+  type        = list(string)
+  default     = ["213.239.239.164/32", "213.239.239.165/32", "213.239.239.166/32"]
+  validation {
+    condition     = length(var.ntp_servers) > 0 && alltrue([for cidr in var.ntp_servers : can(cidrhost(cidr, 0)) && can(regex("(/32|/128)$", cidr))])
+    error_message = "List NTP servers as exact /32 or /128 addresses."
+  }
+}
+
+variable "enable_wireguard" {
+  description = "Open UDP 51820 for the CI deploy tunnel. WireGuard answers nothing without a valid peer key, so SSH stays limited to ssh_cidrs."
+  type        = bool
+  default     = false
 }
 
 variable "outbound_cidrs" {
@@ -105,11 +141,26 @@ resource "hcloud_firewall" "acceptance" {
     port            = "53"
     destination_ips = var.outbound_cidrs
   }
+  rule {
+    direction       = "out"
+    protocol        = "udp"
+    port            = "123"
+    destination_ips = var.ntp_servers
+  }
+  dynamic "rule" {
+    for_each = var.enable_wireguard ? ["51820"] : []
+    content {
+      direction  = "in"
+      protocol   = "udp"
+      port       = rule.value
+      source_ips = ["0.0.0.0/0", "::/0"]
+    }
+  }
 }
 
 resource "hcloud_server" "acceptance" {
   name               = var.name
-  server_type        = "cx23"
+  server_type        = var.server_type
   image              = "ubuntu-24.04"
   location           = var.location
   ssh_keys           = [hcloud_ssh_key.deployer.id]
