@@ -667,16 +667,22 @@ class Orchestrator:
             else:
                 rationale = state.turns[0].rationale if state.turns else ""
                 results.append({"ok": False, "summary": (rationale or reason)[:2000], "error": detail or reason, "data": {"stage": "planning"}})
+        erased = False
         if self.run_store and state.run_id:
             try:
                 await self._checkpoint(state)
                 await asyncio.to_thread(self.run_store.complete, state.run_id, status, results)
+                # Read back after the write: a data-subject erasure may have landed after this
+                # run's last look at its row (during its final planner turn, say).
+                erased = await self._run_erased(state.run_id)
             except Exception as store_exc:
                 if error is not None:
                     error.add_note(f"run {state.run_id} could not be marked {status}: {type(store_exc).__name__}: {store_exc}")
                 raise
-        self._record_memory(msg, state, status, results)
-        self._observe(state, status=status, final=True, error_class=type(error).__name__ if error is not None else None)
+        if not erased:
+            # An erased person's run leaves no memory or learning record behind.
+            self._record_memory(msg, state, status, results)
+            self._observe(state, status=status, final=True, error_class=type(error).__name__ if error is not None else None)
         self._metric("omnidesk_agent_runs_total", channel=msg.channel, status=status)
         self._metric("omnidesk_agent_terminations_total", reason=reason)
         first = state.turns[0] if state.turns else None
@@ -695,6 +701,13 @@ class Orchestrator:
             "planner_policy": (state.policy or {}).get("policy_id"),
             "learning_assignment": state.learning_assignment,
         }
+
+    async def _run_erased(self, run_id: str) -> bool:
+        """Was the run's row erased by a data-subject request: deleted, or left as a tombstone?"""
+        if self.run_store is None:
+            return False
+        row = await asyncio.to_thread(self.run_store.get, run_id)
+        return row is None or bool(row.get("erased"))
 
     def _release_actuators(self, state: LoopState) -> None:
         # The desktop lease is per run: free it whenever the run stops driving it.

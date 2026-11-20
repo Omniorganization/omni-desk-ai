@@ -1208,3 +1208,30 @@ def test_an_expired_approval_ends_the_run(harness):
 def test_an_unknown_approval_is_not_found(harness):
     h = harness(write_then_done, approval_mode="remote_approval")
     assert asyncio.run(plane(h).resume_by_approval("no-such-approval"))["status"] == "not_found"
+
+
+# --------------------------------------------------------------------------- data-subject erasure
+
+
+def test_a_run_erased_during_its_last_turn_leaves_no_memory_or_learning_record(harness):
+    hook = Hook(None)
+    erased: list[int] = []
+
+    def decide(payload, request):
+        if payload["turn"] == 1:
+            return turn(steps=[step("files", "read_text", {"path": "notes.txt"})])
+        # The erasure lands while the model plans the last turn, after the run's last look at
+        # its row: runs (and jobs) first, then memory, as DataSubjectService orders it.
+        erased.append(h.runs.erase_subject("owner"))
+        erased.append(h.memory.erase_subject("owner"))
+        return turn("done", final_answer="read")
+
+    h = harness(decide, hook=hook)
+    (h.workspace / "notes.txt").write_text("notes", encoding="utf-8")
+    result = h.run("read notes.txt")
+
+    assert result["status"] == "completed" and erased[0] == 1  # the run in flight became a tombstone
+    # Nothing about the erased person is written after the erasure.
+    assert h.memory.export_subject("owner") == [] and h.runs.export_subject("owner") == []
+    assert h.runs.get(result["run_id"])["erased"] is True
+    assert hook.outcomes == []  # no learning record either

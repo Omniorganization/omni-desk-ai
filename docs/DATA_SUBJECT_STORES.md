@@ -20,6 +20,7 @@
 - **Mentions in other people's records.** Text about the person inside someone else's records is not found: matching is by actor id.
 - **PostgreSQL stores** in `repositories/postgres_state.py` need their own methods.
 - **Work already running.** A step running at the moment of erasure finishes. So does a job a worker is processing, and its run may be created afterwards; erase again if a run appears.
+  - A run that finishes after its row was erased writes no memory or learning record. The orchestrator reads the row back after its last write and skips both when the row is a tombstone or gone. `DataSubjectService` erases runs and jobs before the other stores.
 - **Other data.**
   - The model response cache has no actor. Its entries are no longer served after `cache_ttl_seconds` (default 24 h).
   - Screenshots in the computer tool's screenshot directory are not linked to an actor and are not erased.
