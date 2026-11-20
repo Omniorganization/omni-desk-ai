@@ -415,3 +415,25 @@ def test_the_loop_does_not_claim_the_core_hook_protocol_before_the_wiring_change
     loop = RuntimeLearningLoop()
     assert not any(hasattr(loop, name) for name in ("assign", "observe", "after_plan"))
     assert callable(loop.assign_policy) and callable(loop.observe_result)
+
+
+
+def test_latency_and_cost_noise_on_tiny_values_does_not_block_promotion():
+    gate = SequentialGate(GateConfig(min_samples_per_arm=100, max_looks=1, require_cost_measurement=True))
+    control = ArmStats(n=400, successes=160, cost_sum=0.0, cost_n=400, latency_sum=400 * 1.5, latency_n=400)
+    treatment = ArmStats(n=400, successes=400, cost_sum=400 * 0.000001, cost_n=400, latency_sum=400 * 1.9, latency_n=400)
+    assert gate.evaluate(control, treatment, look=1, mode="ab").decision == "promote_candidate"
+    slow = ArmStats(n=400, successes=400, cost_sum=0.0, cost_n=400, latency_sum=400 * 900.0, latency_n=400)
+    control_fast = ArmStats(n=400, successes=160, cost_sum=0.0, cost_n=400, latency_sum=400 * 500.0, latency_n=400)
+    assert "latency_increase" in gate.evaluate(control_fast, slow, look=1, mode="ab").checks["blockers"]
+
+
+def test_shadow_does_not_store_outcomes_for_runs_it_did_not_shadow(tmp_path):
+    async def plan(msg, policy):
+        return {"steps": []}
+
+    shadow = ShadowRunner(tmp_path / "shadow.sqlite3", plan, sample_rate=0.0)
+    assert shadow.observe_production("never-shadowed", RunOutcome(status="completed")) is None
+    import sqlite3
+    with sqlite3.connect(tmp_path / "shadow.sqlite3") as con:
+        assert con.execute("SELECT COUNT(*) FROM learning_shadow_runs").fetchone()[0] == 0
