@@ -3,7 +3,8 @@
 Regression tests for the 2026-11-21 audit (operations: high; data-reliability:
 high): /health returned 429 under load and went through the PostgreSQL limiter,
 the limiter opened a fresh PostgreSQL connection for every check, synchronously
-on the event loop, and its table was never pruned.
+on the event loop, with no timeouts, and its table was never pruned. The same
+behaviour against a real server is in test_postgres_rate_limiter_real.py.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import asyncio
 import sys
 import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,7 +40,11 @@ class _FakeCursor:
             self.con.fail_next = False
             self.con.closed = True
             raise ConnectionError("server closed the connection")
+        if self.con.registry.timeout_next:
+            self.con.registry.timeout_next = False
+            raise TimeoutError("canceling statement due to lock timeout")
         if "RETURNING count" in sql:
+            self.con.registry.threads.append(threading.current_thread().name)
             key = params[0]
             self.con.counts[key] = self.con.counts.get(key, 0) + 1
             self._row = (self.con.counts[key],)
@@ -61,6 +67,12 @@ class _FakeConnection:
     def cursor(self):
         return _FakeCursor(self)
 
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
     def close(self):
         self.closed = True
 
@@ -73,27 +85,69 @@ class _FakeConnection:
 
 @pytest.fixture()
 def fake_psycopg(monkeypatch):
-    registry = types.SimpleNamespace(connections=[], counts={})
+    registry = types.SimpleNamespace(connections=[], counts={}, dsns=[], threads=[], timeout_next=False, options="")
+    lock = threading.Lock()
 
-    def connect(dsn):
+    def connect(dsn, **kwargs):
         con = _FakeConnection(registry)
-        registry.connections.append(con)
+        with lock:
+            registry.connections.append(con)
+            registry.dsns.append((dsn, kwargs))
         return con
 
-    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=connect))
+    def make_conninfo(dsn, **kwargs):
+        return " ".join([dsn, *(f"{k}={v!r}" for k, v in sorted(kwargs.items()))])
+
+    conninfo = types.SimpleNamespace(
+        conninfo_to_dict=lambda dsn: {"options": registry.options} if registry.options else {},
+        make_conninfo=make_conninfo,
+    )
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=connect, conninfo=conninfo))
     monkeypatch.setenv("OMNIDESK_TEST_RATE_DSN", "postgresql://u:p@db/x")
     return registry
 
 
-def test_postgres_limiter_reuses_one_connection_per_thread(fake_psycopg):
+def test_postgres_limiter_counts_on_one_reused_connection(fake_psycopg):
     limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN")
-    schema_connections = len(fake_psycopg.connections)
 
     results = [limiter.allow("ip:1", limit=3, window_seconds=60) for _ in range(5)]
 
     assert results == [True, True, True, False, False]
-    assert len(fake_psycopg.connections) - schema_connections == 1
+    assert len(fake_psycopg.connections) == 1  # the schema setup's connection, reused
     assert fake_psycopg.connections[-1].autocommit is True
+
+
+def test_postgres_limiter_never_opens_more_than_its_pool(fake_psycopg):
+    limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN", pool_size=3)
+
+    with ThreadPoolExecutor(max_workers=16) as threads:
+        assert all(threads.map(lambda i: limiter.allow(f"ip:{i % 7}", limit=10_000, window_seconds=60), range(300)))
+    limiter.close()
+
+    assert 1 <= len(fake_psycopg.connections) <= 3
+
+
+def test_postgres_limiter_connections_carry_timeouts_and_keep_dsn_options(fake_psycopg):
+    fake_psycopg.options = "-c search_path=omnidesk"
+    PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN", statement_timeout_ms=1500, lock_timeout_ms=700).close()
+
+    dsn, kwargs = fake_psycopg.dsns[0]
+    assert "options='-c search_path=omnidesk -c statement_timeout=1500 -c lock_timeout=700'" in dsn
+    assert "application_name='omnidesk-rate-limiter'" in dsn
+    assert kwargs["connect_timeout"] >= 1
+
+
+def test_postgres_limiter_does_not_retry_a_timeout(fake_psycopg):
+    # A lock or statement timeout leaves the connection healthy: retrying would
+    # only double the wait. The check fails and the request is refused.
+    limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN")
+    fake_psycopg.timeout_next = True
+
+    with pytest.raises(TimeoutError):
+        limiter.allow("k", limit=10, window_seconds=60)
+
+    assert len(fake_psycopg.connections) == 1 and not fake_psycopg.connections[0].closed
+    assert limiter.allow("k", limit=10, window_seconds=60) is True
 
 
 def test_postgres_limiter_replaces_a_broken_connection_once(fake_psycopg):
@@ -142,6 +196,22 @@ class _Request:
 
     async def stream(self):
         yield b""
+
+
+def test_guard_checks_run_on_the_limiters_own_bounded_workers(fake_psycopg):
+    limiter = PostgresRateLimiter(dsn_env="OMNIDESK_TEST_RATE_DSN", pool_size=2)
+    guard = ChatAwareApiResourceGuard(ApiResourceGuardConfig(max_body_bytes=0))
+    guard.rate = limiter
+
+    async def admit():
+        release = await guard.before_request(_Request("/admin/status"))
+        release()
+        await guard.check_authenticated_async(_Request("/admin/status"), actor="a", role="viewer")
+
+    asyncio.run(admit())
+    limiter.close()
+
+    assert fake_psycopg.threads and all(name.startswith("omnidesk-rate-limit-db") for name in fake_psycopg.threads)
 
 
 def test_shared_store_checks_run_off_the_event_loop():

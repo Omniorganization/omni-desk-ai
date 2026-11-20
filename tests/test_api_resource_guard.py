@@ -119,6 +119,14 @@ class _FakeConnection:
         self.executed = []
         self.returning_count = 1
         self.size_count = 0
+        self.closed = False
+        self.autocommit = False
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
 
     def __enter__(self):
         return self
@@ -130,16 +138,27 @@ class _FakeConnection:
         return _FakeCursor(self)
 
 
+# psycopg.conninfo stand-in: the limiter adds its timeouts to the DSN with it.
+_FAKE_CONNINFO = SimpleNamespace(
+    conninfo_to_dict=lambda dsn: {},
+    make_conninfo=lambda dsn, **kw: " ".join([dsn, *(f"{k}={v!r}" for k, v in sorted(kw.items()))]),
+)
+
+
 def test_postgres_rate_limiter_uses_configured_dsn_and_limit_results(monkeypatch):
     connection = _FakeConnection()
     seen_dsns = []
     monkeypatch.setenv("OMNI_TEST_POSTGRES_DSN", "postgresql://user:pass@db/omnidesk")
-    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda dsn: seen_dsns.append(dsn) or connection))
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg",
+        SimpleNamespace(connect=lambda dsn, **_kw: seen_dsns.append(dsn) or connection, conninfo=_FAKE_CONNINFO),
+    )
 
     limiter = PostgresRateLimiter(dsn_env="OMNI_TEST_POSTGRES_DSN", clock=lambda: 100.0)
 
     assert "CREATE TABLE IF NOT EXISTS omnidesk_api_resource_rate_limits" in connection.executed[0][0]
-    assert seen_dsns == ["postgresql://user:pass@db/omnidesk"]
+    assert len(seen_dsns) == 1 and seen_dsns[0].startswith("postgresql://user:pass@db/omnidesk ")
     assert not limiter.allow("ip:blocked", limit=0, window_seconds=60)
 
     connection.returning_count = 1
@@ -152,7 +171,7 @@ def test_postgres_rate_limiter_uses_configured_dsn_and_limit_results(monkeypatch
 
 def test_postgres_rate_limiter_requires_dsn(monkeypatch):
     monkeypatch.delenv("OMNI_TEST_POSTGRES_DSN", raising=False)
-    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda _dsn: _FakeConnection()))
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda _dsn, **_kw: _FakeConnection(), conninfo=_FAKE_CONNINFO))
 
     with pytest.raises(RuntimeError, match="OMNI_TEST_POSTGRES_DSN is required"):
         PostgresRateLimiter(dsn_env="OMNI_TEST_POSTGRES_DSN")

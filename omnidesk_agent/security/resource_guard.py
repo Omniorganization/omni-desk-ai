@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from ipaddress import ip_address, ip_network
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from fastapi import HTTPException, Request
 
+from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
@@ -125,75 +129,83 @@ class SQLiteRateLimiter:
 class PostgresRateLimiter:
     """Shared fixed-window limiter in PostgreSQL.
 
-    Each worker thread keeps one autocommit connection and reconnects once on
-    failure, instead of opening a connection per check; expired windows are
-    pruned periodically so the table stays bounded.
+    Connections come from a bounded pool (the repositories'
+    SharedPostgresConnectionPool), and the guard runs checks on the limiter's
+    own ``pool_size`` worker threads, so the number of connections stays the
+    same however many requests arrive. Each connection carries a statement and
+    a lock timeout: a slow or locked store fails the check, and the request is
+    refused, instead of hanging. A check is one autocommit upsert. Expired
+    windows are deleted every ``prune_interval_seconds``.
     """
 
     backend = "postgres"
     prune_interval_seconds = 300.0
+    application_name = "omnidesk-rate-limiter"
 
-    def __init__(self, *, dsn_env: str, clock: Callable[[], float] | None = None):
+    def __init__(
+        self,
+        *,
+        dsn_env: str,
+        clock: Callable[[], float] | None = None,
+        pool_size: int = 4,
+        statement_timeout_ms: int = 2_000,
+        lock_timeout_ms: int = 1_000,
+        connect_timeout_seconds: float = 3.0,
+    ):
         self.dsn_env = dsn_env
         self.clock = clock or time.time
-        self._local = threading.local()
+        self._pool = SharedPostgresConnectionPool(
+            self._session_dsn(statement_timeout_ms, lock_timeout_ms),
+            max_size=pool_size,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
+        # One worker per connection: checks queue here, never on the pool.
+        self.executor = ThreadPoolExecutor(max_workers=self._pool.max_size, thread_name_prefix="omnidesk-rate-limit-db")
         self._prune_lock = threading.Lock()
         self._last_prune = 0.0
         self._init_schema()
 
-    def _dsn(self) -> str:
+    def _session_dsn(self, statement_timeout_ms: int, lock_timeout_ms: int) -> str:
         dsn = os.getenv(self.dsn_env, "")
         if not dsn:
             raise RuntimeError(f"{self.dsn_env} is required when api_resource_guard.backend=postgres")
-        return dsn
-
-    def _connect(self):  # type: ignore[no-untyped-def]
         try:
-            import psycopg  # type: ignore
+            from psycopg import conninfo  # type: ignore
         except Exception as exc:  # pragma: no cover - optional production dependency
             raise RuntimeError("Install psycopg to use api_resource_guard.backend=postgres") from exc
-        return psycopg.connect(self._dsn())
+        # Keep any options the DSN already sets (search_path, ...) and add the timeouts.
+        existing = str(conninfo.conninfo_to_dict(dsn).get("options") or "").strip()
+        timeouts = f"-c statement_timeout={int(statement_timeout_ms)} -c lock_timeout={int(lock_timeout_ms)}"
+        return conninfo.make_conninfo(dsn, options=f"{existing} {timeouts}".strip(), application_name=self.application_name)
 
     def _init_schema(self) -> None:
-        with self._connect() as con:
-            with con.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS omnidesk_api_resource_rate_limits (
-                        key TEXT PRIMARY KEY,
-                        window_started DOUBLE PRECISION NOT NULL,
-                        count INTEGER NOT NULL
-                    )
-                    """
+        self._run(
+            lambda cur: cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS omnidesk_api_resource_rate_limits (
+                    key TEXT PRIMARY KEY,
+                    window_started DOUBLE PRECISION NOT NULL,
+                    count INTEGER NOT NULL
                 )
-
-    def _connection(self):  # type: ignore[no-untyped-def]
-        con = getattr(self._local, "con", None)
-        if con is None or getattr(con, "closed", False):
-            con = self._connect()
-            con.autocommit = True
-            self._local.con = con
-        return con
-
-    def _drop_connection(self) -> None:
-        con = getattr(self._local, "con", None)
-        self._local.con = None
-        if con is not None:
-            try:
-                con.close()
-            except Exception:
-                pass
+                """
+            )
+        )
 
     def _run(self, work):  # type: ignore[no-untyped-def]
-        # A broken pooled connection is replaced once; a second failure propagates
-        # (fail closed: the request is refused, not let through unmetered).
+        # A connection that broke since its last use (a database restart, say)
+        # is discarded by the pool and the work retried once on another. Any
+        # other failure, a lock or statement timeout included, propagates: the
+        # request is refused, never let through unmetered.
         for attempt in (0, 1):
+            con = None
             try:
-                with self._connection().cursor() as cur:
-                    return work(cur)
+                with self._pool.connection() as con:
+                    con.autocommit = True  # one statement per check, no BEGIN/COMMIT round trips
+                    with con.cursor() as cur:
+                        return work(cur)
             except Exception:
-                self._drop_connection()
-                if attempt:
+                broken = con is not None and bool(getattr(con, "broken", False) or getattr(con, "closed", False))
+                if attempt or not broken:
                     raise
         raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -248,6 +260,10 @@ class PostgresRateLimiter:
 
         return self._run(count)
 
+    def close(self) -> None:
+        self.executor.shutdown(wait=True)
+        self._pool.close()
+
 
 class ApiResourceGuard:
     """Bound public API consumption before and after admin authentication."""
@@ -281,12 +297,18 @@ class ApiResourceGuard:
         release = self._acquire(route_class)
         return await self._ingest_admitted(request, release)
 
+    async def _off_loop(self, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        # Shared stores do network or disk I/O; keep it off the event loop, on
+        # the limiter's own bounded workers when it has them.
+        loop = asyncio.get_running_loop()
+        call = functools.partial(contextvars.copy_context().run, function, *args, **kwargs)
+        return await loop.run_in_executor(getattr(self.rate, "executor", None), call)
+
     async def _check_rates_async(self, checks: list[tuple[str, int, str]], window_seconds: int) -> None:
         if getattr(self.rate, "backend", "memory") == "memory":
             self._check_rates(checks, window_seconds)
             return
-        # Shared stores do network or disk I/O; keep it off the event loop.
-        await asyncio.to_thread(self._check_rates, checks, window_seconds)
+        await self._off_loop(self._check_rates, checks, window_seconds)
 
     def _check_rates(self, checks: list[tuple[str, int, str]], window_seconds: int) -> None:
         for key, limit, label in checks:
@@ -304,7 +326,7 @@ class ApiResourceGuard:
         if getattr(self.rate, "backend", "memory") == "memory":
             self.check_authenticated(request, actor=actor, role=role, organization=organization)
             return
-        await asyncio.to_thread(self.check_authenticated, request, actor=actor, role=role, organization=organization)
+        await self._off_loop(self.check_authenticated, request, actor=actor, role=role, organization=organization)
 
     def check_authenticated(self, request: Request, *, actor: str, role: str, organization: str | None = None) -> None:
         if not self._enabled():
