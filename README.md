@@ -119,7 +119,7 @@ GitHub `main` 必须保持为源码主干；package-only zip 只能作为 Releas
 - UI Bridge：对 WhatsApp Web、Telegram Desktop、WeChat Desktop、浏览器中的 Meta 页面等已登录软件做屏幕级操作，不保存密码、不绕过 MFA；输入发往当前获得焦点的窗口。
 - 其他渠道适配器：LINE、Slack、Lark/飞书、钉钉、X、Google Chat、Matrix、Discord（Ed25519）、Microsoft Teams（配置 App ID 后校验 Bot Framework JWT）、QQ（配置 AppSecret 后校验 Ed25519 并应答 op 13）在入站时校验提供方自己的签名或令牌。Signal 和 iMessage 没有提供方签名，只接受经 OmniDesk HMAC（`x-omnidesk-webhook-signature-256`）重签的流量，需要自建中继，仓库里不带。
 - 投递语义：对没有原生去重的提供方，超时或 5xx 后不会自动重发，而是记为 `ambiguous` 等待对账；HTTP 200 里的错误码（微信 errcode、钉钉、飞书 code、Slack `ok:false`）按失败处理。详见 [docs/NATIVE_CHANNELS.md](docs/NATIVE_CHANNELS.md#delivery-semantics)。
-- 目前没有任何渠道在仓库里提交过真实提供方的联调记录；解析、签名和错误处理是用提供方文档里的样例和录制的报文测试的。
+- 目前没有任何渠道在仓库里提交过真实提供方的联调记录；解析、签名和错误处理是用提供方文档里的样例和录制的报文测试的。实网契约工作流（`Channel Live Contract`，目前覆盖 Telegram）见 [docs/NATIVE_CHANNELS.md](docs/NATIVE_CHANNELS.md#live-contract-runs)。
 - OpenClaw 参考生态：Mattermost、Zalo、IRC、Nextcloud Talk、Nostr、Synology Chat、Twitch、WebChat、Voice Wake、Live Canvas 等被记录为 `ecosystem_reference`，可用于规划和 UI Bridge 目标推荐，但不是 OmniDesk 已实现的通道。
 
 ## 后台常驻

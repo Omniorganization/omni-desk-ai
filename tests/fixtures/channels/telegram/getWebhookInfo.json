@@ -1,0 +1,4 @@
+{
+  "_source": "Shape of Telegram Bot API getWebhookInfo with no webhook set (WebhookInfo.url is empty).",
+  "response": {"ok": true, "result": {"url": "", "has_custom_certificate": false, "pending_update_count": 0}}
+}

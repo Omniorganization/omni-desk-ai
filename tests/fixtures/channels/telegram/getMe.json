@@ -1,0 +1,4 @@
+{
+  "_source": "Shape of Telegram Bot API getMe (core.telegram.org/bots/api#getme, User object); ids are placeholders. Replace with a sanitized recording from a passed live run.",
+  "response": {"ok": true, "result": {"id": 7000000001, "is_bot": true, "first_name": "OmniDesk Test", "username": "omnidesk_test_bot", "can_join_groups": true, "can_read_all_group_messages": false, "supports_inline_queries": false}}
+}

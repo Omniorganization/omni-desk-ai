@@ -99,6 +99,27 @@ Access tokens come from `cgi-bin/stable_token` in normal mode, so several replic
 
 The page access token is sent as `Authorization: Bearer`, not `?access_token=`, so it does not land in proxy logs.
 
+## Live contract runs
+
+`.github/workflows/channel-live-contract.yml` (manual) runs `scripts/run_channel_live_contract.py` against the real provider with a dedicated test account, through the production adapter code. Today it covers Telegram:
+
+1. `getMe`, then `getWebhookInfo` must show no webhook (the run never deletes one).
+2. Pending updates are drained.
+3. `TelegramChannel.send_text` posts a message with a one-time code to the test chat.
+4. The test user replies with the code from their phone; `TelegramPoller` must deliver that reply through the allowlist within `reply_timeout_minutes`.
+
+`send-only` mode stops after step 3.
+
+The run needs a `channel-live` GitHub environment (Settings → Environments; add required reviewers to gate runs) with these secrets, set by the owner with `gh secret set NAME --env channel-live`:
+
+| Secret | Value |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | token of a dedicated test bot from @BotFather, with no webhook set |
+| `TELEGRAM_LIVE_CHAT_ID` | chat id the run sends to (the test user's private chat with the bot) |
+| `TELEGRAM_LIVE_SENDER_ID` | numeric user id of the test account that replies |
+
+The evidence artifact (`dist/evidence/channels/<channel>-live-contract.json`, schema `omnidesk-channel-live-contract/v1`) records what the run observed: provider message ids, run URL and commit, with chat and user ids only as truncated SHA-256 digests. A failed run writes `status: failed` with the error. Only a passed run's file is committed, under `release/external-evidence/channels/`, together with its run URL. CI runs the same runner against recorded responses in `tests/fixtures/channels/telegram/` (`tests/test_channel_live_contract.py`).
+
 ## Inbound authentication without URL tokens
 
 Credentials in a URL end up in access logs, proxy logs and monitoring, so hook tokens are read from headers only.
