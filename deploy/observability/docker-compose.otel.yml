@@ -56,8 +56,36 @@ services:
       - prometheus-data:/prometheus
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
+    depends_on:
+      - alertmanager
     networks:
       - omnidesk-observability
+
+  alertmanager:
+    # Render ./alertmanager.yml first: scripts/render_alertmanager_config.py --receiver telegram ...
+    image: ${OMNIDESK_ALERTMANAGER_IMAGE:?set OMNIDESK_ALERTMANAGER_IMAGE to prom/alertmanager digest-pinned image, e.g. prom/alertmanager@sha256:...}
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:9093:9093"
+    secrets:
+      - source: alert_telegram_bot_token
+        target: /etc/alertmanager/secrets/telegram_bot_token
+    volumes:
+      - alertmanager-data:/alertmanager
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      # The notification receiver is outside this host, so Alertmanager alone
+      # also joins an egress-capable network; the stack network stays internal.
+      - omnidesk-observability
+      - omnidesk-alert-egress
 
   grafana:
     image: ${OMNIDESK_GRAFANA_IMAGE:?set OMNIDESK_GRAFANA_IMAGE to grafana/grafana digest-pinned image, e.g. grafana/grafana@sha256:...}
@@ -78,6 +106,8 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana-dashboard.json:/var/lib/grafana/dashboards/omnidesk-runtime.json:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
     networks:
       - omnidesk-observability
 
@@ -86,13 +116,18 @@ secrets:
     file: ${OMNIDESK_GRAFANA_ADMIN_PASSWORD_FILE:?path to grafana admin password file}
   omnidesk_metrics_token:
     file: ${OMNIDESK_METRICS_TOKEN_FILE:?path to an AdminAuth viewer/operator token file for /admin/metrics scraping}
+  alert_telegram_bot_token:
+    file: ${OMNIDESK_ALERT_TELEGRAM_BOT_TOKEN_FILE:?path to the alert bot token file (empty file when the webhook receiver is used)}
 
 networks:
   omnidesk-observability:
     driver: bridge
     internal: true
+  omnidesk-alert-egress:
+    driver: bridge
 
 volumes:
   tempo-data:
   prometheus-data:
   grafana-data:
+  alertmanager-data:

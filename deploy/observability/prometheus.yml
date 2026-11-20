@@ -5,6 +5,12 @@ global:
 rule_files:
   - /etc/prometheus/prometheus-rules.yml
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
 scrape_configs:
   - job_name: omnidesk-agent
     metrics_path: /admin/metrics
@@ -12,5 +18,6 @@ scrape_configs:
     static_configs:
       - targets:
           - omnidesk:18789
+    # /admin/metrics requires an AdminAuth viewer token; without it every scrape is a 403.
     authorization:
       credentials_file: /run/secrets/omnidesk_metrics_token

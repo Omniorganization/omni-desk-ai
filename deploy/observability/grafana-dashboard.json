@@ -1,106 +1,536 @@
 {
   "panels": [
     {
+      "title": "Gateway targets up",
+      "type": "stat",
       "targets": [
         {
-          "expr": "increase(omnidesk_approval_resume_failures_total[1h])"
+          "expr": "sum(up{job=\"omnidesk-agent\"})",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 1,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "API 5xx ratio (5m / 1h, SLO 0.5%)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "omnidesk:api_error_ratio:rate5m",
+          "refId": "A",
+          "legendFormat": "5m",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        },
+        {
+          "expr": "omnidesk:api_error_ratio:rate1h",
+          "refId": "B",
+          "legendFormat": "1h",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 2,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Control-plane requests over 1s (SLO 1%)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "omnidesk:api_slow_ratio:rate5m",
+          "refId": "A",
+          "legendFormat": "5m",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 3,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "HTTP p95 latency by route",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(omnidesk_http_request_duration_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "{{path}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 4,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Span p95 latency (tool.call, planner.plan, ...)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, span) (rate(omnidesk_span_duration_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "{{span}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 5,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Trace export failures and drops",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (reason) (increase(omnidesk_trace_export_failures_total[5m]))",
+          "refId": "A",
+          "legendFormat": "failed {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        },
+        {
+          "expr": "sum by (reason) (increase(omnidesk_trace_export_dropped_total[5m]))",
+          "refId": "B",
+          "legendFormat": "dropped {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 6,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "targets": [
+        {
+          "expr": "increase(omnidesk_approval_resume_failures_total[1h])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "Approval resume failures",
-      "type": "stat"
+      "type": "stat",
+      "id": 7,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     },
     {
       "targets": [
         {
-          "expr": "increase(omnidesk_outbound_ambiguous_send_total[1h])"
+          "expr": "increase(omnidesk_outbound_ambiguous_send_total[1h])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "Outbound ambiguous sends",
-      "type": "stat"
+      "type": "stat",
+      "id": 8,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     },
     {
       "targets": [
         {
-          "expr": "increase(omnidesk_outbound_dead_letter_total[1h])"
+          "expr": "increase(omnidesk_outbound_dead_letter_total[1h])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "Outbound dead letters",
-      "type": "stat"
+      "type": "stat",
+      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     },
     {
       "targets": [
         {
-          "expr": "increase(omnidesk_sandbox_timeout_total[5m])"
-        }
-      ],
-      "title": "Sandbox timeouts",
-      "type": "timeseries"
-    },
-    {
-      "targets": [
-        {
-          "expr": "increase(omnidesk_self_upgrade_invalid_transition_total[1h])"
-        }
-      ],
-      "title": "Self-upgrade invalid transitions",
-      "type": "stat"
-    },
-    {
-      "targets": [
-        {
-          "expr": "increase(omnidesk_webhook_signature_failures_total[5m])"
+          "expr": "increase(omnidesk_webhook_signature_failures_total[5m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "Webhook signature failures",
-      "type": "timeseries"
+      "type": "timeseries",
+      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     },
     {
       "targets": [
         {
-          "expr": "increase(omnidesk_backup_verify_failure_total[24h])"
-        }
-      ],
-      "title": "Backup verify failures",
-      "type": "stat"
-    },
-    {
-      "targets": [
-        {
-          "expr": "increase(omnidesk_trace_span_failures_total OR omnidesk_trace_export_failures_total[5m])"
+          "expr": "sum(increase(omnidesk_trace_span_failures_total[5m])) or sum(increase(omnidesk_trace_export_failures_total[5m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "Trace span failures",
-      "type": "timeseries"
+      "type": "timeseries",
+      "id": 11,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     },
     {
       "targets": [
         {
-          "expr": "increase(omnidesk_bigseller_webhook_rejected_total[10m])"
+          "expr": "increase(omnidesk_bigseller_webhook_rejected_total[10m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "BigSeller webhook rejected",
-      "type": "timeseries"
+      "type": "timeseries",
+      "id": 12,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     },
     {
       "targets": [
         {
-          "expr": "increase(omnidesk_bigseller_webhook_duplicate_total[10m])"
+          "expr": "increase(omnidesk_bigseller_webhook_duplicate_total[10m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "BigSeller duplicate webhooks",
-      "type": "timeseries"
+      "type": "timeseries",
+      "id": 13,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     },
     {
       "targets": [
         {
-          "expr": "omnidesk_bigseller_dead_letter_current"
+          "expr": "omnidesk_bigseller_dead_letter_current",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
         }
       ],
       "title": "BigSeller current dead letters",
-      "type": "stat"
+      "type": "stat",
+      "id": 14,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Webhook enqueue failures",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (channel) (increase(omnidesk_webhook_enqueue_failures_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{channel}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 15,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Jobs dead-lettered",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "increase(omnidesk_jobs_dead_lettered_total[30m])",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 16,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Admission-control denials (429)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(omnidesk_http_resource_guard_denials_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{path}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(omnidesk_http_requests_total[5m]))",
+          "refId": "B",
+          "legendFormat": "all requests",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 17,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Unhandled request exceptions",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(omnidesk_http_errors_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{path}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 18,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Metric series dropped (registry cap)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "increase(omnidesk_metrics_dropped_series_updates_total[15m])",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 19,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
+    },
+    {
+      "title": "Request rate by route",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(omnidesk_http_request_duration_seconds_count[5m]))",
+          "refId": "A",
+          "legendFormat": "{{path}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "omnidesk-prometheus"
+          }
+        }
+      ],
+      "id": 20,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "omnidesk-prometheus"
+      }
     }
   ],
   "schemaVersion": 39,
   "title": "OmniDesk Industrial Runtime",
-  "version": 1
+  "version": 1,
+  "uid": "omnidesk-runtime"
 }
