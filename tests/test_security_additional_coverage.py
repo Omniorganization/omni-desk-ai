@@ -24,7 +24,7 @@ def test_permission_manager_modes_session_and_auto(tmp_path):
     assert pm.verify({**proposal, "risk": "medium", "tool": "safe"}).allowed
 
     key = pm.allow_approved_proposal({**proposal, "risk": "high", "scope_hash": "abc"})
-    assert key in pm.session_allows
+    assert key == pm.session_key({**proposal, "risk": "high", "scope_hash": "abc"})
     assert pm.verify({**proposal, "risk": "high", "scope_hash": "abc"}).allowed
 
 
