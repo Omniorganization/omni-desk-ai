@@ -6,27 +6,62 @@ from omnidesk_agent.models.base import ModelRequest
 from omnidesk_agent.models.providers import PROVIDER_CLASSES
 
 
+REQUIRED_TASKS = ["planner", "tool_plan", "chat", "code", "vision", "private", "summarize", "upgrade"]
+
+
+def credential_status(api_key_env: Optional[str]) -> str:
+    """'present' or 'missing' for a profile's key variable; 'not_required' when it names none.
+
+    Only the variable is checked, never its value or the provider; a profile without
+    a key (a local Ollama, a subscription CLI) is usable but unverified until a live check.
+    """
+    if not api_key_env:
+        return "not_required"
+    return "present" if os.getenv(api_key_env) else "missing"
+
+
+def route_profiles(routing: dict, task: str, default: str = "") -> list[str]:
+    raw = routing.get(task) or routing.get("chat") or default
+    if isinstance(raw, dict):
+        primary = str(raw.get("primary") or default)
+        return [primary] + [str(item) for item in raw.get("fallback", []) if str(item) != primary]
+    return [str(raw)] if raw else []
+
+
 def validate_models(runtime) -> dict:
     router = runtime.model_router
-    required_tasks = ["planner", "tool_plan", "chat", "code", "vision", "private", "summarize", "upgrade"]
     profiles = router.providers
+    credentials = {name: credential_status(getattr(getattr(provider, "settings", None), "api_key_env", None)) for name, provider in profiles.items()}
     coverage = {}
-    for task in required_tasks:
+    tasks = {}
+    for task in REQUIRED_TASKS:
         if hasattr(router, "route_plan"):
             plan = router.route_plan(task)
-            route_profiles = list(getattr(plan, "profiles", []))
+            route = list(getattr(plan, "profiles", []))
         else:
-            raw = router.cfg.routing.get(task)
-            if isinstance(raw, dict):
-                primary = str(raw.get("primary") or "")
-                route_profiles = [primary] + [str(item) for item in raw.get("fallback", []) if str(item) != primary]
-            else:
-                route_profiles = [str(raw)] if raw else []
-        coverage[task] = bool(route_profiles) and all(profile in profiles for profile in route_profiles)
+            route = route_profiles(router.cfg.routing, task)
+        usable = [profile for profile in route if profile in profiles and credentials[profile] != "missing"]
+        tasks[task] = {
+            "profiles": route,
+            "usable": usable,
+            "without_key_check": [profile for profile in usable if credentials[profile] == "not_required"],
+            "missing_credentials": [profile for profile in route if credentials.get(profile) == "missing"],
+        }
+        # Every routed profile must be loaded, and one of them must have its key (or need none).
+        coverage[task] = bool(route) and all(profile in profiles for profile in route) and bool(usable)
+    missing_env = sorted({
+        str(getattr(getattr(provider, "settings", None), "api_key_env", ""))
+        for name, provider in profiles.items()
+        if credentials[name] == "missing"
+    })
     provider_aliases = sorted(PROVIDER_CLASSES)
     return {
         "ok": all(coverage.values()) and bool(profiles),
         "task_coverage": coverage,
+        "tasks": tasks,
+        "credentials": credentials,
+        "missing_credential_env": missing_env,
+        "note": "static check of key variables only; validate-models-live calls each profile",
         "router": router.status(),
         "supported_provider_aliases": provider_aliases,
         "token_budget_layer": "ModelRouter",

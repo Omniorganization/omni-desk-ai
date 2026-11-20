@@ -173,6 +173,41 @@ def build_offline_doctor_checks(cfg: AppConfig, *, root: Path, required: bool) -
     return checks
 
 
+def build_model_doctor_checks(cfg: AppConfig, *, required: bool) -> list[DoctorCheck]:
+    """Whether the planner (and vision, when enabled) can reach a model: key variables only, nothing is called."""
+    from omnidesk_agent.validation.models import credential_status, route_profiles
+
+    if cfg.llm.provider == "rule":
+        return [DoctorCheck("model:planner", "pass", "llm.provider is rule: the keyword planner needs no model", category="models")]
+    tasks = ["planner"] + (["vision"] if cfg.capabilities.vision.enabled else [])
+    checks: list[DoctorCheck] = []
+    for task in tasks:
+        route = [name for name in route_profiles(cfg.models.routing, task, cfg.models.default) if name in cfg.models.profiles and cfg.models.profiles[name].enabled]
+        statuses = {name: credential_status(cfg.models.profiles[name].api_key_env) if name in cfg.models.profiles else "missing" for name in route}
+        keyed = [name for name, status in statuses.items() if status == "present"]
+        keyless = [name for name, status in statuses.items() if status == "not_required"]
+        missing = sorted({str(cfg.models.profiles[name].api_key_env) for name, status in statuses.items() if status == "missing" and name in cfg.models.profiles})
+        if keyed:
+            checks.append(DoctorCheck(f"model:{task}", "pass", f"key set for {', '.join(keyed)}", category="models"))
+        elif keyless:
+            checks.append(DoctorCheck(
+                f"model:{task}",
+                "warn",
+                f"no key set ({', '.join(missing) or 'none configured'}); only {', '.join(keyless)}, which needs no key, is left and was not contacted",
+                fix="Run omnidesk validate-models-live, or set the provider key.",
+                category="models",
+            ))
+        else:
+            checks.append(DoctorCheck(
+                f"model:{task}",
+                "blocked" if required else "warn",
+                f"no usable model profile: missing {', '.join(missing) or 'profiles'}",
+                fix=f"Set {' or '.join(missing) or 'a model profile'} in the environment, or route {task} to a local profile.",
+                category="models",
+            ))
+    return checks
+
+
 def run_doctor(cfg: AppConfig, *, profile: str = "single-mac-ga-lab", fix: bool = False, root: Path | None = None) -> DoctorReport:
     """Run the source and host readiness doctor without fabricating external evidence."""
 
@@ -210,6 +245,7 @@ def run_doctor(cfg: AppConfig, *, profile: str = "single-mac-ga-lab", fix: bool 
         _file(root / "release" / "external-ga-evidence.required.json", required=True, category="evidence", fix="Restore the external GA evidence contract."),
         _file(root / "AGENTS.md", required=True, category="codex", fix="Add repository-level AI coding guardrails."),
     ]
+    checks.extend(build_model_doctor_checks(cfg, required=profile != "source-only"))
     if offline_required:
         checks.extend(build_offline_doctor_checks(cfg, root=root, required=True))
     counts = {"pass": 0, "warn": 0, "blocked": 0}

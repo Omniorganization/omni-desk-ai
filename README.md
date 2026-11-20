@@ -27,7 +27,12 @@ omnidesk serve --config ~/.omnidesk/config.yaml
 omnidesk serve --config examples/config.yaml
 
 # 执行一条本地任务；每一步会先走权限验证
+# 退出码：0 完成，3 等待审批（输出含 approval_id 和 resume_token），1 失败
 omnidesk run "打开浏览器，检查屏幕上是否有未回复的消息"
+
+# 审批后继续（critical 操作需两位 owner 走 POST /approvals/{id}/dual-approve；生产环境只能走鉴权 API）
+omnidesk approve <approval_id>      # 或 omnidesk deny <approval_id>
+omnidesk resume <run_id> --token <resume_token>
 
 # 添加经验记录
 omnidesk remember "回复客户报价前先检查库存表" --tags sales,inventory

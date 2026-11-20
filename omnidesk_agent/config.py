@@ -21,6 +21,17 @@ DEFAULT_SANDBOX_IMAGE = "python:3.11-slim@sha256:174bec68e0451bffabbb08c7d5d21c6
 class BaseModel(PydanticBaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("*", mode="after")
+    @classmethod
+    def _expand_home(cls, value: Any) -> Any:
+        # "~/..." in a config file means the home directory for every consumer
+        # (ensure_dirs, stores, tools), not a directory named "~" in the CWD.
+        if isinstance(value, Path):
+            return value.expanduser()
+        if isinstance(value, list) and value and all(isinstance(item, Path) for item in value):
+            return [item.expanduser() for item in value]
+        return value
+
 
 class LLMConfig(BaseModel):
     provider: str = "openai"
