@@ -260,3 +260,75 @@ def test_a_retried_decision_replays_without_touching_the_ledger_again(plane: Any
     assert again.json()["approval"]["status"] == "approved"
     # resume_by_approval is idempotent on agent-core's side; the ledger was decided once.
     assert _stored(ledger, ledger_id)["status"] == "approved"
+
+
+# ------------------------------------------------- failure between ledger and mirror ---
+
+
+class FlakyMirror:
+    """An AppSync store whose next decide_approval fails once, after the ledger was written."""
+
+    def __init__(self, store: Any) -> None:
+        self.store, self.fail_next = store, False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.store, name)
+
+    def decide_approval(self, **kwargs: Any) -> Any:
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("lost between the ledger and the mirror")
+        return self.store.decide_approval(**kwargs)
+
+
+def _plane_parts(tmp_path: Path, **proposal: Any) -> tuple[FlakyMirror, ApprovalStore, FakeOrchestrator, str]:
+    store, ledger, orchestrator = StrictJsonAppSyncStore(tmp_path / "appsync.json"), _ledger(tmp_path), FakeOrchestrator()
+    ledger_id = ledger.create(_proposal(**proposal))
+    AppSyncApprovalListener(store).on_approval_wait(_event(ledger_id, _stored(ledger, ledger_id)["proposal"]))
+    return FlakyMirror(store), ledger, orchestrator, ledger_id
+
+
+async def _owner_decides(store: Any, ledger: ApprovalStore, orchestrator: FakeOrchestrator, ledger_id: str, *, actor: str = "olivia-owner", decision: str = "approved", key: str | None = "k1") -> dict[str, Any]:
+    return await decide_agent_approval(store=store, approval_store=ledger, orchestrator=orchestrator, approval_id=f"agt_{ledger_id}", actor=actor, decision=decision, reason=None, break_glass=False, idempotency_key=key, idempotency_payload={"decision": decision} if key else None)
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_lost_mirror_finishes_the_decision(tmp_path: Path) -> None:
+    store, ledger, orchestrator, ledger_id = _plane_parts(tmp_path)
+    store.fail_next = True
+    with pytest.raises(RuntimeError):
+        await _owner_decides(store, ledger, orchestrator, ledger_id)
+    # The ledger is decided, the mirror is not, and the run did not resume yet.
+    assert _stored(ledger, ledger_id)["status"] == "approved" and orchestrator.resumed == []
+    outcome = await _owner_decides(store, ledger, orchestrator, ledger_id)
+    assert outcome["approval"]["status"] == "approved" and orchestrator.resumed == [ledger_id]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_mirror_of_a_first_critical_approval_is_recovered(tmp_path: Path) -> None:
+    store, ledger, orchestrator, ledger_id = _plane_parts(tmp_path, dual=True, risk="critical")
+    store.fail_next = True
+    with pytest.raises(RuntimeError):
+        await _owner_decides(store, ledger, orchestrator, ledger_id)
+    # The dual store holds the first approval; the retry counts it as done.
+    retried = await _owner_decides(store, ledger, orchestrator, ledger_id)
+    assert retried["approval"]["status"] == "pending" and retried["approval"]["approved_by"] == ["olivia-owner"]
+    second = await _owner_decides(store, ledger, orchestrator, ledger_id, actor="adam-admin", key="k2")
+    assert second["approval"]["status"] == "approved" and orchestrator.resumed == [ledger_id]
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_retry_of_a_finished_decision_resumes_again_without_error(tmp_path: Path) -> None:
+    store, ledger, orchestrator, ledger_id = _plane_parts(tmp_path)
+    await _owner_decides(store, ledger, orchestrator, ledger_id)
+    again = await _owner_decides(store, ledger, orchestrator, ledger_id, key=None)
+    # resume_by_approval answers already_handled on agent-core's side; nothing runs twice.
+    assert again["approval"]["status"] == "approved" and orchestrator.resumed == [ledger_id, ledger_id]
+
+
+@pytest.mark.asyncio
+async def test_another_owner_on_a_decided_approval_gets_a_conflict(tmp_path: Path) -> None:
+    store, ledger, orchestrator, ledger_id = _plane_parts(tmp_path)
+    await _owner_decides(store, ledger, orchestrator, ledger_id)
+    with pytest.raises(ValueError, match="already decided"):
+        await _owner_decides(store, ledger, orchestrator, ledger_id, actor="adam-admin", decision="rejected", key="k9")
