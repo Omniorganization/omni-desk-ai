@@ -4,7 +4,7 @@ OmniDesk Agent 是一个“本地优先”的多渠道 AI 助理工程骨架，�
 
 1. **Computer-use**：看屏幕、截图、点击、输入、热键、跨软件操作。
 2. **Gateway + channels**：Telegram、WhatsApp Cloud API、WeChat Official Account、Facebook Page / Instagram Graph API、以及用户手动授权的桌面 UI Bridge。
-3. **Agent runtime**：层级规划、经验检索、skills/tools 加载、文件/shell/系统 UI 操作、每一步执行前权限验证。
+3. **Agent runtime**：规划 → 执行 → 观察 → 重规划循环（工具结果回传模型，失败后重规划，按步数/模型调用/成本/时限预算终止，见 `docs/AGENT_LOOP.md`）、经验检索、skills/tools 加载、文件/shell/系统 UI 操作、每一步执行前权限验证。
 4. **OpenClaw-aligned interaction layer**：参考 OpenClaw 的多渠道产品形态，提供渠道生态目录、交互画像学习和 UI Bridge 目标推荐；安全架构仍坚持 OmniDesk 的审批、审计、签名、沙箱和生产闭环。
 
 > 合规边界：本工程不包含绕过登录、破解平台接口、批量骚扰、隐蔽操控个人账号、规避官方限制的代码。WhatsApp/Meta/WeChat 的正式接入默认使用官方 API；对个人账号只能通过“用户当前已登录、用户可见、每步批准”的 UI Bridge 执行桌面操作。

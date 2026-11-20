@@ -13,6 +13,10 @@ from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.dual_approval import stamp_requester
 
 
+# Upper bound for one agent-loop audit payload (record_event).
+AGENT_EVENT_MAX_BYTES = 16_384
+
+
 class PermissionDecision:
     def __init__(self, allowed: bool, mode: str = "allow", reason: str = ""):
         self.allowed = allowed
@@ -147,6 +151,50 @@ class PermissionManager:
         self._audit("approval_required", {"approval_id": approval_id, **proposal_dict})
         self._metric("omnidesk_approval_required_total", tool=str(proposal_dict.get("tool", "")), risk=str(proposal_dict.get("risk", "medium")))
         raise ApprovalRequired(approval_id=approval_id, proposal=proposal_dict)
+
+    def record_access(self, proposal: Any) -> None:
+        """Audit an action that runs without an approval gate (for example files.list).
+
+        Raises AuditIntegrityError when the audit log cannot be written; the
+        caller must then not perform the action.
+        """
+        proposal_dict = self._proposal_dict(proposal)
+        self._audit("access_without_approval", proposal_dict)
+        self._metric("omnidesk_audited_access_total", tool=str(proposal_dict.get("tool", "")), action=str(proposal_dict.get("action", "")))
+
+    def record_policy_block(self, proposal: Any, *, rule: str, reason: str) -> None:
+        """Audit a request that a policy check refused before verify() ran.
+
+        ``rule`` names the check (path_escape, git_metadata_write,
+        capability_disabled, command_not_allowlisted, ...). Call it, then refuse
+        the request as before.
+        """
+        proposal_dict = self._proposal_dict(proposal)
+        self._audit("policy_blocked", {**proposal_dict, "block_rule": str(rule), "block_reason": str(reason)})
+        self._metric("omnidesk_policy_blocks_total", tool=str(proposal_dict.get("tool", "")), rule=str(rule))
+
+    def record_event(self, event: str, payload: dict[str, Any]) -> None:
+        """Audit an agent-loop lifecycle event (agent_turn_planned, agent_step_finished, ...).
+
+        Only ``agent_``-prefixed names are accepted, so loop events can never pose
+        as approval decisions, policy blocks or break-glass transitions. The
+        payload must be JSON-serialisable and at most AGENT_EVENT_MAX_BYTES; it
+        passes the same redaction as proposals and should hold ids, counts,
+        digests and statuses, never tool output text. Raises AuditIntegrityError
+        when the entry cannot be written: stop the run then.
+        """
+        name = str(event or "")
+        if not re.fullmatch(r"agent_[a-z0-9_]{1,60}", name):
+            raise ValueError("agent loop audit events must be named agent_<lower_snake_case>")
+        if not isinstance(payload, dict):
+            raise TypeError("agent loop audit payload must be a dict")
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("agent loop audit payload must be JSON-serialisable") from exc
+        if len(encoded.encode("utf-8")) > AGENT_EVENT_MAX_BYTES:
+            raise ValueError(f"agent loop audit payload exceeds {AGENT_EVENT_MAX_BYTES} bytes")
+        self._audit(name, payload)
 
     def _audit(self, event: str, payload: dict[str, Any]) -> None:
         clean = self._redact(payload)

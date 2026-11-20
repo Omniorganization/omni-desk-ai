@@ -154,8 +154,10 @@ def test_structured_planner_valid_repair_and_fallback_paths():
         isolated = LLMStructuredPlanner(router, Memory(), Skills(), ToolsDescribe(), FallbackPlanner())
         await isolated.plan(ChannelMessage(channel="gmail", sender_id="attacker", thread_id="t", text="summarize this invoice"))
         request_payload = json.loads(router.requests[0].user)
-        assert request_payload["task"]["trusted"] is False
-        assert "<UNTRUSTED_CHANNEL_MESSAGE>" in request_payload["task"]["content"]
+        task = next(item for item in request_payload["data"] if item["id"] == request_payload["task"])
+        assert (task["trust"], task["source"]) == ("untrusted", "channel:gmail")
+        assert task["content"].startswith(f"<<DATA {request_payload['boundary']} ") and "summarize this invoice" in task["content"]
+        assert "summarize this invoice" not in router.requests[0].system
 
         blocked_router = Router([VALID_STRUCTURED_PLAN])
         blocked = LLMStructuredPlanner(blocked_router, Memory(), Skills(), ToolsDescribe(), FallbackPlanner())

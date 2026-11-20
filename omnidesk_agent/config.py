@@ -33,7 +33,29 @@ class LLMConfig(BaseModel):
     enable_cache: bool = True
     cache_ttl_seconds: int = 86400
     per_task_max_llm_calls: Optional[int] = 16
+    # The cap counts the calls of this many recent seconds (None: every call ever).
+    per_task_window_seconds: Optional[int] = Field(default=3600, ge=1)
     require_approval_above_estimated_tokens: int = 20000
+
+
+class AgentLoopConfig(BaseModel):
+    """Per-run limits of the plan -> act -> observe -> re-plan loop.
+
+    The first exhausted limit ends the run as failed with its name as the
+    reason. Planner calls also count against llm.per_task_max_llm_calls.
+    """
+
+    max_turns: int = Field(default=8, ge=1, le=100)
+    max_steps: int = Field(default=20, ge=1, le=500)
+    max_llm_calls: int = Field(default=12, ge=1, le=500)
+    max_tokens: int = Field(default=200_000, ge=1000, le=10_000_000)
+    max_cost_usd: Optional[float] = Field(default=1.0, ge=0)
+    max_consecutive_failures: int = Field(default=3, ge=1, le=50)
+    max_active_seconds: float = Field(default=900.0, gt=0, le=86400)
+    max_steps_per_turn: int = Field(default=8, ge=1, le=50)
+    # Characters of one step's output shown to the planner, and of all outputs per call.
+    observation_chars: int = Field(default=4000, ge=0, le=50000)
+    history_chars: int = Field(default=24000, ge=1000, le=200000)
 
 
 class ModelProfileConfig(BaseModel):
@@ -555,6 +577,18 @@ class MemoryPrivacyConfig(BaseModel):
     encryption_key_id: str = "default"
 
 
+class MemoryRetrievalConfig(BaseModel):
+    """Planner memory retrieval: BM25 ranking of the actor's memories, optionally
+    blended with embedding similarity (local model, `vector` extra)."""
+
+    candidate_window: int = Field(default=500, ge=10, le=5000)  # most recent memories ranked
+    fts_candidates: int = Field(default=200, ge=0, le=2000)  # older full-text matches added
+    embeddings_enabled: bool = False
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_weight: float = Field(default=0.5, ge=0, le=1)
+    min_embedding_similarity: float = Field(default=0.35, ge=0, le=1)
+
+
 class SandboxConfig(BaseModel):
     backend: Literal["argv", "docker", "remote_docker"] = "docker"
     docker_image: str = DEFAULT_SANDBOX_IMAGE
@@ -587,6 +621,7 @@ class LearningConfig(BaseModel):
 class AppConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    agent: AgentLoopConfig = Field(default_factory=AgentLoopConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     updates: UpdateConfig = Field(default_factory=UpdateConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
@@ -601,6 +636,7 @@ class AppConfig(BaseModel):
     api_resource_guard: ApiResourceGuardConfig = Field(default_factory=ApiResourceGuardConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     memory_privacy: MemoryPrivacyConfig = Field(default_factory=MemoryPrivacyConfig)
+    memory_retrieval: MemoryRetrievalConfig = Field(default_factory=MemoryRetrievalConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
     def model_post_init(self, __context: Any) -> None:

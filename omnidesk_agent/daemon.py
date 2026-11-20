@@ -30,6 +30,8 @@ from omnidesk_agent.channels.x_channel import XChannel
 from omnidesk_agent.channels.http_client import set_channel_offline_mode
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.validation.production import ProductionConfigError, is_production_mode
+from omnidesk_agent.core.agent_loop import LoopBudget
+from omnidesk_agent.core.run_control import EmergencyStop
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
 from omnidesk_agent.core.llm import RouterLLMAdapter, RuleBasedLLM
 from omnidesk_agent.core.orchestrator import Orchestrator
@@ -100,11 +102,13 @@ class OmniDeskRuntime:
             break_glass_enabled=cfg.permissions.break_glass_enabled,
         )
         self.memory = self.repository_factory.memory_store(cfg.memory_privacy)
+        self._configure_memory_retrieval()
         self.token_budget = self.repository_factory.token_budget_manager(
             TokenBudgetConfig(
                 max_input_chars=cfg.llm.max_input_chars,
                 max_output_tokens=cfg.llm.max_output_tokens,
                 per_task_max_llm_calls=cfg.llm.per_task_max_llm_calls,
+                per_task_window_seconds=cfg.llm.per_task_window_seconds,
                 cache_ttl_seconds=cfg.llm.cache_ttl_seconds,
                 enable_cache=cfg.llm.enable_cache,
                 require_approval_above_estimated_tokens=cfg.llm.require_approval_above_estimated_tokens,
@@ -117,6 +121,9 @@ class OmniDeskRuntime:
         self.skills = SkillRegistry(cfg.workspace.skills_dirs)
         self.plugins = PluginRegistry(cfg.workspace.plugins_dirs, cfg.plugins)
         self.tools = ToolRegistry()
+        # Next to the audit log, outside the workspace the file tool can reach.
+        self.emergency_stop = EmergencyStop(cfg.permissions.audit_log.expanduser().parent / EmergencyStop.FILE_NAME)
+        self.tools.emergency_stop = self.emergency_stop
         self.adapters = self._build_channel_adapters()
         self.model_cost_store = self.repository_factory.model_cost_store()
         self.model_router = build_model_router(
@@ -142,6 +149,8 @@ class OmniDeskRuntime:
             self.approval_store,
             learning_loop=self.learning_loop,
             dual_approval_store=self.dual_approval_store,
+            loop_budget=LoopBudget.from_config(cfg.agent),
+            emergency_stop=self.emergency_stop,
         )
         self.orchestrator.storage_plan = self.storage_plan
         self.webhook_worker: Optional[WebhookWorker] = WebhookWorker(self.job_queue, self.orchestrator)
@@ -152,6 +161,20 @@ class OmniDeskRuntime:
         self.reconnect_worker: ReconnectSyncWorker | None = None
         self._reconnect_task: asyncio.Task | None = None
 
+
+    def _configure_memory_retrieval(self) -> None:
+        settings = self.cfg.memory_retrieval
+        configure = getattr(self.memory, "configure_retrieval", None)
+        if not callable(configure):
+            if settings.embeddings_enabled:
+                raise RuntimeError("memory_retrieval.embeddings_enabled is supported by the SQLite memory store only")
+            return
+        embedder = None
+        if settings.embeddings_enabled:
+            from omnidesk_agent.memory.embeddings import SentenceTransformerEmbedder
+
+            embedder = SentenceTransformerEmbedder(settings.embedding_model)
+        configure(settings, embedder=embedder)
 
     def _build_channel_adapters(self) -> dict:
         production = is_production_mode(self.cfg)
