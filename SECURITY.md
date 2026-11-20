@@ -26,7 +26,7 @@ What the code provides today (`privacy/data_subject.py`, `server_routes/privacy_
 - **What results say.**
   - Every result lists the stores that could not take part (`unsupported`) and the records kept on purpose (`retained`): the tamper-evident audit logs, which are kept for their retention period and never rewritten.
   - Every export and erasure is audited with counts only, never content.
-- **Participating stores.** A store takes part by implementing `export_subject(actor)` and `erase_subject(actor)`. Today only the approval records (SQLite) and their dual-approval rows do. Memory, runs, outbound messages and AppSync report `unsupported` until their owners add the hooks, so a result says `complete: false` until then.
+- **Participating stores.** A store takes part by implementing `export_subject(actor)` and `erase_subject(actor)`. Today only the approval records (SQLite) and their dual-approval rows do. Memory, runs, outbound messages, the job queue (every inbound task message and its result) and AppSync report `unsupported` until their owners add the hooks, so a result says `complete: false` until then.
 
 ## Reporting
 

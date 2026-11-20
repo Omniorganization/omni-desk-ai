@@ -61,7 +61,13 @@ def test_export_covers_supported_stores_and_names_the_rest(app):
         e["payload"].get("actor") == "alice" for e in export["data"]["security_audit_log"]
     )
     assert "security_audit_log" in export["retained"]
-    assert export["complete"] is False and {"memory", "runs"} <= set(export["unsupported"])
+    # Every store the runtime has is exported or named unsupported, and
+    # "complete" follows from that; this holds before and after stores gain hooks.
+    stores = {"approvals": "approval_store", "memory": "memory", "runs": "run_store", "outbound_messages": "outbound_messages", "app_sync": "app_sync", "jobs": "job_queue"}
+    present = {name for name, attr in stores.items() if getattr(app.state.runtime, attr, None) is not None}
+    assert "jobs" in present  # the job queue keeps every inbound message
+    assert (set(export["data"]) - set(export["retained"])) | set(export["unsupported"]) == present
+    assert export["complete"] is (not export["unsupported"])
 
 
 def test_export_needs_an_owner(app):

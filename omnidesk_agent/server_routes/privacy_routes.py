@@ -46,6 +46,8 @@ def _service(cfg: Any, rt: Any) -> DataSubjectService:
         "runs": getattr(rt, "run_store", None),
         "outbound_messages": getattr(rt, "outbound_messages", None),
         "app_sync": getattr(rt, "app_sync", None),
+        # Every inbound task message (sender, text, raw payload) and its result.
+        "jobs": getattr(rt, "job_queue", None),
     }
     admin_log = getattr(getattr(rt, "admin_auth", None), "audit_log", None)
     retained = {
