@@ -312,3 +312,32 @@ def test_sqlite_restore_moves_a_stale_wal_aside(tmp_path: Path, monkeypatch: pyt
     assert len(moved) == 3 and any(name.endswith("-wal") for name in moved)
     with closing(sqlite3.connect(target)) as con:
         assert con.execute("SELECT v FROM t").fetchall() == [("from backup",)]
+
+
+# ---------------------------------------------------- client tool versions ---
+
+
+def _fake_tool(directory: Path, name: str, major: int) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    tool = directory / name
+    tool.write_text(f"#!/bin/sh\necho '{name} (PostgreSQL) {major}.3'\n", encoding="utf-8")
+    tool.chmod(0o755)
+    return tool
+
+
+def test_client_tools_must_match_the_servers_major(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # CI had pg_dump/pg_restore 17 against a PostgreSQL 16 server: every restore
+    # failed on "unrecognized configuration parameter transaction_timeout".
+    newer = _fake_tool(tmp_path / "pg17" / "bin", "pg_restore", 17)
+    matching = _fake_tool(tmp_path / "pg16" / "bin", "pg_restore", 16)
+    monkeypatch.setenv("OMNIDESK_PG_BIN", str(newer.parent))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(pb, "_PG_BIN_LAYOUTS", (str(tmp_path / "pg{major}" / "bin"),))
+    # The server's version is found in its usual install location.
+    assert pb.pg_tool("pg_restore", server_major=16) == str(matching)
+    assert pb.pg_tool("pg_restore", server_major=17) == str(newer)
+    # Without a known server version, OMNIDESK_PG_BIN wins as before.
+    assert pb.pg_tool("pg_restore") == str(newer)
+    matching.unlink()
+    with pytest.raises(pb.BackupError, match=r"must be PostgreSQL 16's.*pg17/bin/pg_restore \(17\)"):
+        pb.pg_tool("pg_restore", server_major=16)
