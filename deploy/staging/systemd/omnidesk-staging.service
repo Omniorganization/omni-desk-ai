@@ -1,0 +1,14 @@
+[Unit]
+Description=OmniDesk staging stack (gateway, Postgres, sandbox runner, TLS ingress, monitoring)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/omnidesk-deploy-compose up
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

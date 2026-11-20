@@ -1,0 +1,10 @@
+[Unit]
+Description=OmniDesk Postgres backup with verification (writes node_exporter metrics)
+Requires=docker.service
+After=omnidesk-staging.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omnidesk-deploy-compose backup
+Nice=10
+IOSchedulingClass=idle

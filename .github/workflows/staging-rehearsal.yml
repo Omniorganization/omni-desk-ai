@@ -1,0 +1,186 @@
+name: Staging Rehearsal (single host)
+
+# Rehearses the exact single-host staging setup on a disposable CI VM before
+# it touches the real host: deploy/staging/bootstrap-host.sh, the compose stack
+# (gateway, Postgres, rootless sandbox runner, Caddy TLS, Prometheus,
+# Alertmanager, node_exporter) and every operation CI may run through the
+# deploy key's forced command: deploy, failed deploy with automatic rollback,
+# rollback, smoke with strict sandbox, backup, restore drill, maintenance and
+# alert delivery. This is CI evidence for the tooling, never staging evidence.
+
+on:
+  pull_request:
+    paths:
+      - deploy/staging/**
+      - deploy/docker/docker-compose.full.yml
+      - deploy/sandbox-runner/Dockerfile
+      - deploy/observability/prometheus-rules*.yml
+      - Dockerfile
+      - scripts/production_smoke_test.py
+      - .github/workflows/staging-rehearsal.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY_IMAGE: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+  POSTGRES_IMAGE: postgres:16.16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
+  PUBLIC_HOST: omnidesk-rehearsal.test
+  VERSION: 1.12.7+root-monorepo-production-ga-candidate
+
+jobs:
+  rehearsal:
+    # The real host runs Ubuntu 24.04: rehearse on the same release, including
+    # its AppArmor restriction on unprivileged user namespaces.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Host packages the real host gets from cloud-init
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns catatonit
+          mkdir -p reports/staging-rehearsal
+      - name: Build release-like images into a local registry
+        run: |
+          set -euo pipefail
+          docker run -d --restart=always -p 127.0.0.1:5000:5000 --name registry "$REGISTRY_IMAGE"
+          push() { docker push --quiet "$1" >/dev/null; docker inspect --format '{{index .RepoDigests 0}}' "$1"; }
+          docker build -q --build-arg OMNIDESK_BUILD_SHA="${GITHUB_SHA}-a" -t localhost:5000/omnidesk-agent:a . >/dev/null
+          docker build -q --build-arg OMNIDESK_BUILD_SHA="${GITHUB_SHA}-b" -t localhost:5000/omnidesk-agent:b . >/dev/null
+          docker build -q -f deploy/sandbox-runner/Dockerfile -t localhost:5000/omnidesk-sandbox-runner:ci . >/dev/null
+          # A release that never becomes healthy, for the failed-rollout drill.
+          printf 'FROM localhost:5000/omnidesk-agent:b\nCMD ["python", "-c", "raise SystemExit(\\"rehearsal: broken release\\")"]\n' > "$RUNNER_TEMP/Dockerfile.broken"
+          docker build -q -f "$RUNNER_TEMP/Dockerfile.broken" -t localhost:5000/omnidesk-agent:broken "$RUNNER_TEMP" >/dev/null
+          {
+            echo "IMAGE_A=$(push localhost:5000/omnidesk-agent:a)"
+            echo "IMAGE_B=$(push localhost:5000/omnidesk-agent:b)"
+            echo "IMAGE_BROKEN=$(push localhost:5000/omnidesk-agent:broken)"
+            echo "RUNNER_IMAGE=$(push localhost:5000/omnidesk-sandbox-runner:ci)"
+          } >> "$GITHUB_ENV"
+      - name: Alert receiver on the egress network gateway
+        run: |
+          set -euo pipefail
+          # Stand-in for Telegram: records what Alertmanager sends.
+          cat > "$RUNNER_TEMP/receiver.py" <<'PY'
+          import http.server, sys
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = self.rfile.read(int(self.headers["content-length"]))
+                  with open(sys.argv[1], "ab") as handle:
+                      handle.write(body + b"\n")
+                  self.send_response(200)
+                  self.end_headers()
+              def log_message(self, *args):
+                  pass
+          http.server.ThreadingHTTPServer(("0.0.0.0", 9099), Handler).serve_forever()
+          PY
+          nohup python3 "$RUNNER_TEMP/receiver.py" reports/staging-rehearsal/alerts.jsonl > /dev/null 2>&1 &
+          echo "127.0.0.1 $PUBLIC_HOST" | sudo tee -a /etc/hosts
+      - name: Bootstrap the host exactly as on staging
+        run: |
+          set -euo pipefail
+          ssh-keygen -q -t ed25519 -N '' -C ci-rehearsal -f "$RUNNER_TEMP/deploy_key"
+          docker pull --quiet "$POSTGRES_IMAGE"
+          postgres_ref="$(docker inspect --format '{{index .RepoDigests 0}}' "$POSTGRES_IMAGE")"
+          sudo bash deploy/staging/bootstrap-host.sh \
+            --public-host "$PUBLIC_HOST" --tls internal \
+            --app-image "$IMAGE_A" --runner-image "$RUNNER_IMAGE" --postgres-image "$postgres_ref" \
+            --expected-version "$VERSION" --deploy-key-file "$RUNNER_TEMP/deploy_key.pub" \
+            --alert-receiver webhook --webhook-url http://172.30.0.1:9099/alerts 2>&1 | tee reports/staging-rehearsal/bootstrap.log
+      - name: Operations through the deploy key's forced command
+        run: |
+          set -uo pipefail
+          ops() {  # what sshd runs for the CI key: the forced command with SSH_ORIGINAL_COMMAND
+            sudo -u omnidesk-deploy env SSH_ORIGINAL_COMMAND="omnidesk-deploy-compose $*" /usr/local/bin/omnidesk-ssh-entry | tail -n 1
+          }
+          expect() {  # expect <exit code> <label> <command...>
+            local want="$1" label="$2"; shift 2
+            out="$(ops "$@")"; code=$?
+            echo "$out" > "reports/staging-rehearsal/$label.json"
+            echo "== $label (exit $code, expected $want): $out" | cut -c1-600
+            [[ "$code" == "$want" ]] || { echo "::error::$label exited $code, expected $want"; failed=1; }
+          }
+          failed=0
+          expect 0 smoke-a smoke --strict-sandbox
+          expect 0 deploy-b deploy --image "$IMAGE_B" --expected-version "$VERSION"
+          expect 0 smoke-b smoke --strict-sandbox
+          expect 4 failed-deploy-auto-rollback deploy --image "$IMAGE_BROKEN" --expected-version "$VERSION" --timeout 60
+          expect 0 smoke-after-auto-rollback smoke
+          expect 3 refused-unknown-digest deploy --image "localhost:5000/omnidesk-agent@sha256:$(printf '%064d' 7)" --expected-version "$VERSION"
+          expect 0 rollback-to-a rollback
+          expect 0 status status
+          expect 0 backup backup
+          expect 0 restore-drill restore-drill
+          expect 0 maintenance maintenance
+          expect 3 refused-shell-escape "status; id"
+          python3 - <<'PY' || failed=1
+          import json
+          def load(name):
+              return json.load(open(f"reports/staging-rehearsal/{name}.json"))
+          assert load("deploy-b")["status"] == "deployed"
+          auto = load("failed-deploy-auto-rollback")
+          assert auto["status"] == "rolled_back_after_failed_deploy" and auto["restored"] is True, auto
+          assert load("rollback-to-a")["status"] == "rolled_back"
+          import os
+          status = load("status")
+          assert status["release"]["OMNIDESK_IMAGE"] == os.environ["IMAGE_A"], status["release"]
+          assert status["health"].get("image_digest") == os.environ["IMAGE_A"].rsplit("@", 1)[1], status["health"]
+          drill = load("restore-drill")
+          assert drill["backup_verified"] and drill["restore_verified"], drill
+          assert drill["marker_after_backup_absent"] and drill["schema_check_passed"], drill
+          print("rehearsal assertions passed; restore RTO", drill["rto_seconds"], "s; RPO", drill["rpo_seconds"], "s")
+          PY
+          exit "$failed"
+      - name: TLS ingress, metrics scrape and host metrics
+        run: |
+          set -euo pipefail
+          sudo docker compose --project-name omnidesk ls
+          caddy="$(sudo docker ps --filter name=omnidesk-caddy --format '{{.Names}}' | head -n1)"
+          sudo docker exec "$caddy" cat /data/caddy/pki/authorities/local/root.crt > "$RUNNER_TEMP/caddy-root.crt"
+          curl -fsS --cacert "$RUNNER_TEMP/caddy-root.crt" "https://$PUBLIC_HOST/health" | tee reports/staging-rehearsal/https-health.json
+          code="$(curl -s -o /dev/null -w '%{http_code}' --cacert "$RUNNER_TEMP/caddy-root.crt" "https://$PUBLIC_HOST/admin/status")"
+          [[ "$code" == "401" || "$code" == "403" ]] || { echo "unauthenticated admin request returned $code"; exit 1; }
+          for _ in $(seq 1 40); do
+            curl -fsS 'http://127.0.0.1:9090/api/v1/query?query=up' > "$RUNNER_TEMP/up.json" || true
+            if python3 -c "import json,sys; r=json.load(open('$RUNNER_TEMP/up.json'))['data']['result']; up={x['metric']['job']: x['value'][1] for x in r}; sys.exit(0 if up.get('omnidesk-agent')=='1' and up.get('node')=='1' else 1)"; then break; fi
+            sleep 5
+          done
+          cat "$RUNNER_TEMP/up.json" | tee reports/staging-rehearsal/prometheus-up.json
+          python3 -c "import json,sys; r=json.load(open('$RUNNER_TEMP/up.json'))['data']['result']; up={x['metric']['job']: x['value'][1] for x in r}; sys.exit(0 if up.get('omnidesk-agent')=='1' and up.get('node')=='1' else 1)"
+          curl -fsS 'http://127.0.0.1:9090/api/v1/query?query=omnidesk_backup_last_verify_success' | tee reports/staging-rehearsal/backup-metric.json | grep -q '"1"'
+      - name: Alert drill - gateway outage pages through Alertmanager
+        run: |
+          set -euo pipefail
+          sudo docker stop omnidesk-agent
+          for _ in $(seq 1 60); do
+            grep -q OmniDeskGatewayDown reports/staging-rehearsal/alerts.jsonl 2>/dev/null && break
+            sleep 5
+          done
+          grep -q OmniDeskGatewayDown reports/staging-rehearsal/alerts.jsonl
+          sudo /usr/local/bin/omnidesk-deploy-compose up > reports/staging-rehearsal/recovered.json
+          # Resolved notifications go out at the next group_interval (5m).
+          for _ in $(seq 1 96); do
+            grep -q '"status":"resolved"' reports/staging-rehearsal/alerts.jsonl && break
+            sleep 5
+          done
+          grep -q '"status":"resolved"' reports/staging-rehearsal/alerts.jsonl
+      - name: Collect host evidence
+        if: always()
+        run: |
+          set +e
+          sudo cat /var/log/omnidesk/deploy-history.jsonl > reports/staging-rehearsal/deploy-history.jsonl
+          sudo docker compose --project-name omnidesk ps -a > reports/staging-rehearsal/compose-ps.txt 2>&1
+          for c in omnidesk-agent omnidesk-postgres omnidesk-sandbox-runner; do sudo docker logs --tail 150 "$c" > "reports/staging-rehearsal/$c.log" 2>&1; done
+          sudo journalctl -t omnidesk-ssh-entry --no-pager > reports/staging-rehearsal/ssh-entry.log 2>&1
+          sudo sysctl kernel.apparmor_restrict_unprivileged_userns > reports/staging-rehearsal/userns.txt 2>&1
+          echo "{\"workflow_run\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\", \"commit\": \"$GITHUB_SHA\", \"environment\": \"ci-rehearsal\", \"staging_evidence\": false}" > reports/staging-rehearsal/run.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: staging-rehearsal
+          path: reports/staging-rehearsal/
+          if-no-files-found: error

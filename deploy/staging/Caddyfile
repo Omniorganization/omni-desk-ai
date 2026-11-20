@@ -1,0 +1,22 @@
+# TLS ingress for the staging gateway. OMNIDESK_TLS is the ACME account email
+# (certificates via HTTP-01 from OMNIDESK_ACME_CA, Let's Encrypt by default) or
+# "internal" for the CI rehearsal, which uses Caddy's own CA.
+{
+	admin off
+	acme_ca {$OMNIDESK_ACME_CA}
+}
+
+{$OMNIDESK_PUBLIC_HOST} {
+	tls {$OMNIDESK_TLS}
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	request_body {
+		max_size 2MB
+	}
+	# Caddy replaces any client-supplied X-Forwarded-For with the real peer.
+	reverse_proxy omnidesk:18789
+}

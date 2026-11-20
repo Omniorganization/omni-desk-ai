@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Forced command for the CI deploy key (authorized_keys: restrict,command=...).
+# The key can run exactly one root helper, with allowlisted subcommands and
+# conservative argument characters; anything else is refused and logged.
+set -euo pipefail
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+allowed='^omnidesk-deploy-compose (deploy|rollback|status|up|smoke|backup|restore-drill|maintenance|provision-secret)( [A-Za-z0-9@:./_+=-]+)*$'
+if [[ ! "$cmd" =~ $allowed ]]; then
+  logger -t omnidesk-ssh-entry "refused: ${cmd:0:200}"
+  echo '{"status": "refused", "reason": "command not allowed for the deploy key"}'
+  exit 3
+fi
+read -r -a argv <<< "$cmd"
+exec sudo -n /usr/local/bin/omnidesk-deploy-compose "${argv[@]:1}"

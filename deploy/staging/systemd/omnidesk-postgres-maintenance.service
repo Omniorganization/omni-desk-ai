@@ -1,0 +1,9 @@
+[Unit]
+Description=OmniDesk Postgres maintenance (VACUUM ANALYZE with health checks)
+Requires=docker.service
+After=omnidesk-staging.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omnidesk-deploy-compose maintenance
+Nice=10
