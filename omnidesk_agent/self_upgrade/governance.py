@@ -134,6 +134,8 @@ class GovernedSelfImprovement:
             # The state history must not claim a shadow run that never happened,
             # and the canonical path reaches CANARY only through SHADOW_MODE.
             canary_result["reason"] = "canary_requires_shadow_evidence"
+        elif allow_canary and checks_ok and self._governance_sequence(str(proposal.metadata.get("state") or "PROPOSED"), "CANARY") is None:
+            canary_result["reason"] = f"canary_not_reachable_from_{proposal.metadata.get('state')}"
         elif allow_canary and checks_ok and risk.get("can_auto_canary") and not perm_diff.requires_human_approval:
             canary_result = self.canary.enable(
                 target=proposal.proposal_id,
@@ -205,15 +207,25 @@ class GovernedSelfImprovement:
         working["metadata"] = metadata
         return self.state_machine.transition_metadata(working, target_state, reason=reason)
 
+    CANONICAL_PATHS = {
+        "HUMAN_REVIEW": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "HUMAN_REVIEW"],
+        "CANARY": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "SHADOW_MODE", "CANARY"],
+    }
+
+    def _governance_sequence(self, current: str, target_state: str) -> Optional[list[str]]:
+        """States to walk from ``current`` to ``target_state``, or None if unreachable."""
+        if target_state == "CANARY" and current == "HUMAN_REVIEW":
+            # A proposal held for review (e.g. canary asked for without shadow
+            # evidence) continues once the shadow comparison is supplied.
+            return ["HUMAN_REVIEW", "SHADOW_MODE", "CANARY"]
+        sequence = self.CANONICAL_PATHS.get(target_state, [current, target_state])
+        return sequence if current in sequence else None
+
     def _transition_governance_path(self, proposal_dict: dict, target_state: str) -> dict:
         metadata = dict(proposal_dict.get("metadata") or {})
         current = metadata.get("state") or "PROPOSED"
         if current == target_state:
             return metadata
-        canonical_paths = {
-            "HUMAN_REVIEW": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "HUMAN_REVIEW"],
-            "CANARY": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "SHADOW_MODE", "CANARY"],
-        }
         if target_state == "BLOCKED":
             if self.state_machine.can_transition(current, "BLOCKED"):
                 working = dict(proposal_dict)
@@ -223,8 +235,8 @@ class GovernedSelfImprovement:
             metadata.setdefault("state_history", []).append({"from": current, "to": "BLOCKED", "reason": "governance_evaluation_forced_block"})
             return metadata
 
-        sequence = canonical_paths.get(target_state, [current, target_state])
-        if current not in sequence:
+        sequence = self._governance_sequence(current, target_state)
+        if sequence is None:
             raise ValueError(f"cannot continue governance path from {current} to {target_state}")
         start = sequence.index(current) + 1
         for state in sequence[start:]:

@@ -64,7 +64,10 @@ def content_sha256(kind: str, name: str, body: str) -> str:
 
 def slugify(name: str) -> str:
     slug = _SLUG.sub("-", str(name or "").lower()).strip("-")
-    return slug[:80]
+    if len(slug) <= 80:
+        return slug
+    # Distinct long names must not collapse into one slot (same kind + name supersedes).
+    return slug[:69].rstrip("-") + "-" + hashlib.sha256(slug.encode("utf-8")).hexdigest()[:10]
 
 
 @dataclass
@@ -136,6 +139,11 @@ class PolicyRegistry:
                   name TEXT PRIMARY KEY,
                   version_id TEXT NOT NULL,
                   updated_at REAL NOT NULL
+                )""")
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS learning_policy_stack (
+                  position INTEGER PRIMARY KEY AUTOINCREMENT,
+                  version_id TEXT NOT NULL
                 )""")
             con.execute("""
                 CREATE TABLE IF NOT EXISTS learning_policy_history (
@@ -283,6 +291,9 @@ class PolicyRegistry:
             new_members = kept + [artifact]
             policy = self._compose(new_members, policy_id="planner_current")
             self._insert_version(con, policy, parent=current, actor=actor)
+            # Version ids are content hashes, so the same set reached in another
+            # order reuses a row; rollback follows the activation stack instead.
+            con.execute("INSERT INTO learning_policy_stack(version_id) VALUES(?)", (current,))
             self._move_pointer(con, current, policy.version, action="apply", artifact_id=artifact_id, actor=actor, reason=reason)
             for old in replaced:
                 old.status = "superseded"
@@ -300,11 +311,19 @@ class PolicyRegistry:
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
             current = self._pointer(con)
-            target = to_version or self._parent(con, current)
-            if target is None:
-                raise PermissionError("no earlier policy version to roll back to")
+            if to_version is None:
+                row = con.execute("SELECT position, version_id FROM learning_policy_stack ORDER BY position DESC LIMIT 1").fetchone()
+            else:
+                row = con.execute(
+                    "SELECT position, version_id FROM learning_policy_stack WHERE version_id=? ORDER BY position DESC LIMIT 1",
+                    (to_version,),
+                ).fetchone()
+            if row is None:
+                raise PermissionError("no earlier activation to roll back to" if to_version is None else f"{to_version} is not an earlier activation")
+            target = str(row["version_id"])
             if target == current:
                 raise PermissionError("target version is already active")
+            con.execute("DELETE FROM learning_policy_stack WHERE position >= ?", (int(row["position"]),))
             target_ids = self._version_ids(con, target)
             current_ids = self._version_ids(con, current)
             for aid in current_ids:
@@ -479,11 +498,6 @@ class PolicyRegistry:
         if row is None:
             raise KeyError(f"unknown policy version {version_id}")
         return list(json.loads(row["artifact_ids_json"]))
-
-    @staticmethod
-    def _parent(con: sqlite3.Connection, version_id: str) -> Optional[str]:
-        row = con.execute("SELECT parent_version FROM learning_policy_versions WHERE version_id=?", (version_id,)).fetchone()
-        return None if row is None else row["parent_version"]
 
     @staticmethod
     def _insert_version(con: sqlite3.Connection, policy: PlannerPolicy, *, parent: str, actor: str) -> None:

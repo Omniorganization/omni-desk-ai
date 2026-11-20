@@ -184,3 +184,34 @@ def test_cli_feedback_without_identity_records_the_os_account(tmp_path):
     result = gov.record_human_feedback(proposal.proposal_id, "rejected", "not needed")
     assert result["metadata"]["human_review"]["reviewer"].startswith("os-user:")
     gov.close()
+
+
+def test_a_proposal_held_for_review_can_still_reach_canary_with_shadow_evidence(tmp_path):
+    # Codex review on #226: HUMAN_REVIEW -> SHADOW_MODE -> CANARY must be a valid continuation.
+    gov = _governance(tmp_path)
+    proposal = _proposal(gov)
+    asyncio.run(gov.evaluate_proposal(proposal.proposal_id, allow_canary=True))  # no shadow: HUMAN_REVIEW
+    assert gov.proposal_store.get(proposal.proposal_id).metadata["state"] == "HUMAN_REVIEW"
+
+    result = asyncio.run(gov.evaluate_proposal(
+        proposal.proposal_id, allow_canary=True,
+        stable_plan={"steps": [{"risk": "medium"}, {"risk": "medium"}]}, shadow_plan={"steps": [{"risk": "low"}]},
+    ))
+    history = [(h["from"], h["to"]) for h in result["proposal"]["metadata"]["state_history"]]
+    assert result["verdict"] == "canary_enabled"
+    assert history[-2:] == [("HUMAN_REVIEW", "SHADOW_MODE"), ("SHADOW_MODE", "CANARY")]
+    gov.close()
+
+
+def test_canary_state_is_not_written_when_canary_is_unreachable(tmp_path):
+    gov = _governance(tmp_path)
+    proposal = _proposal(gov)
+    proposal.metadata["state"] = "APPROVED_FOR_PR"
+    gov.proposal_store.save(proposal)
+    with pytest.raises(ValueError):
+        asyncio.run(gov.evaluate_proposal(
+            proposal.proposal_id, allow_canary=True,
+            stable_plan={"steps": [{"risk": "medium"}]}, shadow_plan={"steps": [{"risk": "low"}]},
+        ))
+    assert not (tmp_path / "ws" / "canary_state.json").exists()
+    gov.close()
