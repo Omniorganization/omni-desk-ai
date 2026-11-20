@@ -13,7 +13,6 @@ import asyncio
 import os
 import subprocess
 import textwrap
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
