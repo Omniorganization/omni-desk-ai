@@ -146,9 +146,10 @@ def test_run_erasure_deletes_finished_runs_and_stops_one_in_flight(tmp_path):
     assert store.erase_subject(ALICE) == 3
 
     assert store.get(done) is None
+    assert store.get(bobs)["erased"] is False
     for run_id in (waiting, running):
         tomb = store.get(run_id)
-        assert tomb is not None and tomb["status"] == "cancelled" and tomb["original_message"] == {"erased": True}
+        assert tomb is not None and tomb["status"] == "cancelled" and tomb["original_message"] == {"erased": True} and tomb["erased"] is True
         assert (tomb["plan_json"], tomb["results"], tomb["approval_proposal"], tomb["waiting_approval_id"]) == (None, [], None, None)
     # Nobody can resume the erased run.
     with pytest.raises(PermissionError):

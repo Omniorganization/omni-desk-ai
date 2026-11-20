@@ -189,7 +189,7 @@ class RunStore:
             row = con.execute(
                 """
                 SELECT id,status,original_message,plan_json,current_step_index,results_json,
-                       waiting_approval_id,approval_proposal_json,resume_token,created_at,updated_at
+                       waiting_approval_id,approval_proposal_json,resume_token,created_at,updated_at,erased_at
                 FROM runs WHERE id=?
                 """,
                 (run_id,),
@@ -208,6 +208,8 @@ class RunStore:
             "resume_token": row[8],
             "created_at": row[9],
             "updated_at": row[10],
+            # A tombstone of a data-subject erasure: whoever still holds the run must not write about it.
+            "erased": row[11] is not None,
         }
 
     def get_by_approval(self, approval_id: str) -> Optional[dict[str, Any]]:
