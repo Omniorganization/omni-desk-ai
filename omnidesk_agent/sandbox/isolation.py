@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import unicodedata
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Mapping, Optional, Sequence
 
 # Docker/Podman parse a --mount value as one CSV record of key=value fields,
@@ -75,3 +75,74 @@ def minimal_host_env(argv: Sequence[str], environ: Optional[Mapping[str, str]] =
         if key in source and not (os.name == "nt" and key.upper() in {k.upper() for k in env}):
             env[key] = source[key]
     return env
+
+
+# OmniDesk's own state that the SQLite backend keeps directly in workspace.root
+# (repositories/sqlite.py, daemon.py): approvals, dual approvals, break-glass,
+# runs, memory, audit records. Sandboxed commands run in that same directory, so
+# they must neither upload, read nor change these entries.
+RUNTIME_STATE_NAMES = frozenset({
+    "approvals.sqlite3",
+    "dual_approvals.sqlite3",
+    "break_glass.sqlite3",
+    "webhooks.sqlite3",
+    "jobs.sqlite3",
+    "outbound_messages.sqlite3",
+    "runs.sqlite3",
+    "agent_run_idempotency.sqlite3",
+    "side_effect_idempotency.sqlite3",
+    "learning_experiments.sqlite3",
+    "memory.sqlite3",
+    "token_budget.sqlite3",
+    "model_costs.sqlite3",
+    "admin_auth_audit.jsonl",
+    "audit_checkpoints",
+    "app_sync_state.json",
+    "learning_audit.jsonl",
+    "self_learning.sqlite3",
+    "growth_plan.json",
+    "upgrade_proposals",
+    "upgrade_memory.sqlite3",
+    "canary_state.json",
+    "bigseller_audit.jsonl",
+    "bigseller_state.sqlite3",
+    "screenshots",
+})
+# SQLite side files and the audit chain's key/lock files next to an entry.
+_RUNTIME_STATE_SUFFIXES = ("-wal", "-shm", "-journal", ".key", ".lock")
+
+
+def is_runtime_state(relative: PurePath | str) -> bool:
+    """True for a workspace-relative path inside OmniDesk's own state entries."""
+    parts = PurePath(relative).parts
+    if not parts:
+        return False
+    top = parts[0]
+    for suffix in _RUNTIME_STATE_SUFFIXES:
+        if top.endswith(suffix):
+            top = top[: -len(suffix)]
+            break
+    return top in RUNTIME_STATE_NAMES
+
+
+def runtime_state_masks(workspace: Path, *, container_root: str = "/workspace") -> list[str]:
+    """``--mount`` arguments that hide the runtime state present in ``workspace``.
+
+    Files are covered by a read-only bind of ``/dev/null``, directories by an
+    empty read-only tmpfs, so a command in a container that mounts the workspace
+    sees neither their content nor a way to change them.
+    """
+    args: list[str] = []
+    try:
+        entries = sorted(Path(workspace).iterdir())
+    except OSError:
+        return args
+    for entry in entries:
+        if not is_runtime_state(entry.name):
+            continue
+        target = f"{container_root.rstrip('/')}/{bind_mount_source(entry.name)}"
+        if entry.is_dir() and not entry.is_symlink():
+            args.extend(["--mount", f"type=tmpfs,dst={target},readonly,tmpfs-size=4k"])
+        else:
+            args.extend(["--mount", f"type=bind,src=/dev/null,dst={target},readonly"])
+    return args
