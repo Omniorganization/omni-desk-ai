@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import signal
 import tempfile
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Optional
@@ -27,6 +29,16 @@ def validate_plugin_permissions(permissions: list[str]) -> None:
         raise PermissionError(f"unsupported plugin permissions: {invalid}")
 
 
+def _kill_process_group(proc: Any) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, AttributeError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 class SubprocessPluginTool:
     """Run plugin entrypoints in a child Python process via JSON stdin/stdout.
 
@@ -34,6 +46,12 @@ class SubprocessPluginTool:
       def call(action: str, args: dict) -> dict
 
     It must not import the main runtime directly.
+
+    This is NOT OS isolation: the child runs as the gateway's user with its
+    filesystem and network access, only with a scrubbed environment and isolated
+    Python mode. It is for development; production refuses it
+    (plugins.production_forbid_subprocess) and uses the docker sandboxes. A
+    timeout kills the child's whole process group, so nothing it spawned survives.
     """
 
     def __init__(
@@ -127,8 +145,17 @@ class SubprocessPluginTool:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(entrypoint.parent),
                 env={"PYTHONNOUSERSITE": "1", "PATH": "/usr/bin:/bin:/usr/local/bin"},
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps(payload).encode("utf-8")), timeout=self.timeout_seconds)
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps(payload).encode("utf-8")), timeout=self.timeout_seconds)
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                _kill_process_group(proc)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return ToolResult(False, error=f"plugin timed out after {self.timeout_seconds}s", summary=f"plugin {self.name} timeout")
         if len(stdout) > self.max_output_bytes or len(stderr) > self.max_output_bytes:
             return ToolResult(False, error="plugin output exceeded limit", summary=f"plugin {self.name} output limit exceeded")
         if proc.returncode != 0:

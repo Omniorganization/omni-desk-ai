@@ -24,7 +24,9 @@ class TestTool:
         command = str(args.get("command") or "python -m compileall omnidesk_agent")
         if any(bad in command for bad in ["--force", " rm ", "sudo", "shutdown", "reboot"]):
             return ToolResult(False, error="Refusing unsafe test command")
-        decision = ctx.permissions.verify(proposal("test", "run", {"command": command}, "medium", "运行升级测试命令", ctx))
+        # pytest imports and runs workspace code (conftest.py, plugins): the same
+        # risk as ShellTool running pytest, which is critical.
+        decision = ctx.permissions.verify(proposal("test", "run", {"command": command}, "critical", "运行升级测试命令", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run test: {command}")
         result = await self.tester.run(command)

@@ -21,6 +21,17 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: mkdir -p dist/evidence/security-attack-surface-tests
       - run: python scripts/check_security_attack_surface.py . --write-report dist/evidence/security-attack-surface.json
+      - name: Container sandbox escape and lifecycle tests
+        if: always()
+        env:
+          # A missing container runtime or sandbox image fails these tests instead of skipping them.
+          OMNIDESK_REQUIRE_CONTAINER_TESTS: "1"
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python -m pytest -q --tb=short -rs \
+            tests/test_sandbox_escape_negative.py \
+            tests/test_sandbox_lifecycle_and_state_isolation.py \
+            2>&1 | tee dist/evidence/security-attack-surface-tests/sandbox-escape.txt
       - name: Admin auth regression tests
         run: |
           set -o pipefail

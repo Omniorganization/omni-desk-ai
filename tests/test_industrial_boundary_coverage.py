@@ -220,7 +220,8 @@ def test_runner_runtime_ready_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIDESK_SANDBOX_READY_SMOKE", "1")
     monkeypatch.setenv("OMNIDESK_SANDBOX_IMAGE_ALLOWLIST", "python:test")
     ok, reason = runner_server._runtime_ready(RunnerConfig(container_runtime="docker", default_image="python:test"))
-    assert ok is True and calls[-1][:5] == ["docker", "run", "--rm", "--network", "none"]
+    # The smoke container is named so a timeout can kill it.
+    assert ok is True and calls[-1][:3] == ["docker", "run", "--name"] and calls[-1][4:7] == ["--rm", "--network", "none"]
 
     def fail_run(argv, **kwargs):
         raise RuntimeError("nope")
