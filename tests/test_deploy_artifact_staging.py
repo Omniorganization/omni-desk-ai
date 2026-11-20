@@ -169,6 +169,8 @@ exit 2
             "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
             "OMNIDESK_INSTALL_DIR": str(self.install_dir),
             "OMNIDESK_RUNTIME_ENV_FILE": str(tmp_path / "etc" / "runtime.env"),
+            # The helper waits for /health up to this deadline; keep failing tests fast.
+            "OMNIDESK_HEALTH_TIMEOUT_SECONDS": "1",
         }
 
     def run(self, *, artifact: Path | None = None, sha: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -218,7 +220,9 @@ cp -- {str(evil)!r} {str(helper.artifact)!r}
     assert helper.staging_dirs() == []
     if _bash_supports_at_q():
         assert result.returncode == 0, result.stderr
-        assert f"OMNIDESK_ARTIFACT_SHA256={_sha(GOOD)}" in (tmp_path / "etc" / "runtime.env").read_text(encoding="utf-8")
+        # Identity goes to its own file; the service's secrets file is never rewritten.
+        assert f"OMNIDESK_ARTIFACT_SHA256={_sha(GOOD)}" in (tmp_path / "etc" / "release.env").read_text(encoding="utf-8")
+        assert not (tmp_path / "etc" / "runtime.env").exists()
 
 
 def test_helper_rejects_a_symlinked_upload(tmp_path):
@@ -328,3 +332,41 @@ def test_helper_keeps_the_existing_input_validation():
     assert 'sha256sum "$STAGED_WHEEL"' in text
     assert 'pip install --no-deps --force-reinstall "$STAGED_WHEEL"' in text
     assert 'sha256sum "$ARTIFACT"' not in text
+
+
+def test_deploy_never_rewrites_the_service_secrets_file(tmp_path):
+    # The unit's secrets live in runtime.env; the old helper truncated it to three
+    # identity lines, so the next restart came up without any secret.
+    helper = Helper(tmp_path)
+    runtime_env = tmp_path / "etc" / "runtime.env"
+    runtime_env.parent.mkdir(parents=True)
+    runtime_env.write_text("OMNIDESK_ADMIN_TOKEN=keep-me\n", encoding="utf-8")
+    helper.run()
+    assert runtime_env.read_text(encoding="utf-8") == "OMNIDESK_ADMIN_TOKEN=keep-me\n"
+
+
+def test_failed_deploy_restores_the_previous_release_identity(tmp_path):
+    # A rolled-back service must report the release it actually runs, not the failed one.
+    helper = Helper(tmp_path)
+    previous = helper.install_dir / "artifacts" / "1.2.2-prev" / "omnidesk_agent-1.2.2-py3-none-any.whl"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"previous wheel")
+    (helper.install_dir / "artifacts" / "current.whl").symlink_to(previous)
+    release_env = tmp_path / "etc" / "release.env"
+    release_env.parent.mkdir(parents=True)
+    release_env.write_text("OMNIDESK_VERSION=1.2.2\nOMNIDESK_ARTIFACT_SHA256=" + "e" * 64 + "\n", encoding="utf-8")
+    helper.env["HEALTH_EXIT"] = "1"
+    result = helper.run()
+    assert result.returncode != 0
+    assert "rolling back" in result.stderr
+    assert release_env.read_text(encoding="utf-8") == "OMNIDESK_VERSION=1.2.2\nOMNIDESK_ARTIFACT_SHA256=" + "e" * 64 + "\n"
+
+
+def test_helper_refuses_to_create_a_dependency_less_virtualenv(tmp_path):
+    helper = Helper(tmp_path)
+    shutil.rmtree(helper.install_dir / "venv")
+    result = helper.run()
+    assert result.returncode == 69
+    assert "--require-hashes" in result.stderr
+    assert helper.installs() == []
+
