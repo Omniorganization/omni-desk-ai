@@ -36,6 +36,7 @@ from omnidesk_agent.self_learning.approval import is_system_identity
 from omnidesk_agent.self_learning.experiments.cohort_assignment import CohortAssigner
 from omnidesk_agent.self_learning.experiments.metric_collector import ExperimentObservation
 from omnidesk_agent.self_learning.experiments.sequential_gate import ArmStats, GateConfig, SequentialGate
+from omnidesk_agent.self_learning.experiments.stats import normal_quantile, wilson_bounds
 from omnidesk_agent.self_learning.observability.audit import LearningAuditLog
 from omnidesk_agent.self_learning.observability.schema import LearningEvent
 from omnidesk_agent.self_learning.policy_hook import PolicyAssignment, RunOutcome
@@ -146,6 +147,9 @@ class RolloutController:
         )
         if (artifact.evaluation or {}).get("verdict") not in PASSING_VERDICTS:
             raise PermissionError("artefact needs a passing offline evaluation before an online rollout")
+        if (artifact.evaluation or {}).get("base_version") != self.registry.active_version():
+            # Real traffic would see active + candidate, a combination never evaluated.
+            raise PermissionError("the offline evaluation was run against another active policy; re-run it first")
         if self.current() is not None:
             raise PermissionError("another rollout is running; stop it first")
         candidate = self.registry.candidate_policy(artifact_id)
@@ -240,8 +244,9 @@ class RolloutController:
             stage = state["stage"]
             stage["n"] += 1
             stage["errors"] += 0 if outcome.success else 1
-            if outcome.latency_ms is not None and len(stage["latencies"]) < MAX_STAGE_LATENCIES:
-                stage["latencies"].append(float(outcome.latency_ms))
+            if outcome.latency_ms is not None:
+                # Rolling window of the most recent runs, so late regressions still count.
+                stage["latencies"] = (stage["latencies"] + [float(outcome.latency_ms)])[-MAX_STAGE_LATENCIES:]
             breach = self._slo_breach(spec, stage, ArmStats(**state["arms"]["control"])) if spec.mode == "canary" else None
             if breach:
                 self._save(state)
@@ -273,7 +278,8 @@ class RolloutController:
                 state["stage"] = {"n": 0, "errors": 0, "latencies": []}
                 self._save(state, event="stage_advanced", payload={**record, "treatment_percent": state["treatment_percent"]})
                 return self._public(state)
-            if spec.mode == "ab" or last:
+            stage_ready = spec.mode == "ab" or state["stage"]["n"] >= spec.min_stage_samples
+            if (spec.mode == "ab" or last) and stage_ready:
                 self._save(state, event="gate", payload=record)
                 return self._ready(state, spec, record)
         self._save(state, event="gate", payload=record)
@@ -334,8 +340,11 @@ class RolloutController:
         n = int(stage["n"])
         control_error = 1.0 - control.success_rate if control.n else 0.0
         error = stage["errors"] / n if n else 0.0
-        if n >= min(20, spec.min_stage_samples) and error > spec.slo_max_error_rate and error > control_error:
-            return f"canary error rate {error:.2%} exceeds SLO {spec.slo_max_error_rate:.0%} and control ({control_error:.2%})"
+        # Checked after every run, so act only when the error rate is confidently
+        # above the SLO (99% Wilson lower bound), not on a noisy small sample.
+        error_floor = wilson_bounds(int(stage["errors"]), n, normal_quantile(0.99))[0] if n else 0.0
+        if n >= min(20, spec.min_stage_samples) and error_floor > spec.slo_max_error_rate and error > control_error:
+            return f"canary error rate {error:.2%} is above SLO {spec.slo_max_error_rate:.0%} (99% lower bound {error_floor:.2%}) and above control ({control_error:.2%})"
         latencies = sorted(stage["latencies"])
         if spec.slo_p95_latency_ms is not None and len(latencies) >= 20:
             p95 = latencies[min(len(latencies) - 1, int(math.ceil(0.95 * len(latencies))) - 1)]

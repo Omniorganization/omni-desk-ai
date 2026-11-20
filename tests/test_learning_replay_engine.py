@@ -130,3 +130,13 @@ def test_daily_job_records_replay_evaluations_on_registry_candidates(tmp_path):
     stored = job.policy_registry.get(artifact.artifact_id)
     assert stored.status == "evaluated" and stored.evaluation["method"] == "paired_replay_v1"
     assert job.policy_registry.active_policy().is_empty  # evaluation applies nothing
+
+
+def test_runs_with_auxiliary_results_are_not_paired_with_steps():
+    # Codex review on #229: vision/verification results would be zipped onto unexecuted steps.
+    run = _run(1, steps=[{"tool": "computer", "action": "screenshot", "args": {}}, {"tool": "browser", "action": "click", "args": {}}],
+               oks=[True, False], status="failed")
+    verified = _run(2, steps=[{"tool": "browser", "action": "type", "args": {"verification": {"text": "ok"}}}, {"tool": "browser", "action": "submit", "args": {}}],
+                    oks=[True, False], status="failed")
+    cases, skipped = cases_from_runs([run, verified])
+    assert cases == [] and skipped["unmapped_results"] == 2

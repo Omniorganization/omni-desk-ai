@@ -11,7 +11,9 @@ measured before and after real traffic sees it. Code:
 `ReplayEngine` re-plans recorded runs twice with the same planner (a scripted
 model in CI, the configured model in a deployment): once with the active
 policy, once with `active + candidate`. Plans are never executed. Each plan
-step is looked up in the recorded outcomes (`RecordedOutcomeOracle`): a step
+step is looked up in the recorded outcomes (`RecordedOutcomeOracle`); runs whose
+steps add auxiliary results (computer/ui_bridge grounding, verification) are
+skipped because results cannot be mapped to steps yet. A step
 with the same tool, action and arguments (minus `expected_result`,
 `verification`, `retry_policy`) gets the recorded result; anything else is
 `unknown`. A plan is `ok` if every step is known-good, `fail` at its first
@@ -48,6 +50,8 @@ passing offline evaluation; no other running rollout; and a planner that
 applies policies (`planner_applies_policy=True`). Without the last one the arms
 would be identical, so the start is refused.
 
+- Admission also requires the offline evaluation to have been run against
+  the policy that is active now.
 - Assignment: the randomization unit is a hash of channel and thread id (or
   message id), never message text. Treatment runs get `active + candidate`,
   control runs the active policy. If the active policy changes during the
@@ -67,12 +71,16 @@ would be identical, so the start is refused.
     test, any sample size) or a significantly lower success rate.
   - Promote: A/B needs a significantly higher success rate; canary needs
     non-inferiority (one-sided lower bound above minus the 2-point margin).
+    Bounds use the Newcombe hybrid score method, which does not collapse at
+    0% or 100% success the way a Wald interval does.
     Both also need: safety rate not above control, cost measured on at least
     90% of runs and at most +20%, latency at most +25%.
 - Canary stages (default 1, 5, 10, 25, 50% of traffic): a passing look moves
-  to the next stage once the stage has enough runs. Within a stage the
-  treatment rolls back when its error rate exceeds the SLO and the control's
-  error rate, or its p95 latency exceeds `slo_p95_latency_ms`.
+  to the next stage once the stage has `min_stage_samples` runs, and the last
+  stage also needs them before `ready_to_promote`. Within a stage the
+  treatment rolls back when its error rate is confidently above the SLO (99%
+  Wilson lower bound) and above the control's, or when the p95 latency of its
+  most recent 2000 runs exceeds `slo_p95_latency_ms`.
 - Outcomes: `rolled_back` (automatic; traffic returns to the active policy and
   the artefact needs a new evaluation and approval), `stopped_inconclusive`,
   or `ready_to_promote`, which records the online result as the artefact's
@@ -90,7 +98,8 @@ background task with a timeout, an in-flight cap and a daily cap. The shadow
 plan is never executed, shown or written to memory. It stores only the
 comparison with the production plan (tool/action sequence, common prefix,
 risk and approval deltas, planning latency, planner errors) and, once the
-production run ends, a join: `identical_plan`, `would_fail_same` (identical
+production run ends (in either order; whichever side arrives second makes the
+join), a join: `identical_plan`, `would_fail_same` (identical
 through the failing step), `diverged_before_failure`,
 `production_succeeded_shadow_diverged`. Divergence is not evidence of
 success, and the report says so.

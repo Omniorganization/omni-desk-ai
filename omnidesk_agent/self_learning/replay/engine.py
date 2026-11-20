@@ -32,6 +32,7 @@ PlanFn = Callable[[dict[str, Any], PlannerPolicy], Awaitable[Any]]
 # nothing about what the tool does.
 VOLATILE_ARGS = frozenset({"expected_result", "verification", "retry_policy", "auto_ground", "auto_click_grounded"})
 METHOD = "paired_replay_v1"
+AUXILIARY_RESULT_TOOLS = frozenset({"computer", "ui_bridge"})
 
 
 def args_digest(args: Optional[dict[str, Any]]) -> str:
@@ -100,7 +101,14 @@ def cases_from_runs(runs: Iterable[dict[str, Any]]) -> tuple[list[ReplayCase], d
         if not steps:
             skipped["no_plan"] += 1
             continue
-        if len(results) > len(steps) or (status == "completed" and len(results) != len(steps)):
+        # The orchestrator appends extra results (vision grounding, grounded
+        # clicks, verification) after computer/ui_bridge steps and steps with a
+        # verification; without per-result step ids those runs cannot be mapped.
+        auxiliary = any(
+            str(step.get("tool")) in AUXILIARY_RESULT_TOOLS or "verification" in (step.get("args") or {})
+            for step in steps
+        )
+        if auxiliary or len(results) > len(steps) or (status == "completed" and len(results) != len(steps)):
             skipped["unmapped_results"] += 1
             continue
         recorded = tuple(

@@ -107,7 +107,8 @@ class ShadowRunner:
                   candidate_version TEXT NOT NULL,
                   status TEXT NOT NULL,
                   join_result TEXT,
-                  payload_json TEXT NOT NULL
+                  payload_json TEXT NOT NULL,
+                  production_json TEXT
                 )""")
             con.execute("CREATE INDEX IF NOT EXISTS learning_shadow_candidate ON learning_shadow_runs(candidate_version)")
 
@@ -143,43 +144,64 @@ class ShadowRunner:
         payload["planning_ms"] = round((time.perf_counter() - started) * 1000, 3)
         try:
             with self._connect() as con:
+                # Keep a production outcome that arrived first.
                 con.execute(
-                    "INSERT OR REPLACE INTO learning_shadow_runs(shadow_id, at, candidate_version, status, join_result, payload_json) VALUES(?,?,?,?,?,?)",
+                    """
+                    INSERT INTO learning_shadow_runs(shadow_id, at, candidate_version, status, join_result, payload_json)
+                    VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(shadow_id) DO UPDATE SET at=excluded.at, candidate_version=excluded.candidate_version,
+                      status=excluded.status, payload_json=excluded.payload_json
+                    """,
                     (self._id(run_key), time.time(), candidate.version, payload["status"], None, json.dumps(payload)),
                 )
+                self._join(con, self._id(run_key))
         except Exception:
             pass
 
     def observe_production(self, run_key: str, outcome: RunOutcome, *, failed_step_index: Optional[int] = None) -> Optional[str]:
-        """Join the production outcome to a stored shadow comparison."""
+        """Record the production outcome; join now, or when the shadow plan arrives."""
+        production = {"status": outcome.status, "success": outcome.success, "failed_step_index": failed_step_index}
         try:
             with self._connect() as con:
-                row = con.execute("SELECT payload_json FROM learning_shadow_runs WHERE shadow_id=?", (self._id(run_key),)).fetchone()
-                if row is None:
-                    return None
-                payload = json.loads(row["payload_json"])
-                comparison = payload.get("comparison") or {}
-                if payload.get("status") != "planned":
-                    result = "no_shadow_plan"
-                elif comparison.get("identical"):
-                    result = "identical_plan"
-                elif outcome.success:
-                    result = "production_succeeded_shadow_diverged"
-                elif failed_step_index is not None and comparison.get("common_prefix", 0) > failed_step_index:
-                    result = "would_fail_same"
-                elif failed_step_index is not None:
-                    result = "diverged_before_failure"
-                else:
-                    result = "production_failed_unknown_step"
-                payload["production"] = {"status": outcome.status, "failed_step_index": failed_step_index}
-                con.execute("UPDATE learning_shadow_runs SET join_result=?, payload_json=? WHERE shadow_id=?", (result, json.dumps(payload), self._id(run_key)))
-            return result
+                con.execute(
+                    """
+                    INSERT INTO learning_shadow_runs(shadow_id, at, candidate_version, status, join_result, payload_json, production_json)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(shadow_id) DO UPDATE SET production_json=excluded.production_json
+                    """,
+                    (self._id(run_key), time.time(), "", "pending_shadow", None, "{}", json.dumps(production)),
+                )
+                return self._join(con, self._id(run_key))
         except Exception:
             return None
 
+    @staticmethod
+    def _join(con: sqlite3.Connection, shadow_id: str) -> Optional[str]:
+        row = con.execute("SELECT status, payload_json, production_json FROM learning_shadow_runs WHERE shadow_id=?", (shadow_id,)).fetchone()
+        if row is None or row["status"] == "pending_shadow" or not row["production_json"]:
+            return None
+        payload = json.loads(row["payload_json"])
+        production = json.loads(row["production_json"])
+        comparison = payload.get("comparison") or {}
+        failed = production.get("failed_step_index")
+        if payload.get("status") != "planned":
+            result = "no_shadow_plan"
+        elif comparison.get("identical"):
+            result = "identical_plan"
+        elif production.get("success"):
+            result = "production_succeeded_shadow_diverged"
+        elif failed is not None and comparison.get("common_prefix", 0) > failed:
+            result = "would_fail_same"
+        elif failed is not None:
+            result = "diverged_before_failure"
+        else:
+            result = "production_failed_unknown_step"
+        con.execute("UPDATE learning_shadow_runs SET join_result=? WHERE shadow_id=?", (result, shadow_id))
+        return result
+
     def report(self, candidate_version: str) -> dict[str, Any]:
         with self._connect() as con:
-            rows = con.execute("SELECT status, join_result, payload_json FROM learning_shadow_runs WHERE candidate_version=?", (candidate_version,)).fetchall()
+            rows = con.execute("SELECT status, join_result, payload_json FROM learning_shadow_runs WHERE candidate_version=? AND status != 'pending_shadow'", (candidate_version,)).fetchall()
         statuses = Counter(r["status"] for r in rows)
         joins = Counter(r["join_result"] for r in rows if r["join_result"])
         planned = [json.loads(r["payload_json"]) for r in rows if r["status"] == "planned"]
@@ -200,7 +222,7 @@ class ShadowRunner:
     def _count_today(self) -> int:
         since = time.time() - 86400
         with self._connect() as con:
-            return int(con.execute("SELECT COUNT(*) FROM learning_shadow_runs WHERE at >= ?", (since,)).fetchone()[0])
+            return int(con.execute("SELECT COUNT(*) FROM learning_shadow_runs WHERE at >= ? AND status != 'pending_shadow'", (since,)).fetchone()[0])
 
     @staticmethod
     def _id(run_key: str) -> str:

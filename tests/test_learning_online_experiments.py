@@ -306,3 +306,103 @@ def test_shadow_respects_sampling_timeout_and_errors(tmp_path):
     assert timed_report["statuses"] == {"timeout": 1}
     assert failing_report["statuses"] == {"planner_error": 1}
     store.close()
+
+
+# ------------------------------------------------ review findings on #229
+
+def test_rollout_refuses_an_evaluation_made_against_another_active_policy(tmp_path):
+    store, registry, artifact, controller, _ = _setup(tmp_path)
+    other = registry.register_candidate("workflow", "other", "Check stock before quoting.")
+    registry.record_evaluation(other.artifact_id, {"verdict": "improved", "method": "paired_replay_v1", "trace_count": 3})
+    approval = registry.request_approval(other.artifact_id)
+    registry.decide(approval.approval_id, "approved", reviewer="owner@example.com")
+    registry.apply(other.artifact_id, actor="owner@example.com")  # active policy changed after artifact's replay
+    with pytest.raises(PermissionError, match="another active policy"):
+        controller.start(artifact.artifact_id, actor="owner@example.com")
+    store.close()
+
+
+def test_perfect_samples_do_not_prove_non_inferiority():
+    gate = SequentialGate(GateConfig(min_samples_per_arm=100, max_looks=10, require_cost_measurement=False))
+    decision = gate.evaluate(ArmStats(n=2000, successes=2000), ArmStats(n=100, successes=100), look=1, mode="canary")
+    assert decision.decision == "continue" and "success_noninferiority_not_shown" in decision.checks["blockers"]
+
+
+def test_a_canary_worse_than_the_margin_is_rarely_promoted():
+    # Control is perfect, treatment fails 2.1% of the time (worse than the 2-point margin).
+    gate = SequentialGate(GateConfig(min_samples_per_arm=100, max_looks=10, require_cost_measurement=False))
+    rng = random.Random(229)
+    promoted = 0
+    for _ in range(300):
+        control, treatment = ArmStats(), ArmStats()
+        for look in range(1, 11):
+            control.n += 100
+            control.successes += 100
+            for _ in range(100):
+                treatment.n += 1
+                treatment.successes += rng.random() >= 0.021
+            decision = gate.evaluate(control, treatment, look=look, mode="canary")
+            if decision.decision != "continue":
+                promoted += decision.decision == "promote_candidate"
+                break
+    assert promoted / 300 <= 0.05
+
+
+def test_the_last_canary_stage_needs_its_minimum_samples(tmp_path):
+    store, registry, artifact, controller, _ = _setup(tmp_path)
+    spec = RolloutSpec(mode="canary", stages=(50.0,), look_every=50, min_stage_samples=1000, gate=GateConfig(min_samples_per_arm=50, max_looks=100))
+    controller.start(artifact.artifact_id, actor="owner@example.com", spec=spec)
+    loop = RuntimeLearningLoop(rollout=controller)
+    rng = random.Random(1)
+    for i in range(1200):
+        a = loop.assign(Msg("c", "u", "t", thread_id=f"t{i}"))
+        loop.observe(a, RunOutcome(status="completed" if rng.random() < 0.99 else "failed", latency_ms=100.0, model_cost_usd=0.01))
+    state = controller.current()
+    assert state is not None and state["status"] == "running"  # < 1000 treatment runs in the stage so far
+    assert state["stage"]["n"] < 1000
+    store.close()
+
+
+def test_latency_slo_uses_the_most_recent_runs(tmp_path):
+    store, registry, artifact, controller, _ = _setup(tmp_path)
+    controller.start(artifact.artifact_id, actor="owner@example.com",
+                     spec=RolloutSpec(mode="canary", stages=(50.0,), look_every=100_000, slo_p95_latency_ms=500.0))
+    loop = RuntimeLearningLoop(rollout=controller)
+    treated = 0
+    result = None
+    i = 0
+    while treated < 2400:
+        a = loop.assign(Msg("c", "u", "t", thread_id=f"t{i}"))
+        i += 1
+        latency = 100.0 if treated < 2000 else 10_000.0
+        if a.arm == "treatment":
+            treated += 1
+        result = loop.observe(a, RunOutcome(status="completed", latency_ms=latency if a.arm == "treatment" else 100.0, model_cost_usd=0.01))
+        if result and result["status"] != "running":
+            break
+    assert result and result["status"] == "rolled_back" and "p95 latency" in result["finished_reason"]
+    store.close()
+
+
+def test_production_outcome_that_arrives_first_is_joined_later(tmp_path):
+    release = asyncio.Event()
+
+    async def slow_plan(msg, policy):
+        await release.wait()
+        return {"steps": [{"tool": "browser", "action": "extract", "args": {}}]}
+
+    store, registry, artifact, _, _ = _setup(tmp_path)
+    shadow = ShadowRunner(tmp_path / "shadow.sqlite3", slow_plan, sample_rate=1.0)
+    candidate = registry.candidate_policy(artifact.artifact_id)
+    shadow.set_candidate(candidate)
+
+    async def scenario():
+        shadow.after_plan(Msg("c", "u", "t", "t"), {"steps": [{"tool": "browser", "action": "click", "args": {}}]}, run_key="r1")
+        early = shadow.observe_production("r1", RunOutcome(status="failed"), failed_step_index=0)
+        release.set()
+        await shadow.drain()
+        return early
+
+    assert asyncio.run(scenario()) is None  # shadow still planning
+    assert shadow.report(candidate.version)["joins"] == {"diverged_before_failure": 1}
+    store.close()

@@ -11,11 +11,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from omnidesk_agent.self_learning.experiments.stats import (
-    diff_lower_bound,
-    fisher_one_sided_greater,
-    superiority_p,
-)
+from omnidesk_agent.self_learning.experiments.stats import diff_bounds, fisher_one_sided_greater
 
 Mode = Literal["ab", "canary"]
 Decision = Literal["continue", "promote_candidate", "rollback", "stop_inconclusive"]
@@ -104,23 +100,20 @@ class SequentialGate:
         checks["safety_harm_p"] = fisher_one_sided_greater(treatment.safety_runs, treatment.n, control.safety_runs, control.n)
         if checks["safety_harm_p"] < alpha:
             return out("rollback", "treatment has significantly more runs with policy safety events")
-        if min(control.n, treatment.n) >= cfg.harm_min_samples_per_arm:
-            checks["success_harm_p"] = superiority_p(control.successes, control.n, treatment.successes, treatment.n)
-            if checks["success_harm_p"] < alpha:
-                return out("rollback", "treatment success rate is significantly lower")
+        lower, upper = diff_bounds(treatment.successes, treatment.n, control.successes, control.n, alpha)
+        checks["success_diff_bounds"] = [round(lower, 6), round(upper, 6)]
+        if min(control.n, treatment.n) >= cfg.harm_min_samples_per_arm and upper < 0:
+            return out("rollback", "treatment success rate is significantly lower")
 
         if min(control.n, treatment.n) < cfg.min_samples_per_arm:
             return out("continue" if look < cfg.max_looks else "stop_inconclusive", "minimum sample size not reached")
 
         blockers: list[str] = []
         if mode == "ab":
-            checks["superiority_p"] = superiority_p(treatment.successes, treatment.n, control.successes, control.n, cfg.min_success_delta)
-            if checks["superiority_p"] >= alpha:
+            if lower <= cfg.min_success_delta:
                 blockers.append("success_not_significantly_better")
-        else:
-            checks["diff_lower_bound"] = diff_lower_bound(treatment.successes, treatment.n, control.successes, control.n, alpha)
-            if checks["diff_lower_bound"] <= -cfg.noninferiority_margin:
-                blockers.append("success_noninferiority_not_shown")
+        elif lower <= -cfg.noninferiority_margin:
+            blockers.append("success_noninferiority_not_shown")
         if treatment.safety_rate > control.safety_rate:
             blockers.append("safety_rate_higher")
 

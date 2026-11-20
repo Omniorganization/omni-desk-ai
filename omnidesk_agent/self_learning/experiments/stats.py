@@ -71,19 +71,30 @@ def normal_quantile(p: float) -> float:
     return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
 
 
-def diff_lower_bound(x_t: int, n_t: int, x_c: int, n_c: int, alpha: float) -> float:
-    """One-sided (1 - alpha) lower bound for p_t - p_c (Wald, unpooled)."""
-    if n_t <= 0 or n_c <= 0:
-        return -1.0
-    p_t, p_c = x_t / n_t, x_c / n_c
-    se = math.sqrt(max(p_t * (1 - p_t) / n_t + p_c * (1 - p_c) / n_c, 1e-12))
-    return (p_t - p_c) - normal_quantile(1 - alpha) * se
+def wilson_bounds(x: int, n: int, z: float) -> tuple[float, float]:
+    """Wilson score interval for a proportion; stays inside [0, 1] at 0 and n."""
+    if n <= 0:
+        return 0.0, 1.0
+    p = x / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(max(p * (1 - p) / n + z * z / (4 * n * n), 0.0)) / denom
+    return max(0.0, center - half), min(1.0, center + half)
 
 
-def superiority_p(x_t: int, n_t: int, x_c: int, n_c: int, delta: float = 0.0) -> float:
-    """One-sided p-value for p_t - p_c > delta (Wald z, unpooled)."""
+def diff_bounds(x_t: int, n_t: int, x_c: int, n_c: int, alpha: float) -> tuple[float, float]:
+    """One-sided (1 - alpha) lower and upper bounds for p_t - p_c (Newcombe hybrid score).
+
+    Unlike the Wald interval it does not collapse when a rate is 0 or 1, so
+    100 successes out of 100 are not mistaken for certainty.
+    """
     if n_t <= 0 or n_c <= 0:
-        return 1.0
+        return -1.0, 1.0
+    z = normal_quantile(1 - alpha)
     p_t, p_c = x_t / n_t, x_c / n_c
-    se = math.sqrt(max(p_t * (1 - p_t) / n_t + p_c * (1 - p_c) / n_c, 1e-12))
-    return normal_sf(((p_t - p_c) - delta) / se)
+    lo_t, hi_t = wilson_bounds(x_t, n_t, z)
+    lo_c, hi_c = wilson_bounds(x_c, n_c, z)
+    d = p_t - p_c
+    lower = d - math.sqrt((p_t - lo_t) ** 2 + (hi_c - p_c) ** 2)
+    upper = d + math.sqrt((hi_t - p_t) ** 2 + (p_c - lo_c) ** 2)
+    return lower, upper
