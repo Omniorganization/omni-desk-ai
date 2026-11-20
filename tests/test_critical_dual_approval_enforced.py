@@ -236,3 +236,21 @@ def test_production_validator_requires_remote_approval(mode, ok):
     issues = validate_production_config(cfg, {"OMNIDESK_ENV": "production"})["issues"]
 
     assert ("permissions.approval_mode must be remote_approval in production" not in issues) is ok
+
+
+def test_ui_bridge_actions_cannot_be_auto_approved_in_production(tmp_path):
+    """Integrations audit: UI Bridge typing/sending was auto-approved under default_mode=allow."""
+    cfg = AppConfig()
+    cfg.channels.ui_bridge.enabled = True
+    cfg.capabilities.ui_bridge.enabled = True
+    cfg.permissions.default_mode = "allow"
+
+    issues = validate_production_config(cfg, {"OMNIDESK_ENV": "production"})["issues"]
+
+    assert any("permissions.default_mode" in issue for issue in issues)
+    assert "permissions.approval_mode must be remote_approval in production" in issues
+    # With the production policy every UI Bridge step waits for a remote approval.
+    approvals, _dual = _stores(tmp_path)
+    pm = PermissionManager(PermissionConfig(approval_mode="remote_approval", audit_log=tmp_path / "audit.log"), approvals)
+    with pytest.raises(ApprovalRequired):
+        pm.verify({"tool": "ui_bridge", "action": "type_visible_reply", "risk": "high", "source": "telegram", "actor": "owner", "scope_hash": "s"})
