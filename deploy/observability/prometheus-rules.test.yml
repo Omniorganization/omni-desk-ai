@@ -218,11 +218,11 @@ tests:
   - name: a stale backup breaks the recovery point objective
     interval: 1m
     input_series:
-      # Last success at t=0, never refreshed: stale after 26h (plus 10m for).
-      - series: 'omnidesk_backup_last_success_timestamp_seconds{job="node",instance="host:9100"}'
+      # Last verified at t=0, never refreshed: stale after 26h (plus 10m for).
+      - series: 'omnidesk_backup_last_verify_success_timestamp_seconds{job="node",instance="host:9100",kind="postgres"}'
         values: '0x1600'
-      - series: 'omnidesk_backup_last_verify_success{job="node",instance="host:9100"}'
-        values: '1x1600'
+      - series: 'omnidesk_backup_verify_failure_total{job="node",instance="host:9100",kind="postgres"}'
+        values: '0x1600'
     alert_rule_test:
       - eval_time: 25h
         alertname: OmniDeskBackupStale
@@ -234,42 +234,63 @@ tests:
               severity: critical
               job: node
               instance: host:9100
+              kind: postgres
             exp_annotations:
-              summary: The last successful OmniDesk Postgres backup is older than 26 hours
-              description: The daily backup is missing, so the recovery point objective (24h) is no longer met.
+              summary: The last verified OmniDesk backup is older than 26 hours
+              description: No backup has passed verification for 26 hours, so the recovery point objective (24h) is no longer met.
               runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupstale
       - eval_time: 26h20m
-        alertname: OmniDeskBackupVerifyFailed
+        alertname: OmniDeskBackupVerifyFailure
         exp_alerts: []
 
-  - name: a failed backup verification and a missing backup both page
+  - name: a failed backup verification pages
     interval: 1m
     input_series:
-      - series: 'omnidesk_backup_last_verify_success{job="node",instance="host:9100"}'
-        values: '1 1 0 0 0'
-      - series: 'up{job="node",instance="host:9100"}'
-        values: '1x70'
+      # An earlier run verified a backup at t=0; the next verification fails.
+      # verify_backup.py keeps the older success time and counts the failure.
+      - series: 'omnidesk_backup_last_verify_success_timestamp_seconds{job="node",instance="host:9100",kind="sqlite"}'
+        values: '0x10'
+      - series: 'omnidesk_backup_verify_failure_total{job="node",instance="host:9100",kind="sqlite"}'
+        values: '0 0 1x8'
     alert_rule_test:
       - eval_time: 4m
-        alertname: OmniDeskBackupVerifyFailed
+        alertname: OmniDeskBackupVerifyFailure
         exp_alerts:
           - exp_labels:
               severity: critical
               job: node
               instance: host:9100
+              kind: sqlite
             exp_annotations:
-              summary: The latest OmniDesk Postgres backup failed verification
-              description: The newest dump did not pass its checksum and pg_restore --list check; do not rely on it for recovery.
-              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupverifyfailed
+              summary: OmniDesk backup verification failed
+              description: verify_backup.py rejected the latest backup set (checksum, decryption, integrity or trial restore); do not rely on it for recovery.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupverifyfailure
+      - eval_time: 4m
+        alertname: OmniDeskBackupMissing
+        exp_alerts: []
+
+  - name: a host that never verified a backup pages as missing
+    interval: 1m
+    input_series:
+      # A first-ever verification that fails creates the counter at 1, which
+      # increase() cannot see; the missing success time pages instead.
+      - series: 'omnidesk_backup_verify_failure_total{job="node",instance="host:9100",kind="postgres"}'
+        values: '1x70'
+      - series: 'up{job="node",instance="host:9100"}'
+        values: '1x70'
+    alert_rule_test:
       - eval_time: 70m
         alertname: OmniDeskBackupMissing
         exp_alerts:
           - exp_labels:
               severity: critical
             exp_annotations:
-              summary: No successful OmniDesk Postgres backup has been recorded
-              description: The backup job never reported success on this host (or node_exporter's textfile directory is not mounted).
+              summary: No verified OmniDesk backup has been recorded
+              description: No backup on this host has passed verify_backup.py yet, or it runs without --metrics-file, or node_exporter's textfile directory is not mounted.
               runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupmissing
+      - eval_time: 70m
+        alertname: OmniDeskBackupVerifyFailure
+        exp_alerts: []
 
   - name: an unsynchronised clock is reported
     interval: 1m

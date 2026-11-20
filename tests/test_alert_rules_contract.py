@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,8 +22,8 @@ RULE_FILES = [
 ]
 RUNBOOK = ROOT / "docs" / "runbooks" / "ALERTS.md"
 # Produced outside the gateway: Prometheus itself, node_exporter, and the backup job
-# through node_exporter's textfile collector.
-EXTERNAL_PREFIXES = ("up", "node_", "omnidesk_backup_last_")
+# (scripts/verify_backup.py --metrics-file) through node_exporter's textfile collector.
+EXTERNAL_PREFIXES = ("up", "node_", "omnidesk_backup_")
 PROMQL_WORDS = {
     "sum", "rate", "increase", "by", "without", "and", "or", "unless", "on", "ignoring",
     "abs", "absent", "time", "histogram_quantile", "le", "bool", "max", "min", "avg", "count", "vector",
@@ -84,9 +85,25 @@ def test_every_alert_watches_a_metric_that_something_emits() -> None:
 def test_removed_rules_for_unemitted_metrics_stay_removed_until_instrumented() -> None:
     emitted = _emitted_metric_names()
     text = "\n".join(path.read_text(encoding="utf-8") for path in RULE_FILES)
-    for name in ("omnidesk_sandbox_timeout_total", "omnidesk_self_upgrade_invalid_transition_total", "omnidesk_backup_verify_failure_total"):
+    for name in ("omnidesk_sandbox_timeout_total", "omnidesk_self_upgrade_invalid_transition_total"):
         if name not in emitted:
             assert name not in text
+
+
+def test_backup_alerts_watch_the_series_the_backup_job_writes(tmp_path: Path) -> None:
+    """Why: these alerts are the only signal that a restore would fail. If they
+    watch names the backup job does not write, Missing pages forever and a failed
+    verification never pages."""
+    try:
+        from omnidesk_agent.storage.postgres_backup import record_verification
+    except ImportError:
+        pytest.skip("the backup metrics writer (verify_backup.py --metrics-file) lands with #255")
+    textfile = tmp_path / "omnidesk_backup.prom"
+    record_verification(textfile, kind="sqlite", ok=True)
+    record_verification(textfile, kind="postgres", ok=False)
+    written = set(re.findall(r"^(omnidesk_backup_[a-z0-9_]+)\{", textfile.read_text(encoding="utf-8"), re.M))
+    watched = {name for rule in _rules() for name in re.findall(r"omnidesk_backup_[a-z0-9_]+", rule["expr"])}
+    assert watched and watched <= written, (watched, written)
 
 
 def test_alerts_are_routable_and_have_runbooks() -> None:

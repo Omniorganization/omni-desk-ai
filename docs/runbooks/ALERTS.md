@@ -153,16 +153,19 @@ egress to the configured NTP servers is allowed by the cloud firewall.
 
 ## OmniDeskBackupMissing
 
-No successful Postgres backup has ever been recorded on this host. Check the
-backup timer's journal and that the job writes `omnidesk_backup.prom` into the
-node_exporter textfile directory.
+No backup on this host has passed verification yet. Check the backup timer's
+journal, that `verify_backup.py` runs with `--metrics-file` pointing at
+`omnidesk_backup.prom` in the node_exporter textfile directory
+(`docs/BACKUP_RESTORE.md`), and that node_exporter reads that directory.
 
 ## OmniDeskBackupStale
 
-The last successful backup is older than 26 hours, so the 24-hour recovery
-point objective is not met. Run the backup unit by hand and read its journal.
+No backup has passed verification for 26 hours (the `kind` label says SQLite or
+Postgres), so the 24-hour recovery point objective is not met. Run the backup
+unit by hand and read its journal.
 
-## OmniDeskBackupVerifyFailed
+## OmniDeskBackupVerifyFailure
 
-The newest dump failed its checksum or `pg_restore --list` check. Keep the
-previous verified dump, and fix the backup before the next scheduled run.
+`verify_backup.py` rejected the latest backup set: a checksum, decryption,
+integrity (`PRAGMA quick_check`, `pg_restore --list`) or trial-restore failure.
+Keep the previous verified set, and fix the backup before the next scheduled run.
