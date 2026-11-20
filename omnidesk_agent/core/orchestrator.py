@@ -2,25 +2,66 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
+import time
 
-from omnidesk_agent.core.models import ChannelMessage, Plan, ToolResult
+from omnidesk_agent.core.agent_loop import (
+    ORIGIN_AUTO_CLICK,
+    ORIGIN_AUTO_GROUND,
+    ORIGIN_PLANNER,
+    ORIGIN_VERIFY,
+    RULE_PLAN_SOURCES,
+    TURN_DONE,
+    TURN_GIVE_UP,
+    LegacyPlannerAdapter,
+    LoopBudget,
+    LoopState,
+    LoopView,
+    PlannerTurn,
+    PromptInjectionBlocked,
+    StepRecord,
+    TurnRecord,
+    budget_exhausted,
+    budget_left,
+    finish_single_plan,
+    history_for_planner,
+    sanitize_tool_result,
+    task_item,
+    tool_output_item,
+)
+from omnidesk_agent.core.models import ChannelMessage, Plan, PlanStep, ToolResult
+from omnidesk_agent.core.planner_policy import PlannerPolicy, PolicyAssignment, RunOutcome
+from omnidesk_agent.core.run_control import EmergencyStop
 from omnidesk_agent.core.run_store import RunStore
 from omnidesk_agent.core.serialization import message_from_dict, plan_from_dict
 from omnidesk_agent.core.vision_executor import VisionActionExecutor
 from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.learning.experience_extractor import ExperienceExtractor
+from omnidesk_agent.models.provider_errors import safe_error_text
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.approval_store import ApprovalStore
+from omnidesk_agent.security.audit_errors import AuditIntegrityError
 from omnidesk_agent.security.permissions import PermissionManager
+from omnidesk_agent.security.provenance import tag_untrusted
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.registry import ToolRegistry
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
 from omnidesk_agent.observability_tracing import trace_span
 
 
+_FINISHED_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "resume_failed"})
+
+
 class Orchestrator:
+    """Drives the agent loop: plan a turn, run its steps, show the results to the planner, repeat.
+
+    Every step goes through the tool registry, so each tool's own permission
+    check runs on every call; an approval request pauses the run with its whole
+    loop state, and resume continues from the blocked step. The run store gets
+    a checkpoint after every turn and every step.
+    """
+
     def __init__(
         self,
         planner: Any,
@@ -32,6 +73,8 @@ class Orchestrator:
         approval_store: Optional[ApprovalStore] = None,
         learning_loop: Optional[Any] = None,
         dual_approval_store: Optional[Any] = None,
+        loop_budget: Optional[LoopBudget] = None,
+        emergency_stop: Optional[EmergencyStop] = None,
     ):
         self.planner = planner
         self.tools = tools
@@ -47,24 +90,17 @@ class Orchestrator:
         self.storage_plan: Any = None
         self.learning_loop = learning_loop
         self.dual_approval_store = dual_approval_store
+        self.loop_budget = loop_budget or LoopBudget()
+        self.emergency_stop = emergency_stop
+
+    # ------------------------------------------------------------------ entry points
 
     async def handle_message(self, msg: ChannelMessage) -> dict:
         run_id = await asyncio.to_thread(self.run_store.create, asdict(msg)) if self.run_store else None
-        learning_assignment = None
-        if self.learning_loop is not None:
-            try:
-                learning_assignment = self.learning_loop.assign_policy(msg)
-            except Exception:
-                learning_assignment = None
+        state = LoopState.new(msg, run_id)
+        self._assign(msg, state)
         self._metric("omnidesk_planner_requests_total", channel=msg.channel)
-        try:
-            with trace_span("planner.plan", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), channel=msg.channel, actor=msg.sender_id, run_id=run_id):
-                plan = await self.planner.plan(msg)
-            self._metric("omnidesk_planner_results_total", channel=msg.channel, status="ok")
-        except Exception:
-            self._metric("omnidesk_planner_results_total", channel=msg.channel, status="error")
-            raise
-        return await self._execute_plan(msg, plan, run_id=run_id, start_index=0, prior_results=[], learning_assignment=learning_assignment)
+        return await self._run(msg, state)
 
     async def resume(self, run_id: str, resume_token: Optional[str] = None) -> dict:
         if self.run_store is None:
@@ -84,7 +120,16 @@ class Orchestrator:
             return {"ok": False, "status": "missing_approval_id"}
         if self.approval_store is None:
             return {"ok": False, "status": "approval_store_unavailable"}
+        if not run["plan_json"]:
+            return {"ok": False, "status": "missing_plan"}
 
+        # A resume before anyone decided must not use up the token: that would
+        # leave a run nobody can ever resume once the approval comes in.
+        pending = await asyncio.to_thread(self._approval_pending, approval_id)
+        if pending:
+            return {"ok": False, "status": "approval_pending", "run_id": run_id, "approval_id": approval_id, "message": "the approval has not been decided yet"}
+
+        state = self._restore_state(run)
         resume_started = False
         try:
             with trace_span("orchestrator.resume.consume_token", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), run_id=run_id, approval_id=approval_id):
@@ -104,145 +149,509 @@ class Orchestrator:
                 await asyncio.to_thread(self.approval_store.require_approved, approval_id, proposal)
             if hasattr(self.permissions, "allow_approved_proposal"):
                 await asyncio.to_thread(self.permissions.allow_approved_proposal, run.get("approval_proposal") or {})
-            if self.run_store:
-                await asyncio.to_thread(self.run_store.update, run_id, {"status": "running", "waiting_approval_id": None})
+            await asyncio.to_thread(self.run_store.update, run_id, {"status": "running", "waiting_approval_id": None})
         except PermissionError as exc:
+            audit_failed = isinstance(exc, AuditIntegrityError)
             if resume_started and hasattr(self.run_store, "mark_resume_failed"):
                 await asyncio.to_thread(self.run_store.mark_resume_failed, run_id, str(exc))
-            return {"ok": False, "status": "approval_not_satisfied", "approval_id": approval_id, "error": str(exc)}
+            if resume_started:
+                if not audit_failed:
+                    state.note_safety_event("approval_denied")
+                state.termination = {"reason": "audit_unavailable" if audit_failed else "approval_denied", "detail": safe_error_text(exc)[:2000]}
+                self._observe(state, status="failed", final=True, error_class=type(exc).__name__)
+            return {"ok": False, "status": "audit_unavailable" if audit_failed else "approval_not_satisfied", "approval_id": approval_id, "error": str(exc)}
 
         msg = message_from_dict(run["original_message"])
-        if not run["plan_json"]:
-            return {"ok": False, "status": "missing_plan"}
-        plan = plan_from_dict(run["plan_json"])
-        return await self._execute_plan(msg, plan, run_id=run_id, start_index=int(run["current_step_index"]), prior_results=run["results"], learning_assignment=None)
+        return await self._run(msg, state)
 
-    async def _execute_plan(self, msg: ChannelMessage, plan: Plan, *, run_id: Optional[str], start_index: int, prior_results: list[dict], learning_assignment: Optional[dict[str, Any]] = None) -> dict:
-        ctx = ToolContext(permissions=self.permissions, source=msg.channel, actor=msg.sender_id, run_id=run_id, plan_id=plan.plan_id)
-        results: list[ToolResult] = []
-        sanitized_prior = list(prior_results)
-        current_step_index = start_index
+    async def plan_only(self, msg: ChannelMessage, policy: Optional[PlannerPolicy] = None) -> PlannerTurn:
+        """The first planner turn for `msg`, without running anything.
 
+        For shadow experiments: no tool call, no run-store or memory write (memory
+        is not read either, since reading it records last use). Model cost only.
+        """
+        state = LoopState.new(msg, None)
+        if policy is not None:
+            state.policy = policy.to_dict()
+        return await self._turn_planner().next_turn(self._view(msg, state, retrieve_memory=False))
+
+    async def cancel(self, run_id: str, *, reason: str = "", actor: str = "operator") -> dict:
+        """Cancel a run. A running loop stops before its next step or turn; a run waiting
+        for approval can no longer be resumed and its pending approval is denied."""
+        if self.run_store is None:
+            return {"ok": False, "status": "cancel_unavailable", "message": "RunStore is not configured"}
+        run = await asyncio.to_thread(self.run_store.get, run_id)
+        if not run:
+            return {"ok": False, "status": "not_found", "run_id": run_id}
+        previous = str(run["status"])
+        if previous in _FINISHED_RUN_STATUSES:
+            return {"ok": False, "status": previous, "run_id": run_id, "message": "run already finished"}
+        approval_id = run.get("waiting_approval_id")
+        await asyncio.to_thread(self.run_store.update, run_id, {"status": "cancelled", "resume_token": None, "waiting_approval_id": None})
+        if approval_id and self.approval_store is not None:
+            await asyncio.to_thread(self._deny_pending, str(approval_id), actor, reason)
+        self._metric("omnidesk_agent_cancellations_total", previous=previous)
+        result: dict[str, Any] = {"ok": True, "status": "cancelled", "run_id": run_id, "previous_status": previous}
         try:
-            for idx, step in enumerate(plan.steps[start_index:], start=start_index):
-                current_step_index = idx
-                ctx.step_index = idx
+            self._audit_event("agent_run_cancelled", {"run_id": run_id, "previous_status": previous, "actor": str(actor)[:200], "reason": str(reason)[:500]})
+        except AuditIntegrityError as exc:
+            # The run is cancelled either way; say that its audit entry is missing.
+            result["audit_error"] = f"{type(exc).__name__}: {safe_error_text(exc)}"[:500]
+        return result
 
-                if "expected_result" not in step.args:
-                    step.args["expected_result"] = step.description or plan.goal
+    def _deny_pending(self, approval_id: str, actor: str, reason: str) -> None:
+        get = getattr(self.approval_store, "get", None)
+        approval = get(approval_id) if callable(get) else None
+        if isinstance(approval, dict) and approval.get("status") == "pending":
+            try:
+                self.approval_store.decide(approval_id, "denied", {"decided_by": str(actor), "reason": f"run cancelled: {reason}"[:500]})  # type: ignore[union-attr]
+            except (KeyError, PermissionError):
+                pass  # expired or decided meanwhile: nothing left to deny
 
-                decision = self.execution_strategy.decide_tool_step(tool=step.tool, action=step.action, args=step.args, goal=plan.goal)
-                if not decision.allowed:
-                    results.append(ToolResult(False, error=f"Execution skipped: {decision.reason}", summary=f"skipped {step.tool}.{step.action}"))
-                    break
+    async def _stop_reason(self, state: LoopState) -> Optional[str]:
+        """'emergency_stop' or 'cancelled' when the run must stop before its next step or turn."""
+        if self.emergency_stop is not None and self.emergency_stop.status().engaged:
+            return "emergency_stop"
+        if self.run_store is not None and state.run_id is not None:
+            row = await asyncio.to_thread(self.run_store.get, state.run_id)
+            if row is not None and row.get("status") == "cancelled":
+                return "cancelled"
+        return None
 
-                with trace_span(
-                    "tool.call",
-                    metrics=getattr(self, "metrics", None),
-                    otel_exporter=getattr(self, "otel_exporter", None),
-                    run_id=run_id,
-                    plan_id=plan.plan_id,
-                    step_index=idx,
-                    tool=step.tool,
-                    action=step.action,
-                ):
-                    result = await self.tools.call(step.tool, step.action, step.args, ctx)
-                results.append(result)
+    # ------------------------------------------------------------------ the loop
 
-                if result.ok and step.tool in {"computer", "ui_bridge"} and isinstance(result.data, dict):
-                    image_path = result.data.get("image_path")
-                    if image_path and "vision" in self.tools.names() and step.args.get("auto_ground", True):
-                        with trace_span("tool.call", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), run_id=run_id, plan_id=plan.plan_id, step_index=idx, tool="vision", action="ground"):
-                            vision_result = await self.tools.call("vision", "ground", {
-                                "image_path": image_path,
-                                "instruction": step.args.get("expected_result", plan.goal),
-                                "expected_result": f"Ground screenshot for: {step.args.get('expected_result', plan.goal)}",
-                                "task_id": plan.plan_id,
-                            }, ctx)
-                        results.append(vision_result)
+    async def _run(self, msg: ChannelMessage, state: LoopState) -> dict:
+        budget = self.loop_budget
+        segment_started = time.time()
+        base_ctx = ToolContext(permissions=self.permissions, source=msg.channel, actor=msg.sender_id, run_id=state.run_id, plan_id=state.plan_id)
+        if self.run_store is not None and state.run_id is not None:
+            # Checkpoints never write the status, so a cancel made while a step runs is not overwritten.
+            await asyncio.to_thread(self.run_store.update, state.run_id, {"status": "running"})
+        try:
+            while True:
+                halt = await self._stop_reason(state)
+                if halt is not None:
+                    return await self._finish(msg, state, "cancelled" if halt == "cancelled" else "failed", halt, segment_started)
+                if state.pending:
+                    stop = budget_exhausted(state, budget, segment_started_at=segment_started, before="step")
+                    if stop:
+                        return await self._finish(msg, state, "failed", stop, segment_started)
+                    step = state.step(state.pending[0])
+                    derived = await self._execute_step(state, step, base_ctx)
+                    state.pending.pop(0)
+                    if step.status == "done":
+                        state.consecutive_failures = 0
+                        state.pending[0:0] = [record.index for record in derived]
+                    else:
+                        # Stop this turn's remaining steps; the planner sees the failure next.
+                        state.consecutive_failures += 1
+                        state.pending.clear()
+                    await self._checkpoint(state)
+                    continue
 
-                        if step.args.get("auto_click_grounded", False):
-                            click_result = await self.vision_executor.maybe_click_target(
-                                vision_result,
-                                step.args.get("expected_result", plan.goal),
-                                ctx,
-                                screenshot_metadata=result.data,
-                            )
-                            if click_result is not None:
-                                results.append(click_result)
+                if state.single_plan:
+                    final = finish_single_plan(state)
+                    state.final_answer = final.final_answer
+                    if final.status == TURN_DONE:
+                        return await self._finish(msg, state, "completed", "goal_reached", segment_started)
+                    return await self._finish(msg, state, "failed", "gave_up", segment_started, detail=final.final_answer)
 
-                verification = step.args.get("verification")
-                if verification and "vision" in self.tools.names() and "computer" in self.tools.names():
-                    verify_result = await self.vision_executor.verify_with_retry(
-                        ctx=ctx,
-                        instruction=step.args.get("expected_result", plan.goal),
-                        verification=verification,
-                        retry_policy=step.args.get("retry_policy"),
-                    )
-                    results.append(verify_result)
-                    if not verify_result.ok:
-                        break
-
-                if not result.ok:
-                    break
-
+                stop = budget_exhausted(state, budget, segment_started_at=segment_started, before="turn")
+                if stop:
+                    return await self._finish(msg, state, "failed", stop, segment_started)
+                try:
+                    turn = await self._plan_turn(msg, state)
+                except AuditIntegrityError:
+                    raise
+                except Exception as exc:
+                    self._metric("omnidesk_planner_results_total", channel=msg.channel, status="error")
+                    blocked = isinstance(exc, PermissionError)
+                    if blocked:
+                        state.note_safety_event("prompt_injection_blocked" if isinstance(exc, PromptInjectionBlocked) else "permission_denied")
+                    result = await self._finish(msg, state, "failed", "blocked" if blocked else "planner_error", segment_started, error=exc)
+                    if state.steps_executed == 0:
+                        raise  # nothing ran yet: callers (and job retries) see the error, as before
+                    return result
+                self._metric("omnidesk_planner_results_total", channel=msg.channel, status="ok")
+                self._record_turn(msg, state, turn)
+                if turn.status == TURN_DONE:
+                    state.final_answer = turn.final_answer
+                    return await self._finish(msg, state, "completed", "goal_reached", segment_started)
+                if turn.status == TURN_GIVE_UP:
+                    state.final_answer = turn.final_answer
+                    return await self._finish(msg, state, "failed", "gave_up", segment_started, detail=turn.final_answer)
+                if turn.errors:
+                    state.consecutive_failures += 1
+                await self._checkpoint(state)
         except ApprovalRequired as approval:
-            self._metric("omnidesk_approval_waiting_runs_total", tool=str(approval.proposal.get("tool", "")) if isinstance(approval.proposal, dict) else "unknown")
-            all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
-            if self.run_store and run_id:
-                resume_token = await asyncio.to_thread(
-                    self.run_store.save_waiting,
-                    run_id,
-                    asdict(plan),
-                    current_step_index,
-                    all_results,
-                    approval.approval_id,
-                    approval.proposal,
-                )
-            else:
-                resume_token = None
-            return {
-                "status": "waiting_approval",
-                "run_id": run_id,
-                "resume_token": resume_token,
-                "approval_id": approval.approval_id,
-                "proposal": approval.proposal,
-                "plan_id": plan.plan_id,
-                "goal": plan.goal,
-                "current_step_index": current_step_index,
-                "results": all_results,
-            "learning_assignment": learning_assignment,
-            }
+            return await self._pause(msg, state, approval, segment_started)
+        except AuditIntegrityError as exc:
+            # Nothing may run unaudited: stop here, and do not try to audit the stop.
+            state.note_safety_event("audit_unavailable")
+            return await self._finish(msg, state, "failed", "audit_unavailable", segment_started, error=exc, audit=False)
 
-        all_results = sanitized_prior + [self._sanitize_result(r) for r in results]
-        status = "completed" if all(r["ok"] for r in all_results) else "failed"
-        if self.run_store and run_id:
-            await asyncio.to_thread(self.run_store.complete, run_id, status, all_results)
-        resume_token = None
+    def _view(self, msg: ChannelMessage, state: LoopState, *, retrieve_memory: bool = True) -> LoopView:
+        return LoopView(
+            msg=msg,
+            run_id=state.run_id,
+            turn_index=len(state.turns) + 1,
+            history=history_for_planner(state, self.loop_budget),
+            last_errors=list(state.last_errors),
+            budget_left=budget_left(state, self.loop_budget),
+            max_steps_per_turn=self.loop_budget.max_steps_per_turn,
+            policy=state.planner_policy(),
+            retrieve_memory=retrieve_memory,
+        )
 
-        outcome = "\n".join([r.get("summary") or r.get("error") or "" for r in all_results])
-        compact_steps = [{"description": s.description, "tool": s.tool, "action": s.action, "risk": s.risk, "args_keys": sorted(s.args.keys())} for s in plan.steps]
-        self.memory.add(task=msg.text[:1000], plan=json.dumps(compact_steps, ensure_ascii=False), outcome=outcome[:2000], tags=[msg.channel], channel=msg.channel, actor=msg.sender_id)
+    def _turn_planner(self) -> Any:
+        return self.planner if callable(getattr(self.planner, "next_turn", None)) else LegacyPlannerAdapter(self.planner)
+
+    async def _plan_turn(self, msg: ChannelMessage, state: LoopState) -> PlannerTurn:
+        view = self._view(msg, state)
+        with trace_span("planner.plan", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), channel=msg.channel, actor=msg.sender_id, run_id=state.run_id, turn=view.turn_index):
+            return await self._turn_planner().next_turn(view)
+
+    def _record_turn(self, msg: ChannelMessage, state: LoopState, turn: PlannerTurn) -> TurnRecord:
+        record = TurnRecord(
+            index=len(state.turns) + 1,
+            status=turn.status,
+            source=turn.source,
+            goal=turn.goal,
+            rationale=turn.rationale,
+            final_answer=turn.final_answer[:4000],
+            success_criteria=turn.success_criteria[:1000],
+            llm_calls=turn.llm_calls,
+            tokens=turn.tokens,
+            cost_usd=turn.cost_usd,
+            cost_known=turn.cost_known,
+            errors=list(turn.errors),
+            warnings=list(turn.warnings),
+        )
+        state.turns.append(record)
+        state.llm_calls += turn.llm_calls
+        state.tokens += turn.tokens
+        state.cost_usd += turn.cost_usd
+        state.cost_known = state.cost_known and turn.cost_known
+        state.last_errors = list(turn.errors)
+        provenance = self._turn_provenance(msg, state, turn)
+        if turn.status not in {TURN_DONE, TURN_GIVE_UP} and not turn.errors:
+            steps = turn.steps[: self.loop_budget.max_steps_per_turn]
+            if len(turn.steps) > len(steps):
+                record.warnings.append(f"only the first {len(steps)} of {len(turn.steps)} steps were accepted")
+            for step in steps:
+                added = state.add_step(step, turn=record.index, provenance=provenance)
+                record.step_indexes.append(added.index)
+                state.pending.append(added.index)
+        self._metric("omnidesk_agent_turns_total", status=turn.status, source=turn.source)
+        self._audit_event("agent_turn_planned", {
+            "run_id": state.run_id,
+            "plan_id": state.plan_id,
+            "turn": record.index,
+            "status": record.status,
+            "source": record.source,
+            "steps": [f"{state.step(i).tool}.{state.step(i).action}" for i in record.step_indexes],
+            "errors": len(record.errors),
+            "llm_calls": record.llm_calls,
+            "policy_id": (state.policy or {}).get("policy_id"),
+        })
+        if record.index == 1:
+            self._after_first_plan(msg, state, turn)
+        return record
+
+    @staticmethod
+    def _turn_provenance(msg: ChannelMessage, state: LoopState, turn: PlannerTurn) -> dict[str, Any]:
+        """The taint snapshot for the steps `turn` proposes, after recording what decided them.
+
+        Fresh approval follows the content that decided an action, not the planner
+        that wrote it. The rule planner turns the task text itself into the tool
+        call, so its steps carry the task's trust: clean from local-cli and
+        local-api, tainted from every other channel. A planner that does not
+        report its input (and one with only plan(msg)) is assumed to have seen
+        untrusted text: unknown provenance cannot vouch for anything.
+        """
+        if turn.source in RULE_PLAN_SOURCES:
+            return {**state.observe_inputs([task_item(msg)]), "origin": "rule"}
+        inputs = list(turn.inputs) or [tag_untrusted("planner did not report its model input", source="agent:unreported_planner_input")]
+        return state.observe_inputs(inputs)
+
+    # ------------------------------------------------------------------ steps
+
+    async def _execute_step(self, state: LoopState, step: StepRecord, base_ctx: ToolContext) -> list[StepRecord]:
+        """Run one step and record its result. Returns the steps it adds. Raises ApprovalRequired."""
+        # The step's own snapshot, fixed when it was planned: a resumed step
+        # proposes exactly what was approved, untrusted context included.
+        ctx = replace(base_ctx, step_index=step.index, provenance=step.provenance)
+        args = step.args
+        if "expected_result" not in args:
+            args["expected_result"] = step.description or state.goal
+        scope = state.run_id or state.plan_id
+
+        decision = self.execution_strategy.decide_tool_step(tool=step.tool, action=step.action, args=args, goal=state.goal, scope=scope)
+        if not decision.allowed:
+            state.note_safety_event("execution_strategy_blocked")
+            self._store_result(state, step, ToolResult(False, error=f"Execution skipped: {decision.reason}", summary=f"skipped {step.tool}.{step.action}"))
+            return []
+
         try:
+            with trace_span("tool.call", metrics=getattr(self, "metrics", None), otel_exporter=getattr(self, "otel_exporter", None), run_id=state.run_id, plan_id=state.plan_id, step_index=step.index, tool=step.tool, action=step.action):
+                result = await self._dispatch(state, step, args, ctx)
+        except (ApprovalRequired, AuditIntegrityError):
+            raise
+        except Exception as exc:
+            # Raised outside the registry's own handling (a direct permission check, a vision helper).
+            result = ToolResult(False, data={"error_class": type(exc).__name__, "permission_denied": isinstance(exc, PermissionError)}, error=f"{type(exc).__name__}: {safe_error_text(exc)}", summary=f"step {step.index} raised")
+        self._store_result(state, step, result)
+        if not result.ok:
+            return []
+        note_state_change = getattr(self.execution_strategy, "note_state_change", None)
+        if callable(note_state_change) and not ResultOrientedExecutionStrategy.is_expensive(step.tool, step.action):
+            note_state_change(scope)
+        return self._derived_steps(state, step, result)
+
+    async def _dispatch(self, state: LoopState, step: StepRecord, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if step.origin == ORIGIN_VERIFY:
+            return await self.vision_executor.verify_with_retry(
+                ctx=ctx,
+                instruction=str(args.get("instruction") or state.goal),
+                verification=dict(args.get("verification") or {}),
+                retry_policy=args.get("retry_policy"),
+            )
+        if step.origin == ORIGIN_AUTO_CLICK and step.parent is not None:
+            ground = state.step(step.parent)
+            shot = state.step(ground.parent) if ground.parent is not None else None
+            ground_result = ground.result or {}
+            grounding = ToolResult(bool(ground_result.get("ok")), data=ground_result.get("data"), summary=ground_result.get("summary"))
+            clicked = await self.vision_executor.maybe_click_target(grounding, str(args.get("instruction") or state.goal), ctx, screenshot_metadata=(shot.result or {}).get("data") if shot else None)
+            return clicked if clicked is not None else ToolResult(True, data={"clicked": False}, summary="no grounded target to click")
+        return await self.tools.call(step.tool, step.action, args, ctx)
+
+    def _derived_steps(self, state: LoopState, step: StepRecord, result: ToolResult) -> list[StepRecord]:
+        """Screenshot grounding, grounded clicks and vision verification run as their own steps,
+        so an approval pause on one of them resumes that step, never the action before it."""
+        names = set(self.tools.names()) if callable(getattr(self.tools, "names", None)) else set()
+        expected = str(step.args.get("expected_result") or state.goal)
+        if step.origin == ORIGIN_AUTO_GROUND:
+            parent = state.step(step.parent) if step.parent is not None else None
+            if parent is not None and parent.args.get("auto_click_grounded", False) and "computer" in names:
+                click = PlanStep("click the grounded target", "computer", "click_grounded", {"instruction": str(parent.args.get("expected_result") or state.goal), "expected_result": f"Click grounded target for: {parent.args.get('expected_result') or state.goal}"}, "high", True)
+                # The click target is the vision model's reading of the screen: untrusted.
+                return [state.add_step(click, turn=step.turn, origin=ORIGIN_AUTO_CLICK, parent=step.index, provenance=state.observe_inputs([tool_output_item(step)]))]
+            return []
+        if step.origin != ORIGIN_PLANNER:
+            return []
+        derived: list[StepRecord] = []
+        data = result.data if isinstance(result.data, dict) else {}
+        if step.tool in {"computer", "ui_bridge"} and data.get("image_path") and "vision" in names and step.args.get("auto_ground", True):
+            ground = PlanStep("ground the screenshot", "vision", "ground", {"image_path": data["image_path"], "instruction": expected, "expected_result": f"Ground screenshot for: {expected}"}, "medium", True)
+            derived.append(state.add_step(ground, turn=step.turn, origin=ORIGIN_AUTO_GROUND, parent=step.index))
+        verification = step.args.get("verification")
+        if verification and "vision" in names and "computer" in names:
+            verify = PlanStep("verify the step result", "vision", "verify", {"instruction": expected, "verification": verification, "retry_policy": step.args.get("retry_policy"), "expected_result": f"Verify: {expected}"}, "medium", True)
+            derived.append(state.add_step(verify, turn=step.turn, origin=ORIGIN_VERIFY, parent=step.index))
+        if derived:
+            # These steps send the step's output (a screenshot, the screen) to the vision model.
+            provenance = state.observe_inputs([tool_output_item(step)])
+            for record in derived:
+                record.provenance = dict(provenance)
+        return derived
+
+    def _store_result(self, state: LoopState, step: StepRecord, result: ToolResult) -> None:
+        step.result = sanitize_tool_result(result.ok, result.data, result.error, result.summary)
+        step.status = "done" if result.ok else "failed"
+        data = result.data if isinstance(result.data, dict) else {}
+        step.error_class = None if result.ok else (str(data.get("error_class")) if data.get("error_class") else None)
+        if not result.ok and data.get("permission_denied"):
+            state.note_safety_event("permission_denied")
+        usage = data.get("model_usage") if isinstance(data.get("model_usage"), dict) else None
+        if usage is not None:
+            state.tool_model_calls += int(usage.get("calls") or 1)
+            state.cost_usd += float(usage.get("cost_usd") or 0.0)
+            state.cost_known = state.cost_known and bool(usage.get("cost_known"))
+        elif step.tool == "vision":
+            # A vision step (grounding, or a verification of several) that does not
+            # report its model cost makes the run's cost unknown.
+            state.cost_known = False
+        state.order.append(step.index)
+        self._audit_event("agent_step_finished", {
+            "run_id": state.run_id,
+            "plan_id": state.plan_id,
+            "step_index": step.index,
+            "turn": step.turn,
+            "origin": step.origin,
+            "tool": step.tool,
+            "action": step.action,
+            "ok": result.ok,
+            "error_class": step.error_class,
+        })
+
+    # ------------------------------------------------------------------ pause, finish, persistence
+
+    async def _checkpoint(self, state: LoopState) -> None:
+        if self.run_store is None or state.run_id is None:
+            return
+        current = state.pending[0] if state.pending else (state.order[-1] if state.order else 0)
+        await asyncio.to_thread(self.run_store.update, state.run_id, {
+            "plan_json": json.dumps(state.plan_json(), ensure_ascii=False, default=str),
+            "current_step_index": current,
+            "results_json": json.dumps(state.results(), ensure_ascii=False, default=str),
+        })
+
+    async def _pause(self, msg: ChannelMessage, state: LoopState, approval: ApprovalRequired, segment_started: float) -> dict:
+        halt = await self._stop_reason(state)
+        if halt is not None:
+            # Stopped while this step asked for approval: withdraw the request instead of waiting.
+            if self.approval_store is not None:
+                await asyncio.to_thread(self._deny_pending, approval.approval_id, "system", halt)
+            return await self._finish(msg, state, "cancelled" if halt == "cancelled" else "failed", halt, segment_started)
+        self._release_actuators(state)
+        state.active_seconds += time.time() - segment_started
+        self._metric("omnidesk_approval_waiting_runs_total", tool=str(approval.proposal.get("tool", "")) if isinstance(approval.proposal, dict) else "unknown")
+        blocked = state.pending[0] if state.pending else 0
+        results = state.results()
+        resume_token = None
+        if self.run_store and state.run_id:
+            resume_token = await asyncio.to_thread(self.run_store.save_waiting, state.run_id, state.plan_json(), blocked, results, approval.approval_id, approval.proposal)
+        state.termination = {"reason": "approval_wait", "detail": approval.approval_id}
+        self._observe(state, status="waiting_approval", final=False)
+        return {
+            "status": "waiting_approval",
+            "run_id": state.run_id,
+            "resume_token": resume_token,
+            "approval_id": approval.approval_id,
+            "proposal": approval.proposal,
+            "plan_id": state.plan_id,
+            "goal": state.goal,
+            "current_step_index": blocked,
+            "results": results,
+            "loop": self._loop_summary(state),
+            "learning_assignment": state.learning_assignment,
+        }
+
+    async def _finish(self, msg: ChannelMessage, state: LoopState, status: str, reason: str, segment_started: float, *, detail: str = "", error: Optional[BaseException] = None, audit: bool = True) -> dict:
+        self._release_actuators(state)
+        state.active_seconds += time.time() - segment_started
+        if audit:
+            # Before the run is stored as finished: an outcome that cannot be audited is a failure.
+            try:
+                self._audit_event("agent_run_finished", {"run_id": state.run_id, "plan_id": state.plan_id, "status": status, "termination": reason, **self._loop_summary(state)})
+            except AuditIntegrityError as exc:
+                state.note_safety_event("audit_unavailable")
+                status, reason, detail, error = "failed", "audit_unavailable", "", exc
+        state.termination = {"reason": reason, "detail": detail[:2000]}
+        if error is not None:
+            state.termination["error"] = f"{type(error).__name__}: {safe_error_text(error)}"[:2000]
+        results = state.results()
+        if status != "completed" and not results:
+            # Nothing ran: say why in the results, so the run row explains itself.
+            if error is not None:
+                stage = "audit" if reason == "audit_unavailable" else "planning"
+                results.append({"ok": False, "summary": f"{stage} failed", "error": state.termination["error"], "data": {"stage": stage}})
+            else:
+                rationale = state.turns[0].rationale if state.turns else ""
+                results.append({"ok": False, "summary": (rationale or reason)[:2000], "error": detail or reason, "data": {"stage": "planning"}})
+        if self.run_store and state.run_id:
+            try:
+                await self._checkpoint(state)
+                await asyncio.to_thread(self.run_store.complete, state.run_id, status, results)
+            except Exception as store_exc:
+                if error is not None:
+                    error.add_note(f"run {state.run_id} could not be marked {status}: {type(store_exc).__name__}: {store_exc}")
+                raise
+        self._record_memory(msg, state, status, results)
+        self._observe(state, status=status, final=True, error_class=type(error).__name__ if error is not None else None)
+        self._metric("omnidesk_agent_runs_total", channel=msg.channel, status=status)
+        self._metric("omnidesk_agent_terminations_total", reason=reason)
+        first = state.turns[0] if state.turns else None
+        return {
+            "status": status,
+            "run_id": state.run_id,
+            "resume_token": None,
+            "plan_id": state.plan_id,
+            "goal": (first.goal if first and first.goal else state.goal),
+            "rationale": first.rationale if first else "",
+            "final_answer": state.final_answer,
+            "termination": dict(state.termination),
+            "steps": [asdict(step.plan_step()) for step in state.steps if step.origin == ORIGIN_PLANNER],
+            "results": results,
+            "loop": self._loop_summary(state),
+            "planner_policy": (state.policy or {}).get("policy_id"),
+            "learning_assignment": state.learning_assignment,
+        }
+
+    def _release_actuators(self, state: LoopState) -> None:
+        # The desktop lease is per run: free it whenever the run stops driving it.
+        release = getattr(self.tools, "release_run", None)
+        if callable(release) and state.run_id:
+            release(state.run_id)
+
+    def _restore_state(self, run: dict[str, Any]) -> LoopState:
+        plan_json = run["plan_json"] or {}
+        loop = plan_json.get("agent_loop") if isinstance(plan_json, dict) else None
+        if isinstance(loop, dict):
+            return LoopState.from_dict(loop)
+        # Saved by a release without the loop: finish its one plan from the saved step.
+        plan: Plan = plan_from_dict(plan_json)
+        state = LoopState(goal=plan.goal, plan_id=plan.plan_id, run_id=str(run["id"]))
+        state.prior_results = list(run.get("results") or [])
+        turn = TurnRecord(index=1, status="continue", source="legacy", goal=plan.goal, rationale=plan.rationale)
+        state.turns.append(turn)
+        start = int(run.get("current_step_index") or 0)
+        for position, step in enumerate(plan.steps):
+            record = state.add_step(step, turn=1)
+            turn.step_indexes.append(record.index)
+            if position >= start:
+                state.pending.append(record.index)
+            else:
+                record.status = "done"
+        return state
+
+    def _approval_pending(self, approval_id: str) -> bool:
+        get = getattr(self.approval_store, "get", None)
+        approval = get(approval_id) if callable(get) else None
+        if not isinstance(approval, dict) or approval.get("status") != "pending":
+            return False
+        expires_at = approval.get("expires_at")
+        return not (expires_at and time.time() > float(expires_at))
+
+    def _loop_summary(self, state: LoopState) -> dict[str, Any]:
+        return {
+            "turns": len(state.turns),
+            "steps_executed": state.steps_executed,
+            "llm_calls": state.llm_calls,
+            "tokens": state.tokens,
+            "model_calls": state.llm_calls + state.tool_model_calls,
+            "cost_usd": round(state.cost_usd, 6) if state.cost_known else None,
+            "replans": max(0, len(state.turns) - 1),
+            "active_seconds": round(state.active_seconds, 3),
+        }
+
+    def _record_memory(self, msg: ChannelMessage, state: LoopState, status: str, results: list[dict[str, Any]]) -> None:
+        planner_steps = [step for step in state.steps if step.origin == ORIGIN_PLANNER]
+        compact_steps = [{"description": s.description, "tool": s.tool, "action": s.action, "risk": s.risk, "args_keys": sorted(s.args.keys())} for s in planner_steps]
+        outcome = "\n".join([r.get("summary") or r.get("error") or "" for r in results])
+        try:
+            # Inside the try: the run is already recorded, and a memory error must
+            # not turn it into an exception that makes a job retry its side effects.
+            self.memory.add(task=msg.text[:1000], plan=json.dumps(compact_steps, ensure_ascii=False), outcome=outcome[:2000], tags=[msg.channel], channel=msg.channel, actor=msg.sender_id)
             structured = self.experience_extractor.extract(
                 task=msg.text,
                 plan={"steps": compact_steps},
                 run_result={
                     "status": status,
-                    "run_id": run_id,
-                    "plan_id": plan.plan_id,
-                    "goal": plan.goal,
-                    "steps": [asdict(s) for s in plan.steps],
-                    "results": all_results,
-            "learning_assignment": learning_assignment,
+                    "run_id": state.run_id,
+                    "plan_id": state.plan_id,
+                    "goal": state.goal,
+                    "steps": [asdict(s.plan_step()) for s in planner_steps],
+                    "results": results,
+                    "learning_assignment": state.learning_assignment,
                 },
                 tags=[msg.channel],
             )
             self.memory.add_experience(structured, channel=msg.channel, actor=msg.sender_id)
             self.memory.record_metric(
                 success=status == "completed",
-                manual_intervention=any("approval" in str(r).lower() for r in all_results),
-                tool_error=any((not r.get("ok")) and r.get("error") for r in all_results),
+                manual_intervention=any("approval" in str(r).lower() for r in results),
+                tool_error=any((not r.get("ok")) and r.get("error") for r in results),
                 repeat_failure=bool(structured.get("failure_reason") and structured.get("failure_reason") != "unknown"),
                 skill_reuse=bool(structured.get("reusable_skill")),
                 security_violation=structured.get("failure_reason") == "security_violation",
@@ -254,49 +663,82 @@ class Orchestrator:
                     actor=msg.sender_id,
                     task=msg.text,
                     status=status,
-                    manual_intervention=any("approval" in str(r).lower() for r in all_results),
+                    manual_intervention=any("approval" in str(r).lower() for r in results),
                     safety_violation=structured.get("failure_reason") == "security_violation",
                 )
         except Exception:
             # Learning failures must never break task execution.
             pass
 
-        if self.learning_loop is not None:
-            try:
-                self.learning_loop.observe_result(learning_assignment, status=status, result_count=len(all_results), safety_violation=any("security" in str(r).lower() for r in all_results))
-            except Exception:
-                pass
+    # ------------------------------------------------------------------ learning hook, audit, metrics
 
-        self._metric("omnidesk_agent_runs_total", channel=msg.channel, status=status)
+    def _assign(self, msg: ChannelMessage, state: LoopState) -> None:
+        hook = self.learning_loop
+        if hook is None:
+            return
+        try:
+            if callable(getattr(hook, "assign", None)) and callable(getattr(hook, "observe", None)):
+                state.assignment_protocol = "hook"
+                assignment = hook.assign(msg)
+                if isinstance(assignment, PolicyAssignment):
+                    state.learning_assignment = assignment.to_dict()
+                    state.policy = assignment.policy.to_dict() if assignment.policy else None
+            elif callable(getattr(hook, "assign_policy", None)):
+                # Transitional: the pre-hook RuntimeLearningLoop assigns arms but has no policy.
+                state.assignment_protocol = "legacy"
+                state.learning_assignment = hook.assign_policy(msg)
+        except Exception:
+            state.learning_assignment = None
+            state.policy = None
 
-        return {
-            "status": status,
-            "run_id": run_id,
-            "resume_token": resume_token,
-            "plan_id": plan.plan_id,
-            "goal": plan.goal,
-            "rationale": plan.rationale,
-            "steps": [asdict(s) for s in plan.steps],
-            "results": all_results,
-            "learning_assignment": learning_assignment,
-        }
+    def _after_first_plan(self, msg: ChannelMessage, state: LoopState, turn: PlannerTurn) -> None:
+        after_plan = getattr(self.learning_loop, "after_plan", None)
+        if state.assignment_protocol != "hook" or not callable(after_plan):
+            return
+        try:
+            assignment = PolicyAssignment.from_dict(state.learning_assignment) if state.learning_assignment else None
+            after_plan(msg, assignment, turn)
+        except Exception:
+            pass
+
+    def _observe(self, state: LoopState, *, status: str, final: bool, error_class: Optional[str] = None) -> None:
+        hook = self.learning_loop
+        if hook is None or state.assignment_protocol == "none":
+            return
+        reason = str((state.termination or {}).get("reason") or "")
+        outcome_status = reason if reason in {"planner_error", "blocked"} else status
+        latency_ms = (time.time() - state.started_at) * 1000.0
+        try:
+            if state.assignment_protocol == "hook":
+                assignment = PolicyAssignment.from_dict(state.learning_assignment) if state.learning_assignment else None
+                hook.observe(assignment, RunOutcome(
+                    run_id=state.run_id,
+                    status=outcome_status,
+                    final=final,
+                    termination=reason,
+                    latency_ms=latency_ms,
+                    model_cost_usd=round(state.cost_usd, 6) if state.cost_known else None,
+                    model_calls=state.llm_calls + state.tool_model_calls,
+                    replans=max(0, len(state.turns) - 1),
+                    steps_executed=state.steps_executed,
+                    safety_events=tuple(state.safety_events),
+                    error_class=error_class,
+                ))
+            elif final:
+                hook.observe_result(state.learning_assignment, status=status, result_count=len(state.results()), cost=state.cost_usd, latency_ms=latency_ms, safety_violation=bool(state.safety_events))
+        except Exception:
+            # Learning failures must never break task execution.
+            pass
+
+    def _audit_event(self, event: str, payload: dict[str, Any]) -> None:
+        # Hash-chained entry for loop lifecycle events, where the permission
+        # manager provides it; tool permission decisions are audited by the tools.
+        record = getattr(self.permissions, "record_event", None)
+        if callable(record):
+            record(event, payload)
 
     def _metric(self, name: str, **labels: Any) -> None:
         metrics = getattr(self, "metrics", None)
         inc = getattr(metrics, "inc", None)
         if callable(inc):
             inc(name, **labels)
-
-    @staticmethod
-    def _sanitize_result(result: ToolResult) -> dict:
-        data = result.data
-        if isinstance(data, dict):
-            data = dict(data)
-            for key in ["png_base64", "raw_html", "full_file_content"]:
-                if key in data:
-                    data.pop(key, None)
-                    data[f"{key}_removed"] = True
-            for key in ["stdout", "stderr"]:
-                if isinstance(data.get(key), str) and len(data[key]) > 4000:
-                    data[key] = data[key][:2000] + "\n...[TRUNCATED]...\n" + data[key][-2000:]
-        return {"ok": result.ok, "summary": result.summary, "error": result.error, "data": data}
