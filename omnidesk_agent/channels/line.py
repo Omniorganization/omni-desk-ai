@@ -6,7 +6,9 @@ import os
 from typing import Any
 from omnidesk_agent.config import LineConfig
 from omnidesk_agent.core.models import ChannelMessage
-from omnidesk_agent.channels.http_client import ChannelHttpClient
+from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
+
+LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 class LineChannel:
     name = "line"
@@ -51,7 +53,34 @@ class LineChannel:
                 out.append(ChannelMessage(channel=self.name, sender_id=user_id, thread_id=user_id, message_id=str(message.get("id") or ""), text=text, raw=event))
         return out
 
-    async def send_text(self, recipient: str, text: str, **kwargs) -> None:
+    async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any]:
         if not self.token:
             raise RuntimeError("LINE channel access token is missing")
-        return await self.http.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {self.token}"}, json={"to": recipient, "messages": [{"type": "text", "text": text}]}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        idempotency_key = kwargs.get("idempotency_key")
+        try:
+            # X-Line-Retry-Key (derived from the outbox key) makes LINE reject a
+            # repeat of an accepted push, so a timed-out send can be retried.
+            result = await self.http.post(
+                LINE_PUSH_URL,
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"to": recipient, "messages": [{"type": "text", "text": text}]},
+                idempotency_key=idempotency_key,
+                channel=self.name,
+                idempotent=bool(idempotency_key),
+            )
+        except ChannelHttpError as exc:
+            accepted_request_id = {k.lower(): v for k, v in exc.headers.items()}.get("x-line-accepted-request-id")
+            if exc.status_code == 409 and idempotency_key and accepted_request_id:
+                # An earlier attempt with this retry key was already accepted;
+                # for push, LINE repeats that attempt's sentMessages.
+                body = exc.response_json if isinstance(exc.response_json, dict) else {}
+                sent = body.get("sentMessages") if isinstance(body.get("sentMessages"), list) else []
+                first = sent[0] if sent and isinstance(sent[0], dict) else {}
+                message_id = first.get("id")
+                return {"message_id": None if message_id is None else str(message_id), "request_id": accepted_request_id}
+            raise
+        data = result.data if isinstance(result.data, dict) else {}
+        sent = data.get("sentMessages") if isinstance(data.get("sentMessages"), list) else []
+        first = sent[0] if sent and isinstance(sent[0], dict) else {}
+        message_id = first.get("id")  # documented as a number, sent as a string
+        return {"message_id": None if message_id is None else str(message_id), "request_id": result.request_id}

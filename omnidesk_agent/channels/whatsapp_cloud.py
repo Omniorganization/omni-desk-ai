@@ -58,7 +58,7 @@ class WhatsAppCloudChannel:
                         ))
         return out
 
-    async def send_text(self, recipient: str, text: str, **kwargs) -> None:
+    async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any]:
         if not self.cfg.phone_number_id:
             raise RuntimeError("WhatsApp phone_number_id is missing")
         if not self.token:
@@ -70,4 +70,10 @@ class WhatsAppCloudChannel:
             "type": "text",
             "text": {"body": text},
         }
-        return await self.http.post(url, headers={"Authorization": f"Bearer {self.token}"}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        result = await self.http.post(url, headers={"Authorization": f"Bearer {self.token}"}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        # 200 means Meta accepted the message; delivery failures (for example
+        # 131047 outside the 24h window) arrive later as status webhooks.
+        data = result.data if isinstance(result.data, dict) else {}
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        first = messages[0] if messages and isinstance(messages[0], dict) else {}
+        return {"message_id": first.get("id"), "request_id": result.request_id}

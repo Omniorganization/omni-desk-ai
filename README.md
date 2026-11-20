@@ -3,11 +3,11 @@
 OmniDesk Agent 是一个“本地优先”的多渠道 AI 助理工程骨架，目标是把三类能力合并到一个安全可控的运行时：
 
 1. **Computer-use**：看屏幕、截图、点击、输入、热键、跨软件操作。
-2. **Gateway + channels**：Telegram、WhatsApp Cloud API、WeChat Official Account、Facebook Page / Instagram Graph API、以及用户手动授权的桌面 UI Bridge。
+2. **Gateway + channels**：Telegram、WhatsApp Cloud API、WeChat Official Account、Facebook Page / Instagram Graph API、LINE、Slack、Lark/飞书、钉钉、X、Google Chat、Matrix 等渠道适配器（逐渠道的校验方式见 [docs/NATIVE_CHANNELS.md](docs/NATIVE_CHANNELS.md)），以及用户手动授权的桌面 UI Bridge。
 3. **Agent runtime**：层级规划、经验检索、skills/tools 加载、文件/shell/系统 UI 操作、每一步执行前权限验证。
 4. **OpenClaw-aligned interaction layer**：参考 OpenClaw 的多渠道产品形态，提供渠道生态目录、交互画像学习和 UI Bridge 目标推荐；安全架构仍坚持 OmniDesk 的审批、审计、签名、沙箱和生产闭环。
 
-> 合规边界：本工程不包含绕过登录、破解平台接口、批量骚扰、隐蔽操控个人账号、规避官方限制的代码。WhatsApp/Meta/WeChat 的正式接入默认使用官方 API；对个人账号只能通过“用户当前已登录、用户可见、每步批准”的 UI Bridge 执行桌面操作。
+> 合规边界：本工程不包含绕过登录、破解平台接口、批量骚扰、隐蔽操控个人账号、规避官方限制的代码。WhatsApp/Meta/WeChat 的正式接入默认使用官方 API；对个人账号只能通过 UI Bridge 执行桌面操作：每一步都要批准，审批绑定完整的输入内容；目标软件是否已登录、是否在前台可见，目前由批准人确认，代码不检查前台窗口或登录状态。
 
 ## 快速开始
 
@@ -112,12 +112,15 @@ GitHub `main` 必须保持为源码主干；package-only zip 只能作为 Releas
 
 ## 渠道接入说明
 
-- Telegram：Bot API webhook 或 polling。
+- Telegram：Bot API webhook（校验 `X-Telegram-Bot-Api-Secret-Token`）。getUpdates polling 尚未实现。
 - WhatsApp：WhatsApp Business Platform Cloud API。
-- WeChat：微信公众号 / 服务号消息服务器。
-- Facebook / Instagram：Meta Graph API，适合 Page、Professional/Business 相关能力；个人账号私信自动化不在官方稳定 API 范围内，使用 UI Bridge 时必须每步用户可见并确认。
-- UI Bridge：对 WhatsApp Web、Telegram Desktop、WeChat Desktop、浏览器中的 Meta 页面等已登录软件做屏幕级操作，不保存密码、不绕过 MFA、不隐藏行为。
-- OpenClaw 参考生态：Slack、Discord、Google Chat、Signal、iMessage、Microsoft Teams、Matrix、Mattermost、Zalo、QQ、WebChat、Voice Wake、Live Canvas 等被记录为 `ecosystem_reference`，可用于规划和 UI Bridge 目标推荐，但不会被视为 OmniDesk 原生已支持通道。
+- WeChat：微信公众号 / 服务号消息服务器（仅明文模式；安全模式/兼容模式的 AES 加密未实现）。
+- Facebook / Instagram：Meta Graph API，适合 Page、Professional/Business 相关能力；个人账号私信自动化不在官方稳定 API 范围内，使用 UI Bridge 时每步都需要批准。
+- UI Bridge：对 WhatsApp Web、Telegram Desktop、WeChat Desktop、浏览器中的 Meta 页面等已登录软件做屏幕级操作，不保存密码、不绕过 MFA；输入发往当前获得焦点的窗口。
+- 其他渠道适配器：LINE、Slack、Lark/飞书、钉钉、X、Google Chat、Matrix 在入站时校验提供方自己的签名或令牌。Discord 只有在装了 PyNaCl（未列入依赖）时才校验 Ed25519；Microsoft Teams（未实现 Bot Framework JWT）、QQ（未实现 Ed25519 和 op 13 回调校验）、Signal 和 iMessage（没有提供方签名，需要自建中继）只接受经 OmniDesk HMAC（`x-omnidesk-webhook-signature-256`）重签的流量，仓库里不带这类中继。
+- 投递语义：对没有原生去重的提供方，超时或 5xx 后不会自动重发，而是记为 `ambiguous` 等待对账；HTTP 200 里的错误码（微信 errcode、钉钉、飞书 code、Slack `ok:false`）按失败处理。详见 [docs/NATIVE_CHANNELS.md](docs/NATIVE_CHANNELS.md#delivery-semantics)。
+- 目前没有任何渠道在仓库里提交过真实提供方的联调记录；解析、签名和错误处理是用提供方文档里的样例和录制的报文测试的。
+- OpenClaw 参考生态：Mattermost、Zalo、IRC、Nextcloud Talk、Nostr、Synology Chat、Twitch、WebChat、Voice Wake、Live Canvas 等被记录为 `ecosystem_reference`，可用于规划和 UI Bridge 目标推荐，但不是 OmniDesk 已实现的通道。
 
 ## 后台常驻
 
