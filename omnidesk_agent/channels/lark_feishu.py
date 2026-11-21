@@ -132,19 +132,31 @@ class _BaseLarkFeishuChannel:
         encrypted = isinstance(payload, dict) and isinstance(payload.get("encrypt"), str)
         if self.encrypt_key and not encrypted:
             raise PermissionError(f"{self.name} Encrypt Key is configured but the event is not encrypted")
-        decoded = self._decoded(payload)
-        if not isinstance(decoded, dict):
-            raise PermissionError(f"invalid {self.name} event body")
         if self.encrypt_key:
             signature = header(headers, "x-lark-signature")
-            timestamp = header(headers, "x-lark-request-timestamp")
-            nonce = header(headers, "x-lark-request-nonce")
-            if signature or decoded.get("type") != "url_verification":
-                # Event pushes are signed; only the URL-verification challenge is not.
-                if not signature or not timestamp or not nonce:
-                    raise PermissionError(f"missing {self.name} X-Lark-Signature headers")
-                if not hmac.compare_digest(signature.lower(), lark_signature(timestamp, nonce, self.encrypt_key, body)):
+            if signature:
+                # The signature covers the raw (encrypted) body, so it is checked
+                # before anything is decrypted: unauthenticated ciphertext never
+                # reaches the AES-CBC decryptor.
+                timestamp = header(headers, "x-lark-request-timestamp")
+                nonce = header(headers, "x-lark-request-nonce")
+                if not timestamp or not nonce or not hmac.compare_digest(signature.lower(), lark_signature(timestamp, nonce, self.encrypt_key, body)):
                     raise PermissionError(f"invalid {self.name} X-Lark-Signature")
+                decoded = self._decoded(payload)
+            else:
+                # Only the URL-verification challenge is unsigned. Every failure
+                # here gives the same answer, so a padding or format error is not
+                # distinguishable from a missing signature (no decryption oracle).
+                try:
+                    decoded = self._decoded(payload)
+                except PermissionError:
+                    decoded = None
+                if not isinstance(decoded, dict) or decoded.get("type") != "url_verification":
+                    raise PermissionError(f"missing or invalid {self.name} X-Lark-Signature")
+        else:
+            decoded = payload
+        if not isinstance(decoded, dict):
+            raise PermissionError(f"invalid {self.name} event body")
         supplied = self._event_token(decoded)
         if not token or not isinstance(supplied, str) or not hmac.compare_digest(supplied, token):
             raise PermissionError(f"invalid {self.name} verification token")

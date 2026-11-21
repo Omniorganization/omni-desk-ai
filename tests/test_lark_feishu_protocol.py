@@ -180,3 +180,34 @@ def test_production_lark_accepts_real_signed_traffic_without_the_bridge_header(m
     plain = _event()
     with pytest.raises(PermissionError):
         plaintext.verify_request({}, json.dumps(plain).encode(), {}, plain)
+
+
+def test_unauthenticated_ciphertext_is_never_decrypted_and_errors_are_uniform(monkeypatch):
+    # AES-CBC decryption of attacker-chosen ciphertext with distinguishable
+    # errors is a padding oracle. A signed push is checked before decryption;
+    # an unsigned one (only the challenge may be) fails the same way whether
+    # it does not decrypt or decrypts to something other than the challenge.
+    from omnidesk_agent.channels import lark_feishu
+
+    monkeypatch.setenv("LARK_VERIFICATION_TOKEN", "v-token")
+    monkeypatch.setenv("LARK_ENCRYPT_KEY", "enc-key")
+    monkeypatch.delenv("LARK_WEBHOOK_SECRET", raising=False)
+    channel = LarkChannel(LarkConfig(enabled=True))
+
+    garbage = {"encrypt": base64.b64encode(os.urandom(48)).decode()}
+    body = json.dumps(garbage).encode()
+    decrypt_calls = []
+    real = lark_feishu.decrypt_lark_event
+    monkeypatch.setattr(lark_feishu, "decrypt_lark_event", lambda *args: decrypt_calls.append(args) or real(*args))
+    wrong_sig = {"X-Lark-Request-Timestamp": "1700000000", "X-Lark-Request-Nonce": "n", "X-Lark-Signature": lark_signature("1700000000", "n", "not-the-key", body)}
+    with pytest.raises(PermissionError, match="invalid lark X-Lark-Signature"):
+        channel.verify_request(wrong_sig, body, {}, garbage)
+    assert decrypt_calls == []  # refused before any decryption
+
+    event = {"encrypt": _encrypt(json.dumps(_event()).encode(), "enc-key")}
+    errors = set()
+    for payload in (garbage, event):
+        with pytest.raises(PermissionError) as exc:
+            channel.verify_request({}, json.dumps(payload).encode(), {}, payload)
+        errors.add(str(exc.value))
+    assert errors == {"missing or invalid lark X-Lark-Signature"}
