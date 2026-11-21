@@ -28,6 +28,11 @@ class TokenBudgetConfig:
     # token warning threshold, but they must still respect this per-task call cap.
     per_task_max_llm_calls: Optional[int] = 16
 
+    # Count only the calls of the last N seconds against the cap, so a task id that
+    # is reused over time (a live check, a long-lived conversation) is throttled
+    # instead of locked out for good. None counts every call ever recorded.
+    per_task_window_seconds: Optional[int] = None
+
 
 @dataclass
 class TokenDecision:
@@ -158,7 +163,7 @@ class TokenBudgetManager:
         cache_key = self.make_cache_key(model, truncated_system, truncated_user)
 
         if cfg.per_task_max_llm_calls is not None:
-            used_calls = self.count_calls(task_id)
+            used_calls = self.count_calls_for_cap(task_id)
             if used_calls >= int(cfg.per_task_max_llm_calls):
                 return TokenDecision(
                     allowed=False,
@@ -215,10 +220,27 @@ class TokenBudgetManager:
             verified_required=verified_required,
         )
 
-    def count_calls(self, task_id: str) -> int:
+    def count_calls(self, task_id: str, *, since: Optional[float] = None) -> int:
         with connect_sqlite(self.db_path) as con:
-            row = con.execute("SELECT COUNT(*) FROM llm_usage WHERE task_id = ?", (task_id,)).fetchone()
+            if since is None:
+                row = con.execute("SELECT COUNT(*) FROM llm_usage WHERE task_id = ?", (task_id,)).fetchone()
+            else:
+                row = con.execute(
+                    "SELECT COUNT(*) FROM llm_usage WHERE task_id = ? AND created_at >= ?",
+                    (task_id, float(since)),
+                ).fetchone()
         return int(row[0]) if row else 0
+
+    def count_calls_for_cap(self, task_id: str) -> int:
+        """Calls that count against the per-task cap.
+
+        A storage subclass that overrides count_calls without a time filter keeps
+        counting every call: stricter than the window, never looser.
+        """
+        window = self.config.per_task_window_seconds
+        if not window or type(self).count_calls is not TokenBudgetManager.count_calls:
+            return self.count_calls(task_id)
+        return self.count_calls(task_id, since=time.time() - int(window))
 
     def get_cached(self, cache_key: str) -> Optional[str]:
         if not self.config.enable_cache:

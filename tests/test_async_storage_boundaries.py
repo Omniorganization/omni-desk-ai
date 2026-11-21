@@ -43,6 +43,9 @@ class FakeRunStore:
     def complete(self, run_id, status, results):
         self.completed.append((run_id, status, list(results)))
 
+    def update(self, run_id, fields):
+        assert run_id == "run-1"
+
 
 def test_orchestrator_delegates_sync_run_store_calls_to_thread(monkeypatch):
     calls: list[str] = []
@@ -57,9 +60,12 @@ def test_orchestrator_delegates_sync_run_store_calls_to_thread(monkeypatch):
 
     result = asyncio.run(orchestrator.handle_message(ChannelMessage(channel="test", sender_id="u", text="hello")))
 
-    assert result["status"] == "completed"
-    assert calls == ["create", "complete"]
-    assert run_store.completed == [("run-1", "completed", [])]
+    # An empty plan did nothing, so the run is 'failed', never 'completed'.
+    assert result["status"] == "failed"
+    # Every run-store call, including the loop's checkpoint, went through to_thread.
+    assert calls == ["create", "update", "complete"]
+    assert [(run_id, status) for run_id, status, _ in run_store.completed] == [("run-1", "failed")]
+    assert run_store.completed[0][2][0]["error"] == "plan has no executable steps"
     assert len(orchestrator.memory.writes) == 2
     assert all(row["channel"] == "test" and row["actor"] == "u" for row in orchestrator.memory.writes)
 

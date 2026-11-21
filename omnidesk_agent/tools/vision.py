@@ -6,6 +6,7 @@ import os
 import stat
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.models.base import ModelRequest
@@ -103,6 +104,16 @@ class VisionGroundingTool:
             raise PermissionError(f"image_path content does not match its image type: {path.name}")
         return digest.hexdigest()
 
+    @staticmethod
+    def _call_cap_key(args: dict[str, Any], ctx: ToolContext) -> str:
+        # Per run, never one fixed id: a shared default made every verification
+        # count against a single lifetime cap.
+        if args.get("task_id"):
+            return str(args["task_id"])
+        if ctx.run_id:
+            return f"vision-{ctx.run_id}"
+        return f"vision-{uuid4().hex}"
+
     @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action != "ground":
@@ -137,11 +148,14 @@ class VisionGroundingTool:
             images=[str(image_path)],
             json_mode=True,
             verified_required=True,
-            task_id=str(args.get("task_id", "vision-ground")),
+            task_id=self._call_cap_key(args, ctx),
         ))
         text = resp.text.strip()
         try:
             parsed = json.loads(text)
         except Exception:
             parsed = {"summary": text, "elements": [], "target": None, "confidence": 0}
-        return ToolResult(True, data={"grounding": parsed, "provider": resp.provider, "model": resp.model}, summary="vision grounding completed")
+        usage = resp.usage or {}
+        cost = usage.get("cost_usd") or usage.get("estimated_cost_usd") or 0.0
+        model_usage = {"calls": 1, "cost_usd": float(cost), "cost_known": bool(usage.get("cache_hit") or usage.get("cost_known"))}
+        return ToolResult(True, data={"grounding": parsed, "provider": resp.provider, "model": resp.model, "model_usage": model_usage}, summary="vision grounding completed")

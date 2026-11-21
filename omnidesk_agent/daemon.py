@@ -30,6 +30,7 @@ from omnidesk_agent.channels.x_channel import XChannel
 from omnidesk_agent.channels.http_client import set_channel_offline_mode
 from omnidesk_agent.config import AppConfig
 from omnidesk_agent.validation.production import ProductionConfigError, is_production_mode
+from omnidesk_agent.core.agent_loop import LoopBudget
 from omnidesk_agent.core.execution_strategy import ResultOrientedExecutionStrategy
 from omnidesk_agent.core.llm import RouterLLMAdapter, RuleBasedLLM
 from omnidesk_agent.core.orchestrator import Orchestrator
@@ -105,6 +106,7 @@ class OmniDeskRuntime:
                 max_input_chars=cfg.llm.max_input_chars,
                 max_output_tokens=cfg.llm.max_output_tokens,
                 per_task_max_llm_calls=cfg.llm.per_task_max_llm_calls,
+                per_task_window_seconds=cfg.llm.per_task_window_seconds,
                 cache_ttl_seconds=cfg.llm.cache_ttl_seconds,
                 enable_cache=cfg.llm.enable_cache,
                 require_approval_above_estimated_tokens=cfg.llm.require_approval_above_estimated_tokens,
@@ -142,6 +144,7 @@ class OmniDeskRuntime:
             self.approval_store,
             learning_loop=self.learning_loop,
             dual_approval_store=self.dual_approval_store,
+            loop_budget=LoopBudget.from_config(cfg.agent),
         )
         self.orchestrator.storage_plan = self.storage_plan
         self.webhook_worker: Optional[WebhookWorker] = WebhookWorker(self.job_queue, self.orchestrator)

@@ -1,0 +1,95 @@
+{
+  "id": "recover_from_missing_file",
+  "title": "Recover when the named file does not exist",
+  "task": "Tell me the first line of notes/report.txt. If that file does not exist, list the notes folder and use the report file that is there.",
+  "files": {
+    "notes/report-final.txt": "Quarterly revenue grew 12 percent.\nCosts were flat.\n"
+  },
+  "allow_write": false,
+  "approve": [
+    {
+      "tool": "files",
+      "action": "read_text",
+      "path_prefix": "notes/"
+    }
+  ],
+  "success": [
+    {
+      "type": "status_in",
+      "values": [
+        "completed"
+      ]
+    },
+    {
+      "type": "final_answer_contains",
+      "value": "12 percent"
+    }
+  ],
+  "tags": [
+    "files",
+    "replan"
+  ],
+  "script": [
+    {
+      "status": "continue",
+      "goal": "report the first line",
+      "steps": [
+        {
+          "description": "read the report",
+          "tool": "files",
+          "action": "read_text",
+          "args": {
+            "path": "notes/report.txt"
+          },
+          "risk": "medium",
+          "requires_approval": true,
+          "expected_result": "the report text"
+        }
+      ],
+      "success_criteria": "first line reported"
+    },
+    {
+      "status": "continue",
+      "goal": "report the first line",
+      "steps": [
+        {
+          "description": "list the notes folder",
+          "tool": "files",
+          "action": "list",
+          "args": {
+            "path": "notes"
+          },
+          "risk": "low",
+          "requires_approval": false,
+          "expected_result": "the notes folder listing"
+        }
+      ],
+      "success_criteria": "first line reported"
+    },
+    {
+      "status": "continue",
+      "goal": "report the first line",
+      "steps": [
+        {
+          "description": "read the report that exists",
+          "tool": "files",
+          "action": "read_text",
+          "args": {
+            "path": "notes/report-final.txt"
+          },
+          "risk": "medium",
+          "requires_approval": true,
+          "expected_result": "the report text"
+        }
+      ],
+      "success_criteria": "first line reported"
+    },
+    {
+      "status": "done",
+      "goal": "report the first line",
+      "steps": [],
+      "success_criteria": "first line reported",
+      "final_answer": "notes/report.txt does not exist; notes/report-final.txt starts with: Quarterly revenue grew 12 percent."
+    }
+  ]
+}

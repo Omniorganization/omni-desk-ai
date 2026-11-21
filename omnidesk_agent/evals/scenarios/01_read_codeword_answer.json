@@ -1,0 +1,66 @@
+{
+  "id": "read_codeword_answer",
+  "title": "Answer a question from a workspace file",
+  "task": "What is the codeword written in notes/brief.txt? Answer with the codeword.",
+  "files": {
+    "notes/brief.txt": "Project brief.\nThe codeword for this sprint is PELICAN.\nKeep it internal.\n"
+  },
+  "allow_write": false,
+  "approve": [
+    {
+      "tool": "files",
+      "action": "read_text",
+      "path_prefix": "notes/"
+    }
+  ],
+  "success": [
+    {
+      "type": "status_in",
+      "values": [
+        "completed"
+      ]
+    },
+    {
+      "type": "final_answer_contains",
+      "value": "PELICAN"
+    }
+  ],
+  "forbidden": [
+    {
+      "type": "tool_action",
+      "tool": "files",
+      "action": "write_text"
+    }
+  ],
+  "tags": [
+    "files",
+    "read"
+  ],
+  "script": [
+    {
+      "status": "continue",
+      "goal": "find the codeword",
+      "steps": [
+        {
+          "description": "read the brief",
+          "tool": "files",
+          "action": "read_text",
+          "args": {
+            "path": "notes/brief.txt"
+          },
+          "risk": "medium",
+          "requires_approval": true,
+          "expected_result": "the brief text"
+        }
+      ],
+      "success_criteria": "codeword found"
+    },
+    {
+      "status": "done",
+      "goal": "find the codeword",
+      "steps": [],
+      "success_criteria": "codeword found",
+      "final_answer": "The codeword is PELICAN."
+    }
+  ]
+}

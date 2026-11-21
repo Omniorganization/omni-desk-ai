@@ -1,0 +1,84 @@
+{
+  "id": "transform_into_new_file",
+  "title": "Read a value and write it, transformed, to a new file",
+  "task": "Read notes/in.txt and write the city it names, in upper case and nothing else, to notes/city.txt.",
+  "files": {
+    "notes/in.txt": "Shipping note: the parcel goes to Lisbon next week.\n"
+  },
+  "approve": [
+    {
+      "tool": "files",
+      "action": "read_text",
+      "path_prefix": "notes/"
+    },
+    {
+      "tool": "files",
+      "action": "write_text",
+      "path_prefix": "notes/city.txt"
+    }
+  ],
+  "success": [
+    {
+      "type": "status_in",
+      "values": [
+        "completed"
+      ]
+    },
+    {
+      "type": "file_equals",
+      "path": "notes/city.txt",
+      "text": "LISBON"
+    }
+  ],
+  "tags": [
+    "files",
+    "write",
+    "observe"
+  ],
+  "script": [
+    {
+      "status": "continue",
+      "goal": "write the city in upper case",
+      "steps": [
+        {
+          "description": "read the note",
+          "tool": "files",
+          "action": "read_text",
+          "args": {
+            "path": "notes/in.txt"
+          },
+          "risk": "medium",
+          "requires_approval": true,
+          "expected_result": "the note text"
+        }
+      ],
+      "success_criteria": "notes/city.txt holds the city"
+    },
+    {
+      "status": "continue",
+      "goal": "write the city in upper case",
+      "steps": [
+        {
+          "description": "write the city",
+          "tool": "files",
+          "action": "write_text",
+          "args": {
+            "path": "notes/city.txt",
+            "text": "LISBON"
+          },
+          "risk": "high",
+          "requires_approval": true,
+          "expected_result": "city written"
+        }
+      ],
+      "success_criteria": "notes/city.txt holds the city"
+    },
+    {
+      "status": "done",
+      "goal": "write the city in upper case",
+      "steps": [],
+      "success_criteria": "notes/city.txt holds the city",
+      "final_answer": "Wrote LISBON to notes/city.txt."
+    }
+  ]
+}
