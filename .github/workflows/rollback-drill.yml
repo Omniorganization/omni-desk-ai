@@ -114,7 +114,7 @@ jobs:
           OMNIDESK_DEPLOY_NAMESPACE: ${{ vars.OMNIDESK_STAGING_NAMESPACE }}
           OMNIDESK_DEPLOYMENT_NAME: ${{ vars.OMNIDESK_STAGING_DEPLOYMENT_NAME }}
           OMNIDESK_CONTAINER_NAME: ${{ vars.OMNIDESK_STAGING_CONTAINER_NAME }}
-          OMNIDESK_IMAGE: ${{ vars.OMNIDESK_STAGING_IMAGE }}
+          OMNIDESK_IMAGE_REPOSITORY: ${{ vars.OMNIDESK_STAGING_IMAGE_REPOSITORY }}
           OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_STAGING_HOST }}
           OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
           OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
@@ -122,13 +122,20 @@ jobs:
         run: |
           artifact="$(find current -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$artifact"
+          # Image modes deploy repository@<this artifact's digest>, so the two deploys differ.
+          if [[ -n "${OMNIDESK_IMAGE_REPOSITORY:-}" ]]; then export OMNIDESK_IMAGE="$OMNIDESK_IMAGE_REPOSITORY@$OMNIDESK_IMAGE_DIGEST"; fi
+          echo "CURRENT_DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$OMNIDESK_EXPECTED_VERSION" --artifact-sha256 "$CURRENT_SHA" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Current staging smoke
+        if: ${{ inputs.deploy_mode != 'noop' }}
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
           OMNIDESK_SMOKE_ADMIN_TOKEN: ${{ secrets.OMNIDESK_STAGING_ADMIN_TOKEN }}
           CURRENT_VERSION: ${{ inputs.current_version }}
-        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "$CURRENT_VERSION" --expected-artifact-sha256 "$CURRENT_SHA"
+        run: |
+          identity=(--expected-version "$CURRENT_VERSION" --expected-artifact-sha256 "$CURRENT_SHA")
+          if [[ "${{ inputs.deploy_mode }}" != "systemd" ]]; then identity+=(--expected-image-digest "$CURRENT_IMAGE_DIGEST"); fi
+          python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo "${identity[@]}"
       - name: Roll back to previous artifact
         env:
           OMNIDESK_DEPLOY_MODE: ${{ inputs.deploy_mode }}
@@ -140,7 +147,7 @@ jobs:
           OMNIDESK_DEPLOY_NAMESPACE: ${{ vars.OMNIDESK_STAGING_NAMESPACE }}
           OMNIDESK_DEPLOYMENT_NAME: ${{ vars.OMNIDESK_STAGING_DEPLOYMENT_NAME }}
           OMNIDESK_CONTAINER_NAME: ${{ vars.OMNIDESK_STAGING_CONTAINER_NAME }}
-          OMNIDESK_IMAGE: ${{ vars.OMNIDESK_STAGING_IMAGE }}
+          OMNIDESK_IMAGE_REPOSITORY: ${{ vars.OMNIDESK_STAGING_IMAGE_REPOSITORY }}
           OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_STAGING_HOST }}
           OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
           OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
@@ -148,10 +155,59 @@ jobs:
         run: |
           artifact="$(find previous -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$artifact"
+          if [[ -n "${OMNIDESK_IMAGE_REPOSITORY:-}" ]]; then export OMNIDESK_IMAGE="$OMNIDESK_IMAGE_REPOSITORY@$OMNIDESK_IMAGE_DIGEST"; fi
+          echo "ROLLBACK_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$OMNIDESK_EXPECTED_VERSION" --artifact-sha256 "$PREVIOUS_SHA" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Rollback staging smoke
+        if: ${{ inputs.deploy_mode != 'noop' }}
         env:
           OMNIDESK_SMOKE_BASE_URL: ${{ vars.OMNIDESK_STAGING_BASE_URL }}
           OMNIDESK_SMOKE_ADMIN_TOKEN: ${{ secrets.OMNIDESK_STAGING_ADMIN_TOKEN }}
           PREVIOUS_VERSION: ${{ inputs.previous_version }}
-        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --expected-version "$PREVIOUS_VERSION" --expected-artifact-sha256 "$PREVIOUS_SHA"
+        run: |
+          identity=(--expected-version "$PREVIOUS_VERSION" --expected-artifact-sha256 "$PREVIOUS_SHA")
+          if [[ "${{ inputs.deploy_mode }}" != "systemd" ]]; then identity+=(--expected-image-digest "$PREVIOUS_IMAGE_DIGEST"); fi
+          python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo "${identity[@]}"
+          echo "ROLLBACK_VERIFIED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: Rollback drill report
+        if: always()
+        env:
+          DEPLOY_MODE: ${{ inputs.deploy_mode }}
+          CURRENT_VERSION: ${{ inputs.current_version }}
+          PREVIOUS_VERSION: ${{ inputs.previous_version }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          mkdir -p reports/rollback-drill
+          python - <<'PY'
+          import json, os
+          from datetime import datetime
+          env = os.environ
+          def ts(name):
+              value = env.get(name)
+              return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ") if value else None
+          started, verified = ts("ROLLBACK_STARTED_AT"), ts("ROLLBACK_VERIFIED_AT")
+          noop = env["DEPLOY_MODE"] == "noop"
+          report = {
+              "schema": "omnidesk-rollback-drill-run/v1",
+              # A noop run deploys nothing: it is an artifact dry run, never drill evidence.
+              "evidence": not noop and env["JOB_STATUS"] == "success",
+              "status": "dry_run" if noop else env["JOB_STATUS"],
+              "deploy_mode": env["DEPLOY_MODE"],
+              "workflow_run": f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}",
+              "current": {"version": env["CURRENT_VERSION"], "artifact_sha256": env.get("CURRENT_SHA"), "image_digest": env.get("CURRENT_IMAGE_DIGEST"), "deployed_at": env.get("CURRENT_DEPLOYED_AT")},
+              "previous": {"version": env["PREVIOUS_VERSION"], "artifact_sha256": env.get("PREVIOUS_SHA"), "image_digest": env.get("PREVIOUS_IMAGE_DIGEST")},
+              "rollback_started_at": env.get("ROLLBACK_STARTED_AT"),
+              "rollback_verified_at": env.get("ROLLBACK_VERIFIED_AT"),
+              "rollback_seconds": (verified - started).total_seconds() if started and verified else None,
+          }
+          with open("reports/rollback-drill/rollback-drill-run.json", "w") as handle:
+              json.dump(report, handle, indent=2)
+          print(json.dumps(report, indent=2))
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rollback-drill-run
+          path: reports/rollback-drill/
+          if-no-files-found: error
+

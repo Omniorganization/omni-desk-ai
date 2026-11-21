@@ -1,0 +1,11 @@
+# Lets rootless Podman (the sandbox runner's container engine) create user
+# namespaces under Ubuntu 24.04's kernel.apparmor_restrict_unprivileged_userns=1,
+# without disabling that restriction for any other program.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile omnidesk-podman /usr/bin/podman flags=(unconfined) {
+  userns,
+
+  include if exists <local/omnidesk-podman>
+}

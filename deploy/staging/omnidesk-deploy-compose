@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""Deploy one digest-pinned OmniDesk gateway image on the single staging host.
+
+Installed root-owned at /usr/local/bin/omnidesk-deploy-compose. The CI deploy
+user may run exactly this command through sudo (deploy/staging/sudoers); it is
+never in the docker group. CI verifies release signatures and attestations
+before calling it; this helper pins the image by that verified digest, so what
+runs is byte-for-byte what was verified.
+
+  up                            start the whole stack with the current release (boot / bootstrap)
+  deploy   --image REPO@sha256:D --expected-version V [--artifact-sha256 S]
+  rollback                      redeploy the release that was live before the last deploy
+  status
+  smoke    [--strict-sandbox]   post-deploy smoke from inside the gateway container (host secrets
+                                never leave the host)
+  backup                        pg_dump, checksum, pg_restore --list verify, node_exporter metrics
+  restore-drill                 restore the newest backup into a scratch database and measure RPO/RTO
+  maintenance                   VACUUM (ANALYZE) with before/after health and bloat figures
+  provision-secret NAME         store one operator secret read from stdin (allowlisted names)
+
+On a failed deploy (pull error, container never healthy, wrong identity on
+/health) it restores the previous release and verifies it came back. Every
+outcome is one JSON line on stdout and appended to the deploy history.
+
+Exit codes: 0 deployed/rolled back as asked, 3 refused (bad input, nothing
+changed), 4 new release failed and the previous one was restored, 5 restore
+failed too (page the operator).
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+STATE_DIR = Path(os.environ.get("OMNIDESK_STAGING_STATE_DIR", "/etc/omnidesk/staging"))
+COMPOSE_DIR = Path(os.environ.get("OMNIDESK_STAGING_COMPOSE_DIR", "/opt/omnidesk/staging"))
+HISTORY = Path(os.environ.get("OMNIDESK_STAGING_DEPLOY_HISTORY", "/var/log/omnidesk/deploy-history.jsonl"))
+HEALTH_BASE = os.environ.get("OMNIDESK_STAGING_HEALTH_BASE", "http://127.0.0.1:18789")
+COMPOSE_FILES = ("docker-compose.full.yml", "compose.staging.yml")
+SERVICE = "omnidesk"
+IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,200}@sha256:[0-9a-f]{64}$")
+VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$")
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class Refused(Exception):
+    pass
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _write_private(path: Path, text: str) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(temporary, path)
+
+
+def _release_text(release: dict[str, str]) -> str:
+    return "".join(f"{key}={release[key]}\n" for key in sorted(release))
+
+
+def _compose(*args: str, timeout: int = 600) -> subprocess.CompletedProcess:
+    """Run docker compose with secrets (compose.env) plus the release pins (release.env)."""
+    combined = {**_read_env(STATE_DIR / "compose.env"), **_read_env(STATE_DIR / "release.env")}
+    runtime_env = STATE_DIR / ".compose.runtime.env"
+    _write_private(runtime_env, _release_text(combined))
+    command = ["docker", "compose", "--project-name", "omnidesk", "--env-file", str(runtime_env)]
+    for name in COMPOSE_FILES:
+        command += ["-f", str(COMPOSE_DIR / name)]
+    return subprocess.run(command + list(args), cwd=COMPOSE_DIR, text=True, capture_output=True, timeout=timeout)
+
+
+def _get_json(path: str) -> tuple[int, dict]:
+    try:
+        with urllib.request.urlopen(HEALTH_BASE + path, timeout=3) as response:  # nosec B310 - fixed loopback URL
+            return int(response.status), json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return int(exc.code), {}
+    except (urllib.error.URLError, OSError, ValueError):
+        return 0, {}
+
+
+def _wait_healthy(release: dict[str, str], timeout: int) -> tuple[bool, dict]:
+    """Wait until /health reports this release's identity and /ready is 200."""
+    deadline = time.monotonic() + timeout
+    last: dict = {}
+    while time.monotonic() < deadline:
+        status, health = _get_json("/health")
+        ready_status, _ = _get_json("/ready")
+        last = {"health_status": status, "ready_status": ready_status, "health": health}
+        identity_ok = (
+            health.get("image_digest") == release["OMNIDESK_IMAGE_DIGEST"]
+            and health.get("version") == release["OMNIDESK_EXPECTED_VERSION"]
+            and (not release.get("OMNIDESK_EXPECTED_ARTIFACT_SHA256") or health.get("artifact_sha256") == release["OMNIDESK_EXPECTED_ARTIFACT_SHA256"])
+        )
+        if status == 200 and ready_status == 200 and identity_ok:
+            return True, last
+        time.sleep(3)
+    return False, last
+
+
+def _migrate(image: str) -> tuple[bool, str]:
+    """Apply the release's AppSync migrations before it serves traffic.
+
+    Migrations must be additive (expand/contract) so the previous release still
+    runs on the migrated schema during a rollback.
+    """
+    env = _read_env(STATE_DIR / "compose.env")
+    dsn = env.get("OMNIDESK_APPSYNC_POSTGRES_DSN") or env.get("OMNIDESK_POSTGRES_DSN", "")
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "omnidesk_omnidesk-private", "-e", "OMNIDESK_APPSYNC_POSTGRES_DSN",
+         image, "python", "-m", "omnidesk_agent.appsync.migrate", "--namespace", env.get("OMNIDESK_STORAGE_NAMESPACE", "staging")],
+        env={**os.environ, "OMNIDESK_APPSYNC_POSTGRES_DSN": dsn}, text=True, capture_output=True, timeout=600,
+    )
+    return result.returncode == 0, (result.stdout + result.stderr)[-1500:]
+
+
+def _activate(release: dict[str, str]) -> tuple[bool, str]:
+    _write_private(STATE_DIR / "release.env", _release_text(release))
+    result = _compose("up", "-d", "--no-deps", "--force-recreate", SERVICE)
+    return result.returncode == 0, (result.stderr or result.stdout)[-2000:]
+
+
+def _record(entry: dict) -> None:
+    HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    with HISTORY.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    print(json.dumps(entry, sort_keys=True))
+
+
+def _restore(previous: dict[str, str], timeout: int) -> tuple[bool, float, dict]:
+    started = time.monotonic()
+    if not previous:
+        return False, 0.0, {"reason": "no previous release to restore"}
+    ok, output = _activate(previous)
+    healthy, last = _wait_healthy(previous, timeout) if ok else (False, {"compose": output})
+    return healthy, round(time.monotonic() - started, 1), last
+
+
+def deploy(args) -> int:
+    image, version, artifact = args.image, args.expected_version, args.artifact_sha256 or ""
+    if not IMAGE_RE.match(image) or not VERSION_RE.match(version) or (artifact and not SHA_RE.match(artifact)):
+        raise Refused("image must be REPO@sha256:<64 hex>, version and artifact sha256 must be well formed")
+    digest = image.rsplit("@", 1)[1]
+    current = _read_env(STATE_DIR / "release.env")
+    release = {"OMNIDESK_IMAGE": image, "OMNIDESK_IMAGE_DIGEST": digest, "OMNIDESK_EXPECTED_VERSION": version}
+    if artifact:
+        release["OMNIDESK_EXPECTED_ARTIFACT_SHA256"] = artifact
+    entry = {"action": "deploy", "at": _now(), "image": image, "version": version, "previous_image": current.get("OMNIDESK_IMAGE")}
+    started = time.monotonic()
+    pulled = subprocess.run(["docker", "pull", image], text=True, capture_output=True, timeout=900)
+    if pulled.returncode != 0:
+        entry.update(status="refused", reason="image pull failed; nothing changed", detail=pulled.stderr[-800:])
+        _record(entry)
+        return 3
+    older = _read_env(STATE_DIR / "release.previous.env")
+    migrated, migrate_output = _migrate(image)
+    entry["migrations"] = migrate_output[-600:]
+    if not migrated:
+        entry.update(status="refused", reason="migrations failed; the running release was not touched")
+        _record(entry)
+        return 3
+    if current:
+        _write_private(STATE_DIR / "release.previous.env", _release_text(current))
+    ok, output = _activate(release)
+    healthy, last = _wait_healthy(release, args.timeout) if ok else (False, {"compose": output})
+    entry["deploy_seconds"] = round(time.monotonic() - started, 1)
+    if healthy:
+        entry.update(status="deployed", health=last.get("health"))
+        _record(entry)
+        return 0
+    entry.update(status="failed", failure=last)
+    restored, seconds, restored_state = _restore(current, args.timeout)
+    entry.update(automatic_rollback=bool(current), restored=restored, rollback_seconds=seconds, restored_state=restored_state)
+    if restored:
+        entry["status"] = "rolled_back_after_failed_deploy"
+        # The failed release never went live: keep the rollback target as it was.
+        if older:
+            _write_private(STATE_DIR / "release.previous.env", _release_text(older))
+        else:
+            (STATE_DIR / "release.previous.env").unlink(missing_ok=True)
+    _record(entry)
+    return 4 if restored else 5
+
+
+def rollback(args) -> int:
+    previous = _read_env(STATE_DIR / "release.previous.env")
+    current = _read_env(STATE_DIR / "release.env")
+    if not previous:
+        raise Refused("no previous release recorded")
+    entry = {"action": "rollback", "at": _now(), "from_image": current.get("OMNIDESK_IMAGE"), "to_image": previous.get("OMNIDESK_IMAGE")}
+    restored, seconds, state = _restore(previous, args.timeout)
+    if restored and current:
+        _write_private(STATE_DIR / "release.previous.env", _release_text(current))
+    entry.update(status="rolled_back" if restored else "rollback_failed", rollback_seconds=seconds, health=state.get("health"))
+    _record(entry)
+    return 0 if restored else 5
+
+
+def status(_args) -> int:
+    code, health = _get_json("/health")
+    ready, _ = _get_json("/ready")
+    print(json.dumps({"release": _read_env(STATE_DIR / "release.env"), "health_status": code, "ready_status": ready, "health": health}, sort_keys=True))
+    return 0
+
+
+BACKUP_DIR = Path(os.environ.get("OMNIDESK_STAGING_BACKUP_DIR", "/var/lib/omnidesk/backups"))
+TEXTFILE_DIR = Path(os.environ.get("OMNIDESK_TEXTFILE_DIR", "/var/lib/omnidesk/textfile"))
+SCRIPTS_DIR = COMPOSE_DIR / "scripts"
+POSTGRES_CONTAINER = "omnidesk-postgres"
+GATEWAY_CONTAINER = "omnidesk-agent"
+KEEP_BACKUPS = 7
+# name -> (file, owner uid, mode) for secrets read by non-root containers, or
+# "env" for values the gateway reads from compose.env.
+PROVISIONABLE = {
+    "model-api-key": "env:OMNIDESK_MODEL_API_KEY",
+    "alert-telegram-bot-token": "file:alert-telegram-bot-token:65534",
+}
+
+
+def _psql(sql: str, *, database: str = "omnidesk", timeout: int = 600) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["docker", "exec", "-i", "-u", "postgres", POSTGRES_CONTAINER, "psql", "--no-psqlrc", "-v", "ON_ERROR_STOP=1",
+         "--tuples-only", "--no-align", "-d", database],
+        input=sql, text=True, capture_output=True, timeout=timeout,
+    )
+
+
+def _db_name() -> str:
+    name = _read_env(STATE_DIR / "compose.env").get("OMNIDESK_POSTGRES_DB", "omnidesk")
+    if not re.fullmatch(r"[a-z_][a-z0-9_]{0,40}", name):
+        raise Refused("unexpected database name")
+    return name
+
+
+COUNT_TABLES_SQL = (
+    "SELECT format('SELECT %L || ''='' || count(*) FROM %I.%I;', schemaname || '.' || relname, schemaname, relname) "
+    "FROM pg_stat_user_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY 1 \\gexec\n"
+)
+
+
+def _parse_counts(text: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        if "=" in line:
+            name, value = line.rsplit("=", 1)
+            if value.strip().isdigit():
+                counts[name.strip()] = int(value)
+    return counts
+
+
+def _table_counts(database: str) -> dict[str, int]:
+    """Exact row counts of every user table."""
+    return _parse_counts(_psql(COUNT_TABLES_SQL, database=database).stdout)
+
+
+class _Snapshot:
+    """Hold a REPEATABLE READ transaction and export its snapshot.
+
+    pg_dump --snapshot=<id> then dumps exactly what this transaction sees, so
+    the row counts taken here describe the dump byte for byte even while the
+    gateway keeps writing.
+    """
+
+    def __init__(self, database: str):
+        self.process = subprocess.Popen(
+            ["docker", "exec", "-i", "-u", "postgres", POSTGRES_CONTAINER, "psql", "--no-psqlrc", "-q", "--tuples-only",
+             "--no-align", "-v", "ON_ERROR_STOP=1", "-d", database],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+    def _run(self, sql: str) -> list[str]:
+        sentinel = "omnidesk-snapshot-sentinel-" + os.urandom(6).hex()
+        assert self.process.stdin and self.process.stdout
+        self.process.stdin.write(sql + f"\nSELECT '{sentinel}';\n")
+        self.process.stdin.flush()
+        lines: list[str] = []
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise Refused("snapshot session ended unexpectedly")
+            if line.strip() == sentinel:
+                return lines
+            lines.append(line.rstrip("\n"))
+
+    def export(self) -> str:
+        lines = self._run("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\nSELECT pg_export_snapshot();")
+        snapshot = next((line for line in lines if re.fullmatch(r"[0-9A-F]+-[0-9A-F]+(-[0-9]+)?", line.strip())), "")
+        if not snapshot:
+            raise Refused("could not export a snapshot")
+        return snapshot.strip()
+
+    def counts(self) -> dict[str, int]:
+        return _parse_counts("\n".join(self._run(COUNT_TABLES_SQL)))
+
+    def close(self) -> None:
+        if self.process.stdin:
+            try:
+                self.process.stdin.write("COMMIT;\n\\q\n")
+                self.process.stdin.close()
+            except OSError:
+                pass
+        try:
+            self.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+
+def _write_textfile(metrics: dict[str, float]) -> None:
+    TEXTFILE_DIR.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for name, value in metrics.items():
+        lines += [f"# TYPE {name} gauge", f"{name} {value}"]
+    temporary = TEXTFILE_DIR / ".omnidesk_backup.prom.tmp"
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, TEXTFILE_DIR / "omnidesk_backup.prom")
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def backup(_args) -> int:
+    database = _db_name()
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(BACKUP_DIR, 0o700)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = BACKUP_DIR / f"omnidesk-{stamp}.dump"
+    started = time.monotonic()
+    entry = {"action": "backup", "at": _now(), "file": str(target)}
+    snapshot = _Snapshot(database)
+    try:
+        snapshot_id = snapshot.export()
+        counts = snapshot.counts()
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            # Peer authentication inside the container: no DSN or password on any command line.
+            dump = subprocess.run(["docker", "exec", "-u", "postgres", POSTGRES_CONTAINER, "pg_dump", "--format=custom",
+                                   "--no-owner", "--no-acl", f"--snapshot={snapshot_id}", "-d", database],
+                                  stdout=handle, stderr=subprocess.PIPE, timeout=3600)
+    finally:
+        snapshot.close()
+    completed_at = time.time()
+    verify_ok = False
+    if dump.returncode == 0 and target.stat().st_size > 0:
+        with target.open("rb") as handle:
+            listing = subprocess.run(["docker", "exec", "-i", "-u", "postgres", POSTGRES_CONTAINER, "pg_restore", "--list"],
+                                     stdin=handle, capture_output=True, timeout=600)
+        verify_ok = listing.returncode == 0 and b"TABLE DATA" in listing.stdout
+    digest = _sha256(target) if target.exists() else ""
+    manifest = {
+        "schema": "omnidesk-postgres-backup/v1", "file": target.name, "sha256": digest,
+        "size_bytes": target.stat().st_size if target.exists() else 0, "database": database,
+        "completed_at": completed_at, "table_live_rows": counts, "verified": verify_ok,
+    }
+    manifest_path = target.with_suffix(".json")
+    _write_private(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    duration = round(time.monotonic() - started, 2)
+    metrics = {"omnidesk_backup_last_verify_success": 1.0 if verify_ok else 0.0, "omnidesk_backup_last_duration_seconds": duration,
+               "omnidesk_backup_last_size_bytes": float(manifest["size_bytes"])}
+    if dump.returncode == 0 and verify_ok:
+        metrics["omnidesk_backup_last_success_timestamp_seconds"] = round(completed_at, 3)
+    else:
+        previous = (TEXTFILE_DIR / "omnidesk_backup.prom")
+        for line in previous.read_text(encoding="utf-8").splitlines() if previous.exists() else []:
+            if line.startswith("omnidesk_backup_last_success_timestamp_seconds "):
+                metrics["omnidesk_backup_last_success_timestamp_seconds"] = float(line.split()[1])
+    _write_textfile(metrics)
+    for old in sorted(BACKUP_DIR.glob("omnidesk-*.dump"))[:-KEEP_BACKUPS]:
+        old.unlink(missing_ok=True)
+        old.with_suffix(".json").unlink(missing_ok=True)
+    entry.update(status="verified" if (dump.returncode == 0 and verify_ok) else "failed", sha256=digest,
+                 size_bytes=manifest["size_bytes"], duration_seconds=duration, tables=len(counts),
+                 stderr=dump.stderr.decode(errors="replace")[-500:] if dump.returncode else "")
+    _record(entry)
+    return 0 if entry["status"] == "verified" else 1
+
+
+def restore_drill(_args) -> int:
+    """Back up, then restore into a scratch database and prove the restore is complete and usable.
+
+    RPO here is the data-loss window of restoring this backup: writes made after the
+    backup finished (a marker inserted after it must be absent from the restore).
+    RTO is the time from starting the restore to a restored database that passes
+    the release's own schema check.
+    """
+    database = _db_name()
+    marker_table = "omnidesk_ops_drill_markers"
+    drill_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    entry = {"action": "restore-drill", "at": _now(), "drill_id": drill_id}
+    created = _psql(f"CREATE TABLE IF NOT EXISTS {marker_table} (id text PRIMARY KEY, phase text NOT NULL, at timestamptz NOT NULL DEFAULT now());\n"
+                    f"INSERT INTO {marker_table} (id, phase) VALUES ('{drill_id}-before', 'before-backup');", database=database)
+    if created.returncode != 0:
+        raise Refused("cannot write the drill marker: " + created.stderr[-300:])
+    code = backup(_args)
+    newest = sorted(BACKUP_DIR.glob("omnidesk-*.dump"))[-1] if code == 0 else None
+    if newest is None:
+        entry.update(status="failed", reason="backup failed")
+        _record(entry)
+        return 1
+    manifest = json.loads(newest.with_suffix(".json").read_text(encoding="utf-8"))
+    _psql(f"INSERT INTO {marker_table} (id, phase) VALUES ('{drill_id}-after', 'after-backup');", database=database)
+    incident_at = time.time()
+    scratch = f"omnidesk_restore_drill_{drill_id.lower().replace('t', '_').replace('z', '')}"
+    restore_started = time.monotonic()
+    _psql(f"DROP DATABASE IF EXISTS {scratch};", database="postgres")
+    created_db = _psql(f"CREATE DATABASE {scratch};", database="postgres")
+    with newest.open("rb") as handle:
+        restored = subprocess.run(["docker", "exec", "-i", "-u", "postgres", POSTGRES_CONTAINER, "pg_restore", "--exit-on-error",
+                                   "--no-owner", "--no-acl", "-d", scratch], stdin=handle, capture_output=True, timeout=3600)
+    restored_counts = _table_counts(scratch) if restored.returncode == 0 else {}
+    markers = _psql(f"SELECT id FROM {marker_table} ORDER BY id;", database=scratch).stdout.split()
+    # Exact row counts on both sides for every table in the backup manifest.
+    mismatches = {name: (count, restored_counts.get(name)) for name, count in manifest["table_live_rows"].items()
+                  if name != f"public.{marker_table}" and restored_counts.get(name) != count}
+    schema_ok = False
+    release = _read_env(STATE_DIR / "release.env")
+    env = _read_env(STATE_DIR / "compose.env")
+    if restored.returncode == 0 and release.get("OMNIDESK_IMAGE"):
+        dsn = re.sub(r"/[^/?]+(\?|$)", f"/{scratch}\\1", env.get("OMNIDESK_POSTGRES_DSN", ""), count=1)
+        check = subprocess.run(["docker", "run", "--rm", "--network", "omnidesk_omnidesk-private", "-e", "OMNIDESK_APPSYNC_POSTGRES_DSN",
+                                release["OMNIDESK_IMAGE"], "python", "-m", "omnidesk_agent.appsync.migrate", "--check",
+                                "--namespace", env.get("OMNIDESK_STORAGE_NAMESPACE", "staging")],
+                               env={**os.environ, "OMNIDESK_APPSYNC_POSTGRES_DSN": dsn}, capture_output=True, text=True, timeout=300)
+        schema_ok = check.returncode == 0
+        entry["schema_check"] = (check.stdout or check.stderr)[-500:]
+    rto = round(time.monotonic() - restore_started, 2)
+    backup_verified = bool(manifest.get("verified")) and _sha256(newest) == manifest.get("sha256")
+    restore_verified = (created_db.returncode == 0 and restored.returncode == 0 and not mismatches
+                        and f"{drill_id}-before" in markers and f"{drill_id}-after" not in markers and schema_ok)
+    _psql(f"DROP DATABASE IF EXISTS {scratch};", database="postgres")
+    entry.update(
+        status="verified" if (backup_verified and restore_verified) else "failed",
+        backup_file=newest.name, backup_sha256=manifest.get("sha256"), backup_verified=backup_verified,
+        restore_verified=restore_verified, tables_compared=len(manifest["table_live_rows"]), row_count_mismatches=mismatches,
+        marker_before_backup_restored=f"{drill_id}-before" in markers, marker_after_backup_absent=f"{drill_id}-after" not in markers,
+        schema_check_passed=schema_ok, rpo_seconds=round(incident_at - manifest["completed_at"], 2), rto_seconds=rto,
+        rpo_objective_seconds=86400, restore_target="scratch database on the staging Postgres (live database untouched)",
+        restore_stderr=restored.stderr.decode(errors="replace")[-500:] if restored.returncode else "",
+    )
+    _record(entry)
+    return 0 if entry["status"] == "verified" else 1
+
+
+def maintenance(_args) -> int:
+    database = _db_name()
+    entry = {"action": "maintenance", "at": _now()}
+    before_status, _ = _get_json("/ready")
+    stats = "SELECT coalesce(sum(n_dead_tup),0) || ' ' || pg_database_size(current_database()) FROM pg_stat_user_tables;"
+    dead_before, size_before = (int(x) for x in _psql(stats, database=database).stdout.split())
+    long_tx = _psql("SELECT count(*) FROM pg_stat_activity WHERE state <> 'idle' AND now() - xact_start > interval '5 minutes';",
+                    database=database).stdout.strip()
+    started = time.monotonic()
+    vacuum = _psql("VACUUM (ANALYZE);", database=database, timeout=3600)
+    duration = round(time.monotonic() - started, 2)
+    dead_after, size_after = (int(x) for x in _psql(stats, database=database).stdout.split())
+    after_status, _ = _get_json("/ready")
+    ok = vacuum.returncode == 0 and before_status == 200 and after_status == 200
+    entry.update(status="passed" if ok else "failed", vacuum_seconds=duration, dead_tuples_before=dead_before,
+                 dead_tuples_after=dead_after, database_bytes_before=size_before, database_bytes_after=size_after,
+                 long_running_transactions=int(long_tx or 0), ready_before=before_status, ready_after=after_status,
+                 stderr=vacuum.stderr[-300:])
+    _record(entry)
+    return 0 if ok else 1
+
+
+def smoke(args) -> int:
+    release = _read_env(STATE_DIR / "release.env")
+    script = SCRIPTS_DIR / "production_smoke_test.py"
+    command = ["docker", "exec", "-i", "-e", "OMNIDESK_SMOKE_ADMIN_TOKEN", "-e", "OMNIDESK_SMOKE_SANDBOX_TOKEN",
+               "-e", "OMNIDESK_SMOKE_SANDBOX_HMAC_SECRET", GATEWAY_CONTAINER, "python", "-", "--base-url", "http://127.0.0.1:18789",
+               "--check-admin-metrics", "--check-admin-slo", "--fail-on-slo",
+               "--expected-version", release.get("OMNIDESK_EXPECTED_VERSION", ""),
+               "--expected-image-digest", release.get("OMNIDESK_IMAGE_DIGEST", "")]
+    if release.get("OMNIDESK_EXPECTED_ARTIFACT_SHA256"):
+        command += ["--expected-artifact-sha256", release["OMNIDESK_EXPECTED_ARTIFACT_SHA256"]]
+    if args.strict_sandbox:
+        command += ["--sandbox-url", "http://sandbox-runner:18890", "--strict-sandbox"]
+    secrets_env = _read_env(STATE_DIR / "compose.env")
+    # Values reach docker exec through its environment, never its argv.
+    env = {**os.environ, "OMNIDESK_SMOKE_ADMIN_TOKEN": secrets_env.get("OMNIDESK_ADMIN_TOKEN", ""),
+           "OMNIDESK_SMOKE_SANDBOX_TOKEN": secrets_env.get("OMNIDESK_SANDBOX_RUNNER_TOKEN", ""),
+           "OMNIDESK_SMOKE_SANDBOX_HMAC_SECRET": secrets_env.get("OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET", "")}
+    result = subprocess.run(command, input=script.read_text(encoding="utf-8"), env=env, text=True, capture_output=True, timeout=600)
+    entry = {"action": "smoke", "at": _now(), "status": "passed" if result.returncode == 0 else "failed",
+             "strict_sandbox": bool(args.strict_sandbox), "image": release.get("OMNIDESK_IMAGE")}
+    try:
+        entry["result"] = json.loads(result.stdout or "{}")
+    except ValueError:
+        entry["stdout"] = result.stdout[-2000:]
+    entry["stderr"] = result.stderr[-2000:]
+    _record(entry)
+    return result.returncode
+
+
+def up(args) -> int:
+    release = _read_env(STATE_DIR / "release.env")
+    # Postgres first, so the release's migrations can run before the gateway starts.
+    started = _compose("up", "-d", "postgres")
+    if started.returncode == 0 and release:
+        for _ in range(60):
+            if _psql("SELECT 1;", database=_db_name()).returncode == 0:
+                break
+            time.sleep(2)
+        migrated, output = _migrate(release["OMNIDESK_IMAGE"])
+        if not migrated:
+            _record({"action": "up", "at": _now(), "status": "failed", "reason": "migrations failed", "migrations": output})
+            return 1
+    result = _compose("up", "-d", "--remove-orphans")
+    healthy, last = _wait_healthy(release, args.timeout) if (result.returncode == 0 and release) else (False, {})
+    entry = {"action": "up", "at": _now(), "status": "running" if healthy else "failed", "image": release.get("OMNIDESK_IMAGE"),
+             "compose": (result.stderr or result.stdout)[-1500:], "health": last.get("health")}
+    _record(entry)
+    return 0 if healthy else 1
+
+
+def provision_secret(args) -> int:
+    spec = PROVISIONABLE.get(args.name)
+    if spec is None:
+        raise Refused(f"unknown secret name; allowed: {', '.join(sorted(PROVISIONABLE))}")
+    value = sys.stdin.read().strip()
+    if len(value) < 16 or "\n" in value or "\r" in value:
+        raise Refused("secret value must be one line of at least 16 characters")
+    kind, rest = spec.split(":", 1)
+    if kind == "env":
+        current = _read_env(STATE_DIR / "compose.env")
+        current[rest] = value
+        _write_private(STATE_DIR / "compose.env", _release_text(current))
+    else:
+        filename, owner = rest.split(":")
+        target = STATE_DIR / filename
+        _write_private(target, value + "\n")
+        os.chown(target, int(owner), int(owner))
+        os.chmod(target, 0o400)
+    print(json.dumps({"action": "provision-secret", "name": args.name, "status": "stored"}))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    p_deploy = sub.add_parser("deploy")
+    p_deploy.add_argument("--image", required=True)
+    p_deploy.add_argument("--expected-version", required=True)
+    p_deploy.add_argument("--artifact-sha256", default="")
+    p_deploy.add_argument("--timeout", type=int, default=240)
+    p_rollback = sub.add_parser("rollback")
+    p_rollback.add_argument("--timeout", type=int, default=240)
+    sub.add_parser("status")
+    p_up = sub.add_parser("up")
+    p_up.add_argument("--timeout", type=int, default=300)
+    p_smoke = sub.add_parser("smoke")
+    p_smoke.add_argument("--strict-sandbox", action="store_true")
+    sub.add_parser("backup")
+    sub.add_parser("restore-drill")
+    sub.add_parser("maintenance")
+    p_secret = sub.add_parser("provision-secret")
+    p_secret.add_argument("name")
+    args = parser.parse_args(argv)
+    if os.geteuid() != 0 and not os.environ.get("OMNIDESK_STAGING_ALLOW_NON_ROOT"):
+        print(json.dumps({"status": "refused", "reason": "run as root through sudo"}))
+        return 3
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(STATE_DIR / ".deploy.lock", "w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            handlers = {"deploy": deploy, "rollback": rollback, "status": status, "up": up, "smoke": smoke, "backup": backup,
+                        "restore-drill": restore_drill, "maintenance": maintenance, "provision-secret": provision_secret}
+            return handlers[args.command](args)
+        except Refused as exc:
+            print(json.dumps({"action": args.command, "status": "refused", "reason": str(exc)}))
+            return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

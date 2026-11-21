@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: staging
+
+rule_files:
+  - /etc/prometheus/prometheus-rules.yml
+  - /etc/prometheus/prometheus-rules.host.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  - job_name: omnidesk-agent
+    metrics_path: /admin/metrics
+    static_configs:
+      - targets:
+          - omnidesk:18789
+    authorization:
+      credentials_file: /run/secrets/omnidesk_metrics_token
+  - job_name: node
+    static_configs:
+      - targets:
+          - node-exporter:9100

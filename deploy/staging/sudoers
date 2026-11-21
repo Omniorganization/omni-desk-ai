@@ -1,0 +1,4 @@
+# The CI deploy identity may run the staging deploy helper as root and nothing
+# else. It is not in the docker group (which would be root-equivalent).
+Defaults:omnidesk-deploy !requiretty, env_reset
+omnidesk-deploy ALL=(root) NOPASSWD: /usr/local/bin/omnidesk-deploy-compose

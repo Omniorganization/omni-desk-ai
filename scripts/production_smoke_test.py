@@ -150,18 +150,46 @@ def check_strict_sandbox(runner_url: str, token: str, hmac_secret: str, timeout_
     return checks
 
 
-def _slo_is_healthy(payload: dict) -> bool:
+BLOCKING_SLO_SEVERITIES = {"critical", "error"}
+LEGACY_BREACH_STATUSES = {"fail", "failed", "breached", "critical"}
+
+
+def _slo_gate(payload: dict) -> dict:
+    """Classify /admin/slo checks for the post-deploy gate.
+
+    Only a measured violation of a critical or error objective blocks
+    promotion (docs/SLO.md). A check without data yet (``missing_data``, as on
+    every freshly started process) and a warning-level violation are reported
+    but do not block; blocking on them made the gate fail on every fresh
+    deployment, so operators had to bypass it.
+    """
     evaluations = payload.get("slo") or payload.get("evaluations") or []
     if isinstance(evaluations, dict):
         evaluations = evaluations.get("checks") or evaluations.get("items") or []
+    gate: dict = {"ok": True, "blocking": [], "warnings": [], "missing_data": [], "checked": 0}
     if not isinstance(evaluations, list):
-        return True
+        gate["ok"] = False
+        gate["blocking"].append({"metric": "<payload>", "reason": "SLO payload has no checks list"})
+        return gate
     for item in evaluations:
-        if isinstance(item, dict) and item.get("ok") is False:
-            return False
-        if isinstance(item, dict) and str(item.get("status", "")).lower() in {"fail", "failed", "breached", "critical"}:
-            return False
-    return True
+        if not isinstance(item, dict):
+            continue
+        gate["checked"] += 1
+        metric = str(item.get("metric") or "<unknown>")
+        status = str(item.get("status", "")).lower()
+        severity = str(item.get("severity", "error")).lower()
+        if status == "missing_data":
+            gate["missing_data"].append(metric)
+        elif status in LEGACY_BREACH_STATUSES or (status == "violated" and severity in BLOCKING_SLO_SEVERITIES):
+            gate["blocking"].append({"metric": metric, "severity": severity, "value": item.get("value"), "threshold": item.get("threshold")})
+        elif status == "violated" or item.get("ok") is False:
+            gate["warnings"].append({"metric": metric, "severity": severity, "value": item.get("value"), "threshold": item.get("threshold")})
+    gate["ok"] = not gate["blocking"]
+    return gate
+
+
+def _slo_is_healthy(payload: dict) -> bool:
+    return bool(_slo_gate(payload)["ok"])
 
 
 def _assert_expected_runtime_identity(payloads: list[dict | None], *, expected_version: str | None = None, expected_artifact_sha256: str | None = None, expected_build_sha: str | None = None, expected_image_digest: str | None = None) -> dict:
@@ -212,8 +240,10 @@ def check_app(*, check_admin_metrics: bool = False, check_admin_slo: bool = Fals
             metrics = {"checked": True, "bytes": len(text)}
         if check_admin_slo or fail_on_slo:
             slo = request_json(f"{base_url}/admin/slo", token)
-            if fail_on_slo and not _slo_is_healthy(slo):
-                raise RuntimeError(f"SLO gate failed: {slo}")
+            gate = _slo_gate(slo)
+            slo = {**slo, "gate": gate}
+            if fail_on_slo and not gate["ok"]:
+                raise RuntimeError(f"SLO gate failed on {gate['blocking']}")
     elif check_admin_metrics or check_admin_slo or fail_on_slo:
         raise RuntimeError("OMNIDESK_SMOKE_ADMIN_TOKEN is required for admin metrics/SLO smoke checks")
     runtime_identity = _assert_expected_runtime_identity(
@@ -229,6 +259,9 @@ def check_app(*, check_admin_metrics: bool = False, check_admin_slo: bool = Fals
 def check_sandbox(*, strict: bool = False) -> dict | None:
     runner_url = os.getenv("OMNIDESK_SMOKE_SANDBOX_URL")
     if not runner_url:
+        if strict:
+            # Silently skipping made --strict-sandbox report success with no sandbox checked.
+            raise RuntimeError("--strict-sandbox requires OMNIDESK_SMOKE_SANDBOX_URL (or --sandbox-url)")
         return None
     runner_url = runner_url.rstrip("/")
     token = os.getenv("OMNIDESK_SMOKE_SANDBOX_TOKEN") or os.getenv("OMNIDESK_SANDBOX_RUNNER_TOKEN")

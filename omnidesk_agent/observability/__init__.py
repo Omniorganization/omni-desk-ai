@@ -54,7 +54,6 @@ DEFAULT_RUNTIME_METRICS = [
     "agent_runs_total",
     "agent_runs_failed_total",
     "tool_calls_total",
-    "tool_call_latency_seconds",
     "approval_required_total",
     "approval_denied_total",
     "resume_failed_total",
@@ -107,29 +106,35 @@ DEFAULT_RUNTIME_METRICS = [
     "omnidesk_sandbox_timeout_total",
     "omnidesk_backup_verify_failure_total",
     "omnidesk_trace_spans_total",
-    "omnidesk_run_duration_seconds",
-    "omnidesk_tool_duration_seconds",
-    "omnidesk_approval_wait_seconds",
-    "omnidesk_sandbox_duration_seconds",
-    "omnidesk_job_queue_lag_seconds",
     "omnidesk_job_dead_letter_total",
     "omnidesk_permission_denied_total",
     "omnidesk_upgrade_blocked_total",
     "omnidesk_trace_span_failures_total",
     "omnidesk_http_requests_total",
     "omnidesk_http_errors_total",
-    "omnidesk_http_request_duration_seconds",
     "omnidesk_trace_export_failures_total",
+    "omnidesk_trace_export_dropped_total",
+    "omnidesk_trace_exported_spans_total",
+]
+
+# Latency distributions that are actually observed: HTTP request duration
+# (server middleware) and every traced span (tool calls, planner, resume).
+DEFAULT_RUNTIME_HISTOGRAMS = [
+    "omnidesk_http_request_duration_seconds",
+    "omnidesk_span_duration_seconds",
 ]
 
 
 def initialize_runtime_metrics(metrics: MetricsRegistry) -> None:
     for name in DEFAULT_RUNTIME_METRICS:
         metrics.inc(name, 0)
+    for name in DEFAULT_RUNTIME_HISTOGRAMS:
+        metrics.declare_histogram(name)
 
 
 __all__ = [
     "DEFAULT_METRICS_REGISTRY",
+    "DEFAULT_RUNTIME_HISTOGRAMS",
     "DEFAULT_RUNTIME_METRICS",
     "JsonEventLogger",
     "MetricsRegistry",

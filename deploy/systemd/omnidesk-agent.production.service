@@ -16,6 +16,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=OMNIDESK_ENV=production
 Environment=OMNIDESK_REQUIRE_PRODUCTION_GUARDS=true
 EnvironmentFile=-/etc/omnidesk/runtime.env
+# Release identity written by omnidesk-deploy-artifact (version, artifact sha256, image digest).
+EnvironmentFile=-/etc/omnidesk/release.env
 StateDirectory=omnidesk
 LogsDirectory=omnidesk
 RuntimeDirectory=omnidesk

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily OmniDesk Postgres backup (24h RPO objective)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

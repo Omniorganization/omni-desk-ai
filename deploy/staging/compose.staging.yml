@@ -1,0 +1,124 @@
+# Single-host staging: TLS ingress, host and backup metrics, Prometheus and
+# Alertmanager on top of deploy/docker/docker-compose.full.yml. Used only via
+# /usr/local/bin/omnidesk-deploy-compose and the omnidesk-staging systemd unit:
+#   docker compose -f docker-compose.full.yml -f compose.staging.yml ...
+# Images are digest-pinned; the gateway image comes from release.env.
+services:
+  omnidesk:
+    volumes:
+      - ${OMNIDESK_STAGING_CONFIG:?path to the rendered staging config}:/data/config.production.yaml:ro
+
+  caddy:
+    image: ${OMNIDESK_CADDY_IMAGE:-caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    mem_limit: 128m
+    pids_limit: 128
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      OMNIDESK_PUBLIC_HOST: ${OMNIDESK_PUBLIC_HOST:?public DNS name of this host}
+      OMNIDESK_TLS: ${OMNIDESK_TLS:?ACME account email, or internal}
+      OMNIDESK_ACME_CA: ${OMNIDESK_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    depends_on:
+      - omnidesk
+    networks:
+      omnidesk-egress:
+        # The gateway trusts X-Forwarded-For only from this address
+        # (api_resource_guard.trusted_proxy_ips in the staging config).
+        ipv4_address: 172.30.0.10
+
+  node-exporter:
+    image: ${OMNIDESK_NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0}
+    restart: unless-stopped
+    read_only: true
+    pid: host
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 64m
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    volumes:
+      - /:/host:ro,rslave
+      - ${OMNIDESK_TEXTFILE_DIR:-/var/lib/omnidesk/textfile}:/textfile:ro
+    networks:
+      - omnidesk-private
+
+  prometheus:
+    image: ${OMNIDESK_PROMETHEUS_IMAGE:-prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 384m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+    ports:
+      # Operators reach the UI through an SSH tunnel only.
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./prometheus.staging.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
+      - ./observability/prometheus-rules.host.yml:/etc/prometheus/prometheus-rules.host.yml:ro
+      - ${OMNIDESK_METRICS_TOKEN_FILE:?viewer token file for the /admin/metrics scrape}:/run/secrets/omnidesk_metrics_token:ro
+    depends_on:
+      - alertmanager
+    networks:
+      - omnidesk-private
+
+  alertmanager:
+    image: ${OMNIDESK_ALERTMANAGER_IMAGE:-prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 64m
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - alertmanager-data:/alertmanager
+      - ${OMNIDESK_ALERTMANAGER_CONFIG:?rendered alertmanager.yml}:/etc/alertmanager/alertmanager.yml:ro
+      - ${OMNIDESK_ALERT_TELEGRAM_BOT_TOKEN_FILE:?alert bot token file}:/etc/alertmanager/secrets/telegram_bot_token:ro
+    networks:
+      # Notifications leave the host; alerts never go through the gateway.
+      - omnidesk-private
+      - omnidesk-egress
+
+networks:
+  omnidesk-egress:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  caddy-data:
+  caddy-config:
+  prometheus-data:
+  alertmanager-data:
