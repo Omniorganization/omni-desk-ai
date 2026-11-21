@@ -6,7 +6,11 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.privacy.data_subject import IncompleteSubjectRequest
 from omnidesk_agent.storage.sqlite import connect_sqlite
+
+# _PostgresJsonState.list returns at most this many rows.
+_LIST_CAP = 1000
 
 
 class SideEffectIdempotencyConflict(ValueError):
@@ -213,12 +217,23 @@ class JsonStateSideEffectIdempotencyStore:
 
     def export_subject(self, actor: str) -> list[dict[str, Any]]:
         """Data-subject export: the actor's replay records (which request, when, and its stored answer)."""
-        return [{k: row.get(k) for k in ("route", "resource_id", "request_key", "status", "created_at", "expires_at", "response")} for row in self.state.list(self.namespace, limit=10_000) if row.get("actor") == actor]
+        return [{k: row.get(k) for k in ("route", "resource_id", "request_key", "status", "created_at", "expires_at", "response")} for row in self._subject_rows(actor)]
 
     def erase_subject(self, actor: str) -> int:
         """Data-subject erasure: delete the actor's replay records."""
         erased = 0
-        for row in self.state.list(self.namespace, limit=10_000):
-            if row.get("actor") == actor and self.state.delete(self.namespace, str(row.get("scope_key") or "")):
+        for row in self._subject_rows(actor):
+            if self.state.delete(self.namespace, str(row.get("scope_key") or "")):
                 erased += 1
         return erased
+
+    def _subject_rows(self, actor: str) -> list[dict[str, Any]]:
+        """Every row of the actor; refuses rather than silently missing rows past a listing cap."""
+        values = getattr(self.state, "values", None)
+        if callable(values):
+            rows = list(values(self.namespace))
+        else:
+            rows = self.state.list(self.namespace, limit=_LIST_CAP)
+            if len(rows) >= _LIST_CAP:
+                raise IncompleteSubjectRequest(f"{self.namespace}: the state lists at most {_LIST_CAP} rows; needs values()")
+        return [row for row in rows if row.get("actor") == actor]

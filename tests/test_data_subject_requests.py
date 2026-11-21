@@ -228,3 +228,50 @@ def test_runs_and_jobs_are_erased_before_anything_a_run_could_write_to(tmp_path)
     service.erase("alice", requested_by="owner-a", approval_id="ap-1")
 
     assert order[:2] == ["runs", "jobs"] and sorted(order[2:]) == order[2:]
+
+
+def test_an_erased_request_keeps_structure_and_no_free_text():
+    # gateway-clients: a planner's "reason" can describe the person's task
+    # ("Sam asked for the clinic letter"); only structural fields survive.
+    from omnidesk_agent.security.dual_approval import anonymized_request
+
+    kept = anonymized_request(
+        {"tool": "files", "action": "write_text", "risk": "high", "created_by": "sam", "scope_hash": "s" * 64,
+         "reason": "Sam asked for the clinic letter", "summary": "letter to Dr. X", "args": {"text": "...", "text_length": 3}},
+        "sam",
+    )
+
+    assert kept == {
+        "tool": "files", "action": "write_text", "risk": "high", "created_by": "[erased]", "scope_hash": "s" * 64,
+        "args": {"text_length": 3}, "args_withheld": True, "fields_withheld": ["reason", "summary"],
+    }
+
+
+class _CappedState:
+    """_PostgresJsonState.list returns at most 1000 rows, newest first."""
+
+    def __init__(self, rows, *, with_values):
+        self.rows = rows
+        if with_values:
+            self.values = lambda namespace: list(self.rows.values())
+
+    def list(self, namespace, *, limit=50, **_):
+        return list(self.rows.values())[: min(limit, 1000)]
+
+    def delete(self, namespace, key):
+        return self.rows.pop(key, None) is not None
+
+
+def test_a_store_that_cannot_reach_every_row_reports_incomplete_not_success():
+    # gateway-clients: listing stopped at the newest 1000 rows, so older rows
+    # were neither exported nor erased, and the erasure still claimed success.
+    from omnidesk_agent.security.agent_run_idempotency import JsonStateAgentRunIdempotencyStore
+
+    rows = {f"k{i}": {"scope_key": f"k{i}", "actor": "alice" if i == 1500 else "bob"} for i in range(1600)}
+    capped = JsonStateAgentRunIdempotencyStore(_CappedState(dict(rows), with_values=False))
+    full = JsonStateAgentRunIdempotencyStore(_CappedState(dict(rows), with_values=True))
+
+    result = DataSubjectService({"agent_run_idempotency": capped}).erase("alice", requested_by="owner-a", approval_id="ap-1")
+    assert result["complete"] is False and result["incomplete"] == ["agent_run_idempotency"]
+
+    assert full.erase_subject("alice") == 1 and full.export_subject("alice") == []

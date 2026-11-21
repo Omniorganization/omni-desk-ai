@@ -23,6 +23,10 @@ from typing import Any, Callable, Mapping, Optional
 _SUBJECT_FIELDS = ("actor", "created_by", "proposer", "requester", "requested_by", "approved_by", "approver", "sender_id", "revoked_by")
 
 
+class IncompleteSubjectRequest(Exception):
+    """A store could not reach every record of the subject; the result must say so, not succeed."""
+
+
 def supports_subject_requests(store: Any) -> bool:
     return callable(getattr(store, "export_subject", None)) and callable(getattr(store, "erase_subject", None))
 
@@ -74,9 +78,13 @@ class DataSubjectService:
         actor = _require_actor(actor)
         data: dict[str, list[dict[str, Any]]] = {}
         unsupported: list[str] = []
+        incomplete: list[str] = []
         for name, store in sorted(self.sources.items()):
             if supports_subject_requests(store):
-                data[name] = list(store.export_subject(actor))
+                try:
+                    data[name] = list(store.export_subject(actor))
+                except IncompleteSubjectRequest:
+                    incomplete.append(name)
             else:
                 unsupported.append(name)
         retained = {}
@@ -86,8 +94,9 @@ class DataSubjectService:
         result = {
             "actor": actor,
             "generated_at": self.clock(),
-            "complete": not unsupported,
+            "complete": not unsupported and not incomplete,
             "unsupported": unsupported,
+            "incomplete": incomplete,
             "retained": retained,
             "data": data,
         }
@@ -102,17 +111,22 @@ class DataSubjectService:
         # tombstoned, a run finishing meanwhile cannot write new memory about them.
         first = [name for name in ERASE_FIRST if name in self.sources]
         order = first + sorted(name for name in self.sources if name not in first)
+        incomplete: list[str] = []
         for name, store in ((name, self.sources[name]) for name in order):
             if supports_subject_requests(store):
-                erased[name] = int(store.erase_subject(actor))
+                try:
+                    erased[name] = int(store.erase_subject(actor))
+                except IncompleteSubjectRequest:
+                    incomplete.append(name)
             else:
                 unsupported.append(name)
         result = {
             "actor": actor,
             "erased_at": self.clock(),
-            "complete": not unsupported,
+            "complete": not unsupported and not incomplete,
             "erased": erased,
             "unsupported": unsupported,
+            "incomplete": incomplete,
             "retained": {name: reason for name, (_source, reason) in sorted(self.retained.items())},
         }
         self._audit("privacy.subject_erased", {"subject": actor, "requested_by": requested_by, "approval_id": approval_id, "erased": erased, "unsupported": unsupported})

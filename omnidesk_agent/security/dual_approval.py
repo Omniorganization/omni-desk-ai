@@ -40,11 +40,23 @@ class DualApprovalDecision:
 
 ERASED_ACTOR = "[erased]"
 _REQUESTER_KEYS = ("created_by", "proposer", "actor", "requested_by")
+# What an erased subject's request keeps: structure, never free text. A
+# planner's "reason" or "summary" can describe the person's task.
+STRUCTURAL_REQUEST_KEYS = frozenset({
+    *_REQUESTER_KEYS,
+    "tool", "action", "risk", "source", "channel", "run_id", "plan_id", "step_id",
+    "approval_id", "scope_hash", "requires_dual_approval", "provenance", "args",
+})
 
 
 def anonymized_request(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
-    """A request made by an erased subject: requester fields become [erased], argument content is withheld."""
-    out = dict(proposal)
+    """A request made by an erased subject: requester fields become [erased]; only structure stays.
+
+    Argument values are withheld (their digests and lengths stay), and every
+    field outside STRUCTURAL_REQUEST_KEYS is dropped; ``fields_withheld`` names them.
+    """
+    out = {k: v for k, v in proposal.items() if k in STRUCTURAL_REQUEST_KEYS}
+    dropped = sorted(k for k in proposal if k not in STRUCTURAL_REQUEST_KEYS and k not in {"args_withheld", "fields_withheld"})
     for key in _REQUESTER_KEYS:
         if out.get(key) == actor:
             out[key] = ERASED_ACTOR
@@ -53,6 +65,8 @@ def anonymized_request(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
         kept = {k: v for k, v in args.items() if str(k).endswith(("_sha256", "_length"))}
         out["args"] = kept
         out["args_withheld"] = len(kept) != len(args)
+    if dropped:
+        out["fields_withheld"] = dropped
     return out
 
 
