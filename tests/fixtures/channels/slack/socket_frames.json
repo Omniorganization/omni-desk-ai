@@ -1,0 +1,9 @@
+{"_source": "Shapes of Slack Socket Mode frames (hello, events_api envelope wrapping an Events API event_callback, disconnect); ids are placeholders.",
+ "hello": {"type": "hello", "num_connections": 1, "debug_info": {"host": "applink-placeholder", "build_number": 1, "approximate_connection_time": 18060}, "connection_info": {"app_id": "A0000000001"}},
+ "bot_echo": {"envelope_id": "env-bot-echo", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+   "payload": {"token": "placeholder", "team_id": "T0000000001", "api_app_id": "A0000000001", "type": "event_callback", "event_id": "Ev0000000BOT", "event_time": 1763683200,
+     "event": {"type": "message", "subtype": "bot_message", "bot_id": "B0000000001", "channel": "C0000000001", "text": "OmniDesk live contract check.", "ts": "1763683200.000100", "event_ts": "1763683200.000100", "channel_type": "channel"}}},
+ "reply": {"envelope_id": "env-reply", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+   "payload": {"token": "placeholder", "team_id": "T0000000001", "api_app_id": "A0000000001", "type": "event_callback", "event_id": "Ev0000000001", "event_time": 1763683260,
+     "event": {"type": "message", "user": "U0000000002", "channel": "C0000000001", "text": "__CODE__", "ts": "1763683260.000200", "event_ts": "1763683260.000200", "channel_type": "channel", "client_msg_id": "00000000-0000-4000-8000-000000000001"}}},
+ "disconnect": {"type": "disconnect", "reason": "refresh_requested", "debug_info": {"host": "applink-placeholder"}}}

@@ -1,0 +1,2 @@
+{"_source": "Shape of Feishu auth/v3/tenant_access_token/internal; the token is a placeholder.",
+ "response": {"code": 0, "msg": "ok", "tenant_access_token": "t-placeholder", "expire": 7200}}

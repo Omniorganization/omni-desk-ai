@@ -313,6 +313,7 @@ CHANNEL_ALLOWLIST_FIELDS: dict[str, tuple[str, ...]] = {
     "whatsapp_cloud": ("allowed_wa_ids",),
     "wechat_official": ("allowed_open_ids",),
     "meta_graph": ("allowed_psids",),
+    "dingtalk": ("allowed_conversation_ids",),
     "lark": ("allowed_open_ids",),
     "feishu": ("allowed_open_ids",),
     "line": ("allowed_user_ids",),

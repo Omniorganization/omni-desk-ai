@@ -135,14 +135,24 @@ def test_production_browser_requires_dedicated_profile(monkeypatch):
     assert not any("dedicated_profile_dir" in issue for issue in result["issues"])
 
 
-def test_channel_http_client_propagates_idempotency_headers(monkeypatch):
+def test_channel_http_client_sends_only_idempotency_headers_someone_honours(monkeypatch):
+    import uuid
+
     async def run_case():
         module = FakeHttpxModule()
         monkeypatch.setattr(http_client, "httpx", module)
-        await ChannelHttpClient(max_retries=0).post("https://provider.test", json={"a": 1}, idempotency_key="idem-1", channel="telegram")
-        headers = module.calls[0][2]
-        assert headers["X-Omnidesk-Idempotency-Key"] == "idem-1"
-        assert headers["X-Omnidesk-Client-Request-Id"] == "idem-1"
+        client = ChannelHttpClient(max_retries=0)
+        for channel in ("telegram", "line", "line", "signal"):
+            await client.post("https://provider.test", json={"a": 1}, idempotency_key="idem-1", channel=channel)
+        telegram, line, line_again, signal = (call[2] for call in module.calls)
+        # Telegram has no request dedupe; a custom header would only suggest one.
+        assert not any(name.lower().startswith("x-omnidesk") for name in telegram)
+        # LINE deduplicates on X-Line-Retry-Key, which must be a UUID and must
+        # stay the same for every attempt of one outbox message.
+        assert str(uuid.UUID(line["X-Line-Retry-Key"])) == line["X-Line-Retry-Key"]
+        assert line_again["X-Line-Retry-Key"] == line["X-Line-Retry-Key"]
+        # OmniDesk's own Signal bridge gets the correlation id it can dedupe on.
+        assert signal["X-Omnidesk-Client-Request-Id"] == "idem-1"
 
     asyncio.run(run_case())
 

@@ -248,6 +248,10 @@ class TelegramConfig(BaseModel):
     bot_token_env: str = "TELEGRAM_BOT_TOKEN"
     webhook_secret_env: str = "TELEGRAM_WEBHOOK_SECRET"
     allowed_user_ids: list[int] = Field(default_factory=list)
+    # "polling" long-polls getUpdates instead of receiving /webhooks/telegram;
+    # Telegram refuses getUpdates while a webhook is set.
+    mode: Literal["webhook", "polling"] = "webhook"
+    poll_timeout_seconds: int = Field(default=30, ge=1, le=50)
 
 class WhatsAppCloudConfig(BaseModel):
     enabled: bool = False
@@ -379,6 +383,12 @@ class IMessageConfig(BaseModel):
 
 class MicrosoftTeamsConfig(BaseModel):
     enabled: bool = False
+    # Bot Framework app registration: inbound JWTs are validated for this app
+    # id, and sends get an OAuth token with its password from the tenant
+    # (empty tenant = legacy multi-tenant "botframework.com").
+    app_id_env: str = "MICROSOFT_TEAMS_APP_ID"
+    app_password_env: str = "MICROSOFT_TEAMS_APP_PASSWORD"
+    tenant_id_env: str = "MICROSOFT_TEAMS_TENANT_ID"
     bot_token_env: str = "MICROSOFT_TEAMS_BOT_TOKEN"
     inbound_bearer_token_env: str = "MICROSOFT_TEAMS_INBOUND_TOKEN"
     webhook_secret_env: str = "MICROSOFT_TEAMS_WEBHOOK_SECRET"
@@ -403,9 +413,13 @@ class MatrixConfig(BaseModel):
 class QQConfig(BaseModel):
     enabled: bool = False
     bot_app_id_env: str = "QQ_BOT_APP_ID"
+    # AppSecret: derives the Ed25519 key for webhook signatures and op 13
+    # validation, and is the clientSecret for getAppAccessToken.
+    bot_secret_env: str = "QQ_BOT_SECRET"
     bot_token_env: str = "QQ_BOT_TOKEN"
     webhook_secret_env: str = "QQ_WEBHOOK_SECRET"
-    api_base: str = "https://api.sgroup.qq.com"
+    # QQ moved every OpenAPI to api.bot.qq.com (platform changelog 2026-08-10).
+    api_base: str = "https://api.bot.qq.com"
     allowed_user_ids: list[str] = Field(default_factory=list)
     allowed_source_ids: list[str] = Field(default_factory=list)
 

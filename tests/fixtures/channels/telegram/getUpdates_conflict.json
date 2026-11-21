@@ -1,0 +1,5 @@
+{
+  "_source": "Telegram Bot API error envelope for getUpdates while a webhook is set (HTTP 409; description text as returned by the API).",
+  "status_code": 409,
+  "response": {"ok": false, "error_code": 409, "description": "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first"}
+}

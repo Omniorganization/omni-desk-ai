@@ -1,31 +1,128 @@
 # Native messaging channel adapters
 
-OmniDesk 0.7.36/0.7.39 promotes the requested OpenClaw-aligned messaging surfaces from catalog-only references to configurable native adapters while preserving OmniDesk's security boundary.
+OmniDesk ships configurable adapters for the messaging surfaces below. This page says, per channel, what is actually verified on inbound traffic and how outbound delivery behaves.
 
 ## Native adapter set
 
-| Channel | Adapter key | Inbound route | Outbound target | Required controls |
+"Inbound authentication" is what the gateway verifies on each webhook request. "OmniDesk bridge HMAC" means `x-omnidesk-webhook-signature-256`, which no provider sends: such a channel only accepts traffic re-signed by a relay you deploy yourself (none ships in this repository).
+
+| Channel | Adapter key | Inbound route | Inbound authentication | Outbound recipient |
 |---|---|---|---|---|
-| WhatsApp Business Cloud | `whatsapp_cloud` / alias `whatsapp` | `/webhooks/whatsapp` | Graph Cloud API phone number id | App-secret HMAC, sender allowlist, approval, audit |
-| Telegram | `telegram` | `/webhooks/telegram` | Bot API chat id | Secret token, sender allowlist, approval, audit |
-| Slack | `slack` | `/webhooks/slack` | Slack channel id | Slack signing secret, sender/channel allowlist, approval, audit |
-| Discord | `discord` | `/webhooks/discord` | Discord channel id | Ed25519 or signed edge bridge, sender/channel allowlist, approval, audit |
-| Google Chat | `google_chat` | `/webhooks/google-chat` | Incoming webhook URL (configured, or an allowlisted space) | Google-signed bearer JWT (required in production), channel-token header or HMAC outside production, user/space allowlist, approval, audit |
-| Signal | `signal` | `/webhooks/signal` | signal-cli REST bridge recipient | Signed bridge, sender allowlist, approval, audit |
-| iMessage | `imessage` | `/webhooks/imessage` | local macOS relay recipient | Signed local relay, foreground confirmation, approval, audit |
-| Microsoft Teams | `microsoft_teams` / alias `teams` | `/webhooks/teams` | Bot Framework conversation id | Bearer/HMAC verification, allowlists, approval, audit |
-| Matrix | `matrix` | `/webhooks/matrix` | Matrix room id | Hook token in a header or HMAC, room/user allowlist, approval, audit |
-| LINE | `line` | `/webhooks/line` | LINE user/group/room id | Channel-secret signature, allowlist, approval, audit |
-| WeChat Official | `wechat_official` / alias `wechat` | `/webhooks/wechat` | Official Account openid | Token signature, openid allowlist, passive reply, approval, audit |
-| QQ Bot | `qq` | `/webhooks/qq` | `group:`, `channel:`, or `c2c:` recipient | Signed webhook, source/user allowlist, approval, audit |
+| WhatsApp Business Cloud | `whatsapp_cloud` / alias `whatsapp` | `/webhooks/whatsapp` | `X-Hub-Signature-256` (app secret) | WhatsApp id (phone number) |
+| Telegram | `telegram` | `/webhooks/telegram`, or `getUpdates` polling (`mode: polling`) | `X-Telegram-Bot-Api-Secret-Token`; polling needs none (the bot token authenticates the pull) | chat id |
+| Meta Graph (Page / Instagram) | `meta_graph` | `/webhooks/meta` | `X-Hub-Signature-256` (app secret) | PSID / IGSID |
+| WeChat Official | `wechat_official` / alias `wechat` | `/webhooks/wechat` | SHA-1 token signature, freshness, single-use nonce (plaintext mode only) | openid |
+| LINE | `line` | `/webhooks/line` | `X-Line-Signature` (channel secret) | user / group / room id |
+| Slack | `slack` | `/webhooks/slack` | Slack v0 signing secret with timestamp skew | channel id |
+| Lark / Feishu | `lark`, `feishu` | `/webhooks/lark`, `/webhooks/feishu` | Verification token (schema 2.0 `header.token`); with an Encrypt Key, AES decryption plus `X-Lark-Signature` | `oc_…` chat, `ou_…` open id, `on_…` union id, or email |
+| DingTalk | `dingtalk` | `/webhooks/dingtalk` | `timestamp`/`sign` headers keyed by the app secret (5-minute window, single use) | `group:<openConversationId>` (or a `cid…` id), `user:<userId>`, or `robot` for the custom group robot |
+| X | `x` | `/webhooks/x` (+ CRC `GET`) | `X-Twitter-Webhooks-Signature-OAuth2` / `X-Twitter-Webhooks-Signature` | `public` (post) or `dm:<user id>` |
+| Google Chat | `google_chat` | `/webhooks/google-chat` | Google-signed bearer JWT (required in production); channel-token header or bridge HMAC outside production | incoming-webhook space (see below) |
+| Matrix | `matrix` | `/webhooks/matrix` | Hook token in a header, or bridge HMAC | room id |
+| Discord | `discord` | `/webhooks/discord` (interactions endpoint) | Ed25519 interaction signature (`DISCORD_PUBLIC_KEY`, verified with `cryptography`); without a public key, bridge HMAC | channel id |
+| Microsoft Teams | `microsoft_teams` / alias `teams` | `/webhooks/teams` | Bot Connector JWT (`MICROSOFT_TEAMS_APP_ID` set); otherwise the legacy static bearer or bridge HMAC | Bot Framework conversation id |
+| QQ Bot | `qq` | `/webhooks/qq` | QQ Ed25519 signature and op 13 validation (`QQ_BOT_SECRET` set); otherwise bridge HMAC | `group:`, `channel:`, or `c2c:` recipient |
+| Signal (bridge adapter) | `signal` | `/webhooks/signal` | Bridge HMAC only: signal-cli has no signed webhook, and no bridge ships | signal-cli REST bridge recipient |
+| iMessage (bridge adapter) | `imessage` | `/webhooks/imessage` | Bridge HMAC from a local relay; no relay ships | local macOS relay recipient |
+
+None of these adapters has been exercised against the real provider by a committed live run yet; the parsing, signing and error handling are tested against recorded provider payloads and the providers' documented examples.
 
 ## Security model
 
-The adapters do not grant automatic execution rights. `capabilities.channels.enabled` must be true before the send tool is registered, each channel must be explicitly enabled, and external sends still pass through the existing `channels.send_text` high-risk approval gate. Webhook routes keep provider signatures or signed bridge HMACs, replay protection, source allowlists, job-queue ingestion, outbound idempotency headers, metrics, and audit records.
+The adapters do not grant automatic execution rights. `capabilities.channels.enabled` must be true before the send tool is registered, each channel must be explicitly enabled, and external sends still pass through the existing `channels.send_text` high-risk approval gate. Webhook routes keep provider signatures (or signed bridge HMACs where the table says so), replay protection, source allowlists, job-queue ingestion, metrics, and audit records.
 
-## Bridge-backed channels
+The approved recipient is where the message goes: an adapter refuses a recipient it cannot honour instead of sending somewhere else (DingTalk's custom robot can only post to its own group; a configured Google Chat webhook only to its own space).
 
-Signal and iMessage require a trusted local or private bridge because they do not expose the same kind of cloud bot API as Slack or Telegram. These bridges must sign inbound webhooks to OmniDesk and should be deployed on a dedicated OS user/host with minimum privileges.
+## Delivery semantics
+
+A send that the provider may have performed must not be sent again blindly, because most providers cannot deduplicate it. The shared transport (`channels/http_client.py`) therefore repeats a request only when that cannot duplicate a message:
+
+- the request never reached the provider (connection refused, DNS, connect or pool timeout, proxy failure);
+- the provider answered 408, 425 or 429, meaning it did not act; a provider back-off hint (`Retry-After`, Telegram `parameters.retry_after`, Discord `retry_after`, Matrix `retry_after_ms`) longer than 3 seconds ends the request instead of being slept through, and is recorded on the error as `retry_after_seconds`. The outbox does not read it yet: its own back-off schedule (30 s, doubling) still applies;
+- the request is idempotent: `GET`/`PUT`, or a send carrying a dedupe key the provider honours.
+
+After a read timeout, a dropped connection or a 5xx, the error goes straight to the outbound dispatcher (for a transport-repeatable send, the first attempt that may have been delivered decides the outcome even if a later repeat fails before sending or is rate limited), which records a provider without native dedupe as `ambiguous` for reconciliation (`scripts/reconcile_outbound.py` lists them; requeue only after checking the provider) rather than resending it.
+
+| Provider dedupe | Channels | Effect |
+|---|---|---|
+| Native | LINE (`X-Line-Retry-Key`, a UUID derived from the outbox key, 24 h), Matrix (`PUT …/send/m.room.message/{txnId}`), Lark / Feishu (`uuid` body field, 1 h) | the transport and the outbox may retry; LINE's `409` with `x-line-accepted-request-id` is recorded as sent |
+| Transport only | Discord (`nonce` + `enforce_nonce`, a few minutes) | the transport may retry; the outbox treats failures as ambiguous |
+| None | Telegram, WhatsApp, Meta Graph, WeChat, DingTalk, X, Slack, Google Chat, Teams, QQ, Signal, iMessage | timeouts and 5xx become `ambiguous` |
+
+No custom idempotency header is sent to public providers, since none honours one; Signal and iMessage requests carry `X-Omnidesk-Client-Request-Id` for OmniDesk's own bridges.
+
+Errors are classified from what the provider says, not only the HTTP status: WeChat `errcode`, DingTalk `errcode`/`code`, Lark `code` and Slack `ok:false` inside HTTP 200 are failures (for example WeChat 45015, outside the 48-hour window, dead-letters as `policy_error` instead of being recorded as sent); Graph throttling codes (4, 17, 32, 613, 130429, 131056, …) retry as `rate_limit` even in a 400; a blocked or deactivated Telegram recipient dead-letters as `recipient_unavailable` without an auth alert. WeChat and Lark refresh a rejected access token once and resend, because the provider refused the first attempt. Successful sends record the provider message id (Telegram `message_id`, WhatsApp `wamid`, LINE `sentMessages[].id`, Lark `message_id`, DingTalk `processQueryKey`, X post or DM event id).
+
+"Sent" means the provider accepted the message. WhatsApp reports later delivery failures (for example 131047, outside the 24-hour window) only through status webhooks, which are not reconciled into the outbox yet.
+
+## Provider notes
+
+### DingTalk
+
+Inbound robot callbacks are verified with DingTalk's `timestamp` and `sign` headers: `sign = base64(HMAC-SHA256(app secret, timestamp + "\n" + app secret))`, with the timestamp within 5 minutes. The signature does not cover the body, so each one is accepted once: the gateway consumes it in the shared webhook store (SQLite or PostgreSQL, the same store as WeChat's nonces), so another replica or a restarted one refuses a captured header pair; `DINGTALK_APP_SECRET` must be set. A deployment that fronts DingTalk with a body-signing relay can still use the bridge HMAC (`DINGTALK_WEBHOOK_SECRET`) when the DingTalk headers are absent; when they are present the DingTalk signature is what is checked, because production requires every `*_env` (the bridge secret included) and real DingTalk traffic never carries the bridge header.
+
+Outbound uses the robot OpenAPI at `api.dingtalk.com` with an access token from `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET` (robot code defaults to the app key): `group:<openConversationId>` (or a bare `cid…` id) for a group and `user:<userId>` for a 1:1 chat. Inbound 1:1 messages are threaded as `user:<senderStaffId>` so a reply reaches the sender. `robot` posts through the custom group robot webhook (`DINGTALK_ROBOT_TOKEN`, optional `DINGTALK_ROBOT_SECRET`), which can only reach its own group; any other recipient is refused. The gateway needs egress to `api.dingtalk.com:443` (and `oapi.dingtalk.com:443` for the group robot); the reference Kubernetes NetworkPolicies allow no external egress, so add both before enabling the channel.
+
+### Lark / Feishu
+
+Schema 2.0 events carry the verification token in `header.token`; legacy 1.0 events at the top level. When `LARK_ENCRYPT_KEY`/`FEISHU_ENCRYPT_KEY` is set, every body must be `{"encrypt": …}` (AES-256-CBC, key SHA-256 of the Encrypt Key, IV in the first 16 bytes) and every event push must carry a valid `X-Lark-Signature` (`sha256(timestamp + nonce + Encrypt Key + body)`); only the URL-verification challenge is unsigned. Message `content` is parsed from its JSON string, mention placeholders (`@_user_1`) are removed, and messages from apps are ignored. Outbound `content` is sent as a JSON string with a `uuid`, and the tenant access token is cached until shortly before it expires.
+
+### X
+
+`X_WEBHOOK_CRC_TOKEN` holds the secret X signs with: the OAuth 2.0 client secret for `X-Twitter-Webhooks-Signature-OAuth2`, or the OAuth 1.0a consumer secret for the legacy `X-Twitter-Webhooks-Signature`. Event bodies must be JSON objects. Posts (`POST /2/tweets`, recipient `public`) and DMs (`POST /2/dm_conversations/with/{id}/messages`, recipient `dm:<user id>`; new in this release and approval-gated like every send) go to `api.x.com:443` and are signed with OAuth 1.0a user context from `X_API_KEY`/`X_API_SECRET`/`X_ACCESS_TOKEN`/`X_ACCESS_SECRET`. `X_BEARER_TOKEN` is used only when those are missing and only works if it holds an OAuth 2.0 user-context token; an app-only bearer token cannot post, and nothing refreshes a user token. Inbound DMs are threaded as `dm:<sender id>`, and echoes of the account's own DMs are ignored.
+
+### Telegram polling
+
+`channels.telegram.mode: polling` makes the runtime long-poll `getUpdates` (`poll_timeout_seconds`, 1–50, default 30) instead of waiting for `/webhooks/telegram`. Updates go through the same parser and `allowed_user_ids` as webhooks and into the durable job queue; an update is confirmed (next `offset`) only after it was queued, and the job queue deduplicates a re-read one. Telegram refuses `getUpdates` while a webhook is set: run `deleteWebhook` first. Only one poller per bot may run (a second one gets 409 Conflict), so use polling with a single replica.
+
+### Microsoft Teams
+
+Set `MICROSOFT_TEAMS_APP_ID`, `MICROSOFT_TEAMS_APP_PASSWORD` and, for single-tenant bots (every bot created after July 2025), `MICROSOFT_TEAMS_TENANT_ID`. Inbound activities then need a Bot Connector JWT: RS256, issuer `https://api.botframework.com`, audience the app id, 5 minutes of clock skew, a key from `login.botframework.com` endorsed for the activity's `channelId`, and a `serviceUrl` claim equal to the activity's `serviceUrl`. The legacy static inbound token is refused once the app id is set. Keys are cached and refreshed in the background like the Google Chat certificates, so the gateway needs egress to `login.botframework.com:443`. Sends use a client-credentials token for `https://api.botframework.com/.default` from `login.microsoftonline.com/<tenant>` (or `botframework.com` without a tenant), refreshed once on 401. `channels.microsoft_teams.service_url` stays pinned and must match the `serviceUrl` your tenant's activities carry.
+
+### QQ Bot
+
+Set `QQ_BOT_APP_ID` and `QQ_BOT_SECRET` (the AppSecret). The Ed25519 key is derived from the secret (repeated to 32 bytes); pushes must carry a valid `X-Signature-Ed25519` over `X-Signature-Timestamp` + body, op 13 callback validation is answered with the signed `plain_token`, and each push is answered with the op 12 ACK `{"op": 12, "d": 0}`. op 13 only signs digits and token characters, which can never form an event signature over a JSON body. Sends use an app access token from `https://api.bot.qq.com/app/getAppAccessToken` (`Authorization: QQBot <token>`) against `api_base`, now `https://api.bot.qq.com`. Inbound group messages thread as `group:<group_openid>`, C2C as `c2c:<user_openid>`; QQ caps active (non-reply) messages per user and group per day.
+
+### Discord
+
+With `DISCORD_PUBLIC_KEY` set, every interaction must carry a valid Ed25519 signature; Discord probes the endpoint with invalid ones and drops it if they are accepted. Application commands are answered at once with an ephemeral "received" notice (interaction type 4) and components with a deferred update (type 6); the reply follows through the approval-gated send to the channel. Gateway (websocket) message events are not received.
+
+### Signal and iMessage
+
+Neither provider offers a signed webhook. Both adapters accept inbound traffic only from a bridge that signs it with the OmniDesk HMAC (`x-omnidesk-webhook-signature-256`); no such bridge ships in this repository, so the catalog lists them as `bridge_adapter`.
+
+### WeChat Official
+
+Access tokens come from `cgi-bin/stable_token` in normal mode, so several replicas share one token instead of invalidating each other, and the app secret travels in the request body. Only plaintext message mode is implemented.
+
+### Meta Graph
+
+The page access token is sent as `Authorization: Bearer`, not `?access_token=`, so it does not land in proxy logs.
+
+## Live contract runs
+
+`.github/workflows/channel-live-contract.yml` (manual) runs `scripts/run_channel_live_contract.py` against the real provider with a dedicated test account, through the production adapter code. A run sends a message with a one-time code; in `send-receive` mode the test user replies with that code from their phone and the reply must come back through the adapter's parser and allowlist within `reply_timeout_minutes`.
+
+| Channel | Live mode today | What the run exercises |
+|---|---|---|
+| Slack | send-receive | `auth.test`; Socket Mode (`apps.connections.open`, no public URL); `SlackChannel.send_text` after the socket is up; the reply as an Events API payload through `SlackChannel.parse_webhook` (user and channel allowlists); every envelope acknowledged |
+| Feishu / Lark | send-receive | tenant access token; the long-connection event mode (`/callback/ws/endpoint` → WebSocket, protobuf frames, no public URL); `send_text` to the test user's `open_id` once connected; the reply as an `im.message.receive_v1` event through `parse_webhook` (open_id allowlist); every event acknowledged with `biz_rt`. The console saves "receive events through a long connection" only while one is online, so save it during the first run |
+| WhatsApp Cloud | send-only | phone-number probe; the approved `hello_world` template to the verified test recipient. Inbound needs a public HTTPS webhook, deferred until one exists |
+| Telegram | none (no test account) | covered only by `getUpdates` polling and recorded-fixture tests; no live run has happened |
+
+Slack's live receive path is Socket Mode and Feishu/Lark's is the long connection; the gateway itself does not use either yet (its inbound for both is the signed webhook), so these runs prove real event delivery and parsing, not the HTTP signature checks, which stay covered by unit tests.
+
+The run needs a `channel-live` GitHub environment (Settings → Environments; add required reviewers to gate runs). The owner sets each secret with `gh secret set NAME --env channel-live`; a channel only needs its own:
+
+| Channel | Secrets |
+|---|---|
+| Slack | `SLACK_BOT_TOKEN` (xoxb-), `SLACK_APP_TOKEN` (xapp-, `connections:write`), `SLACK_LIVE_CHANNEL_ID` (dedicated test channel, not the alerts channel), `SLACK_LIVE_SENDER_ID` (the replying user's member id) |
+| Feishu | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_LIVE_OPEN_ID` (the test user's `ou_…` open_id for this app) |
+| Lark | `LARK_APP_ID`, `LARK_APP_SECRET`, `LARK_LIVE_OPEN_ID` |
+| WhatsApp | `WHATSAPP_CLOUD_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` (the test number), `WHATSAPP_LIVE_RECIPIENT` (a verified recipient, digits only) |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_LIVE_CHAT_ID`, `TELEGRAM_LIVE_SENDER_ID` |
+
+The evidence artifact (`dist/evidence/channels/<channel>-live-contract.json`, schema `omnidesk-channel-live-contract/v1`) records what the run observed: provider message ids, event ids, run URL and commit, with chat, channel and user ids only as truncated SHA-256 digests. A failed run writes `status: failed`, the error and the checks that passed before it. Only a passed run's file is committed, under `release/external-evidence/channels/`, together with its run URL. CI runs the same runners against recorded responses in `tests/fixtures/channels/` (`tests/test_channel_live_contract.py`); the fixtures are documented response shapes with placeholder ids until a passed run replaces them with sanitized recordings.
 
 ## Inbound authentication without URL tokens
 
@@ -51,21 +148,26 @@ Send the hook token as `Authorization: Bearer <MATRIX_WEBHOOK_TOKEN>` (or the `x
 
 ## Google Chat outbound spaces
 
-When `GOOGLE_CHAT_WEBHOOK_URL` is set every send goes to that webhook and the recipient is ignored. Without it, the recipient must be an incoming-webhook URL of the form `https://chat.googleapis.com/v1/spaces/<id>/messages?...` whose space is listed in `channels.google_chat.allowed_outbound_spaces` (`spaces/<id>` or `<id>`); any other space, host, port or path is refused before a request is made.
+When `GOOGLE_CHAT_WEBHOOK_URL` is set every send goes to that webhook, so the recipient must name the webhook's space (`spaces/<id>`, or an incoming-webhook URL for that space); any other recipient is refused rather than silently redirected. Without it, the recipient must be an incoming-webhook URL of the form `https://chat.googleapis.com/v1/spaces/<id>/messages?...` whose space is listed in `channels.google_chat.allowed_outbound_spaces` (`spaces/<id>` or `<id>`); any other space, host, port or path is refused before a request is made.
 
 ## X CRC challenge
 
-`GET /webhooks/x` answers X's challenge-response check with HMAC-SHA256 of `crc_token` keyed by `X_WEBHOOK_CRC_TOKEN` (the app's consumer secret, as X requires). The endpoint is unauthenticated, so:
+`GET /webhooks/x` answers X's challenge-response check with `sha256=` + base64 HMAC-SHA256 of `crc_token` keyed by `X_WEBHOOK_CRC_TOKEN`, the same secret X signs events with. The endpoint is unauthenticated, so:
 
-- it only answers when the X channel is enabled, and only for `crc_token` values of 1–128 characters from the base64/base64url alphabet; anything else (JSON, whitespace, long strings) gets 400 instead of a signature;
-- `X_WEBHOOK_SECRET` (the OmniDesk bridge HMAC that signs `POST /webhooks/x`) must be a different secret. With the same value the CRC responder would sign data with the webhook key, so the CRC endpoint returns 503 and a production runtime refuses to start.
+- it only answers when the X channel is enabled, and only for `crc_token` values of 1–128 characters from the base64/base64url alphabet; anything else (JSON, whitespace, long strings) gets 400 instead of a signature. Event bodies must be JSON objects, so a CRC answer can never be replayed as an event signature;
+- `X_WEBHOOK_SECRET` (the optional OmniDesk bridge HMAC for relayed `POST /webhooks/x`) must be a different secret. With the same value the CRC responder would sign data with the bridge key, so the CRC endpoint returns 503 and a production runtime refuses to start.
 
 ## Migration
 
 1. Google Chat: switch the app's authentication audience to *Project number*, set `channels.google_chat.project_number` (quoted or unquoted), and remove `?token=` from the endpoint URL; a request that still carries `?token=` is refused even with a valid JWT. Allow DNS and egress to `www.googleapis.com:443`. Signed-bridge deployments that cannot forward the JWT set `require_google_jwt: false` explicitly and must sign every request with the bridge HMAC.
-2. Google Chat outbound without `GOOGLE_CHAT_WEBHOOK_URL`: list the target spaces in `allowed_outbound_spaces`.
+2. Google Chat outbound without `GOOGLE_CHAT_WEBHOOK_URL`: list the target spaces in `allowed_outbound_spaces`. With it, use `spaces/<id>` of that webhook as the recipient.
 3. Matrix: move the hook token from the URL to `Authorization: Bearer`.
-4. X: make sure `X_WEBHOOK_CRC_TOKEN` (consumer secret) and `X_WEBHOOK_SECRET` (bridge HMAC) differ.
-5. Production with Google Chat, Matrix or X enabled requires `gateway.require_webhook_signatures: true`; `omnidesk production-check` lists all of the above.
+4. X: make sure `X_WEBHOOK_CRC_TOKEN` (the secret X signs with) and `X_WEBHOOK_SECRET` (bridge HMAC, optional) differ. Set the four OAuth 1.0a user credentials to post; use recipient `public` for posts and `dm:<user id>` for DMs.
+5. DingTalk: set `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET` for callbacks and replies and allow egress to `api.dingtalk.com:443`; recipients become `group:…`, `cid…`, `user:…` or `robot`. Multi-replica deployments need the shared webhook store (`backend: postgres`) so a DingTalk signature is single-use across replicas.
+6. Lark / Feishu: if the app has an Encrypt Key, set `LARK_ENCRYPT_KEY`/`FEISHU_ENCRYPT_KEY`; plaintext events are then refused.
+7. Teams: set `MICROSOFT_TEAMS_APP_ID`, `MICROSOFT_TEAMS_APP_PASSWORD` and `MICROSOFT_TEAMS_TENANT_ID`, and allow egress to `login.botframework.com` and `login.microsoftonline.com`. After that the static `MICROSOFT_TEAMS_INBOUND_TOKEN` is no longer accepted.
+8. QQ: set `QQ_BOT_SECRET`; a custom `api_base` pointing at `api.sgroup.qq.com` should move to `https://api.bot.qq.com`.
+9. Discord: with `DISCORD_PUBLIC_KEY` set, the Ed25519 signature is now required, and a request with only the bridge HMAC is refused.
+10. Production with Google Chat, Matrix or X enabled requires `gateway.require_webhook_signatures: true`; `omnidesk production-check` lists all of the above.
 
-Rollback: the previous release rejects unknown configuration keys, so remove `project_number`, `require_google_jwt`, `allow_query_token` and `allowed_outbound_spaces` from `channels.google_chat` and `allow_query_token` from `channels.matrix` before deploying it.
+Rollback: the previous release rejects unknown configuration keys, so remove `project_number`, `require_google_jwt`, `allow_query_token` and `allowed_outbound_spaces` from `channels.google_chat`, `allow_query_token` from `channels.matrix`, `mode` and `poll_timeout_seconds` from `channels.telegram`, `app_id_env`/`app_password_env`/`tenant_id_env` from `channels.microsoft_teams` and `bot_secret_env` from `channels.qq` before deploying it. Rolling back the delivery-semantics change restores transport-level resends of timed-out sends (duplicate messages) and HTTP-200 provider errors recorded as sent; rows marked `ambiguous` or dead-lettered meanwhile stay as they are.

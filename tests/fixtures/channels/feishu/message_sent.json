@@ -1,0 +1,2 @@
+{"_source": "Shape of Feishu im/v1/messages create response; ids are placeholders.",
+ "response": {"code": 0, "msg": "success", "data": {"message_id": "om_placeholder000000000000000001", "root_id": "", "parent_id": "", "msg_type": "text", "create_time": "1763683200000", "update_time": "1763683200000", "deleted": false, "updated": false, "chat_id": "oc_placeholder00000000000000000001", "sender": {"id": "cli_placeholder", "id_type": "app_id", "sender_type": "app"}, "body": {"content": "{\"text\":\"OmniDesk live contract check.\"}"}}}}

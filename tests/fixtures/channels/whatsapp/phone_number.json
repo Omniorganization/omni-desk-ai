@@ -1,0 +1,2 @@
+{"_source": "Shape of Graph GET /{phone-number-id}?fields=verified_name,quality_rating for a WhatsApp test number; ids are placeholders.",
+ "response": {"verified_name": "Test Number", "quality_rating": "GREEN", "id": "100000000000001"}}

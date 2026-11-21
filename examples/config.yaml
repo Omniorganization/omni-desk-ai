@@ -140,6 +140,9 @@ channels:
     bot_token_env: TELEGRAM_BOT_TOKEN
     webhook_secret_env: TELEGRAM_WEBHOOK_SECRET
     allowed_user_ids: []
+    # webhook (POST /webhooks/telegram) or polling (getUpdates; single replica, no webhook set)
+    mode: webhook
+    poll_timeout_seconds: 30
   whatsapp_cloud:
     enabled: false
     access_token_env: WHATSAPP_CLOUD_TOKEN

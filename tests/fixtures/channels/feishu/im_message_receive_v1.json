@@ -1,0 +1,4 @@
+{"_source": "Shape of a schema 2.0 im.message.receive_v1 event (open.feishu.cn im-v1/message/events/receive); ids are placeholders, text is filled in by the test.",
+ "event": {"schema": "2.0", "header": {"event_id": "5e3702a84e847582be8db7fb73283c02", "event_type": "im.message.receive_v1", "create_time": "1763683260000", "token": "", "app_id": "cli_placeholder", "tenant_key": "tenant_placeholder"},
+   "event": {"sender": {"sender_id": {"union_id": "on_placeholder", "user_id": "u_placeholder", "open_id": "ou_placeholder"}, "sender_type": "user", "tenant_key": "tenant_placeholder"},
+     "message": {"message_id": "om_reply_placeholder00000000000001", "root_id": "", "parent_id": "", "create_time": "1763683260000", "chat_id": "oc_p2p_placeholder000000000000001", "chat_type": "p2p", "message_type": "text", "content": "{\"text\":\"__CODE__\"}", "mentions": []}}}}

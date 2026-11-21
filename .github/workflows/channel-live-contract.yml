@@ -1,0 +1,95 @@
+name: Channel Live Contract
+
+# Sends and receives real messages through a provider's API with a dedicated
+# test account, using the production adapter code. Credentials live only in
+# the `channel-live` environment (set by the owner with
+# `gh secret set NAME --env channel-live`); add required reviewers to that
+# environment to gate each run. The evidence artifact describes what this run
+# observed; commit it under release/external-evidence/channels/ only from a
+# passed run, together with its run URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Provider to exercise with its test account
+        type: choice
+        required: true
+        default: slack
+        options:
+          - slack
+          - feishu
+          - lark
+          - whatsapp
+          - telegram
+      mode:
+        description: send-receive needs the test user to reply with the code the run sends (slack, feishu, lark, telegram); send-only checks auth and sending (all channels)
+        type: choice
+        required: true
+        default: send-receive
+        options:
+          - send-receive
+          - send-only
+      reply_timeout_minutes:
+        description: How long to wait for the test user's reply
+        required: true
+        default: "10"
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per channel at a time (a second Telegram poller gets 409 Conflict,
+  # and two Slack runs would see each other's codes).
+  group: channel-live-contract-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  live-contract:
+    runs-on: ubuntu-latest
+    environment: channel-live
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python scripts/check_lock_hashes.py requirements.dev.lock
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Run live contract
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          MODE: ${{ inputs.mode }}
+          REPLY_TIMEOUT_MINUTES: ${{ inputs.reply_timeout_minutes }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_LIVE_CHANNEL_ID: ${{ secrets.SLACK_LIVE_CHANNEL_ID }}
+          SLACK_LIVE_SENDER_ID: ${{ secrets.SLACK_LIVE_SENDER_ID }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_LIVE_OPEN_ID: ${{ secrets.FEISHU_LIVE_OPEN_ID }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_LIVE_OPEN_ID: ${{ secrets.LARK_LIVE_OPEN_ID }}
+          WHATSAPP_CLOUD_TOKEN: ${{ secrets.WHATSAPP_CLOUD_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          WHATSAPP_LIVE_RECIPIENT: ${{ secrets.WHATSAPP_LIVE_RECIPIENT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_LIVE_CHAT_ID: ${{ secrets.TELEGRAM_LIVE_CHAT_ID }}
+          TELEGRAM_LIVE_SENDER_ID: ${{ secrets.TELEGRAM_LIVE_SENDER_ID }}
+        run: |
+          set -euo pipefail
+          case "$REPLY_TIMEOUT_MINUTES" in ''|*[!0-9]*) echo "reply_timeout_minutes must be a whole number" >&2; exit 2;; esac
+          python scripts/run_channel_live_contract.py \
+            --channel "$CHANNEL" \
+            --mode "$MODE" \
+            --reply-timeout-seconds "$((REPLY_TIMEOUT_MINUTES * 60))" \
+            --output "dist/evidence/channels/${CHANNEL}-live-contract.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: channel-live-contract-${{ inputs.channel }}-${{ github.run_id }}
+          path: dist/evidence/channels/
+          if-no-files-found: warn

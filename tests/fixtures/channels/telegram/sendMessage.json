@@ -1,0 +1,4 @@
+{
+  "_source": "Shape of Telegram Bot API sendMessage (returns the sent Message); ids are placeholders.",
+  "response": {"ok": true, "result": {"message_id": 4242, "from": {"id": 7000000001, "is_bot": true, "first_name": "OmniDesk Test", "username": "omnidesk_test_bot"}, "chat": {"id": 5000000002, "first_name": "Tester", "type": "private"}, "date": 1763683200, "text": "OmniDesk live contract check."}}
+}

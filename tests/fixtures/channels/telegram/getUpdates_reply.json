@@ -1,0 +1,4 @@
+{
+  "_source": "Shape of Telegram Bot API getUpdates with one private-chat text message (Update.message); ids are placeholders, text is filled in by the test.",
+  "response": {"ok": true, "result": [{"update_id": 900000101, "message": {"message_id": 4243, "from": {"id": 5000000002, "is_bot": false, "first_name": "Tester", "language_code": "en"}, "chat": {"id": 5000000002, "first_name": "Tester", "type": "private"}, "date": 1763683260, "text": "__CODE__"}}]}
+}
