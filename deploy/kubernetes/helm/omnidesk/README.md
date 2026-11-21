@@ -100,11 +100,16 @@ not rewrite backups, so SECURITY.md sets two rules for them:
   logged since the backup was taken (`privacy.subject_erased` in the security
   audit log) has been applied again. Use security's re-apply command once it
   ships; until then, repeat each erasure request with a new dual approval.
+- **Recovery objectives:** the operator or service must provide continuous WAL
+  archiving with point-in-time recovery, an RPO of 5 minutes or less, and a
+  database restore within 30 minutes (RTO), shown in its own restore drill.
+  On Kubernetes OmniDesk backs neither number itself (`docs/SLO.md`).
 
-Single-host deployments back up with the systemd units in `deploy/systemd/`:
-`omnidesk-backup.service`/`.timer` for the SQLite stores, and
-`omnidesk-postgres-backup.service`/`.timer` for PostgreSQL (host `pg_dump`,
-from #255). Both keep 30 days. `docs/BACKUP_RESTORE.md` covers backup,
+The single-host reference is the systemd units in `deploy/systemd/`:
+`omnidesk-postgres-backup.service`/`.timer` for PostgreSQL (one verified
+`pg_dump` a day, from #255) and `omnidesk-backup.service`/`.timer` for the
+SQLite stores (hourly). Both keep 30 days. Their RPO is up to 24 hours for
+PostgreSQL and about 1 hour for SQLite. `docs/BACKUP_RESTORE.md` covers backup,
 verification and restore.
 
 ## Other values that need a decision
