@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from omnidesk_agent.self_upgrade.pipeline.diff_policy import DiffPolicy
+from omnidesk_agent.self_upgrade.pipeline.diff_policy import DiffPolicy, scoped_policy
 from omnidesk_agent.self_upgrade.pipeline.issue import UpgradeIssue
 from omnidesk_agent.self_upgrade.pipeline.workspace import IsolatedWorktree
 
@@ -75,7 +75,11 @@ def verify(
     run_full_suite: bool = True,
     policy: Optional[DiffPolicy] = None,
 ) -> EvidenceBundle:
-    policy = policy or DiffPolicy(allowed_prefixes=tuple(issue.scope_paths) + (("tests/",) if issue.scope_paths else ()))
+    try:
+        policy = policy or scoped_policy(issue)
+    except ValueError as exc:
+        refused = EvidenceBundle(SCHEMA, False, [str(exc)], issue.to_dict(), "", patch_sha256(diff), {"ok": False, "violations": [str(exc)]})
+        return _stamp(refused)
     report = policy.check(diff)
     bundle = EvidenceBundle(SCHEMA, False, [], issue.to_dict(), "", patch_sha256(diff), report.to_dict())
     if not report.ok:
@@ -89,6 +93,10 @@ def verify(
             bundle.steps.append({"name": "failing_tests_before_change", **before.to_dict()})
             if before.exit_code == 0:
                 bundle.reasons.append("the named failing tests pass before the change; the issue is not reproduced")
+            elif before.exit_code != 1:
+                # pytest exits 1 only when tests ran and failed. 4 (usage error, e.g. no
+                # such test) and 5 (nothing collected) reproduce nothing.
+                bundle.reasons.append(f"the named failing tests did not run before the change (pytest exit {before.exit_code}); the issue is not reproduced")
         applied = tree.apply(diff)
         bundle.steps.append({"name": "apply", **applied.to_dict()})
         if applied.exit_code != 0:

@@ -1,14 +1,11 @@
 name: Agent Repair PR
 
+# No path filter: a self-upgrade PR that only touches tests/ or docs/ is
+# re-checked too. In the merge queue the job reports skipped (no head ref).
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "omnidesk_agent/**"
-      - "apps/**"
-      - "release/**"
-      - "scripts/**"
-      - ".github/workflows/**"
+  merge_group:
 
 permissions:
   contents: read
@@ -40,15 +37,35 @@ jobs:
         run: python scripts/check_external_ga_evidence.py . --audit-only
       - name: Focused repair-loop tests
         run: python -m pytest tests/test_ga_1_11_openclaw_codex_alignment.py
+      # The re-check uses the pipeline's policy from the base commit, never the
+      # copy in the PR under review, and runs Python isolated (-I) so files the
+      # PR adds cannot shadow the modules it imports.
+      - name: Load the pipeline policy from the base commit
+        id: policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/base-policy"
+          if git cat-file -e "$BASE_SHA:omnidesk_agent/self_upgrade/pipeline/diff_policy.py" 2>/dev/null; then
+            git show "$BASE_SHA:omnidesk_agent/self_upgrade/pipeline/diff_policy.py" > "$RUNNER_TEMP/base-policy/diff_policy.py"
+            git show "$BASE_SHA:omnidesk_agent/self_upgrade/pipeline/publisher.py" > "$RUNNER_TEMP/base-policy/publisher.py"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no pipeline at the base commit, so no PR can come from it"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Is this a PR the self-upgrade pipeline opened?
         id: origin
+        if: steps.policy.outputs.present == 'true'
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          python - <<'PY'
-          import os
-          from omnidesk_agent.self_upgrade.pipeline.publisher import is_pipeline_branch
-          pipeline = is_pipeline_branch(os.environ["HEAD_REF"])
+          python -I - <<'PY'
+          import importlib.util, os
+          spec = importlib.util.spec_from_file_location("base_publisher", os.path.join(os.environ["RUNNER_TEMP"], "base-policy", "publisher.py"))
+          base = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(base)
+          pipeline = base.is_pipeline_branch(os.environ["HEAD_REF"])
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"pipeline={str(pipeline).lower()}\n")
           print("pipeline branch: re-checking" if pipeline else "not a pipeline branch: normal review only")
@@ -58,13 +75,16 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          git diff --name-only "$BASE_SHA" HEAD > changed.txt
-          python - <<'PY'
+          git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed.txt"
+          python -I - <<'PY'
+          import importlib.util, os
           from fnmatch import fnmatch
           from pathlib import Path
-          from omnidesk_agent.self_upgrade.pipeline.diff_policy import RESTRICTED_PATTERNS
-          changed = [p for p in Path("changed.txt").read_text().splitlines() if p]
-          bad = [p for p in changed if any(fnmatch(p, pattern) for pattern in RESTRICTED_PATTERNS)]
+          spec = importlib.util.spec_from_file_location("base_diff_policy", os.path.join(os.environ["RUNNER_TEMP"], "base-policy", "diff_policy.py"))
+          base = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(base)
+          changed = [p for p in Path(os.environ["RUNNER_TEMP"], "changed.txt").read_text().splitlines() if p]
+          bad = [p for p in changed if any(fnmatch(p, pattern) for pattern in base.RESTRICTED_PATTERNS)]
           if bad:
               raise SystemExit(f"self-upgrade PR touches restricted paths: {bad}")
           print(f"{len(changed)} changed files, none restricted")
