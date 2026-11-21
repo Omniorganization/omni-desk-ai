@@ -229,7 +229,10 @@ def _apply_task_created(store: AppSyncStore, actor: str, payload: dict[str, Any]
 # --- PostgreSQL ------------------------------------------------------------
 # The same operations and rules as above, as statements in the caller's
 # transaction. Each operation runs under its own savepoint, so one rejected or
-# malformed operation is skipped without aborting the others.
+# malformed operation is skipped without aborting the others. A database error
+# that is not about the data (a lock or statement timeout, a deadlock) is not a
+# skip: it aborts the whole upload, so the caller's transaction is retried or the
+# client gets an error and uploads again, instead of losing the operation.
 
 
 def apply_uploaded_operations_sql(
@@ -241,6 +244,8 @@ def apply_uploaded_operations_sql(
     remote: str = "default",
     device_id: str | None = None,
 ) -> dict[str, Any]:
+    from psycopg import OperationalError  # type: ignore
+
     handlers: dict[str, Callable[[Any, Any, str, dict[str, Any], str | None], bool]] = {
         "conversation.created": _sql_conversation_created,
         "message.created": _sql_message_created,
@@ -261,7 +266,10 @@ def apply_uploaded_operations_sql(
         tx.cur.execute("SAVEPOINT omnidesk_apply_operation")
         try:
             changed = handler(store, tx, actor, payload, device_id)
+        except OperationalError:
+            raise  # a lock or statement timeout, a deadlock, a lost connection: not the operation's fault
         except Exception:
+            # A malformed or rejected operation: skipped, so it cannot block the rest.
             tx.cur.execute("ROLLBACK TO SAVEPOINT omnidesk_apply_operation")
             skipped += 1
             continue
@@ -273,7 +281,8 @@ def apply_uploaded_operations_sql(
         organization_id = store._org_for_actor(tx, actor)
         event_payload = {**payload, "organization_id": organization_id}
         event_payload.setdefault("remote", remote)
-        store._event(tx, event_type, actor or "unknown", event_payload)
+        # Like the JSON path: an applied upload is not queued back into this node's own outbox.
+        store._event(tx, event_type, actor or "unknown", event_payload, queue_locally=False)
     return {"applied_state_mutations": applied, "skipped_state_mutations": skipped}
 
 

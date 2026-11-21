@@ -239,6 +239,20 @@ WHERE omnidesk_appsync_device_request_nonces.expires_at <= %(now)s
 RETURNING nonce_key
 """
 
+# Every signed request adds a nonce row, so each claim also deletes a bounded
+# batch of expired ones; their replay window is over. Concurrent requests skip
+# each other's rows instead of waiting on them.
+NONCE_PRUNE_BATCH = 100
+NONCE_PRUNE_SQL = """
+DELETE FROM omnidesk_appsync_device_request_nonces
+WHERE ctid IN (
+    SELECT ctid FROM omnidesk_appsync_device_request_nonces
+    WHERE namespace = %(namespace)s AND expires_at <= %(now)s
+    LIMIT %(batch)s
+    FOR UPDATE SKIP LOCKED
+)
+"""
+
 OPERATION_LOG_SQL = """
 INSERT INTO omnidesk_appsync_operation_log(namespace, organization_id, seq, event, payload, created_at)
 VALUES (%(namespace)s, %(organization_id)s, nextval('omnidesk_appsync_operation_log_entry_seq'), %(event)s, %(payload)s, %(created_at)s)
@@ -586,6 +600,7 @@ class _Tx:
     now: float = field(default_factory=_now)
     events: list[dict[str, Any]] = field(default_factory=list)
     organizations: dict[str, str] = field(default_factory=dict)
+    unqueued: set[int] = field(default_factory=set)
 
 
 def _payload_dict(value: Any) -> dict[str, Any]:
@@ -834,7 +849,9 @@ class MigratedMultiInstancePostgresAppSyncStore:
 
     # ----------------------------------------------------------------- events
 
-    def _event(self, tx: _Tx, event_type: str, actor: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _event(self, tx: _Tx, event_type: str, actor: str, payload: dict[str, Any], *, queue_locally: bool = True) -> dict[str, Any]:
+        """``queue_locally=False`` for applied uploads: they must not be queued
+        back into this node's own offline outbox."""
         payload = dict(payload or {})
         organization_id = self._normalize_org_id(
             payload.get("organization_id")
@@ -847,6 +864,8 @@ class MigratedMultiInstancePostgresAppSyncStore:
         payload.setdefault("organization_id", organization_id)
         event = {"seq": 0, "ts": tx.now, "event_type": event_type, "actor": actor, "organization_id": organization_id, "payload": payload}
         tx.events.append(event)
+        if not queue_locally:
+            tx.unqueued.add(id(event))
         return event
 
     def _flush_events(self, tx: _Tx) -> None:
@@ -876,7 +895,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
         )
         if self.local_outbox_enabled:
             for event in tx.events:
-                if not str(event["event_type"]).startswith(("operation.", "sync.", "network.")):
+                if id(event) not in tx.unqueued and not str(event["event_type"]).startswith(("operation.", "sync.", "network.")):
                     self._auto_queue_event(tx, event)
 
     def _auto_queue_event(self, tx: _Tx, event: dict[str, Any]) -> None:
@@ -1175,6 +1194,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
         return self._read(body)
 
     def _claim_nonce(self, tx: _Tx, nonce_key: str, *, ttl_seconds: int) -> bool:
+        tx.cur.execute(NONCE_PRUNE_SQL, {"namespace": self.namespace, "now": tx.now, "batch": NONCE_PRUNE_BATCH})
         tx.cur.execute(
             NONCE_SQL,
             {"namespace": self.namespace, "nonce_key": nonce_key, "expires_at": tx.now + max(60, int(ttl_seconds or 600)), "now": tx.now},

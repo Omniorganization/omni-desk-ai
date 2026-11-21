@@ -569,8 +569,7 @@ class GatewayProjectStore:
             }
 
     def _event(self, event_type: str, actor: str, project: dict[str, Any]) -> None:
-        # The public method runs under the store's serialization, so a PostgreSQL
-        # instance reloads shared state before persisting instead of overwriting it.
+        # The event joins the AppSync feed in a transaction of its own (record_event).
         self.app_sync.record_event(
             event_type,
             actor,
