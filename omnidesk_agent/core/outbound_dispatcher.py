@@ -80,8 +80,9 @@ class OutboundDispatcher:
             channel = str(message.get("channel", "unknown"))
             capability = capability_for(channel)
             ambiguous_categories = {"timeout", "network_error", "provider_5xx"}
-            # A channel error that knows the request never left (request_sent is
-            # False) is safe to retry; unknown or sent means it may have arrived.
+            # A timeout, network error or provider 5xx may have been delivered, so it
+            # is held for reconciliation, unless the channel error knows the request
+            # never left (request_sent is False). Other retryable errors are retried.
             never_sent = getattr(exc, "request_sent", None) is False
             maybe_delivered = info.retryable and capability.mode != "native" and info.category in ambiguous_categories and not never_sent
             if maybe_delivered:

@@ -1203,6 +1203,10 @@ class PostgresOutboundMessageStore:
                 "updated_at": time.time(),
             },
         )
+        # As the SQLite store: the OmniDeskOutboundAmbiguousSend alert counts these.
+        inc = getattr(self.metrics, "inc", None)
+        if callable(inc):
+            inc("omnidesk_outbound_ambiguous_send_total", category=category)
         return {"id": message_id, "status": "ambiguous", "retry_count": int(row.get("retry_count") or 0), "requires_reconciliation": True}
 
     def requeue(self, message_id: str) -> dict[str, Any]:

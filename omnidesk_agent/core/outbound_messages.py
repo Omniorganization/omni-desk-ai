@@ -219,7 +219,8 @@ class OutboundMessageStore:
         if recovered:
             self._metric("omnidesk_outbound_stale_recovered_total")
         if ambiguous:
-            self._metric("omnidesk_outbound_ambiguous_send_total", category="stale_running")
+            # One per message: each must be reconciled with its provider.
+            self._metric("omnidesk_outbound_ambiguous_send_total", value=ambiguous, category="stale_running")
         return recovered
 
     def mark_sent(self, message_id: str, *, provider_message_id: Optional[str] = None, provider_request_id: Optional[str] = None) -> None:

@@ -17,7 +17,8 @@ import pytest
 from omnidesk_agent.channels import idempotency
 from omnidesk_agent.channels.idempotency import ProviderIdempotencyCapability
 from omnidesk_agent.core.outbound_dispatcher import OutboundDispatcher
-from omnidesk_agent.core.outbound_messages import OutboundMessageStore
+from omnidesk_agent.core.outbound_messages import OutboundMessageStore, stale_send_is_resendable
+from omnidesk_agent.observability.metrics import MetricsRegistry
 from omnidesk_agent.repositories.postgres_state import PostgresOutboundMessageStore
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from test_postgres_state_runtime_contracts import MemoryJsonState
@@ -57,8 +58,10 @@ def store(request, tmp_path):
     return PostgresOutboundMessageStore(MemoryJsonState(), max_retries=2, base_retry_seconds=1)
 
 
-def test_an_interrupted_best_effort_send_waits_for_reconciliation(store):
-    message_id = store.create(channel="telegram", recipient="u1", payload={"type": "text", "text": "invoice ready"}, idempotency_key="idem-1")
+# Best-effort channels, and channels with no idempotency entry at all (mode 'none').
+@pytest.mark.parametrize("channel", ["telegram", "whatsapp_cloud", "gmail", "unregistered_chat"])
+def test_an_interrupted_best_effort_send_waits_for_reconciliation(store, channel):
+    message_id = store.create(channel=channel, recipient="u1", payload={"type": "text", "text": "invoice ready"}, idempotency_key="idem-1")
     _crash_mid_send(store, message_id)
 
     assert store.recover_stale_running(lease_seconds=300) == 1
@@ -68,6 +71,31 @@ def test_an_interrupted_best_effort_send_waits_for_reconciliation(store):
     assert [r["id"] for r in store.list_ambiguous()] == [message_id]
     # After checking the provider, an operator can still send it again on purpose.
     assert store.requeue(message_id)["status"] == "pending"
+
+
+def test_only_a_deduplicating_provider_makes_a_stale_send_resendable(monkeypatch):
+    for channel in ("telegram", "gmail", "", "unregistered_chat"):
+        assert stale_send_is_resendable(channel) is False
+    monkeypatch.setitem(idempotency.PROVIDER_IDEMPOTENCY, "dedupe_chat", ProviderIdempotencyCapability("dedupe_chat", "native", "Idempotency-Key", duplicate_risk=False))
+    assert stale_send_is_resendable("dedupe_chat") is True
+
+
+def test_each_interrupted_send_is_counted_for_the_ambiguous_send_alert(store):
+    # The critical OmniDeskOutboundAmbiguousSend alert is the operator's only push signal
+    # that messages wait for reconciliation; the PostgreSQL store (production) emitted nothing.
+    store.metrics = MetricsRegistry()
+    for n in range(3):
+        _crash_mid_send(store, store.create(channel="telegram", recipient=f"u{n}", payload={"type": "text", "text": "hi"}, idempotency_key=f"idem-c{n}"))
+
+    assert store.recover_stale_running(lease_seconds=300) == 3
+    assert store.metrics.counter_value("omnidesk_outbound_ambiguous_send_total", category="stale_running") == 3
+
+
+def test_an_ambiguous_send_at_runtime_is_counted_on_both_stores(store):
+    store.metrics = MetricsRegistry()
+    message_id = store.create(channel="telegram", recipient="u1", payload={"type": "text", "text": "hi"}, idempotency_key="idem-r")
+    store.mark_ambiguous(message_id, "request timed out", category="timeout")
+    assert store.metrics.counter_value("omnidesk_outbound_ambiguous_send_total", category="timeout") == 1
 
 
 def test_an_interrupted_send_to_a_deduplicating_provider_is_retried(store, monkeypatch):
@@ -112,7 +140,8 @@ class ChannelError(RuntimeError):
         (TimeoutError("provider timeout after request write"), "ambiguous"),
     ],
 )
-def test_dispatcher_retries_only_what_never_left(tmp_path, error, status):
+def test_dispatcher_holds_a_maybe_delivered_timeout_or_network_error(tmp_path, error, status):
+    # Only timeouts, network errors and provider 5xx are held, and only when the request may have left.
     async def scenario():
         store = _sqlite_store(tmp_path)
         message_id = store.create(channel="telegram", recipient="u1", payload={"type": "text", "text": "hello"})
