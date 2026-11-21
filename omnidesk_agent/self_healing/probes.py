@@ -18,7 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
+from omnidesk_agent.core.job_queue import JobQueue
 from omnidesk_agent.self_healing.policy import RuntimeSignal
+from omnidesk_agent.storage.sqlite import connect_sqlite
 
 # Failures worth retrying once the dependency is back: timeouts, connection
 # errors, rate limits and gateway errors. Status codes count only next to
@@ -47,6 +49,10 @@ class WorkerHandle:
     start: Callable[[], Any]
     stop: Callable[[], Any]
     is_alive: Callable[[], bool]
+    # False when start() would recover a queue other gateways share (the webhook
+    # worker on PostgreSQL): its queue-wide lease recovery could re-run another
+    # replica's healthy job, so a dead worker is escalated instead of restarted.
+    restartable: bool = True
 
 
 class WorkerRegistry:
@@ -56,8 +62,8 @@ class WorkerRegistry:
         self._handles: dict[str, WorkerHandle] = {}
         self._restarted_at: dict[str, float] = {}
 
-    def register(self, name: str, *, start: Callable[[], Any], stop: Callable[[], Any], is_alive: Callable[[], bool]) -> None:
-        self._handles[name] = WorkerHandle(name, start, stop, is_alive)
+    def register(self, name: str, *, start: Callable[[], Any], stop: Callable[[], Any], is_alive: Callable[[], bool], restartable: bool = True) -> None:
+        self._handles[name] = WorkerHandle(name, start, stop, is_alive, restartable)
 
     def get(self, name: str) -> Optional[WorkerHandle]:
         return self._handles.get(name)
@@ -74,40 +80,91 @@ class WorkerRegistry:
 
 
 class RequeueLedger:
-    """Durable record of automatic dead-letter requeues.
+    """Automatic dead-letter requeues, kept in the queue's own store.
 
     ``JobQueue.requeue_dead_letter`` resets a job's retry count and last error,
-    so without this record a job that keeps failing would be requeued forever.
-    A job is requeued automatically at most ``max_per_job`` times; after that it
-    stays dead-lettered and is escalated to a human. Each requeue keeps the
-    error the queue row loses.
+    so without a record a job that keeps failing would be requeued forever. The
+    record lives next to the jobs (a table in the SQLite queue's file, a
+    namespace in the PostgreSQL state the queue uses) and is claimed atomically,
+    so every replica and every pod generation gets the same answer: a job is
+    requeued automatically at most once. Each claim keeps the error the queue
+    row loses; claims older than ``retention_seconds`` are pruned.
     """
 
-    def __init__(self, path: Path, *, max_per_job: int = 1):
-        self.path = Path(path).expanduser()
-        self.max_per_job = max(1, int(max_per_job))
+    NAMESPACE = "self_healing_requeues"
 
-    def _load(self) -> dict[str, list[dict[str, Any]]]:
-        if not self.path.exists():
-            return {}
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("requeue ledger is not a JSON object")
-        return data
+    def __init__(self, queue: Any, *, retention_seconds: float = 30 * 86400, clock: Callable[[], float] = time.time):
+        state = getattr(queue, "state", None)
+        if state is not None and callable(getattr(state, "insert_once", None)):
+            self._backend: Any = _StateLedger(state, self.NAMESPACE)
+        elif getattr(queue, "db_path", None) is not None:
+            self._backend = _SqliteLedger(Path(queue.db_path))
+        else:
+            raise TypeError("the requeue ledger needs the queue's own store: the SQLite JobQueue or PostgresJobQueue")
+        self.retention_seconds = float(retention_seconds)
+        self.clock = clock
 
     def exhausted(self, job_ids: Iterable[str]) -> set[str]:
-        """The given jobs that may not be requeued automatically again."""
-        ids = [str(job_id) for job_id in job_ids]
+        """The given jobs that were requeued automatically before."""
+        ids = sorted({str(job_id) for job_id in job_ids})
         try:
-            data = self._load()
-        except (OSError, ValueError):
+            return self._backend.claimed(ids)
+        except Exception:
             return set(ids)  # an unreadable ledger allows no automatic requeue
-        return {job_id for job_id in ids if len(data.get(job_id, [])) >= self.max_per_job}
 
-    def record(self, job_id: str, *, at: float, last_error: Optional[str]) -> None:
-        data = self._load()
-        data.setdefault(str(job_id), []).append({"at": at, "last_error": str(last_error or "")[:500]})
-        _atomic_write(self.path, json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    def claim(self, job_id: str, *, last_error: Optional[str]) -> bool:
+        """True only for the first automatic requeue of ``job_id``, across every replica."""
+        now = self.clock()
+        self._backend.prune(now - self.retention_seconds)
+        return bool(self._backend.insert_once(str(job_id), {"at": now, "last_error": str(last_error or "")[:500]}))
+
+
+class _SqliteLedger:
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        with connect_sqlite(db_path) as con:
+            con.execute("CREATE TABLE IF NOT EXISTS self_healing_requeues (job_id TEXT PRIMARY KEY, at REAL NOT NULL, last_error TEXT)")
+
+    def claimed(self, ids: list[str]) -> set[str]:
+        if not ids:
+            return set()
+        marks = ",".join("?" for _ in ids)
+        query = f"SELECT job_id FROM self_healing_requeues WHERE job_id IN ({marks})"  # nosec B608
+        # (only "?" placeholders are formatted in; the ids are bound parameters)
+        with connect_sqlite(self.db_path) as con:
+            return {str(row[0]) for row in con.execute(query, ids).fetchall()}
+
+    def insert_once(self, job_id: str, record: dict[str, Any]) -> bool:
+        with connect_sqlite(self.db_path) as con:
+            cursor = con.execute("INSERT OR IGNORE INTO self_healing_requeues(job_id, at, last_error) VALUES (?, ?, ?)",
+                                 (job_id, record["at"], record["last_error"]))
+            return cursor.rowcount == 1
+
+    def prune(self, before: float) -> None:
+        with connect_sqlite(self.db_path) as con:
+            con.execute("DELETE FROM self_healing_requeues WHERE at < ?", (before,))
+
+
+class _StateLedger:
+    """The PostgreSQL state store's atomic insert-if-absent, in a namespace of its own."""
+
+    def __init__(self, state: Any, namespace: str):
+        self.state = state
+        self.namespace = namespace
+
+    def claimed(self, ids: list[str]) -> set[str]:
+        return {job_id for job_id in ids if self.state.get(self.namespace, job_id) is not None}
+
+    def insert_once(self, job_id: str, record: dict[str, Any]) -> bool:
+        return bool(self.state.insert_once(self.namespace, job_id, record))
+
+    def prune(self, before: float) -> None:
+        self.state.delete_stale(self.namespace, stale_before=before)
+
+
+def single_consumer(queue: Any) -> bool:
+    """Only the SQLite JobQueue is consumed by this process alone; a test double may say so itself."""
+    return isinstance(queue, JobQueue) or getattr(queue, "single_consumer", False) is True
 
 
 class WorkerProbe:
@@ -123,7 +180,7 @@ class WorkerProbe:
                 alive = bool(handle.is_alive())
             except Exception:
                 alive = False
-            signals.append(RuntimeSignal(component=f"worker:{handle.name}", health_ok=alive))
+            signals.append(RuntimeSignal(component=f"worker:{handle.name}", health_ok=alive, metadata={"restartable": handle.restartable}))
         return signals
 
 
@@ -134,9 +191,13 @@ class JobQueueProbe:
     provider, a tool backend) works again; there is no default. Pass
     ``orphaned_before`` only for a queue this process alone consumes (the
     SQLite queue): it returns the time before which no running job has a live
-    worker, e.g. ``lambda: registry.restarted_at("webhook")``. For a shared
-    queue (PostgreSQL behind several gateways) a job past its lease may still be
-    running elsewhere, so stale jobs are escalated, never recovered.
+    worker, e.g. ``lambda: registry.restarted_at("webhook")``; it is refused
+    for any other queue. For a shared queue (PostgreSQL behind several
+    gateways) a job past its lease may still be running elsewhere, so stale
+    jobs are escalated, never recovered. Jobs the healer requeued once and that
+    are dead-lettered again, whatever their new error, are reported as
+    ``queue:dead_letters_exhausted`` so their escalation never waits behind the
+    requeues of other jobs.
     """
 
     name = "job_queue"
@@ -151,6 +212,8 @@ class JobQueueProbe:
         orphaned_before: Optional[Callable[[], Optional[float]]] = None,
         clock: Callable[[], float] = time.time,
     ):
+        if orphaned_before is not None and not single_consumer(queue):
+            raise ValueError("orphaned_before is only safe for a queue this process alone consumes (the SQLite JobQueue)")
         self.queue = queue
         self.dependency_healthy = dependency_healthy
         self.ledger = ledger
@@ -167,8 +230,9 @@ class JobQueueProbe:
         stale = [job for job in running if job.get("locked_at") is not None and float(job["locked_at"]) <= cutoff]
         boundary = self.orphaned_before() if self.orphaned_before else None
         orphaned = [job for job in stale if boundary is not None and float(job["locked_at"]) <= boundary]
+        exhausted = self.ledger.exhausted(str(job["id"]) for job in dead)
         transient = [job for job in dead if is_transient(job.get("last_error"))]
-        exhausted = self.ledger.exhausted(str(job["id"]) for job in transient)
+        retryable = [job for job in transient if str(job["id"]) not in exhausted]
         try:
             healthy = bool(self.dependency_healthy())
         except Exception:
@@ -176,12 +240,16 @@ class JobQueueProbe:
         return [
             RuntimeSignal(component="queue:stale_jobs", health_ok=not stale, metadata={"stale_count": len(stale), "orphaned_count": len(orphaned)}),
             RuntimeSignal(
+                component="queue:dead_letters_exhausted",
+                health_ok=not exhausted,
+                metadata={"exhausted_count": len(exhausted), "job_ids": sorted(exhausted)[:20]},
+            ),
+            RuntimeSignal(
                 component="queue:dead_letters",
-                health_ok=not transient and len(dead) < 200,
+                health_ok=not retryable and len(dead) < 200,
                 metadata={
                     "transient_count": len(transient),
-                    "retryable_count": len(transient) - len(exhausted),
-                    "exhausted_count": len(exhausted),
+                    "retryable_count": len(retryable),
                     "dead_letter_count": len(dead),
                     "dependency_healthy": healthy,
                     # JobQueue.list returns the newest 200 only.

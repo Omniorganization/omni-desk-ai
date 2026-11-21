@@ -8,13 +8,21 @@ log to watch (``audit_log``), the audit ``event`` that proves containment (for
 example ``recovered`` from the watchdog or ``acted`` from the supervisor), the
 ``component`` it breaks (required for supervisor logs), an optional ``action``,
 and a ``timeout_seconds``. Only a record for that component whose action
-succeeded and was verified counts. An injection counts only when the baseline
-health check passed (otherwise nothing is injected) and every inject command
-exited 0: a fault that was never injected cannot have been contained. The
-runner records only what it observes: command exit codes, the first matching
-audit record written after the injection, and post-recovery health checks.
-``status`` is ``passed`` only when every injection was injected and contained
-and health passed afterwards; otherwise it is ``failed``. The output follows the external GA evidence schema for
+succeeded and was verified counts.
+
+Before every injection health must pass ``settle_checks`` times in a row,
+``settle_seconds`` apart; otherwise that injection and the rest of the plan
+are skipped and the drill fails. An injection counts only when every inject
+command exited 0, and a record contains it only when the failure the record
+answered began after the injection did (the healers write
+``first_failure_at`` / ``first_unhealthy_at``). Injections run one after
+another, so a record found for one cannot answer a failure that began after
+the next one started. Exit code 0 alone does not prove that a fault took
+effect.
+The runner records only what it observes: command exit codes, health checks,
+the first matching audit record, and post-recovery health checks. ``status``
+is ``passed`` only when every injection was injected and contained and health
+passed afterwards; otherwise it is ``failed``. The output follows the external GA evidence schema for
 ``self_healing_failure_injection``; the audit log excerpts are attached with
 their SHA-256.
 """
@@ -72,12 +80,25 @@ def run_drill(
             raise ValueError("a supervisor-log injection must name the component it breaks")
         if not spec["inject"] or not all(isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) for argv in spec["inject"]):
             raise ValueError("each inject step must be a non-empty argv list of strings")
-    baseline = health(health_url)
-    baseline_ok = baseline.get("ok") is True
+    settle_checks = max(1, int(plan.get("settle_checks", 3)))
+    settle_seconds = float(plan.get("settle_seconds", 10))
+    baseline: Optional[dict[str, Any]] = None
+    stopped = False
     for spec in plan["injections"]:
+        checks: list[dict[str, Any]] = []
+        if not stopped:  # never inject into a system that is not steadily healthy
+            for attempt in range(settle_checks):
+                if attempt:
+                    sleep(settle_seconds)
+                checks.append(health(health_url))
+                if checks[-1].get("ok") is not True:
+                    break
+        baseline = baseline if baseline is not None else (checks[0] if checks else None)
+        baseline_ok = len(checks) == settle_checks and all(check.get("ok") is True for check in checks)
+        stopped = stopped or not baseline_ok
         started = clock()
         commands = []
-        if baseline_ok:  # never inject into a system that is already unhealthy
+        if baseline_ok:
             for argv in spec["inject"]:
                 proc = run(argv)
                 commands.append({"argv": argv, "exit_code": proc.returncode, "stderr_tail": (proc.stderr or "")[-300:]})
@@ -87,7 +108,8 @@ def run_drill(
         deadline = started + float(spec.get("timeout_seconds", 300))
         match: Optional[dict[str, Any]] = None
         while injected and clock() < deadline and match is None:
-            match = next((r for r in _audit_records(audit_path) if float(r.get("at", 0)) >= started and _contains(r, spec, wanted)), None)
+            match = next((r for r in _audit_records(audit_path)
+                          if float(r.get("at", 0)) >= started and _began_after(r, started) and _contains(r, spec, wanted)), None)
             if match is None:
                 sleep(2.0)
         contained = match is not None
@@ -100,9 +122,10 @@ def run_drill(
             "name": spec["name"],
             "description": spec.get("description", ""),
             "injected_at": _iso(started),
+            "baseline_checks": checks,
             "commands": commands,
             "injected": injected,
-            "skipped": None if baseline_ok else "baseline health check failed",
+            "skipped": None if baseline_ok else ("baseline health check failed" if checks else "not run: an earlier baseline failed"),
             "contained": contained,
             "containment_record": match,
             "seconds_to_containment": round(float(match["at"]) - started, 3) if match else None,
@@ -126,6 +149,12 @@ def run_drill(
         "post_recovery_checks": post,
         "artifacts": artifacts,
     }
+
+
+def _began_after(record: dict[str, Any], started: float) -> bool:
+    """The failure this record answered was first seen at or after the injection."""
+    first = record.get("first_failure_at", record.get("first_unhealthy_at"))
+    return first is not None and float(first) >= started
 
 
 def _contains(record: dict[str, Any], spec: dict[str, Any], wanted: str) -> bool:

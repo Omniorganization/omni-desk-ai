@@ -42,7 +42,7 @@ def test_a_contained_drill_produces_evidence_the_gate_accepts(tmp_path):
 
     def run(argv):  # the injected fault; the watchdog then writes its record
         clock["now"] += 5
-        audit.write_text(json.dumps({"at": clock["now"] + 20, "event": "recovered", "containment_action": "restart"}) + "\n")
+        audit.write_text(json.dumps({"at": clock["now"] + 20, "event": "recovered", "containment_action": "restart", "first_failure_at": clock["now"] + 3}) + "\n")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     report = run_drill(_plan(audit), out_dir=evidence_dir / "drills", run=run, health=lambda url: {"ok": True, "status_code": 200},
@@ -105,7 +105,7 @@ def test_a_fault_that_was_never_injected_cannot_pass_as_contained(tmp_path):
     sleep = lambda s: clock.__setitem__("now", clock["now"] + s)  # noqa: E731
 
     def denied(argv):
-        audit.write_text(json.dumps({"at": clock["now"] + 1, "event": "recovered", "containment_action": "restart"}) + "\n")
+        audit.write_text(json.dumps({"at": clock["now"] + 1, "event": "recovered", "containment_action": "restart", "first_failure_at": clock["now"]}) + "\n")
         return subprocess.CompletedProcess(argv, 1, "", "Access denied")
 
     report = run_drill(_plan(audit), out_dir=evidence_dir / "drills", run=denied, health=lambda url: {"ok": True},
@@ -133,3 +133,87 @@ def test_each_containment_rule_is_needed_on_its_own():
     }
     assert _contains(good, spec, "acted")
     assert [rule for rule, record in broken.items() if _contains(record, spec, "acted")] == []
+
+
+# ------------------------------------------------ coordinator review of #292
+
+def _two_injections(audit: Path):
+    return {
+        "environment": "staging", "health_url": "https://staging.invalid/health", "settle_checks": 2, "settle_seconds": 5,
+        "injections": [
+            {"name": "kill-gateway", "inject": [["kill-gateway"]], "audit_log": str(audit), "event": "recovered", "timeout_seconds": 30},
+            {"name": "no-op", "inject": [["true"]], "audit_log": str(audit), "event": "recovered", "timeout_seconds": 30},
+        ],
+    }
+
+
+def test_a_second_injection_that_did_nothing_is_not_credited_with_the_first_ones_recovery(tmp_path):
+    evidence_dir = tmp_path / "external-evidence"
+    audit = tmp_path / "watchdog.jsonl"
+    clock = {"now": 1_000.0}
+    sleep = lambda s: clock.__setitem__("now", clock["now"] + s)  # noqa: E731
+
+    def run(argv):
+        if argv == ["kill-gateway"]:  # the watchdog then sees the failure and recovers it
+            started = clock["now"]
+            audit.write_text(json.dumps({"at": started + 20, "event": "recovered", "containment_action": "restart", "first_failure_at": started + 2}) + "\n")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    report = run_drill(_two_injections(audit), out_dir=evidence_dir / "drills", run=run, health=lambda url: {"ok": True},
+                       clock=lambda: clock["now"], sleep=sleep)
+    first, second = report["failure_injections"]
+    assert first["contained"] is True
+    assert second["injected"] is True and second["contained"] is False  # its fault never showed up
+    assert report["status"] == "failed" and "recovery_verified must be true" in _evaluate(evidence_dir, report)
+
+
+def test_a_recovery_from_a_failure_that_began_before_the_injection_does_not_count(tmp_path):
+    evidence_dir = tmp_path / "external-evidence"
+    audit = tmp_path / "watchdog.jsonl"
+    clock = {"now": 1_000.0}
+
+    def run(argv):  # an unrelated outage that started earlier recovers inside the window
+        audit.write_text(json.dumps({"at": clock["now"] + 5, "event": "recovered", "containment_action": "restart", "first_failure_at": clock["now"] - 60}) + "\n")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    report = run_drill(_plan(audit), out_dir=evidence_dir / "drills", run=run, health=lambda url: {"ok": True},
+                       clock=lambda: clock["now"], sleep=lambda s: clock.__setitem__("now", clock["now"] + s))
+    assert report["failure_injections"][0]["contained"] is False and report["status"] == "failed"
+
+
+def test_an_unhealthy_baseline_fails_the_drill_even_if_health_and_a_record_look_fine_afterwards(tmp_path):
+    # Pins the baseline requirement on its own: post-checks are healthy and a matching
+    # record exists, so only the baseline can make this report fail.
+    evidence_dir = tmp_path / "external-evidence"
+    audit = tmp_path / "watchdog.jsonl"
+    clock = {"now": 1_000.0}
+    audit.write_text(json.dumps({"at": 1_100.0, "event": "recovered", "containment_action": "restart", "first_failure_at": 1_050.0}) + "\n")
+    answers = iter([{"ok": False, "error_class": "URLError"}])
+    ran = []
+    report = run_drill(_plan(audit), out_dir=evidence_dir / "drills", run=lambda argv: ran.append(argv),
+                       health=lambda url: next(answers, {"ok": True}), clock=lambda: clock["now"],
+                       sleep=lambda s: clock.__setitem__("now", clock["now"] + s))
+    injection = report["failure_injections"][0]
+    assert ran == [] and injection["injected"] is False and injection["skipped"] == "baseline health check failed"
+    assert report["post_recovery_health"] == "passed" and report["status"] == "failed"
+
+
+def test_a_failed_baseline_stops_the_rest_of_the_plan(tmp_path):
+    audit = tmp_path / "watchdog.jsonl"
+    clock = {"now": 1_000.0}
+    answers = iter([{"ok": True}, {"ok": True}, {"ok": False}])  # healthy before the first, not before the second
+    ran = []
+
+    def run(argv):
+        ran.append(argv)
+        started = clock["now"]
+        audit.write_text(json.dumps({"at": started + 10, "event": "recovered", "containment_action": "restart", "first_failure_at": started + 1}) + "\n")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    plan = _two_injections(audit)
+    plan["injections"].append({"name": "third", "inject": [["kill-gateway"]], "audit_log": str(audit), "event": "recovered", "timeout_seconds": 30})
+    report = run_drill(plan, out_dir=tmp_path / "drills", run=run, health=lambda url: next(answers, {"ok": True}),
+                       clock=lambda: clock["now"], sleep=lambda s: clock.__setitem__("now", clock["now"] + s))
+    skipped = [i["skipped"] for i in report["failure_injections"]]
+    assert ran == [["kill-gateway"]] and skipped == [None, "baseline health check failed", "not run: an earlier baseline failed"]
+    assert report["status"] == "failed"

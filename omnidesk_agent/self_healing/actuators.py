@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from omnidesk_agent.self_healing.policy import RecoveryDecision, RuntimeSignal
-from omnidesk_agent.self_healing.probes import RequeueLedger, WorkerRegistry, is_transient
+from omnidesk_agent.self_healing.probes import RequeueLedger, WorkerRegistry, is_transient, single_consumer
 
 
 @dataclass
@@ -52,6 +52,13 @@ class WorkerRestartActuator:
             stop_error = type(exc).__name__
         else:
             stop_error = None
+        try:
+            still_running = bool(handle.is_alive())
+        except Exception:
+            still_running = True  # cannot tell: treat it as running
+        if still_running:
+            # Its jobs must not be marked orphaned while it may still run them.
+            return ActionResult(False, "restart_worker", {"worker": name, "error": "worker still running after stop()", "stop_error": stop_error})
         # Jobs the stopped worker claimed before this moment have no live worker any more.
         self.registry.mark_restarted(name, self.clock())
         await _maybe_await(handle.start())
@@ -73,6 +80,8 @@ class StaleJobActuator:
     actions = frozenset({"recover_stale_jobs"})
 
     def __init__(self, queue: Any, *, orphaned_before: Callable[[], Optional[float]], lease_seconds: int = 300, clock: Callable[[], float] = time.time):
+        if not single_consumer(queue):
+            raise ValueError("stale-job recovery is only safe for a queue this process alone consumes (the SQLite JobQueue)")
         self.queue = queue
         self.orphaned_before = orphaned_before
         self.lease_seconds = int(lease_seconds)
@@ -99,19 +108,18 @@ class StaleJobActuator:
 
 class DeadLetterRequeueActuator:
     """Requeue dead-lettered jobs whose last error was transient, at most N per action
-    and at most ``ledger.max_per_job`` times per job; the rest stay for a human."""
+    and at most once per job across every replica (``RequeueLedger.claim``); the rest
+    stay for a human."""
 
     actions = frozenset({"requeue_dead_letters"})
 
-    def __init__(self, queue: Any, *, ledger: RequeueLedger, max_per_action: int = 20, clock: Callable[[], float] = time.time):
+    def __init__(self, queue: Any, *, ledger: RequeueLedger, max_per_action: int = 20):
         self.queue = queue
         self.ledger = ledger
         self.max_per_action = max(1, int(max_per_action))
-        self.clock = clock
 
     async def execute(self, decision: RecoveryDecision, signal: RuntimeSignal) -> ActionResult:
         dead = await asyncio.to_thread(self.queue.list_dead_letters, limit=200)
-        exhausted = self.ledger.exhausted(str(job["id"]) for job in dead)
         requeued, skipped, capped = [], 0, 0
         for job in dead:
             if len(requeued) >= self.max_per_action:
@@ -119,11 +127,13 @@ class DeadLetterRequeueActuator:
             if not is_transient(job.get("last_error")):
                 skipped += 1
                 continue
-            if str(job["id"]) in exhausted:
+            # Claim first, atomically: a job another replica (or an earlier run)
+            # requeued is not claimed again, and if the requeue then fails the
+            # job has used its one automatic requeue (fail closed).
+            claimed = await asyncio.to_thread(self.ledger.claim, str(job["id"]), last_error=job.get("last_error"))
+            if not claimed:
                 capped += 1
                 continue
-            # Record first: if the requeue then fails, the job has used its allowance (fail closed).
-            self.ledger.record(str(job["id"]), at=self.clock(), last_error=job.get("last_error"))
             await asyncio.to_thread(self.queue.requeue_dead_letter, str(job["id"]))
             requeued.append(str(job["id"]))
         # A bounded batch is progress even when more transient jobs remain.

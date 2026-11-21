@@ -92,7 +92,7 @@ def test_crashed_worker_is_restarted_and_its_orphaned_job_completes(tmp_path):
 
         restarted = lambda: registry.restarted_at("webhook")  # noqa: E731 - the SQLite queue has this one worker
         healer = HealingSupervisor(
-            [WorkerProbe(registry), JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=RequeueLedger(tmp_path / "r.json"), orphaned_before=restarted)],
+            [WorkerProbe(registry), JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=RequeueLedger(queue), orphaned_before=restarted)],
             [WorkerRestartActuator(registry), StaleJobActuator(queue, orphaned_before=restarted)],
             audit_path=tmp_path / "healing.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep,
         )
@@ -108,6 +108,7 @@ def test_crashed_worker_is_restarted_and_its_orphaned_job_completes(tmp_path):
     actions = {(r["component"], r["decision"]["action"], r.get("verified")) for r in records if r["event"] == "acted"}
     assert ("worker:webhook", "restart_worker", True) in actions
     assert ("queue:stale_jobs", "recover_stale_jobs", True) in actions
+    assert all(r["first_unhealthy_at"] is not None for r in records if r["event"] == "acted")  # drills match on it
     assert orchestrator.handled == ["order status"]
 
 
@@ -134,7 +135,7 @@ def test_a_healthy_job_that_outlives_its_lease_is_neither_cancelled_nor_run_twic
         _age_lock(queue, job["job_id"], 400)
         restarted = lambda: registry.restarted_at("webhook")  # noqa: E731
         healer = HealingSupervisor(
-            [WorkerProbe(registry), JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=RequeueLedger(tmp_path / "r.json"), orphaned_before=restarted)],
+            [WorkerProbe(registry), JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=RequeueLedger(queue), orphaned_before=restarted)],
             [WorkerRestartActuator(registry), StaleJobActuator(queue, orphaned_before=restarted), EscalationActuator(tmp_path)],
             audit_path=tmp_path / "healing.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep,
         )
@@ -162,8 +163,8 @@ def test_transient_dead_letters_wait_for_the_dependency_then_requeue(tmp_path):
             queue.fail(job["job_id"], error)
         provider_up = {"value": False}
         healer = HealingSupervisor(
-            [JobQueueProbe(queue, dependency_healthy=lambda: provider_up["value"], ledger=RequeueLedger(tmp_path / "r.json"))],
-            [DeadLetterRequeueActuator(queue, ledger=RequeueLedger(tmp_path / "r.json"))],
+            [JobQueueProbe(queue, dependency_healthy=lambda: provider_up["value"], ledger=RequeueLedger(queue))],
+            [DeadLetterRequeueActuator(queue, ledger=RequeueLedger(queue))],
             audit_path=tmp_path / "healing.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep,
         )
         while_down = await healer.tick()
@@ -364,6 +365,7 @@ def test_watchdog_restarts_but_never_reverts_a_config_on_its_own(tmp_path):
 
     first, saved, after_change = asyncio.run(scenario())
     assert first["event"] == "recovered" and saved["event"] == "known_good_saved"
+    assert first["first_failure_at"] == 0.0 and after_change["first_failure_at"] == 400  # which failure each recovery answered
     # Coordinator review on #232: a valid security-tightening change must not be undone
     # without a human. The watchdog restarts, reports the difference and leaves the file.
     assert after_change["event"] == "recovered" and after_change["containment_action"] == "restart"
@@ -453,7 +455,8 @@ def test_a_full_page_of_dead_letters_is_escalated_not_reported_healthy(tmp_path)
         def list_dead_letters(self, *, limit):
             return [{"id": str(i), "last_error": "ValueError: bad payload"} for i in range(200)]
 
-    healer = HealingSupervisor([JobQueueProbe(Queue(), dependency_healthy=lambda: True, ledger=RequeueLedger(tmp_path / "r.json"))],
+    ledger = RequeueLedger(JobQueue(tmp_path / "ledger.sqlite3"))
+    healer = HealingSupervisor([JobQueueProbe(Queue(), dependency_healthy=lambda: True, ledger=ledger)],
                                [EscalationActuator(tmp_path)], audit_path=tmp_path / "h.jsonl", mode="act")
     records = asyncio.run(healer.tick())
     escalations = [r for r in records if r["component"] == "queue:dead_letters"]
@@ -469,8 +472,8 @@ def test_requeue_batches_count_as_progress_not_failed_recovery(tmp_path):
             queue.fail(job["id"], "TimeoutError: provider timed out")
         clock = {"now": 0.0}
         healer = HealingSupervisor(
-            [JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=RequeueLedger(tmp_path / "r.json"))],
-            [DeadLetterRequeueActuator(queue, ledger=RequeueLedger(tmp_path / "r.json"))],
+            [JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=RequeueLedger(queue))],
+            [DeadLetterRequeueActuator(queue, ledger=RequeueLedger(queue))],
             audit_path=tmp_path / "h.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep,
             budget=HealingBudget(max_actions_per_component_per_hour=10, failed_verifications_before_escalation=3),
             clock=lambda: clock["now"],
@@ -489,6 +492,8 @@ def test_requeue_batches_count_as_progress_not_failed_recovery(tmp_path):
 
 def test_stale_recovery_only_touches_jobs_claimed_before_the_restart():
     class Queue:
+        single_consumer = True
+
         def __init__(self):
             self.listed = {"old": 100.0, "new": 600.0, "reclaimed": 100.0}
             self.now = {"old": 100.0, "new": 600.0, "reclaimed": 700.0}  # "reclaimed" moved on after the listing
@@ -548,7 +553,7 @@ def test_a_job_that_fails_again_after_its_automatic_requeue_stays_for_a_human(tm
         job = queue.enqueue(ChannelMessage(channel="telegram", sender_id="u1", text="a", message_id="m1"))
         queue.claim_next()
         queue.fail(job["job_id"], "TimeoutError: tool call timed out")
-        ledger = RequeueLedger(tmp_path / "requeues.json")
+        ledger = RequeueLedger(queue)
         clock = {"now": 0.0}
         healer = HealingSupervisor(
             [JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=ledger)],
@@ -568,7 +573,8 @@ def test_a_job_that_fails_again_after_its_automatic_requeue_stays_for_a_human(tm
     assert [(r["decision"]["action"], r["verified"]) for r in first] == [("requeue_dead_letters", True)]
     assert {r["decision"]["action"] for r in later} == {"escalate_human_approval"}
     assert queue.get(job_id)["status"] == "dead_letter" and queue.get(job_id)["last_error"] == "TimeoutError: tool call timed out"
-    assert json.loads((tmp_path / "requeues.json").read_text())[job_id][0]["last_error"] == "TimeoutError: tool call timed out"
+    with sqlite3.connect(queue.db_path) as con:  # the ledger keeps the error the requeue wiped from the row
+        assert con.execute("SELECT last_error FROM self_healing_requeues WHERE job_id = ?", (job_id,)).fetchone() == ("TimeoutError: tool call timed out",)
 
 
 def test_waiting_for_a_dependency_is_not_taken_for_recovery(tmp_path):
@@ -598,3 +604,251 @@ def test_config_snapshots_are_private_and_a_restore_keeps_the_config_mode(tmp_pa
     assert stat.S_IMODE(config.stat().st_mode) == 0o600  # a restore used to leave a 0600 config world-readable
     assert stat.S_IMODE(snapshots.root.stat().st_mode) == 0o700
     assert stat.S_IMODE((snapshots.root / f"{good}.snapshot").stat().st_mode) == 0o600
+
+
+# ------------------------------------------------ coordinator review of #292
+
+def test_two_healers_on_one_queue_requeue_a_job_only_once(tmp_path):
+    # Coordinator review on #292: a ledger file per healer let each replica (and each
+    # new pod) requeue the same job again. The claim now lives in the queue's store.
+    async def scenario():
+        queue = JobQueue(tmp_path / "jobs.sqlite3", max_retries=0)
+        job = queue.enqueue(ChannelMessage(channel="telegram", sender_id="u1", text="a", message_id="m1"))
+        healers = [HealingSupervisor([JobQueueProbe(queue, dependency_healthy=lambda: True, ledger=RequeueLedger(queue))],
+                                     [DeadLetterRequeueActuator(queue, ledger=RequeueLedger(queue))],
+                                     audit_path=tmp_path / f"h{i}.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep)
+                   for i in range(3)]
+        requeues = 0
+        for _ in range(4):
+            if queue.get(job["job_id"])["status"] == "pending":
+                queue.claim_next()
+            if queue.get(job["job_id"])["status"] == "running":
+                queue.fail(job["job_id"], "TimeoutError: tool call timed out")
+            for healer in healers:
+                requeues += sum(len(r["result"]["detail"]["requeued"]) for r in await healer.tick() if r["event"] == "acted" and "requeued" in r["result"]["detail"])
+        return requeues, queue.get(job["job_id"])["status"]
+
+    requeues, status = asyncio.run(scenario())
+    assert requeues == 1 and status == "dead_letter"
+
+
+def test_the_postgres_ledger_claims_through_the_state_stores_atomic_insert():
+    class State:  # the contract of _PostgresJsonState that the ledger relies on
+        def __init__(self):
+            self.rows, self.pruned = {}, []
+
+        def insert_once(self, namespace, key, value):
+            if (namespace, key) in self.rows:
+                return False
+            self.rows[(namespace, key)] = value
+            return True
+
+        def get(self, namespace, key):
+            return self.rows.get((namespace, key))
+
+        def delete_stale(self, namespace, *, stale_before):
+            self.pruned.append((namespace, stale_before))
+            return 0
+
+    class SharedQueue:
+        def __init__(self, state):
+            self.state = state
+
+    state = State()
+    replica_a, replica_b = RequeueLedger(SharedQueue(state), clock=lambda: 1000.0), RequeueLedger(SharedQueue(state), clock=lambda: 1000.0)
+    assert replica_a.claim("job-1", last_error="TimeoutError: x") is True
+    assert replica_b.claim("job-1", last_error="TimeoutError: x") is False  # another replica already used it
+    assert replica_b.exhausted(["job-1", "job-2"]) == {"job-1"}
+    assert state.pruned and state.pruned[0][0] == RequeueLedger.NAMESPACE
+
+
+def test_the_actuator_itself_never_requeues_a_job_twice(tmp_path):
+    # The probe filters exhausted jobs too; this pins the actuator's own claim, which
+    # is what holds when exhausted and new transient dead letters arrive together.
+    queue = JobQueue(tmp_path / "jobs.sqlite3", max_retries=0)
+    ledger = RequeueLedger(queue)
+    jobs = []
+    for i in range(2):
+        jobs.append(queue.enqueue(ChannelMessage(channel="c", sender_id="u", text=f"m{i}", message_id=f"m{i}"))["job_id"])
+        queue.claim_next()
+        queue.fail(jobs[-1], "TimeoutError: provider timed out")
+    assert ledger.claim(jobs[0], last_error="TimeoutError: provider timed out")  # requeued once before
+    decision = RuntimeSelfHealingController().decide(RuntimeSignal(
+        component="queue:dead_letters", health_ok=False, metadata={"retryable_count": 2, "dependency_healthy": True}))
+    result = asyncio.run(DeadLetterRequeueActuator(queue, ledger=ledger).execute(decision, RuntimeSignal(component="queue:dead_letters")))
+    assert result.detail["requeued"] == [jobs[1]] and result.detail["already_requeued"] == 1
+    assert queue.get(jobs[0])["status"] == "dead_letter"
+
+
+def test_an_unreadable_ledger_allows_no_automatic_requeue(tmp_path):
+    queue = JobQueue(tmp_path / "jobs.sqlite3", max_retries=0)
+    ledger = RequeueLedger(queue)
+
+    class Broken:
+        def claimed(self, ids):
+            raise sqlite3.DatabaseError("file is not a database")
+
+    ledger._backend = Broken()
+    assert ledger.exhausted(["a", "b"]) == {"a", "b"}
+
+
+def test_jobs_that_fail_again_after_their_requeue_are_escalated_whatever_the_error_and_without_waiting(tmp_path):
+    # Codex review on #292: a requeued job that fails again with a permanent error was not
+    # counted; and the escalation shared the requeue's cooldown and the dependency's "wait".
+    async def scenario():
+        queue = JobQueue(tmp_path / "jobs.sqlite3", max_retries=0)
+        ledger = RequeueLedger(queue)
+        first = queue.enqueue(ChannelMessage(channel="c", sender_id="u", text="a", message_id="a"))["job_id"]
+        queue.claim_next()
+        queue.fail(first, "ValueError: payload schema invalid")  # fails permanently after its requeue
+        ledger.claim(first, last_error="TimeoutError: earlier timeout")
+        fresh = queue.enqueue(ChannelMessage(channel="c", sender_id="u", text="b", message_id="b"))["job_id"]
+        queue.claim_next()
+        queue.fail(fresh, "TimeoutError: provider timed out")  # retryable, but the provider is down
+        healer = HealingSupervisor([JobQueueProbe(queue, dependency_healthy=lambda: False, ledger=ledger)],
+                                   [DeadLetterRequeueActuator(queue, ledger=ledger), EscalationActuator(tmp_path)],
+                                   audit_path=tmp_path / "h.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep)
+        return first, await healer.tick()
+
+    first, records = asyncio.run(scenario())
+    escalated = [r for r in records if r["component"] == "queue:dead_letters_exhausted"]
+    assert escalated and escalated[0]["decision"]["action"] == "escalate_human_approval" and escalated[0]["event"] == "acted"
+    assert first in escalated[0]["signal"]["metadata"]["job_ids"]
+
+
+def test_dependency_health_must_be_wired_and_orphan_recovery_refuses_a_shared_queue(tmp_path):
+    queue = JobQueue(tmp_path / "jobs.sqlite3")
+    with pytest.raises(TypeError):
+        JobQueueProbe(queue, ledger=RequeueLedger(queue))  # no default dependency check
+
+    class SharedQueue:  # e.g. PostgresJobQueue behind several gateways
+        state = None
+
+    with pytest.raises(ValueError, match="alone consumes"):
+        JobQueueProbe(SharedQueue(), dependency_healthy=lambda: True, ledger=RequeueLedger(queue), orphaned_before=lambda: 1.0)
+    with pytest.raises(ValueError, match="alone consumes"):
+        StaleJobActuator(SharedQueue(), orphaned_before=lambda: 1.0)
+
+
+def test_a_worker_that_stays_alive_after_stop_is_not_marked_restarted(tmp_path):
+    # Codex review on #292: marking a restart while the old worker still runs would let
+    # StaleJobActuator treat its live jobs as orphaned and run them twice.
+    registry = WorkerRegistry()
+    starts = []
+
+    def stop():
+        raise RuntimeError("stop timed out")
+
+    registry.register("webhook", start=lambda: starts.append(1), stop=stop, is_alive=lambda: True)
+    decision = RuntimeSelfHealingController().decide(RuntimeSignal(component="worker:webhook", health_ok=False))
+    result = asyncio.run(WorkerRestartActuator(registry, settle_seconds=0).execute(decision, RuntimeSignal(component="worker:webhook")))
+    assert result.ok is False and registry.restarted_at("webhook") is None and starts == []
+
+
+def test_a_worker_whose_restart_would_recover_a_shared_queue_is_escalated(tmp_path):
+    registry = WorkerRegistry()
+    starts = []
+    registry.register("webhook", start=lambda: starts.append(1), stop=lambda: None, is_alive=lambda: False, restartable=False)
+    healer = HealingSupervisor([WorkerProbe(registry)], [WorkerRestartActuator(registry, settle_seconds=0), EscalationActuator(tmp_path)],
+                               audit_path=tmp_path / "h.jsonl", mode="act", verify_delay_seconds=0, sleep=_no_sleep)
+    record = asyncio.run(healer.tick())[0]
+    assert record["decision"]["action"] == "escalate_human_approval" and starts == []
+
+
+def test_a_safety_violation_reaches_the_escalation_actuator(tmp_path):
+    # disable_capability is autonomous but needs approval: it must be routed to a request
+    # actuator. Without the approval term the decision ended as "no_actuator", unseen.
+    class Sandbox:
+        name = "sandbox"
+
+        async def collect(self):
+            return [RuntimeSignal(component="sandbox:docker", safety_violation=True, health_ok=False)]
+
+    healer = HealingSupervisor([Sandbox()], [EscalationActuator(tmp_path)], audit_path=tmp_path / "h.jsonl", mode="act")
+    record = asyncio.run(healer.tick())[0]
+    assert record["decision"]["action"] == "disable_capability" and record["event"] == "acted"
+    assert "disable_capability" in (tmp_path / "escalations.jsonl").read_text()
+
+
+def test_an_actuator_added_later_still_cannot_take_a_human_decision(tmp_path):
+    ran = []
+
+    class Disabler:  # would switch the capability off itself
+        actions = frozenset({"disable_capability"})
+
+        async def execute(self, decision, signal):
+            ran.append(decision.action)
+
+    class Sandbox:
+        name = "sandbox"
+
+        async def collect(self):
+            return [RuntimeSignal(component="sandbox:docker", safety_violation=True, health_ok=False)]
+
+    healer = HealingSupervisor([Sandbox()], [EscalationActuator(tmp_path)], audit_path=tmp_path / "h.jsonl", mode="act")
+    healer.actuators.insert(0, Disabler())  # after the constructor's check
+    asyncio.run(healer.tick())
+    assert ran == [] and (tmp_path / "escalations.jsonl").exists()
+
+
+def test_a_failed_restart_never_makes_the_file_on_disk_known_good(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v: 1\n")
+    clock = {"now": 0.0}
+
+    async def failed_restart():
+        return {"exit_code": 1}  # e.g. systemctl refused: the old process keeps running
+
+    async def tick_sleep(seconds):
+        clock["now"] += seconds
+
+    dog = GatewayWatchdog(FakeHealth([False, True]), config, tmp_path / "state", restart=failed_restart, failures_before_action=1,
+                          good_after_seconds=300, clock=lambda: clock["now"], sleep=tick_sleep, poll_seconds=5)
+
+    async def scenario():
+        await dog.check()
+        clock["now"] = 400
+        return await dog.check()
+
+    assert asyncio.run(scenario())["event"] == "healthy" and dog.snapshots.known_good() is None
+
+
+def test_known_good_is_exactly_the_bytes_that_were_compared(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v: 1\n")
+    clock = {"now": 0.0}
+
+    async def restart():
+        return {"exit_code": 0}
+
+    async def tick_sleep(seconds):
+        clock["now"] += seconds
+
+    dog = GatewayWatchdog(FakeHealth([False, True]), config, tmp_path / "state", restart=restart, failures_before_action=1,
+                          good_after_seconds=300, clock=lambda: clock["now"], sleep=tick_sleep, poll_seconds=5)
+
+    async def scenario():
+        await dog.check()  # restarted with v1
+        clock["now"] = 400
+        def rewritten_right_after_the_read():
+            data = config.read_bytes()
+            config.write_text("v: 3-unqualified\n")
+            return data
+
+        dog._read_config = rewritten_right_after_the_read
+        return await dog.check()
+
+    record = asyncio.run(scenario())
+    assert record["event"] == "known_good_saved"
+    assert (dog.snapshots.root / f"{record['snapshot']}.snapshot").read_bytes() == b"v: 1\n"
+
+
+def test_a_restore_keeps_a_group_readable_config_group_readable(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v: 1\n")
+    config.chmod(0o640)  # 0600 is the default for new files, so it proves nothing
+    snapshots = ConfigSnapshots(tmp_path / "snapshots")
+    good = snapshots.save_known_good(config.read_bytes())
+    config.write_text("v: 2\n")
+    snapshots.restore(good, config)
+    assert stat.S_IMODE(config.stat().st_mode) == 0o640
