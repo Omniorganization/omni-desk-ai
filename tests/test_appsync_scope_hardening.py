@@ -462,25 +462,29 @@ def _scripted_postgres_store(script: list[list[tuple]]):
 
 def test_postgres_sync_feed_is_a_direct_scoped_read() -> None:
     head = 9
-    window = [
-        (head, 3, "org_default", "conversation.created", OWNER, {"conversation_id": "conv_owner", "organization_id": "org_default"}, 1.0),
-        (head, 4, "org_default", "task.created", OWNER, {"task_id": "task_1", "conversation_id": "conv_owner", "organization_id": "org_default"}, 2.0),
-        (head, 5, "org_default", "conversation.created", OPERATOR, {"conversation_id": "conv_mine", "organization_id": "org_default"}, 3.0),
+    page = [
+        (head, 0, 3, "org_default", "conversation.created", OWNER, {"conversation_id": "conv_owner", "organization_id": "org_default"}, 1.0),
+        (head, 0, 4, "org_default", "task.created", OWNER, {"task_id": "task_1", "conversation_id": "conv_owner", "organization_id": "org_default"}, 2.0),
+        (head, 0, 5, "org_default", "conversation.created", OPERATOR, {"conversation_id": "conv_mine", "organization_id": "org_default"}, 3.0),
     ]
-    store = _scripted_postgres_store([[("org_default",)], window, [("conv_owner", OWNER), ("conv_mine", OPERATOR)]])
+    store = _scripted_postgres_store([[("org_default",)], page, [("conv_owner", OWNER), ("conv_mine", OPERATOR)]])
     feed = store.sync_since(2, actor=OPERATOR)
-    assert feed["sync_seq"] == head
+    # Not a full page: everything after the cursor was read, so it resumes at the head.
+    assert (feed["sync_seq"], feed["has_more"], feed["reset_required"]) == (head, False, False)
     assert [(e["seq"], e["event_type"]) for e in feed["events"]] == [(4, "task.created"), (5, "conversation.created")]
     assert "conversation_id" not in feed["events"][0]["payload"]
     executed = " ".join(store._connection_pool.executed)
     assert "pg_advisory" not in executed and "organization_id = %(organization_id)s" in executed
-    # Like the in-memory store: the newest window after the cursor, cursor at the head.
-    assert "ORDER BY seq DESC" in executed
-
-    idle = _scripted_postgres_store([[("org_default",)], [(head, None, None, None, None, None, None)]])
-    assert idle.sync_since(head, actor=OPERATOR) == {"sync_seq": head, "events": []}
+    # Oldest first from the cursor: a lagging reader pages forward instead of
+    # jumping to the head past events it never saw.
+    assert "ORDER BY seq ASC" in executed
     # Exactly the scoped statements above: no lock, no reload of other tables.
     assert len(store._connection_pool.executed) == 3
+
+    idle = _scripted_postgres_store([[("org_default",)], [(head, 0, None, None, None, None, None, None)]])
+    assert idle.sync_since(head, actor=OPERATOR) == {"sync_seq": head, "head_seq": head, "events": [], "has_more": False, "reset_required": False, "pruned_through": 0}
+    pruned = _scripted_postgres_store([[("org_default",)], [(head, 6, None, None, None, None, None, None)]])
+    assert pruned.sync_since(5, actor=OPERATOR)["reset_required"] is True
 
 
 # --- PostgreSQL parity (runs where OMNIDESK_TEST_POSTGRES_DSN is set) --------
@@ -539,12 +543,16 @@ def test_postgres_sync_feed_reads_without_the_advisory_lock(monkeypatch: pytest.
         owner_feed = second.sync_since(0, actor=OWNER)
         assert owner_feed["sync_seq"] == feed["sync_seq"] == max(e["seq"] for e in owner_feed["events"])
         assert second.sync_since(owner_feed["sync_seq"], actor=OWNER)["events"] == []
-        from omnidesk_agent.appsync import migrated_postgres_store
-
-        monkeypatch.setattr(migrated_postgres_store, "SYNC_EVENT_WINDOW", 2)
-        newest = second.sync_since(0, actor=OWNER)
-        assert [e["seq"] for e in newest["events"]] == sorted(e["seq"] for e in owner_feed["events"])[-2:]
-        assert newest["sync_seq"] == owner_feed["sync_seq"]
+        # Pages of two, oldest first, each resuming where the last ended.
+        cursor, paged = 0, []
+        while True:
+            page = second.sync_since(cursor, actor=OWNER, limit=2)
+            paged.extend(e["seq"] for e in page["events"])
+            cursor = page["sync_seq"]
+            if not page["has_more"]:
+                break
+        assert paged == [e["seq"] for e in owner_feed["events"]]
+        assert cursor == owner_feed["sync_seq"]
     finally:
         first.close()
         second.close()

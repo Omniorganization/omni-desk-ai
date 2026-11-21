@@ -161,6 +161,9 @@ async def stream_sync_events(
                 sync = await asyncio.to_thread(store.sync_since, since_seq, actor=actor)
             await asyncio.wait_for(websocket.send_json({"ok": True, **sync}), timeout=SEND_TIMEOUT_SECONDS)
             since_seq = int(sync["sync_seq"])
+            if sync.get("has_more"):
+                # Catching up: send the next page now instead of after a poll interval.
+                continue
             deadline = loop.time() + poll_seconds
             while (remaining := deadline - loop.time()) > 0:
                 done, _ = await asyncio.wait({receiver}, timeout=remaining)

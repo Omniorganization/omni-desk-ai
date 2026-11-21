@@ -17,6 +17,7 @@ from omnidesk_agent.appsync.lease_safe_chat_repository import (
     PostgresChatRepository,
     canonical_chat_payload,
 )
+from omnidesk_agent.appsync.blocking import run_blocking
 from omnidesk_agent.appsync.chat_service import (
     ChatStreamEvent,
     ChatTurnService,
@@ -305,7 +306,8 @@ class IndustrialChatTurnService(ChatTurnService):
                 conversation_id=conversation_id,
                 default_title=default_title,
             )
-        reservation, content = self._reserve(
+        reservation, content = await run_blocking(
+            self._reserve,
             request=request,
             payload=payload,
             actor=actor,
@@ -323,7 +325,7 @@ class IndustrialChatTurnService(ChatTurnService):
             )
         complete = getattr(getattr(self.runtime, "model_router", None), "complete", None)
         if not callable(complete):
-            self.atomic_repository.fail(reservation, {"code": "model_router_not_configured"})
+            await run_blocking(self.atomic_repository.fail, reservation, {"code": "model_router_not_configured"})
             raise HTTPException(503, "model router is not configured")
         complete_async = cast(Callable[[ModelRequest], Awaitable[ModelResponse]], complete)
         heartbeat = asyncio.create_task(
@@ -331,14 +333,14 @@ class IndustrialChatTurnService(ChatTurnService):
             name=f"omnidesk-chat-lease-{reservation.idempotency_key}",
         )
         try:
-            response = await complete_async(
-                self._model_request(
-                    reservation,
-                    role=role,
-                    payload=payload,
-                    content=content,
-                )
+            model_request = await run_blocking(
+                self._model_request,
+                reservation,
+                role=role,
+                payload=payload,
+                content=content,
             )
+            response = await complete_async(model_request)
         except Exception as exc:
             trace_id = self._trace_id(request)
             error = {
@@ -346,7 +348,7 @@ class IndustrialChatTurnService(ChatTurnService):
                 "trace_id": trace_id,
             }
             try:
-                self.atomic_repository.fail(reservation, error)
+                await run_blocking(self.atomic_repository.fail, reservation, error)
             except ChatLeaseLost:
                 logger.warning(
                     "chat failure result discarded after lease loss",
@@ -366,7 +368,7 @@ class IndustrialChatTurnService(ChatTurnService):
         finally:
             await self._cancel_heartbeat(heartbeat)
         try:
-            result = self.atomic_repository.complete(reservation, response)
+            result = await run_blocking(self.atomic_repository.complete, reservation, response)
         except ChatLeaseLost as exc:
             raise HTTPException(
                 409,

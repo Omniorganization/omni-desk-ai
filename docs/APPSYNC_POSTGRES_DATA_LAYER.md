@@ -40,6 +40,26 @@ writing transaction. The row lock is held until commit, so sequence order is
 commit order: a reader that sees event N has already seen every event below N.
 Writers in one namespace serialize only for that final statement and the commit.
 
+### Reading the feed (`GET /app/sync`, `/app/ws`)
+
+A response is one page of events after the reader's cursor, oldest first
+(both backends):
+
+| Field | Meaning |
+|---|---|
+| `events` | at most 1000 events (or `limit`) after `since_seq` that the caller may see |
+| `sync_seq` | the cursor to send next: the last event of a full page, otherwise the head |
+| `has_more` | more events follow; read again from `sync_seq` right away |
+| `head_seq` | the newest event number at read time |
+| `reset_required` | the cursor is below retained history (or ahead of the head, after a restore): fetch `/app/bootstrap`, then read on from its `sync_seq` |
+| `pruned_through` | every event at or below this number may have been deleted |
+
+A page never moves the cursor past an event the reader has not been given.
+Events hidden from the caller (another actor's chat) still advance it.
+`/app/ws` sends the next page immediately while `has_more` is true.
+`/app/bootstrap` reads the head before its snapshot, so an event committed
+meanwhile is replayed rather than skipped; clients apply events idempotently.
+
 Liveness is not an event. A heartbeat emits `runtime.status_changed` only when the
 runtime's status, active task, version, hostname or capabilities change, a
 verified device request emits no event (it updates `last_seen_at`; routes count
@@ -66,6 +86,7 @@ environment; the defaults are shown.
 | `OMNIDESK_APPSYNC_CONNECT_TIMEOUT_SECONDS` | 5 | `connect_timeout` for new connections |
 | `OMNIDESK_APPSYNC_POOL_ACQUIRE_TIMEOUT_SECONDS` | 10 | wait for a free pooled connection, then `PoolTimeout` |
 | `OMNIDESK_APPSYNC_POSTGRES_POOL_SIZE` | 12 | connections per replica (2-64) |
+| `OMNIDESK_APPSYNC_DB_THREADS` | 32 | worker threads that run store calls for async routes (2-256) |
 
 A failed statement or a domain error (not found, permission, conflict) rolls back
 and keeps the pooled connection; only a dead or interrupted connection is
@@ -77,12 +98,62 @@ it is listed in `ignore_startup_parameters`, in which case the limits silently d
 not apply. Behind PgBouncer, set them on the database role instead (`ALTER ROLE
 ... SET lock_timeout = ...`), or connect the gateway to PostgreSQL directly.
 
-## Migration 5 and rolling upgrades
+## Off the event loop, and busy databases
+
+Route handlers await store calls on a bounded worker pool
+(`omnidesk_agent/appsync/blocking.py`, `OMNIDESK_APPSYNC_DB_THREADS`, default 32),
+including the chat reservation, completion and stream-event writes, so a call
+waiting on a row lock or the network never stalls other requests, WebSockets or
+SSE streams on the process. A lock timeout, statement timeout or pool timeout
+answers `503` with `Retry-After: 2` and `{"detail": {"code": "database_busy"}}`.
+
+Cancelling an await does not stop a call already running on the pool. When a
+chat stream's client disconnects, the stream waits for the event write in flight
+and records its `stream_interrupted` marker under the next sequence. Once the
+model has answered, the turn is stored and completed even if the client is gone.
+
+## Retention
+
+`omnidesk_agent/appsync/retention.py` deletes rows past their age in batches of
+5000, each its own short transaction. Each replica's routes start a background
+worker (`OMNIDESK_APPSYNC_RETENTION_INTERVAL_SECONDS`, default 3600; `0` turns it
+off, for example when a CronJob runs it instead); a session advisory lock lets
+one replica run at a time.
+
+```bash
+python -m omnidesk_agent.appsync.retention --namespace <namespace> --dry-run
+```
+
+| Table | Kept for (days) | Override | Condition |
+|---|---|---|---|
+| sync events | 14 | `OMNIDESK_APPSYNC_RETENTION_SYNC_EVENTS_DAYS` | by sequence; watermark first |
+| device request nonces | until expiry | — | `expires_at` passed |
+| idempotency keys | 7 | `..._IDEMPOTENCY_KEYS_DAYS` | |
+| push outbox | 30 | `..._PUSH_OUTBOX_DAYS` | sent or failed only |
+| notifications | 90 | `..._NOTIFICATIONS_DAYS` | |
+| device challenges | 30 | `..._DEVICE_CHALLENGES_DAYS` | |
+| device enrollments | 30 | `..._DEVICE_ENROLLMENTS_DAYS` | pending, expired or revoked; completed ones are kept as the record of each device's key binding |
+| local inbox / synced outbox / operation log | 30 | `..._LOCAL_INBOX_DAYS`, `..._LOCAL_OUTBOX_DAYS`, `..._OPERATION_LOG_DAYS` | |
+| resolved sync conflicts | 90 | `..._SYNC_CONFLICTS_DAYS` | |
+| finished chat requests (and their stream events) | 30 | `..._CHAT_REQUESTS_DAYS` | completed, failed or interrupted |
+
+Every override must be at least 1 day. Conversations and messages are user data
+and are not pruned by age.
+
+Sync events are pruned by sequence number: the watermark (`pruned_through`) is
+committed before any event is deleted, so a reader below it is reset rather than
+moved silently past the gap. The same write raises the event counter to the
+newest number seen, so numbers that a previous-release replica used are never
+handed out again once their events are pruned.
+
+## Migrations 5 and 6, and rolling upgrades
 
 Migration 5 (`per_entity_transactions`) adds the event counter (seeded from the
 existing events), an operation-log entry sequence, hot-path indexes, and the
-projects table that project operations used to create with DDL at runtime. Apply
-it with the existing CLI before starting this release:
+projects table that project operations used to create with DDL at runtime.
+Migration 6 (`sync_feed_retention`) adds the pruning watermark and the indexes
+the retention rules scan. Index creation takes a write lock on each table for
+its duration. Apply both with the existing CLI before starting this release:
 
 ```bash
 python -m omnidesk_agent.appsync.migrate --namespace <namespace>
@@ -96,14 +167,16 @@ other, only for a previous-release operation, so a stale write-back cannot
 overwrite their rows. The event counter also stays above event numbers that a
 previous-release replica assigned. A write of this release waits behind queued
 previous-release operations for at most `lock_timeout` (5 s by default) and then
-fails with `LockNotAvailable` (HTTP 500), so keep the roll short and scale the
+fails with `LockNotAvailable`, answered as `503 database_busy`, so keep the roll short and scale the
 previous release down quickly. This shared lock can be removed in a later
 release, once no previous-release replica can run against the database.
 
 ## Rollback
 
-Migration 5 only adds two tables (the event counter, seeded from the existing
-events, and projects), a sequence and indexes; the previous release ignores them, so rolling back the application needs no database change. Events
+Migrations 5 and 6 only add two tables (the event counter, seeded from the
+existing events, and projects), a column, a sequence and indexes; the previous
+release ignores them, so rolling back the application needs no database
+change. Events pruned by retention stay deleted. Events
 numbered by this release are ordinary rows the previous release reads. Operation
 log entries written by this release use ids from 10^12 upward and sort after the
 older ones.

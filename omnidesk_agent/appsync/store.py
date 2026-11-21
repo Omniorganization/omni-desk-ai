@@ -498,6 +498,40 @@ def authorize_task_status_change(
         raise PermissionError("an approved task cannot be re-queued; request a new approval")
 
 
+# Largest sync page; a reader with more to catch up gets has_more and pages on.
+SYNC_PAGE_LIMIT = 1000
+
+
+def sync_reset(*, head: int, pruned_through: int) -> dict[str, Any]:
+    """The reader's cursor is older than retained history (or ahead of it, after a
+    restore): it must re-bootstrap, then read on from ``sync_seq``."""
+    return {"sync_seq": head, "head_seq": head, "events": [], "has_more": False, "reset_required": True, "pruned_through": pruned_through}
+
+
+def sync_page(
+    candidates: list[dict[str, Any]],
+    *,
+    head: int,
+    pruned_through: int,
+    limit: int,
+    scope: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None,
+) -> dict[str, Any]:
+    """Build a sync response from the events after the cursor, oldest first.
+
+    ``sync_seq`` is where the reader resumes: the last event of a full page
+    (``has_more`` is then true), else the head. Sequence order is commit order
+    on every backend, so resuming there never skips an event. ``scope`` hides
+    events the reader may not see after paging, so hidden events still advance
+    the cursor.
+    """
+    bounded = max(1, min(int(limit or SYNC_PAGE_LIMIT), SYNC_PAGE_LIMIT))
+    page = candidates[:bounded]
+    has_more = len(candidates) > bounded
+    cursor = int(page[-1]["seq"]) if has_more else head
+    events = page if scope is None else [event for event in (scope(item) for item in page) if event is not None]
+    return {"sync_seq": cursor, "head_seq": head, "events": events, "has_more": has_more, "reset_required": False, "pruned_through": pruned_through}
+
+
 def runtime_status_changed(previous: Optional[RuntimeStatusRecord], current: RuntimeStatusRecord) -> bool:
     """Whether a heartbeat changed what the runtime reports, not just its liveness."""
     if previous is None:
@@ -1938,15 +1972,29 @@ class AppSyncStore:
                 values = [v for v in values if not v.read]
             return [self._record(v) for v in sorted(values, key=lambda n: n.created_at, reverse=True)]
 
-    def sync_since(self, since_seq: int, actor: Optional[str] = None) -> dict[str, Any]:
+    def sync_since(self, since_seq: int, actor: Optional[str] = None, limit: int = SYNC_PAGE_LIMIT) -> dict[str, Any]:
+        """One page of the sync feed after ``since_seq``, oldest first.
+
+        See :func:`sync_page` for the response. The in-memory store keeps the
+        newest 1000 events, so a cursor below them must re-bootstrap.
+        """
+        since = max(0, int(since_seq or 0))
         with self._lock:
-            events = [event for event in self.events if int(event.get("seq", 0)) > since_seq]
-            if actor:
-                organization_id = self._organization_for_actor(actor)
-                scoped = (
-                    scope_sync_event_to_actor(event, actor=actor, conversation_owner=self._conversation_owner)
-                    for event in events
-                    if self._organization_for_event(event) == organization_id
-                )
-                events = [event for event in scoped if event is not None]
-            return {"sync_seq": self._seq, "events": events}
+            head = self._seq
+            pruned_through = int(self.events[0].get("seq", 0)) - 1 if self.events else head
+            if since > head or since < pruned_through:
+                return sync_reset(head=head, pruned_through=pruned_through)
+            organization_id = self._organization_for_actor(actor) if actor else None
+            candidates = [
+                event
+                for event in self.events
+                if int(event.get("seq", 0)) > since
+                and (organization_id is None or self._organization_for_event(event) == organization_id)
+            ]
+            return sync_page(
+                candidates,
+                head=head,
+                pruned_through=pruned_through,
+                limit=limit,
+                scope=(lambda event: scope_sync_event_to_actor(event, actor=actor, conversation_owner=self._conversation_owner)) if actor else None,
+            )

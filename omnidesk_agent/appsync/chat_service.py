@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 
 from fastapi import HTTPException, Request
 
+from omnidesk_agent.appsync.blocking import run_blocking
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
 from omnidesk_agent.appsync.store import AppSyncStore, IdempotencyConflict
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
@@ -14,6 +15,12 @@ from omnidesk_agent.models.router_streaming import GovernedStreamingRouter
 
 logger = logging.getLogger(__name__)
 STREAM_CHUNK_CHARACTERS = 256
+
+
+def _log_unfinished_turn(task: asyncio.Future[Any]) -> None:
+    """Log a turn that could not be finished after its stream was cancelled."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("chat turn was not finished after its stream was cancelled", exc_info=task.exception())
 
 
 @dataclass(frozen=True)
@@ -433,13 +440,15 @@ class ChatTurnService:
             raise HTTPException(422, "JSON object body is required")
         self.content(payload)
         idempotency_key = self.require_idempotency(request, payload)
-        conversation_id = conversation_id or self.ensure_conversation(
+        conversation_id = conversation_id or await run_blocking(
+            self.ensure_conversation,
             actor=actor,
             payload=payload,
             idempotency_key=idempotency_key,
             default_title=default_title,
         )
-        cached = self._cached(
+        cached = await run_blocking(
+            self._cached,
             actor=actor,
             conversation_id=conversation_id,
             payload=payload,
@@ -447,7 +456,8 @@ class ChatTurnService:
         )
         if cached is not None:
             return cached
-        user_message, model_request, idem_payload = self._prepare_turn(
+        user_message, model_request, idem_payload = await run_blocking(
+            self._prepare_turn,
             actor=actor,
             role=role,
             conversation_id=conversation_id,
@@ -478,7 +488,8 @@ class ChatTurnService:
                     "trace_id": trace_id,
                 },
             ) from exc
-        return self._persist_result(
+        return await run_blocking(
+            self._persist_result,
             actor=actor,
             conversation_id=conversation_id,
             user_message=user_message,
@@ -497,7 +508,8 @@ class ChatTurnService:
         last_event_id: int = 0,
         default_title: str = "API streaming chat",
     ) -> AsyncIterator[ChatStreamEvent]:
-        prepared = self.prepare_stream(
+        prepared = await run_blocking(
+            self.prepare_stream,
             request=request,
             payload=payload,
             actor=actor,
@@ -539,13 +551,57 @@ class ChatTurnService:
             raise HTTPException(503, "model router is not configured")
 
         sequence = 1
+        # Store calls run on the worker pool, and cancelling an await does not
+        # stop a write that is already running there. The write in flight is
+        # kept, so that on cancellation the interruption marker waits for it and
+        # takes the next free sequence instead of colliding with it.
+        writing: tuple[asyncio.Future[None], int] | None = None
+
+        async def append(event: ChatStreamEvent) -> None:
+            nonlocal writing
+            write = asyncio.ensure_future(
+                run_blocking(self._append_stream_event, actor=actor, prepared=prepared, event=event)
+            )
+            writing = (write, event.sequence)
+            await asyncio.shield(write)
+
+        async def record_interruption() -> None:
+            next_sequence = sequence
+            if writing is not None:
+                write, written = writing
+                try:
+                    await write
+                except Exception:
+                    logger.warning(
+                        "chat stream event was not stored before the cancellation",
+                        exc_info=True,
+                        extra={"conversation_id": conversation_id, "actor": actor},
+                    )
+                else:
+                    next_sequence = max(next_sequence, written + 1)
+            await run_blocking(
+                self._append_stream_event,
+                actor=actor,
+                prepared=prepared,
+                event=ChatStreamEvent(
+                    next_sequence,
+                    "chat.failed",
+                    {"code": "stream_interrupted"},
+                ),
+                status="interrupted",
+            )
+
         if sequence > last_event_id:
             event = ChatStreamEvent(
                 sequence,
                 "chat.started",
                 {"conversation_id": conversation_id},
             )
-            self._append_stream_event(actor=actor, prepared=prepared, event=event)
+            try:
+                await append(event)
+            except asyncio.CancelledError:
+                await asyncio.shield(record_interruption())
+                raise
             yield event
         sequence += 1
         text_parts: list[str] = []
@@ -582,7 +638,7 @@ class ChatTurnService:
                                     "native": delta.native,
                                 },
                             )
-                            self._append_stream_event(actor=actor, prepared=prepared, event=event)
+                            await append(event)
                             yield event
                         sequence += 1
                     if delta.reasoning:
@@ -596,7 +652,7 @@ class ChatTurnService:
                                     "native": delta.native,
                                 },
                             )
-                            self._append_stream_event(actor=actor, prepared=prepared, event=event)
+                            await append(event)
                             yield event
                         sequence += 1
                     if delta.usage:
@@ -604,17 +660,9 @@ class ChatTurnService:
                     if delta.finish_reason:
                         finish_reason = delta.finish_reason
         except asyncio.CancelledError:
-            event = ChatStreamEvent(
-                sequence,
-                "chat.failed",
-                {"code": "stream_interrupted"},
-            )
-            self._append_stream_event(
-                actor=actor,
-                prepared=prepared,
-                event=event,
-                status="interrupted",
-            )
+            # Shielded: the interruption marker is recorded even if the
+            # request is cancelled again while it is written.
+            await asyncio.shield(record_interruption())
             logger.info(
                 "chat stream cancelled",
                 extra={
@@ -644,7 +692,8 @@ class ChatTurnService:
                         "trace_id": trace_id,
                     },
                 )
-                self._append_stream_event(
+                await run_blocking(
+                    self._append_stream_event,
                     actor=actor,
                     prepared=prepared,
                     event=event,
@@ -666,41 +715,58 @@ class ChatTurnService:
                 "reasoning": "".join(reasoning_parts),
             },
         )
-        persisted = self._persist_result(
-            actor=actor,
-            conversation_id=conversation_id,
-            user_message=user_message,
-            response=response,
-            idempotency_key=prepared.idempotency_key,
-            idempotency_payload=idem_payload,
-        )
-        if sequence > last_event_id:
-            event = ChatStreamEvent(
-                sequence,
-                "chat.usage",
-                usage,
-            )
-            self._append_stream_event(actor=actor, prepared=prepared, event=event)
-            yield event
-        sequence += 1
-        if sequence > last_event_id:
-            event = ChatStreamEvent(
-                sequence,
-                "chat.completed",
-                {
-                    "conversation_id": conversation_id,
-                    "audit_trace_id": persisted.get("audit_trace_id"),
-                    "provider_request_id": provider_request_id,
-                    "finish_reason": finish_reason,
-                    "native": native,
-                },
-            )
-            self._append_stream_event(
+
+        async def finish() -> list[ChatStreamEvent]:
+            persisted = await run_blocking(
+                self._persist_result,
                 actor=actor,
-                prepared=prepared,
-                event=event,
-                status="completed",
+                conversation_id=conversation_id,
+                user_message=user_message,
+                response=response,
+                idempotency_key=prepared.idempotency_key,
+                idempotency_payload=idem_payload,
             )
+            events: list[ChatStreamEvent] = []
+            if sequence > last_event_id:
+                event = ChatStreamEvent(
+                    sequence,
+                    "chat.usage",
+                    usage,
+                )
+                await run_blocking(self._append_stream_event, actor=actor, prepared=prepared, event=event)
+                events.append(event)
+            if sequence + 1 > last_event_id:
+                event = ChatStreamEvent(
+                    sequence + 1,
+                    "chat.completed",
+                    {
+                        "conversation_id": conversation_id,
+                        "audit_trace_id": persisted.get("audit_trace_id"),
+                        "provider_request_id": provider_request_id,
+                        "finish_reason": finish_reason,
+                        "native": native,
+                    },
+                )
+                await run_blocking(
+                    self._append_stream_event,
+                    actor=actor,
+                    prepared=prepared,
+                    event=event,
+                    status="completed",
+                )
+                events.append(event)
+            return events
+
+        # The model has answered, so the turn is finished even if the client
+        # goes away now: shielded, the result and its usage and completed events
+        # are stored whatever happens to this request.
+        finishing = asyncio.ensure_future(finish())
+        try:
+            finished = await asyncio.shield(finishing)
+        except asyncio.CancelledError:
+            finishing.add_done_callback(_log_unfinished_turn)
+            raise
+        for event in finished:
             yield event
 
     async def _replay_cached(

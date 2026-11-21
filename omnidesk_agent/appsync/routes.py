@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Optional, cast
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
+from omnidesk_agent.appsync.blocking import run_blocking
 from omnidesk_agent.appsync.factory import create_appsync_store
 from omnidesk_agent.appsync.conversation_context import ConversationContextBuilder
 from omnidesk_agent.appsync.store import (
@@ -249,7 +250,7 @@ async def _require_signed_device_request(
             )
         await _record_device_request(rt, request, verified=False, device_id=device_id, actor=actor, device_types=required_device_types, reason="device_id_mismatch")
         raise HTTPException(401, "device signature rejected: device_id_mismatch")
-    ok, reason = _verify_device_request(
+    ok, reason = await run_blocking(_verify_device_request,
         cfg=cfg,
         store=store,
         request=request,
@@ -321,7 +322,7 @@ def register_appsync_routes(
         idem_key = _require_idempotency(cfg, request, payload)
         idem_payload = {**payload, "conversation_id": conversation_id}
         try:
-            cached = store.get_idempotency_response(
+            cached = await run_blocking(store.get_idempotency_response,
                 actor=actor,
                 endpoint="conversations.ask",
                 key=idem_key,
@@ -333,7 +334,7 @@ def register_appsync_routes(
             return {"ok": True, **cached}
         source_device_id = payload.get("source_device_id")
         try:
-            user_message = store.add_chat_user_message(
+            user_message = await run_blocking(store.add_chat_user_message,
                 actor=actor,
                 conversation_id=conversation_id,
                 content=content,
@@ -363,7 +364,7 @@ def register_appsync_routes(
         if model_profile:
             metadata["profile"] = model_profile
         try:
-            history = store.list_messages(conversation_id, actor=actor)
+            history = await run_blocking(store.list_messages, conversation_id, actor=actor)
             conversation_context = context_builder.build(
                 history, current_message_id=user_message["message_id"]
             )
@@ -392,7 +393,7 @@ def register_appsync_routes(
                 {"code": "model_provider_unavailable", "trace_id": trace_id},
             ) from exc
         try:
-            assistant_message = store.add_assistant_message(
+            assistant_message = await run_blocking(store.add_assistant_message,
                 actor=actor,
                 conversation_id=conversation_id,
                 content=response.text,
@@ -412,7 +413,7 @@ def register_appsync_routes(
             "usage": response.usage or {},
             "audit_trace_id": assistant_message.get("trace_id"),
         }
-        store.put_idempotency_response(
+        await run_blocking(store.put_idempotency_response,
             actor=actor,
             endpoint="conversations.ask",
             key=idem_key,
@@ -428,7 +429,7 @@ def register_appsync_routes(
         metrics.inc(
             "omnidesk_app_requests_total", surface="shared", operation="bootstrap"
         ) if metrics else None
-        return {"ok": True, **store.bootstrap(_actor(decision), role=getattr(decision, "role", "viewer"))}
+        return {"ok": True, **await run_blocking(store.bootstrap, _actor(decision), role=getattr(decision, "role", "viewer"))}
 
     @app.post("/app/devices/register")
     async def app_register_device(request: Request):
@@ -475,7 +476,7 @@ def register_appsync_routes(
         # unsigned rules, which still allow first registration.
         device_signature_verified = False
         if supplied_device_id and request.headers.get("x-omnidesk-device-signature"):
-            device_signature_verified, signature_reason = _verify_device_request(
+            device_signature_verified, signature_reason = await run_blocking(_verify_device_request,
                 cfg=cfg,
                 store=store,
                 request=request,
@@ -491,7 +492,7 @@ def register_appsync_routes(
                 device_types={device_type}, reason="" if device_signature_verified else signature_reason,
             )
         try:
-            device = store.register_device(
+            device = await run_blocking(store.register_device,
                 actor=actor,
                 device_id=supplied_device_id,
                 device_type=device_type,
@@ -515,13 +516,13 @@ def register_appsync_routes(
         return {
             "ok": True,
             "device": public_device_view(device),
-            "sync_seq": store.sync_since(0, actor=actor)["sync_seq"],
+            "sync_seq": (await run_blocking(store.sync_since, 0, actor=actor))["sync_seq"],
         }
 
     @app.get("/app/conversations")
     async def app_list_conversations(request: Request):
         decision = await admin(request, "viewer")
-        return {"ok": True, "conversations": store.list_conversations(_actor(decision))}
+        return {"ok": True, "conversations": await run_blocking(store.list_conversations, _actor(decision))}
 
     @app.post("/app/conversations")
     async def app_create_conversation(request: Request):
@@ -529,7 +530,7 @@ def register_appsync_routes(
         payload = await request.json()
         idem_key = _require_idempotency(cfg, request, payload)
         try:
-            conversation = store.create_conversation(
+            conversation = await run_blocking(store.create_conversation,
                 actor=_actor(decision),
                 title=payload.get("title") or "New conversation",
                 source_device_id=payload.get("source_device_id"),
@@ -548,7 +549,7 @@ def register_appsync_routes(
         if not content:
             raise HTTPException(422, "content is required")
         try:
-            result = store.add_message_and_task(
+            result = await run_blocking(store.add_message_and_task,
                 actor=_actor(decision),
                 conversation_id=conversation_id,
                 content=content,
@@ -573,7 +574,7 @@ def register_appsync_routes(
     async def app_list_messages(conversation_id: str, request: Request):
         decision = await admin(request, "viewer")
         try:
-            messages = store.list_messages(conversation_id, actor=_actor(decision))
+            messages = await run_blocking(store.list_messages, conversation_id, actor=_actor(decision))
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
         return {"ok": True, "messages": messages}
@@ -607,7 +608,7 @@ def register_appsync_routes(
                 "profile": payload.get("profile"),
             }
             try:
-                conversation = store.create_conversation(
+                conversation = await run_blocking(store.create_conversation,
                     actor=actor,
                     title=idem_payload["title"],
                     source_device_id=idem_payload["source_device_id"],
@@ -637,7 +638,7 @@ def register_appsync_routes(
         actor = _actor(decision)
         conversation_id = str(payload.get("conversation_id") or "").strip()
         if not conversation_id:
-            conversation = store.create_conversation(
+            conversation = await run_blocking(store.create_conversation,
                 actor=actor,
                 title=payload.get("title") or "API streaming chat",
                 source_device_id=payload.get("source_device_id"),
@@ -697,7 +698,7 @@ def register_appsync_routes(
     async def app_get_task(task_id: str, request: Request):
         decision = await admin(request, "viewer")
         try:
-            return {"ok": True, "task": store.get_task(task_id, actor=_actor(decision))}
+            return {"ok": True, "task": await run_blocking(store.get_task, task_id, actor=_actor(decision))}
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
 
@@ -737,7 +738,7 @@ def register_appsync_routes(
         }:
             raise HTTPException(422, "invalid task status")
         try:
-            task = store.update_task_status(
+            task = await run_blocking(store.update_task_status,
                 task_id=task_id,
                 actor=actor,
                 status=status,
@@ -762,7 +763,7 @@ def register_appsync_routes(
         decision = await admin(request, "viewer")
         return {
             "ok": True,
-            "approvals": store.list_approvals(status=status, actor=_actor(decision)),
+            "approvals": await run_blocking(store.list_approvals, status=status, actor=_actor(decision)),
         }
 
     @app.post("/app/approvals/{approval_id}/decide")
@@ -787,7 +788,7 @@ def register_appsync_routes(
         verdict = payload.get("decision")
         if verdict not in {"approved", "rejected"}:
             raise HTTPException(422, "decision must be approved or rejected")
-        _require_approval_signature(
+        await run_blocking(_require_approval_signature,
             cfg=cfg,
             store=store,
             request=request,
@@ -801,7 +802,7 @@ def register_appsync_routes(
             metrics=metrics,
         )
         try:
-            approval = store.decide_approval(
+            approval = await run_blocking(store.decide_approval,
                 approval_id=approval_id,
                 actor=_actor(decision),
                 decision=verdict,
@@ -829,7 +830,7 @@ def register_appsync_routes(
         decision = await admin(request, "viewer")
         return {
             "ok": True,
-            "notifications": store.list_notifications(
+            "notifications": await run_blocking(store.list_notifications,
                 audience=audience, unread_only=unread_only, actor=_actor(decision)
             ),
         }
@@ -856,7 +857,7 @@ def register_appsync_routes(
         if not push_token:
             raise HTTPException(422, "push_token is required")
         try:
-            device = store.register_push_token(
+            device = await run_blocking(store.register_push_token,
                 actor=_actor(decision),
                 device_id=device_id,
                 push_token=push_token,
@@ -884,7 +885,7 @@ def register_appsync_routes(
             metrics=metrics,
         )
         try:
-            device = store.register_approval_key(
+            device = await run_blocking(store.register_approval_key,
                 actor=_actor(decision),
                 device_id=device_id,
                 public_key=str(payload.get("public_key") or ""),
@@ -910,7 +911,7 @@ def register_appsync_routes(
         if len(pairing_code) < 8:
             raise HTTPException(422, "pairing_code must be at least 8 characters")
         try:
-            enrollment = store.start_device_enrollment(
+            enrollment = await run_blocking(store.start_device_enrollment,
                 actor=_actor(decision),
                 device_type=device_type,
                 pairing_code=pairing_code,
@@ -927,7 +928,7 @@ def register_appsync_routes(
         if _is_production(cfg) and is_legacy_hmac_device_key(public_key):
             raise HTTPException(422, LEGACY_HMAC_KEY_REFUSED)
         try:
-            enrollment = store.complete_device_enrollment(
+            enrollment = await run_blocking(store.complete_device_enrollment,
                 actor=_actor(decision),
                 enrollment_id=enrollment_id,
                 pairing_code=str(payload.get("pairing_code") or ""),
@@ -947,7 +948,7 @@ def register_appsync_routes(
         decision = await admin(request, "operator")
         payload = await request.json()
         try:
-            challenge = store.issue_device_challenge(
+            challenge = await run_blocking(store.issue_device_challenge,
                 actor=_actor(decision),
                 enrollment_id=enrollment_id,
                 device_id=str(payload.get("device_id") or ""),
@@ -965,7 +966,7 @@ def register_appsync_routes(
         decision = await admin(request, "operator")
         payload = await request.json()
         try:
-            credential = store.verify_device_challenge(
+            credential = await run_blocking(store.verify_device_challenge,
                 actor=_actor(decision),
                 enrollment_id=enrollment_id,
                 challenge_id=str(payload.get("challenge_id") or ""),
@@ -997,7 +998,7 @@ def register_appsync_routes(
             metrics=metrics,
         )
         try:
-            device = store.rotate_device_token(
+            device = await run_blocking(store.rotate_device_token,
                 actor=_actor(decision), device_id=device_id
             )
         except KeyError as exc:
@@ -1024,7 +1025,7 @@ def register_appsync_routes(
             metrics=metrics,
         )
         try:
-            device = store.revoke_device(
+            device = await run_blocking(store.revoke_device,
                 actor=_actor(decision),
                 device_id=device_id,
                 reason=payload.get("reason"),
@@ -1039,7 +1040,7 @@ def register_appsync_routes(
     async def app_dispatch_push(request: Request):
         await admin(request, "owner")
         payload = await request.json()
-        results = dispatch_pending_push(store, limit=int(payload.get("limit") or 100))
+        results = await run_blocking(dispatch_pending_push, store, limit=int(payload.get("limit") or 100))
         return {"ok": True, "results": [result.__dict__ for result in results]}
 
     @app.post("/app/runtime/desktop/heartbeat")
@@ -1065,7 +1066,7 @@ def register_appsync_routes(
         if status not in {"online", "offline", "degraded"}:
             raise HTTPException(422, "invalid runtime status")
         try:
-            runtime = store.heartbeat_runtime(
+            runtime = await run_blocking(store.heartbeat_runtime,
                 actor=_actor(decision),
                 device_id=device_id,
                 status=status,
@@ -1097,7 +1098,7 @@ def register_appsync_routes(
         if not device_id:
             raise HTTPException(422, "device_id is required")
         try:
-            task = store.claim_next_task(
+            task = await run_blocking(store.claim_next_task,
                 actor=_actor(decision),
                 device_id=device_id,
                 lease_seconds=int(
@@ -1118,7 +1119,7 @@ def register_appsync_routes(
         decision = await admin(request, "viewer")
         return {
             "ok": True,
-            **store.sync_since(int(since_seq or 0), actor=_actor(decision)),
+            **await run_blocking(store.sync_since, int(since_seq or 0), actor=_actor(decision)),
         }
 
     @app.post("/app/sync")
@@ -1141,7 +1142,7 @@ def register_appsync_routes(
         if not isinstance(operations, list) or not isinstance(remote_events, list):
             raise HTTPException(422, "operations and remote_events must be arrays")
         uploaded = (
-            store.receive_outbox_operations(
+            await run_blocking(store.receive_outbox_operations,
                 actor=actor,
                 operations=operations,
                 remote=remote,
@@ -1152,7 +1153,7 @@ def register_appsync_routes(
             else {"applied": 0, "duplicates": 0, "conflicts": [], "cursor": 0}
         )
         pulled = (
-            store.record_remote_events(
+            await run_blocking(store.record_remote_events,
                 actor=actor,
                 events=remote_events,
                 remote=remote,
@@ -1163,9 +1164,9 @@ def register_appsync_routes(
             else {"applied": 0, "duplicates": 0, "conflicts": [], "cursor": 0}
         )
         since_seq = int(payload.get("since_seq") or 0)
-        sync = store.sync_since(since_seq, actor=actor)
+        sync = await run_blocking(store.sync_since, since_seq, actor=actor)
         if payload.get("cursor") is not None:
-            store.record_sync_cursor(
+            await run_blocking(store.record_sync_cursor,
                 actor=actor,
                 remote=remote,
                 since_seq=int(payload.get("cursor") or 0),
@@ -1175,14 +1176,14 @@ def register_appsync_routes(
             "ok": True,
             "uploaded": uploaded,
             "pulled": pulled,
-            "state": store.sync_state(actor=actor),
+            "state": await run_blocking(store.sync_state, actor=actor),
             **sync,
         }
 
     @app.get("/app/sync/state")
     async def app_sync_state(request: Request):
         decision = await admin(request, "viewer")
-        return {"ok": True, **store.sync_state(actor=_actor(decision))}
+        return {"ok": True, **await run_blocking(store.sync_state, actor=_actor(decision))}
 
     app_sync_cfg = getattr(cfg, "app_sync", None)
     ws_connections = WebSocketConnectionLimiter(

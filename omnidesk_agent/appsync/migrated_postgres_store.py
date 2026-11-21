@@ -32,6 +32,7 @@ from typing import Any, Literal, Optional, TypeVar, cast
 from omnidesk_agent.appsync.postgres_migrations import assert_appsync_schema_current
 from omnidesk_agent.appsync.store import (
     LEGACY_HMAC_KEY_REFUSED,
+    SYNC_PAGE_LIMIT,
     TERMINAL_TASK_STATUSES,
     AppSyncStore,
     ApprovalRecord,
@@ -70,48 +71,69 @@ from omnidesk_agent.appsync.store import (
     public_device_view,
     runtime_status_changed,
     scope_sync_event_to_actor,
+    sync_page,
+    sync_reset,
 )
 
 T = TypeVar("T")
 ConflictPolicy = Literal["server-wins", "client-wins", "manual-review", "merge"]
 
-# Like the in-memory store, a sync call returns at most the newest 1000 events
-# after the cursor and moves the cursor to the head.
-SYNC_EVENT_WINDOW = 1000
+# Largest sync page (see store.sync_page).
+SYNC_EVENT_WINDOW = SYNC_PAGE_LIMIT
 # Upper bound for list endpoints that have no pagination yet.
 LIST_LIMIT = 1000
 
-# One statement, one snapshot: the head and the window are read together. Event
-# sequence numbers are assigned in commit order (see EVENT_COUNTER_SQL), so no
-# uncommitted event can later appear below a committed head.
+# One statement, one snapshot: the head, the pruning watermark and the page are
+# read together. Sequence numbers are assigned in commit order (EVENT_COUNTER_SQL),
+# so every event at or below the head is already visible here. MAX(seq) covers
+# events a previous-release replica numbered without the counter.
 SYNC_WINDOW_SQL = """
 WITH head AS (
-    SELECT COALESCE(MAX(seq), 0) AS seq FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s
+    SELECT GREATEST(
+               COALESCE((SELECT seq FROM omnidesk_appsync_event_counters WHERE namespace = %(namespace)s), 0),
+               COALESCE((SELECT MAX(seq) FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s), 0)
+           ) AS seq,
+           COALESCE((SELECT pruned_through FROM omnidesk_appsync_event_counters WHERE namespace = %(namespace)s), 0) AS pruned_through
 ), page AS (
     SELECT seq, organization_id, event_type, actor, payload, created_at
     FROM omnidesk_appsync_sync_events
     WHERE namespace = %(namespace)s AND seq > %(since)s
-    ORDER BY seq DESC
+    ORDER BY seq ASC
     LIMIT %(limit)s
 )
-SELECT head.seq, page.seq, page.organization_id, page.event_type, page.actor, page.payload, page.created_at
+SELECT head.seq, head.pruned_through, page.seq, page.organization_id, page.event_type, page.actor, page.payload, page.created_at
 FROM head LEFT JOIN page ON true
 ORDER BY page.seq
 """
 
 SYNC_ORGANIZATION_WINDOW_SQL = """
 WITH head AS (
-    SELECT COALESCE(MAX(seq), 0) AS seq FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s
+    SELECT GREATEST(
+               COALESCE((SELECT seq FROM omnidesk_appsync_event_counters WHERE namespace = %(namespace)s), 0),
+               COALESCE((SELECT MAX(seq) FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s), 0)
+           ) AS seq,
+           COALESCE((SELECT pruned_through FROM omnidesk_appsync_event_counters WHERE namespace = %(namespace)s), 0) AS pruned_through
 ), page AS (
     SELECT seq, organization_id, event_type, actor, payload, created_at
     FROM omnidesk_appsync_sync_events
     WHERE namespace = %(namespace)s AND seq > %(since)s AND organization_id = %(organization_id)s
-    ORDER BY seq DESC
+    ORDER BY seq ASC
     LIMIT %(limit)s
 )
-SELECT head.seq, page.seq, page.organization_id, page.event_type, page.actor, page.payload, page.created_at
+SELECT head.seq, head.pruned_through, page.seq, page.organization_id, page.event_type, page.actor, page.payload, page.created_at
 FROM head LEFT JOIN page ON true
 ORDER BY page.seq
+"""
+
+SYNC_HEAD_SQL = """
+WITH head AS (
+    SELECT GREATEST(
+               COALESCE((SELECT seq FROM omnidesk_appsync_event_counters WHERE namespace = %(namespace)s), 0),
+               COALESCE((SELECT MAX(seq) FROM omnidesk_appsync_sync_events WHERE namespace = %(namespace)s), 0)
+           ) AS seq,
+           COALESCE((SELECT pruned_through FROM omnidesk_appsync_event_counters WHERE namespace = %(namespace)s), 0) AS pruned_through
+)
+SELECT seq FROM head
 """
 
 ACTOR_ORGANIZATION_SQL = "SELECT organization_id FROM omnidesk_appsync_users WHERE namespace = %s AND user_id = %s"
@@ -665,7 +687,21 @@ class MigratedMultiInstancePostgresAppSyncStore:
     def _ensure_schema(self, conn: Any) -> None:
         assert_appsync_schema_current(conn, namespace=self.namespace)
 
+    def start_retention(self, *, interval_seconds: float, metrics: Any = None) -> Any:
+        """Prune this namespace periodically on a daemon thread (see ``retention``)."""
+        from omnidesk_agent.appsync.retention import RetentionWorker
+
+        worker = getattr(self, "_retention_worker", None)
+        if worker is None:
+            worker = RetentionWorker(self, interval_seconds=interval_seconds, metrics=metrics)
+            self._retention_worker = worker
+            worker.start()
+        return worker
+
     def close(self) -> None:
+        worker = getattr(self, "_retention_worker", None)
+        if worker is not None:
+            worker.stop()
         pool = getattr(self, "_connection_pool", None)
         if pool is not None:
             pool.close()
@@ -1791,10 +1827,10 @@ class MigratedMultiInstancePostgresAppSyncStore:
         sees_organization_devices = role in {"owner", "operator"}
 
         def body(tx: _Tx) -> dict[str, Any]:
-            # The feed head first. Every event at or below it committed before the
-            # reads below, so its effect is in this snapshot; a write committing in
-            # between can only be replayed to the client, never skipped.
-            tx.cur.execute("SELECT COALESCE(MAX(seq), 0) FROM omnidesk_appsync_sync_events WHERE namespace = %s", (self.namespace,))
+            # The head is read before the snapshot: an event committed in between
+            # is replayed by the next sync (clients apply events idempotently)
+            # instead of being skipped.
+            tx.cur.execute(SYNC_HEAD_SQL, {"namespace": self.namespace})
             head = int(tx.cur.fetchone()[0])
             device_filter = "organization_id = %(organization_id)s" + ("" if sees_organization_devices else " AND actor = %(actor)s")
             devices = self._select(tx, DEVICES, device_filter, {"organization_id": organization_id, "actor": actor}, order="created_at", limit=LIST_LIMIT)
@@ -1819,10 +1855,14 @@ class MigratedMultiInstancePostgresAppSyncStore:
 
     # -------------------------------------------------------------- sync feed
 
-    def sync_since(self, since_seq: int, actor: Optional[str] = None) -> dict[str, Any]:
-        """Read the sync feed: one indexed, actor-scoped statement, no locks."""
+    def sync_since(self, since_seq: int, actor: Optional[str] = None, limit: int = SYNC_PAGE_LIMIT) -> dict[str, Any]:
+        """One page of the sync feed after ``since_seq`` (see :func:`store.sync_page`).
+
+        One indexed, organization-scoped statement and no locks: clients poll this.
+        """
         since = max(0, int(since_seq or 0))
-        params: dict[str, Any] = {"namespace": self.namespace, "since": since, "limit": SYNC_EVENT_WINDOW}
+        bounded = max(1, min(int(limit or SYNC_PAGE_LIMIT), SYNC_EVENT_WINDOW))
+        params: dict[str, Any] = {"namespace": self.namespace, "since": since, "limit": bounded + 1}
         owners: dict[str, str] = {}
         with self._connect() as conn, conn.cursor() as cur:
             if actor:
@@ -1833,23 +1873,24 @@ class MigratedMultiInstancePostgresAppSyncStore:
             else:
                 cur.execute(SYNC_WINDOW_SQL, params)
             rows: list[tuple[Any, ...]] = cur.fetchall()
-            head = int(rows[0][0]) if rows else since
+            head = int(rows[0][0]) if rows else 0
+            pruned_through = int(rows[0][1]) if rows else 0
+            if since > head or since < pruned_through:
+                return sync_reset(head=head, pruned_through=pruned_through)
             events: list[dict[str, Any]] = []
             references: set[str] = set()
             for r in rows:
-                if r[1] is None:
+                if r[2] is None:
                     continue
-                payload: dict[str, Any] = r[5] if isinstance(r[5], dict) else json.loads(r[5] or "{}")
+                payload: dict[str, Any] = r[6] if isinstance(r[6], dict) else json.loads(r[6] or "{}")
                 references.update(str(payload.get(key) or "") for key in ("conversation_id", "related_id"))
-                events.append({"seq": int(r[1]), "organization_id": r[2], "event_type": r[3], "actor": r[4], "payload": payload, "ts": float(r[6])})
+                events.append({"seq": int(r[2]), "organization_id": r[3], "event_type": r[4], "actor": r[5], "payload": payload, "ts": float(r[7])})
             references.discard("")
             if actor and references:
                 cur.execute(CONVERSATION_OWNERS_SQL, (self.namespace, sorted(references)))
                 owners = {str(r[0]): str(r[1]) for r in cur.fetchall()}
-        if actor:
-            scoped = (scope_sync_event_to_actor(event, actor=actor, conversation_owner=owners.get) for event in events)
-            events = [event for event in scoped if event is not None]
-        return {"sync_seq": head, "events": events}
+        scope = (lambda event: scope_sync_event_to_actor(event, actor=actor, conversation_owner=owners.get)) if actor else None
+        return sync_page(events, head=head, pruned_through=pruned_through, limit=bounded, scope=scope)
 
     # ---------------------------------------------------- offline sync (local)
 
