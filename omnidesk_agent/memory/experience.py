@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
 import weakref
 from pathlib import Path
 from typing import Any, Optional
-from omnidesk_agent.config import MemoryPrivacyConfig
+from omnidesk_agent.config import MemoryPrivacyConfig, MemoryRetrievalConfig
 from omnidesk_agent.privacy.encryption import EncryptionProvider
 from omnidesk_agent.privacy.redaction import MemoryPrivacyFilter
 from omnidesk_agent.memory.governed_writer import GovernedMemoryWriter
-from omnidesk_agent.memory.retrieval import known_memory_identity, matches_memory_query, planner_memory_visible
+from omnidesk_agent.memory.embeddings import Embedder, cosine
+from omnidesk_agent.memory.retrieval import known_memory_identity, memory_document, planner_memory_visible, rank_memory_rows, tokenize
 from omnidesk_agent.security.prompt_injection import sanitize_memory_text
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 from omnidesk_agent.storage.sqlite import connect_sqlite
@@ -43,6 +45,8 @@ class ExperienceStore:
         else:
             self.encryption = EncryptionProvider.disabled()
         self.governed_writer = GovernedMemoryWriter()
+        self.retrieval = MemoryRetrievalConfig()
+        self.embedder: Optional[Embedder] = None
         self.conn = connect_sqlite(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self._closed = False
@@ -183,6 +187,14 @@ class ExperienceStore:
         except sqlite3.OperationalError:
             # Some Python builds omit FTS5. LIKE fallback remains available.
             pass
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS structured_experience_embeddings (
+          experience_id INTEGER NOT NULL,
+          model TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          PRIMARY KEY (experience_id, model)
+        )
+        """)
         GovernedMemoryWriter.ensure_audit_table(self.conn)
         apply_migrations(self.conn, [Migration(1, "experience_store_schema_baseline", lambda _con: None)])
         self.conn.commit()
@@ -385,34 +397,114 @@ class ExperienceStore:
                 ).fetchall()
         return [self._decode_structured(dict(r)) for r in rows]
 
+    def configure_retrieval(self, config: MemoryRetrievalConfig, *, embedder: Optional[Embedder] = None) -> None:
+        if config.embeddings_enabled and embedder is None:
+            raise ValueError("memory_retrieval.embeddings_enabled needs an embedder")
+        self.retrieval = config
+        self.embedder = embedder if config.embeddings_enabled else None
+
     def retrieve_for_task(self, task: str, limit: int = 5, *, channel: str | None = None, actor: str | None = None) -> list[dict[str, Any]]:
+        """The actor's memories most relevant to `task`, ranked (BM25, optionally blended
+        with embedding similarity), never another channel's or actor's."""
         if not known_memory_identity(channel, actor) or not task.strip() or limit <= 0:
             return []
         channel, actor = str(channel), str(actor)
         limit = min(int(limit), 100)
+        settings = self.retrieval
         now = time.time()
-        # A write transaction keeps curator status and last-used updates consistent.
         with connect_sqlite(self.db_path) as con:
             con.row_factory = sqlite3.Row
-            con.execute("BEGIN IMMEDIATE")
-            candidates = con.execute(
+            recent = con.execute(
                 """SELECT * FROM structured_experiences WHERE channel=? AND actor=?
                 AND memory_status IN ('candidate', 'validated', 'trusted')
                 ORDER BY updated_at DESC LIMIT ?""",
-                (channel, actor, min(max(limit * 20, limit), 1000)),
+                (channel, actor, max(int(settings.candidate_window), limit)),
             ).fetchall()
-            rows: list[dict[str, Any]] = []
-            for candidate in candidates:
-                row = dict(candidate)
-                if not planner_memory_visible(row, channel=channel, actor=actor, now=now):
+            seen = {row["id"] for row in recent}
+            older = [row for row in self._fts_candidates(con, task, channel, actor) if row["id"] not in seen]
+        visible = [self._decode_structured(dict(row)) for row in [*recent, *older] if planner_memory_visible(dict(row), channel=channel, actor=actor, now=now)]
+        semantic = self._semantic_scores(visible, task) if self.embedder is not None and visible else None
+        ranked = rank_memory_rows(
+            visible,
+            task,
+            limit,
+            semantic_scores=semantic,
+            semantic_weight=settings.embedding_weight,
+            min_semantic=settings.min_embedding_similarity,
+        )
+        if not ranked:
+            return []
+        # Re-check each pick under the write lock: a curator review may have retired it meanwhile.
+        rows: list[dict[str, Any]] = []
+        with connect_sqlite(self.db_path) as con:
+            con.row_factory = sqlite3.Row
+            con.execute("BEGIN IMMEDIATE")
+            for row in ranked:
+                current = con.execute("SELECT * FROM structured_experiences WHERE id=?", (row["id"],)).fetchone()
+                if current is None or not planner_memory_visible(dict(current), channel=channel, actor=actor, now=time.time()):
                     continue
-                decoded = self._decode_structured(row)
-                if matches_memory_query(decoded, task):
-                    con.execute("UPDATE structured_experiences SET last_used_at=? WHERE id=?", (now, row["id"]))
-                    rows.append(decoded)
-                if len(rows) == limit:
-                    break
+                con.execute("UPDATE structured_experiences SET last_used_at=? WHERE id=?", (now, row["id"]))
+                rows.append(self._decode_structured(dict(current)))  # the locked row, not the ranked snapshot
         return rows
+
+    def _fts_candidates(self, con: sqlite3.Connection, task: str, channel: str, actor: str) -> list[sqlite3.Row]:
+        """Older memories that the full-text index matches; the recency window covers only the latest."""
+        limit = int(self.retrieval.fts_candidates)
+        if limit <= 0 or self.encryption.enabled:
+            return []  # with encryption at rest the index holds ciphertext
+        # The index's unicode61 tokenizer neither stems nor splits CJK runs: prefix-match ASCII words only.
+        terms = list(dict.fromkeys(term for term in tokenize(task) if term.isascii() and term.isalnum()))
+        if not terms:
+            return []
+        match = " OR ".join(f'"{term}"*' for term in terms[:32])
+        try:
+            return con.execute(
+                """
+                SELECT e.* FROM structured_experiences_fts f
+                JOIN structured_experiences e ON e.id = f.rowid
+                WHERE structured_experiences_fts MATCH ? AND e.channel=? AND e.actor=?
+                AND e.memory_status IN ('candidate', 'validated', 'trusted')
+                ORDER BY rank LIMIT ?
+                """,
+                (match, channel, actor, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []  # no FTS5 in this SQLite build
+
+    def _semantic_scores(self, rows: list[dict[str, Any]], task: str) -> list[float]:
+        embedder = self.embedder
+        assert embedder is not None
+        documents = [memory_document(row) for row in rows]
+        vectors = self._memory_vectors(rows, documents, embedder)
+        query = embedder.embed([task])[0]
+        return [cosine(query, vector) for vector in vectors]
+
+    def _memory_vectors(self, rows: list[dict[str, Any]], documents: list[str], embedder: Embedder) -> list[list[float]]:
+        """One cached vector per memory and model, encrypted like the memory text; recomputed when the text changed."""
+        model = embedder.model_name
+        digests = [hashlib.sha256(text.encode("utf-8")).hexdigest() for text in documents]
+        vectors: dict[int, list[float]] = {}
+        with connect_sqlite(self.db_path) as con:
+            for row, digest in zip(rows, digests):
+                hit = con.execute("SELECT payload FROM structured_experience_embeddings WHERE experience_id=? AND model=?", (row["id"], model)).fetchone()
+                if hit is None:
+                    continue
+                try:
+                    payload = json.loads(self._decrypt_text(hit[0]))
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("sha256") == digest:
+                    vectors[int(row["id"])] = [float(x) for x in payload.get("vector") or []]
+            missing = [i for i, row in enumerate(rows) if int(row["id"]) not in vectors]
+            if missing:
+                fresh = embedder.embed([documents[i] for i in missing])
+                for i, vector in zip(missing, fresh):
+                    vectors[int(rows[i]["id"])] = vector
+                    con.execute(
+                        "INSERT OR REPLACE INTO structured_experience_embeddings (experience_id, model, payload) VALUES (?, ?, ?)",
+                        (rows[i]["id"], model, self._encrypt_text(json.dumps({"sha256": digests[i], "vector": vector}))),
+                    )
+        return [vectors[int(row["id"])] for row in rows]
 
     def summarize_failures(self, days: int = 7, limit: int = 10) -> list[dict[str, Any]]:
         since = time.time() - days * 86400
@@ -545,6 +637,7 @@ class ExperienceStore:
             placeholders = ",".join("?" for _ in ids)
             # Placeholder count is generated from already selected integer ids.
             self.conn.execute(f"DELETE FROM structured_experiences WHERE id IN ({placeholders})", ids)  # nosec B608
+            self.conn.execute(f"DELETE FROM structured_experience_embeddings WHERE experience_id IN ({placeholders})", ids)  # nosec B608
             deleted_count = len(ids)
 
         event = {
