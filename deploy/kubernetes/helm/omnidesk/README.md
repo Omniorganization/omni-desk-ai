@@ -83,6 +83,30 @@ Verify with:
 - `scripts/production_smoke_test.py --strict-sandbox --sandbox-url http://<runner>:18890`
   from a machine allowed to reach the runner.
 
+## Backups and restores
+
+This chart runs no backup job, and the gateway image has no `pg_dump`.
+PostgreSQL is external, so its backups belong to whatever runs it: the
+Postgres operator (CloudNativePG, Crunchy) or the managed service. Erasure does
+not rewrite backups, so SECURITY.md sets two rules for them:
+
+- **Retention:** keep backups 30 days by default and never more than 35, so an
+  erasure reaches every backup within 35 days. Use a time-based retention:
+  keeping the last N backups does not bound their age. With point-in-time
+  recovery, the oldest base backup can predate the window by one base-backup
+  interval, so keep the window plus that interval within 35 days (for example
+  a 30-day window with daily base backups).
+- **Restores:** a restored database serves no traffic until every erasure
+  logged since the backup was taken (`privacy.subject_erased` in the security
+  audit log) has been applied again. Use security's re-apply command once it
+  ships; until then, repeat each erasure request with a new dual approval.
+
+Single-host deployments back up with the systemd units in `deploy/systemd/`:
+`omnidesk-backup.service`/`.timer` for the SQLite stores, and
+`omnidesk-postgres-backup.service`/`.timer` for PostgreSQL (host `pg_dump`,
+from #255). Both keep 30 days. `docs/BACKUP_RESTORE.md` covers backup,
+verification and restore.
+
 ## Other values that need a decision
 
 - `image.digest`: the release app image digest (`release.yml`). The chart never uses tags.
