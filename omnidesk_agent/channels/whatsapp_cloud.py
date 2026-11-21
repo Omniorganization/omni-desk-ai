@@ -19,7 +19,17 @@ class WhatsAppCloudChannel:
         from omnidesk_agent.channels.base import WebhookEnvelope
         try:
             value = payload.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
-            msg = (value.get("messages") or [{}])[0]
+            messages = value.get("messages") or []
+            if not messages and value.get("statuses"):
+                # Delivery-status callbacks carry no "from": key them by the
+                # customer and the status transition, so a burst of statuses
+                # does not share one "unknown" rate bucket and sent/delivered/
+                # read for one message are distinct events.
+                status = value["statuses"][0]
+                recipient = str(status.get("recipient_id") or "unknown")
+                mid = f"status:{status.get('id') or ''}:{status.get('status') or ''}"
+                return WebhookEnvelope(source_key=recipient, sender_id=recipient, message_id=mid, event_type="status", raw=payload)
+            msg = (messages or [{}])[0]
             sender = str(msg.get("from") or "unknown")
             mid = str(msg.get("id") or "")
             ts = float(msg.get("timestamp")) if msg.get("timestamp") else None
@@ -58,7 +68,7 @@ class WhatsAppCloudChannel:
                         ))
         return out
 
-    async def send_text(self, recipient: str, text: str, **kwargs) -> None:
+    async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any]:
         if not self.cfg.phone_number_id:
             raise RuntimeError("WhatsApp phone_number_id is missing")
         if not self.token:
@@ -70,4 +80,10 @@ class WhatsAppCloudChannel:
             "type": "text",
             "text": {"body": text},
         }
-        return await self.http.post(url, headers={"Authorization": f"Bearer {self.token}"}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        result = await self.http.post(url, headers={"Authorization": f"Bearer {self.token}"}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        # 200 means Meta accepted the message; delivery failures (for example
+        # 131047 outside the 24h window) arrive later as status webhooks.
+        data = result.data if isinstance(result.data, dict) else {}
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        first = messages[0] if messages and isinstance(messages[0], dict) else {}
+        return {"message_id": first.get("id"), "request_id": result.request_id}

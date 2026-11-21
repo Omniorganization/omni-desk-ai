@@ -5,7 +5,9 @@ import re
 from typing import Any, Literal, Optional
 
 RiskTier = Literal["low", "medium", "high", "critical"]
-SupportStatus = Literal["native_adapter", "ui_bridge", "ecosystem_reference"]
+# bridge_adapter: an adapter exists, but the provider has no signed webhook, so
+# inbound needs an OmniDesk-signing bridge/relay the operator deploys (none ships).
+SupportStatus = Literal["native_adapter", "bridge_adapter", "ui_bridge", "ecosystem_reference"]
 ChannelCategory = Literal["messaging", "email", "social", "desktop", "voice", "visual_workspace", "control_plane"]
 
 
@@ -55,7 +57,7 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         ("telegram", "tg"),
         True,
         True,
-        ("webhook", "outbound_queue"),
+        ("webhook", "getupdates_polling", "outbound_queue"),
         _GROUP_CONTROLS,
         ui_bridge_app="Telegram",
     ),
@@ -169,7 +171,7 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         ("signed_webhook", "outbound_queue", "ui_bridge"),
         _GROUP_CONTROLS,
         ui_bridge_app="Discord",
-        notes="Discord interactions or signed edge bridge inbound and bot REST outbound.",
+        notes="Ed25519-verified interactions endpoint (slash commands, components) or a signed edge bridge inbound; bot REST outbound. Gateway message events are not received.",
     ),
     ChannelEcosystemEntry(
         "google_chat",
@@ -187,7 +189,7 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         "signal",
         "Signal",
         "messaging",
-        "native_adapter",
+        "bridge_adapter",
         ("signal",),
         True,
         True,
@@ -195,12 +197,13 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         _GROUP_CONTROLS + ("local_bridge_hardening",),
         risk="high",
         ui_bridge_app="Signal",
+        notes="signal-cli REST outbound; inbound only through an OmniDesk-signing bridge, which is not included.",
     ),
     ChannelEcosystemEntry(
         "imessage",
         "iMessage",
         "messaging",
-        "native_adapter",
+        "bridge_adapter",
         ("imessage", "messages"),
         True,
         True,
@@ -208,6 +211,7 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         _GROUP_CONTROLS + ("foreground_confirmation", "local_relay_hardening"),
         risk="high",
         ui_bridge_app="Messages",
+        notes="Needs a local macOS relay that signs inbound webhooks and performs sends; no relay is included.",
     ),
     ChannelEcosystemEntry(
         "microsoft_teams",
@@ -220,6 +224,7 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         ("bot_activity_webhook", "outbound_queue", "ui_bridge"),
         _GROUP_CONTROLS,
         ui_bridge_app="Microsoft Teams",
+        notes="Bot Framework JWT inbound and OAuth client-credentials outbound when MICROSOFT_TEAMS_APP_ID is set.",
     ),
     ChannelEcosystemEntry(
         "matrix",
@@ -240,10 +245,11 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         ("qq", "qq bot"),
         True,
         True,
-        ("signed_webhook", "qq_bot_api", "ui_bridge"),
+        ("ed25519_webhook", "qq_bot_api", "ui_bridge"),
         _GROUP_CONTROLS,
         risk="high",
         ui_bridge_app="QQ",
+        notes="Ed25519-signed HTTP callbacks with op 13 validation when QQ_BOT_SECRET is set; app access token outbound.",
     ),
     ChannelEcosystemEntry(
         "x",
@@ -264,12 +270,13 @@ OMNIDESK_NATIVE_CHANNELS: tuple[ChannelEcosystemEntry, ...] = (
         "email",
         "native_adapter",
         ("gmail", "email", "mail"),
+        False,
         True,
-        True,
-        ("oauth", "pubsub_summary", "compose_gate"),
+        ("oauth", "compose_gate"),
         _BASE_CONTROLS + ("oauth_scope_minimization",),
         risk="high",
         ui_bridge_app="Gmail",
+        notes="OAuth API access only; there is no inbound route or poller, and the Google client libraries are not in the lock files.",
     ),
     ChannelEcosystemEntry(
         "ui_bridge",

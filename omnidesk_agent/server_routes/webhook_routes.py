@@ -13,25 +13,34 @@ def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
     async def _guard_webhook(channel: str, adapter, request: Request, payload=None):
         return await guard.guard(channel, adapter, request, payload=payload)
 
-    def _enqueue_platform_result(parsed):
+    def _enqueue_platform_result(parsed, adapter=None, payload=None):
         if isinstance(parsed, ChannelMessage):
-            return enqueue_webhook_message(rt, parsed)
-        if isinstance(parsed, list):
-            return enqueue_webhook_messages(rt, parsed)
-        if isinstance(parsed, dict):
-            if "challenge" in parsed:
-                return parsed
-            if parsed.get("type") == 1:  # Discord interaction PING
-                return {"type": 1}
-            if parsed.get("ok") is True:
-                return parsed
-        return {"ok": True, "ignored": True}
+            result = enqueue_webhook_message(rt, parsed)
+        elif isinstance(parsed, list):
+            result = enqueue_webhook_messages(rt, parsed)
+        elif isinstance(parsed, dict) and "challenge" in parsed:
+            result = parsed
+        elif isinstance(parsed, dict) and parsed.get("type") == 1:  # Discord interaction PING
+            result = {"type": 1}
+        elif isinstance(parsed, dict) and parsed.get("ok") is True:
+            result = parsed
+        else:
+            result = {"ok": True, "ignored": True}
+        # Some providers require a specific body back (QQ op 13 / op 12 ACK,
+        # Discord interaction responses); the message is already queued.
+        shape = getattr(adapter, "webhook_response", None)
+        if callable(shape):
+            shaped = shape(parsed, payload)
+            if shaped is not None:
+                return shaped
+        return result
 
     async def _json_webhook(route_channel: str, adapter_key: str, request: Request):
         adapter = rt.adapters[adapter_key]
         body, _ = await _guard_webhook(route_channel, adapter, request)
-        parsed = adapter.parse_webhook(guard.json_body(body))
-        return _enqueue_platform_result(parsed)
+        payload = guard.json_body(body)
+        parsed = adapter.parse_webhook(payload)
+        return _enqueue_platform_result(parsed, adapter, payload)
 
     @app.post("/webhooks/telegram")
     async def telegram_webhook(request: Request):

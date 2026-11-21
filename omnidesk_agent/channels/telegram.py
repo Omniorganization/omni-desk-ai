@@ -6,6 +6,7 @@ from typing import Any, Optional
 from omnidesk_agent.config import TelegramConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.channels.http_client import ChannelHttpClient
+from omnidesk_agent.channels.provider_errors import ensure_provider_success
 
 class TelegramChannel:
     name = "telegram"
@@ -70,7 +71,11 @@ class TelegramChannel:
             raw=update,
         )
 
-    async def send_text(self, recipient: str, text: str, **kwargs) -> None:
+    async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any]:
         if not self.base:
             raise RuntimeError("Telegram token is not configured")
-        return await self.http.post(f"{self.base}/sendMessage", json={"chat_id": recipient, "text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        result = await self.http.post(f"{self.base}/sendMessage", json={"chat_id": recipient, "text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        ensure_provider_success(self.name, result)
+        message = result.data.get("result") if isinstance(result.data, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        return {"message_id": None if message_id is None else str(message_id), "request_id": result.request_id}

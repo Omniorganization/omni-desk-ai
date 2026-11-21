@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import json
 import os
 
@@ -127,7 +128,15 @@ class WebhookGuard:
         if not hasattr(self.runtime, "webhook_security"):
             return
         extract = getattr(adapter, "signed_request_nonce", None)
-        nonce = extract(dict(request.query_params)) if callable(extract) else None
+        if not callable(extract):
+            return
+        # WeChat signs query parameters; DingTalk signs request headers. A hook
+        # that declares a ``headers`` parameter gets the headers as well.
+        try:
+            wants_headers = "headers" in inspect.signature(extract).parameters
+        except (TypeError, ValueError):
+            wants_headers = False
+        nonce = extract(dict(request.query_params), headers=dict(request.headers)) if wants_headers else extract(dict(request.query_params))
         # Duck-typed (see channels.base.SignedRequestNonce) so adapters without
         # the hook, or returning None, are simply not nonce-based.
         value = getattr(nonce, "value", None)

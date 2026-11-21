@@ -4,23 +4,30 @@ import hashlib
 import hmac
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import defusedxml.ElementTree as ET
 
 from omnidesk_agent.config import WeChatOfficialConfig
 from omnidesk_agent.core.models import ChannelMessage
-from omnidesk_agent.channels.http_client import ChannelHttpClient
+from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success, token_step_failed
 
 
 WECHAT_SIGNATURE_MAX_AGE_SECONDS = 300
+WECHAT_STABLE_TOKEN_URL = "https://api.weixin.qq.com/cgi-bin/stable_token"
+WECHAT_CUSTOM_SEND_URL = "https://api.weixin.qq.com/cgi-bin/message/custom/send"
+# The access token was rejected (invalid, not the latest, or expired): the
+# send was not performed, so it may be repeated once with a fresh token.
+WECHAT_TOKEN_REJECTED_CODES = {"40001", "40014", "42001"}
 
 
 class WeChatOfficialChannel:
     """WeChat Official Account adapter.
 
     Supports URL verification, XML message parsing, passive text reply, and customer-service
-    message sending. Encrypted-message mode should be added before production if enabled.
+    message sending. Only plaintext mode is implemented: the safe/compatible
+    (AES) message modes are not, so the account must use plaintext mode.
     """
 
     name = "wechat_official"
@@ -115,26 +122,65 @@ class WeChatOfficialChannel:
             raw={child.tag: child.text for child in root},
         )
 
+    def webhook_response(self, parsed: Any, payload: Any):
+        """Reply for a verified delivery that is not answered with a passive message.
+
+        WeChat treats any other body (JSON in particular) as a failure and shows
+        the user "该公众号暂时无法提供服务"; plain "success" acknowledges the push
+        without a reply, which is what a redelivered (duplicate) message needs.
+        """
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse("success")
+
     def passive_text_reply(self, incoming: ChannelMessage, text: str) -> str:
         to_user = incoming.sender_id
         from_user = incoming.raw.get("ToUserName", "")
         now = int(time.time())
         return f"""<xml><ToUserName><![CDATA[{to_user}]]></ToUserName><FromUserName><![CDATA[{from_user}]]></FromUserName><CreateTime>{now}</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[{text}]]></Content></xml>"""
 
-    async def _get_access_token(self) -> str:
-        if self._access_token and self._access_token[1] > time.time() + 60:
+    async def _get_access_token(self, *, refresh: bool = False) -> str:
+        if not refresh and self._access_token and self._access_token[1] > time.time() + 60:
             return self._access_token[0]
-        result = await self.http.get("https://api.weixin.qq.com/cgi-bin/token", params={
-            "grant_type": "client_credential",
-            "appid": self.app_id,
-            "secret": self.app_secret,
-        })
-        data = result.data or {}
-        token = data["access_token"]
-        self._access_token = (token, time.time() + int(data.get("expires_in", 7200)))
+        if not self.app_id or not self.app_secret:
+            raise before_send(RuntimeError("WeChat app id/secret missing"), "config_error")
+        # stable_token in normal mode (force_refresh false) returns the current
+        # token while it is valid, so replicas fetching their own copy do not
+        # invalidate each other, and the secret travels in the body, not the URL.
+        try:
+            result = await self.http.post(
+                WECHAT_STABLE_TOKEN_URL,
+                json={"grant_type": "client_credential", "appid": self.app_id, "secret": self.app_secret, "force_refresh": False},
+                channel=self.name,
+                idempotent=True,
+            )
+            ensure_provider_success(self.name, result)
+        except ChannelHttpError as exc:
+            raise token_step_failed(self.name, exc) from exc
+        data = result.data if isinstance(result.data, dict) else {}
+        token = data.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise ChannelHttpError("WeChat stable_token response carried no access_token", channel=self.name, request_sent=True, category="config_error")
+        try:
+            expires_in = int(data.get("expires_in", 7200))
+        except (TypeError, ValueError):
+            expires_in = 7200
+        self._access_token = (token, time.time() + expires_in)
         return token
 
-    async def send_text(self, recipient_openid: str, text: str, **kwargs) -> None:
-        token = await self._get_access_token()
+    async def send_text(self, recipient_openid: str, text: str, **kwargs) -> dict[str, Any]:
         body = {"touser": recipient_openid, "msgtype": "text", "text": {"content": text}}
-        return await self.http.post("https://api.weixin.qq.com/cgi-bin/message/custom/send", params={"access_token": token}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+        for attempt in range(2):
+            token = await self._get_access_token(refresh=attempt > 0)
+            result = await self.http.post(WECHAT_CUSTOM_SEND_URL, params={"access_token": token}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
+            try:
+                # errcode != 0 inside HTTP 200 (for example 45015, outside the
+                # 48h window) means the message was not sent.
+                ensure_provider_success(self.name, result)
+            except ChannelHttpError as exc:
+                if attempt == 0 and exc.provider_code in WECHAT_TOKEN_REJECTED_CODES:
+                    self._access_token = None
+                    continue
+                raise
+            return {"message_id": None, "request_id": result.request_id}
+        raise AssertionError("unreachable")  # pragma: no cover

@@ -629,12 +629,18 @@ def test_google_chat_send_allows_only_allowlisted_spaces():
     ]
 
 
-def test_google_chat_send_with_configured_webhook_ignores_recipient(monkeypatch):
+def test_google_chat_send_with_configured_webhook_requires_its_space(monkeypatch):
+    # The approver sees the recipient. A configured webhook posts only when the
+    # recipient names that webhook's space, and never to a URL the caller chose.
     monkeypatch.setenv("GOOGLE_CHAT_WEBHOOK_URL", "https://chat.googleapis.com/v1/spaces/CFG/messages?key=k")
     channel = GoogleChatChannel(GoogleChatConfig(enabled=True))
     channel.http = _RecordingHttp()
-    asyncio.run(channel.send_text("https://chat.googleapis.com/v1/spaces/ATTACKER/messages", "hi"))
-    assert channel.http.posted == ["https://chat.googleapis.com/v1/spaces/CFG/messages?key=k"]
+    for recipient in ("https://chat.googleapis.com/v1/spaces/ATTACKER/messages", "spaces/OTHER", "anything", ""):
+        with pytest.raises(PermissionError):
+            asyncio.run(channel.send_text(recipient, "hi"))
+    asyncio.run(channel.send_text("spaces/CFG", "hi"))
+    asyncio.run(channel.send_text("https://chat.googleapis.com/v1/spaces/CFG/messages?key=other", "hi"))
+    assert channel.http.posted == ["https://chat.googleapis.com/v1/spaces/CFG/messages?key=k"] * 2
 
 
 # --------------------------------------------------------------------------- L10 X CRC

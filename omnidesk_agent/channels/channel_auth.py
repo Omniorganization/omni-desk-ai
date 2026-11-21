@@ -58,22 +58,22 @@ def google_chat_requires_jwt(cfg: "GoogleChatConfig", *, production: bool) -> bo
     return production
 
 
-def _b64url_decode(segment: str) -> bytes:
+def _b64url_decode(segment: str, label: str = "Google Chat") -> bytes:
     if not _B64URL_RE.fullmatch(segment):
-        raise PermissionError("malformed Google Chat bearer token")
+        raise PermissionError(f"malformed {label} bearer token")
     try:
         return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
     except (binascii.Error, ValueError) as exc:
-        raise PermissionError("malformed Google Chat bearer token") from exc
+        raise PermissionError(f"malformed {label} bearer token") from exc
 
 
-def _json_segment(segment: str) -> dict[str, Any]:
+def _json_segment(segment: str, label: str = "Google Chat") -> dict[str, Any]:
     try:
-        value = json.loads(_b64url_decode(segment))
+        value = json.loads(_b64url_decode(segment, label))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
-        raise PermissionError("malformed Google Chat bearer token") from exc
+        raise PermissionError(f"malformed {label} bearer token") from exc
     if not isinstance(value, dict):
-        raise PermissionError("malformed Google Chat bearer token")
+        raise PermissionError(f"malformed {label} bearer token")
     return value
 
 
@@ -104,6 +104,8 @@ class GoogleCertFetcher:
         http_get: Optional[Callable[[str, float], tuple[bytes, str]]] = None,
         clock: Callable[[], float] = time.monotonic,
         spawn: Optional[Callable[[Callable[[], None]], None]] = None,
+        parse: Optional[Callable[[bytes], dict[str, Any]]] = None,
+        unavailable_message: str = "Google Chat signing certificates are unavailable",
     ):
         self.url = url
         self.timeout_seconds = timeout_seconds
@@ -113,14 +115,16 @@ class GoogleCertFetcher:
         self._http_get = http_get or _httpx_get
         self._clock = clock
         self._spawn = spawn or _spawn_daemon_thread
+        self._parse = parse or _parse_cert_response
+        self._unavailable_message = unavailable_message
         self._lock = threading.Lock()
-        self._certs: dict[str, str] = {}
+        self._certs: dict[str, Any] = {}
         self._fetched_at: Optional[float] = None
         self._expires_at = 0.0
         self._last_attempt: Optional[float] = None
         self._refreshing = False
 
-    def __call__(self, *, refresh: bool = False) -> Mapping[str, str]:
+    def __call__(self, *, refresh: bool = False) -> Mapping[str, Any]:
         with self._lock:
             fresh = self._fetched_at is not None and self._clock() < self._expires_at
             if fresh and not refresh:
@@ -129,7 +133,7 @@ class GoogleCertFetcher:
         with self._lock:
             if self._fetched_at is not None and self._clock() - self._fetched_at <= self.max_stale_seconds:
                 return dict(self._certs)
-        raise PermissionError("Google Chat signing certificates are unavailable")
+        raise PermissionError(self._unavailable_message)
 
     def prefetch(self) -> None:
         """Start a background refresh unless one is running or one started recently."""
@@ -148,7 +152,7 @@ class GoogleCertFetcher:
     def _refresh(self) -> None:
         try:
             body, cache_control = self._http_get(self.url, self.timeout_seconds)
-            certs: Optional[dict[str, str]] = _parse_cert_response(body)
+            certs: Optional[dict[str, Any]] = self._parse(body)
         except Exception:  # any fetch/parse failure keeps the bounded stale cache
             certs, cache_control = None, ""
         with self._lock:
