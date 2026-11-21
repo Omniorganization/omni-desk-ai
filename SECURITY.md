@@ -27,6 +27,11 @@ What the code enforces today (`omnidesk_agent/security/permissions.py`, `approva
   - Approver identities are static per-role bearer tokens. The owner token and the admin token count as two distinct owners; no per-person identity exists yet.
   - AppSync task approvals (`/app/approvals`) do not apply dual approval.
 
+## Approval Record Visibility
+
+- `GET /approvals` lists only approvals whose requester belongs to the caller's organization, as the gateway resolves it, never as the client states it.
+- Owners, who decide, and the requester see the full proposal. Every other caller, viewers included, sees what is asked: tool, action, risk, run, plan, step, scope hash and requester. Argument content is withheld, and so are its digests and lengths: an unsalted digest of short typed text, such as a PIN or a one-time code, can be brute-forced. The scope hash stays, so approvals can still be correlated. It is a weaker oracle of the same kind, because it covers the content together with withheld fields such as the expected result, so treat approval scope hashes as sensitive. A break-glass session that raises its holder to owner shows them the full proposal they decide. A requester whose organization cannot be resolved shows the approval to nobody.
+
 ## Reporting
 
 Do not include secrets, credentials, private keys, tokens, customer data, or production evidence payloads in public issues. Use a private security channel controlled by the repository owner.

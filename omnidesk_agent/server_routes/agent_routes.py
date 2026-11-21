@@ -155,6 +155,63 @@ async def _idempotent_side_effect(
     return normalize_idempotency_response(result)
 
 
+# What a caller who neither requested nor decides an approval may see of it:
+# what is asked, never the content (typed text, file bodies, messages, scripts)
+# and never its digests or lengths: an unsalted digest of a short typed secret
+# (a PIN, a one-time code) can be brute-forced. requires_fresh_approval is set
+# by verify() for tainted proposals (security #239).
+_APPROVAL_SUMMARY_KEYS = frozenset({
+    "tool", "action", "risk", "reason", "source", "actor", "created_by", "proposer",
+    "run_id", "plan_id", "step_index", "scope_hash", "requires_dual_approval", "requires_fresh_approval",
+})
+_APPROVAL_ROW_KEYS = ("id", "status", "created_at", "expires_at", "decided_at", "consumed_at")
+
+
+def _actor_organization(rt, actor: str) -> str:
+    """The organization the gateway assigns to ``actor``. A failing lookup raises: tenant scoping fails closed."""
+    resolve = getattr(getattr(rt, "app_sync", None), "_organization_for_actor", None)
+    if not callable(resolve) or not actor:
+        return "org_default"
+    return str(resolve(actor))
+
+
+def _approval_requester(proposal: dict[str, Any]) -> str:
+    return str(proposal.get("created_by") or proposal.get("proposer") or proposal.get("actor") or "")
+
+
+def _summarize_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
+    summary = {k: v for k, v in proposal.items() if k in _APPROVAL_SUMMARY_KEYS}
+    args = proposal.get("args")
+    if isinstance(args, dict) and args:
+        summary["args_withheld"] = True
+    return summary
+
+
+def _visible_approvals(rt, rows: list[Any], *, actor: str, role: str) -> list[Any]:
+    """Approvals of the caller's organization; full content only for owners and the requester."""
+    organization = _actor_organization(rt, actor)
+    visible: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        nested = isinstance(row.get("proposal"), dict)
+        proposal = row["proposal"] if nested else row
+        requester = _approval_requester(proposal)
+        try:
+            requester_organization = _actor_organization(rt, requester)
+        except Exception:
+            continue  # it cannot be placed in an organization, so nobody may see it
+        if requester_organization != organization:
+            continue
+        if role == "owner" or (actor and requester == actor):
+            visible.append(row)
+        elif nested:
+            visible.append({**{k: row.get(k) for k in _APPROVAL_ROW_KEYS if k in row}, "proposal": _summarize_proposal(proposal)})
+        else:
+            visible.append(_summarize_proposal(proposal))
+    return visible
+
+
 def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier) -> None:
     @app.post("/agent/run")
     async def run_agent(request: Request, body: AgentRunRequest):
@@ -303,8 +360,20 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
 
     @app.get("/approvals")
     async def list_approvals(request: Request, status: Optional[str] = None):
-        await admin(request, "viewer")
-        return {"ok": True, "approvals": approvals.list(status)}
+        decision = await admin(request, "viewer")
+        actor = str(getattr(decision, "actor", "") or "")
+        role = str(getattr(decision, "role", "viewer") or "viewer")
+        if role != "owner" and request.headers.get("x-omnidesk-break-glass-session"):
+            # A break-glass session raises its holder to owner, so they can decide
+            # approvals; they must see what they decide. A session that does not
+            # verify leaves them with the summary.
+            try:
+                elevated = await admin(request, "owner")
+            except HTTPException:
+                elevated = None
+            if str(getattr(elevated, "role", "") or "") == "owner":
+                role = "owner"
+        return {"ok": True, "approvals": _visible_approvals(rt, approvals.list(status), actor=actor, role=role)}
 
     @app.get("/approvals/{approval_id}/dual-status")
     async def dual_status_request(approval_id: str, request: Request):
