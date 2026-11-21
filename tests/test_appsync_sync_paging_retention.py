@@ -203,11 +203,11 @@ def test_retention_rules_delete_only_expired_rows() -> None:
 
 
 def test_only_one_replica_runs_retention_at_a_time() -> None:
-    import psycopg
+    store = _pg_store("retention_election")  # skips without a test database, before psycopg is needed
+    psycopg = pytest.importorskip("psycopg")
 
     from omnidesk_agent.appsync.retention import _lock_key, run_retention
 
-    store = _pg_store("retention_election")
     holder = psycopg.connect(_dsn(), autocommit=True)
     try:
         holder.execute("SELECT pg_advisory_lock(%s)", (_lock_key(store.namespace),))
