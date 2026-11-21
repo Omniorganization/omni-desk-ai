@@ -178,6 +178,43 @@ def _verify_device_request(
     )
 
 
+async def _record_device_request(
+    rt: Any,
+    request: Request,
+    *,
+    verified: bool,
+    device_id: str,
+    actor: str,
+    device_types: set[str],
+    reason: str = "",
+) -> None:
+    """Security's tamper-evident record of a device-signed request.
+
+    ``AdminAuth.record_device_request`` (security, #278) appends it to the chained
+    admin audit log. Until that hook exists, nothing is recorded. A request that
+    cannot be recorded is refused: what is not on the record does not happen.
+    """
+    record = getattr(getattr(rt, "admin_auth", None), "record_device_request", None)
+    if not callable(record):
+        return
+    client = getattr(request, "client", None)
+    try:
+        await asyncio.to_thread(
+            record,
+            verified=verified,
+            device_id=device_id,
+            actor=actor,
+            method=request.method,
+            path=request.url.path,
+            reason=reason,
+            device_type=",".join(sorted(device_types)),
+            client_host=str(getattr(client, "host", "") or ""),
+        )
+    except PermissionError as exc:
+        # AuditIntegrityError, as for every other audit failure: fail closed.
+        raise HTTPException(503, "device request not recorded: audit log unavailable") from exc
+
+
 async def _require_signed_device_request(
     *,
     cfg: Any,
@@ -188,11 +225,17 @@ async def _require_signed_device_request(
     required_device_types: set[str],
     expected_device_id: str | None = None,
     metrics: Any = None,
+    rt: Any = None,
+    record_verified: bool = True,
 ) -> None:
     """Require a signature from a verified device owned by the authenticated actor.
 
     The device's organization is the actor's, and every store operation behind
     these routes checks the actor's organization against the target resource.
+
+    Security's audit log records every refused signature, and every verified
+    request that changes state (``record_verified``). A heartbeat passes
+    ``record_verified=False``: counters and the device's ``last_seen_at`` cover it.
     """
     if not _device_signature_enforced(cfg):
         return
@@ -204,6 +247,7 @@ async def _require_signed_device_request(
             metrics.inc(
                 "omnidesk_device_signature_failures_total", reason="device_id_mismatch"
             )
+        await _record_device_request(rt, request, verified=False, device_id=device_id, actor=actor, device_types=required_device_types, reason="device_id_mismatch")
         raise HTTPException(401, "device signature rejected: device_id_mismatch")
     ok, reason = _verify_device_request(
         cfg=cfg,
@@ -217,7 +261,10 @@ async def _require_signed_device_request(
     if not ok:
         if metrics:
             metrics.inc("omnidesk_device_signature_failures_total", reason=reason)
+        await _record_device_request(rt, request, verified=False, device_id=device_id, actor=actor, device_types=required_device_types, reason=reason)
         raise HTTPException(401, f"device signature rejected: {reason}")
+    if record_verified:
+        await _record_device_request(rt, request, verified=True, device_id=device_id, actor=actor, device_types=required_device_types)
     if metrics:
         metrics.inc(
             "omnidesk_device_signed_requests_total",
@@ -660,6 +707,7 @@ def register_appsync_routes(
             or ""
         ).strip()
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
@@ -716,6 +764,7 @@ def register_appsync_routes(
         decision = await admin(request, "owner")
         payload, raw_body = await _json_body_and_raw(request)
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
@@ -784,6 +833,7 @@ def register_appsync_routes(
         decision = await admin(request, "operator")
         payload, raw_body = await _json_body_and_raw(request)
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
@@ -817,6 +867,7 @@ def register_appsync_routes(
         decision = await admin(request, "operator")
         payload, raw_body = await _json_body_and_raw(request)
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
@@ -929,6 +980,7 @@ def register_appsync_routes(
         decision = await admin(request, "operator")
         raw_body = await request.body()
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
@@ -955,6 +1007,7 @@ def register_appsync_routes(
         decision = await admin(request, "owner")
         payload, raw_body = await _json_body_and_raw(request)
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
@@ -989,6 +1042,7 @@ def register_appsync_routes(
         payload, raw_body = await _json_body_and_raw(request)
         device_id = payload.get("device_id")
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
@@ -997,6 +1051,7 @@ def register_appsync_routes(
             required_device_types={"desktop"},
             expected_device_id=str(device_id or ""),
             metrics=metrics,
+            record_verified=False,  # liveness, not a state change
         )
         if not device_id:
             raise HTTPException(422, "device_id is required")
@@ -1023,6 +1078,7 @@ def register_appsync_routes(
         payload, raw_body = await _json_body_and_raw(request)
         device_id = payload.get("device_id")
         await _require_signed_device_request(
+            rt=rt,
             cfg=cfg,
             store=store,
             request=request,
