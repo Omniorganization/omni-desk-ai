@@ -83,8 +83,8 @@ approval history).
 ## Not done yet
 
 - The planner does not consume the policy (see above).
-- Evaluation is recorded, not produced: the replay evaluator that re-plans
-  recorded traces with `candidate_policy()` is a separate change.
+- Evaluation: the paired replay and the online A/B/canary gate that produce
+  evaluations are described in [ONLINE_LEARNING_EXPERIMENTS.md](ONLINE_LEARNING_EXPERIMENTS.md).
 - No HTTP route; the admin route needs the server wiring change.
 - Knowledge, prompt and workflow drafts from `KnowledgeBuilder` are still
   human-facing review notes under `self_learning/pending_updates/`; they are
