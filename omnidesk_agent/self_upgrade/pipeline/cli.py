@@ -25,7 +25,7 @@ from typing import Any, Optional
 from omnidesk_agent.self_upgrade.pipeline.diff_policy import DiffPolicy
 from omnidesk_agent.self_upgrade.pipeline.issue import load_issue
 from omnidesk_agent.self_upgrade.pipeline.proposer import ProviderModelClient, propose
-from omnidesk_agent.self_upgrade.pipeline.publisher import GitHubPublisher
+from omnidesk_agent.self_upgrade.pipeline.publisher import GitHubPublisher, is_pipeline_branch
 from omnidesk_agent.self_upgrade.pipeline.verifier import patch_sha256, verify
 from omnidesk_agent.self_upgrade.pipeline.workspace import IsolatedWorktree
 
@@ -35,7 +35,10 @@ def branch_name(issue: Any, *, today: Optional[dt.date] = None, attempt: Optiona
     day = (today or dt.datetime.now(dt.timezone.utc).date()).strftime("%Y%m%d")
     ref = re.sub(r"[^a-z0-9]+", "", str(issue.reference).lower())[:12] or "manual"
     token = re.sub(r"[^a-z0-9]+", "", (attempt or os.getenv("GITHUB_RUN_ID") or secrets.token_hex(3)).lower())[:12]
-    return f"ai/self-upgrade-{ref}-{issue.slug()[:30].strip('-')}-{day}-{token}"
+    name = f"ai/self-upgrade-{ref}-{issue.slug()[:30].strip('-')}-{day}-{token}"
+    if not is_pipeline_branch(name):  # agent-repair-pr.yml re-checks only the branches it recognises
+        raise ValueError(f"not a self-upgrade pipeline branch name: {name!r}")
+    return name
 
 
 def pr_body(issue: Any, proposal: dict[str, Any], evidence: dict[str, Any]) -> str:

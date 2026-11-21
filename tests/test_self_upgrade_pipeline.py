@@ -10,10 +10,12 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from omnidesk_agent.self_upgrade.pipeline import DiffPolicy, GitHubPublisher, ScriptedModelClient, UpgradeIssue, check_branch, propose, verify
 from omnidesk_agent.self_upgrade.pipeline import cli
 from omnidesk_agent.self_upgrade.pipeline.proposer import extract_diff
+from omnidesk_agent.self_upgrade.pipeline.publisher import is_pipeline_branch
 
 BUGGY = "def clamp(value, low, high):\n    return max(low, value)\n"
 TEST = (
@@ -225,3 +227,34 @@ def test_branch_names_are_unique_per_attempt_and_name_the_issue():
     check_branch(first)
     other = UpgradeIssue(title=ISSUE.title, body="b", source="github_issue", reference="#2")
     assert cli.branch_name(other, attempt="111") != first
+
+
+def test_every_pipeline_branch_is_rechecked_and_no_human_branch_is():
+    # agent-repair-pr.yml re-checks paths and tests only on pipeline branches. A
+    # prefix match also caught the human PR that builds the pipeline
+    # (ai/self-upgrade-pipeline-20261121); a miss would let a pipeline PR skip
+    # the re-check, so branch_name() refuses to produce a name the check misses.
+    issues = [
+        ISSUE,
+        UpgradeIssue(title="Fix 20261121 parser!!", body="b", source="github_issue", reference="#12345678901234"),
+        UpgradeIssue(title="日本語のみ", body="b", source="repair_request", reference="repair-9f8e7d6c5b4a3210"),
+        UpgradeIssue(title="x" * 200, body="b", source="manual"),
+    ]
+    for issue in issues:
+        for attempt in ("111", "a" * 40, None):
+            assert is_pipeline_branch(cli.branch_name(issue, attempt=attempt))
+    for human in ("ai/self-upgrade-pipeline-20261121", "ai/self-upgrade-gate-fix-20261121",
+                  "ai/learning-artifact-lifecycle-20261121", "ai/self-upgrade-1-fix-20261121-"):
+        assert not is_pipeline_branch(human)
+    with pytest.raises(ValueError):
+        cli.branch_name(ISSUE, attempt="!!!")
+
+
+def test_the_repair_workflow_gates_its_rechecks_on_the_exact_branch_format():
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "agent-repair-pr.yml"
+    steps = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["repair-policy"]["steps"]
+    origin = next(step for step in steps if step.get("id") == "origin")
+    assert "is_pipeline_branch" in origin["run"]
+    rechecks = [step for step in steps if "RESTRICTED_PATTERNS" in step.get("run", "") or "self-upgrade-targeted-tests" in step.get("run", "")]
+    assert len(rechecks) == 2
+    assert all(step.get("if") == "steps.origin.outputs.pipeline == 'true'" for step in rechecks)

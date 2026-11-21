@@ -40,8 +40,21 @@ jobs:
         run: python scripts/check_external_ga_evidence.py . --audit-only
       - name: Focused repair-loop tests
         run: python -m pytest tests/test_ga_1_11_openclaw_codex_alignment.py
+      - name: Is this a PR the self-upgrade pipeline opened?
+        id: origin
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          python - <<'PY'
+          import os
+          from omnidesk_agent.self_upgrade.pipeline.publisher import is_pipeline_branch
+          pipeline = is_pipeline_branch(os.environ["HEAD_REF"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"pipeline={str(pipeline).lower()}\n")
+          print("pipeline branch: re-checking" if pipeline else "not a pipeline branch: normal review only")
+          PY
       - name: Self-upgrade PRs stay inside the diff policy
-        if: startsWith(github.head_ref, 'ai/self-upgrade-')
+        if: steps.origin.outputs.pipeline == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
@@ -57,7 +70,7 @@ jobs:
           print(f"{len(changed)} changed files, none restricted")
           PY
       - name: Re-run the tests the pipeline named, independently
-        if: startsWith(github.head_ref, 'ai/self-upgrade-')
+        if: steps.origin.outputs.pipeline == 'true'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |

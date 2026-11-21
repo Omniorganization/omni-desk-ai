@@ -19,6 +19,9 @@ from typing import Any, Callable, Optional
 
 API = "https://api.github.com"
 BRANCH_RE = re.compile(r"^ai/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$")
+# Exactly the names cli.branch_name() produces. agent-repair-pr.yml re-checks the
+# PRs on these branches; a branch named the AGENTS.md way (ai/<topic>-<yyyymmdd>) is not one.
+PIPELINE_BRANCH_RE = re.compile(r"^ai/self-upgrade-[a-z0-9]{1,12}-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{8}-[a-z0-9]{1,12}$")
 REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 Transport = Callable[[str, str, Optional[dict[str, Any]], dict[str, str]], dict[str, Any]]
 
@@ -110,3 +113,7 @@ class GitHubPublisher:
 def check_branch(branch: str) -> None:
     if not BRANCH_RE.match(branch) or len(branch) > 100 or ".." in branch or branch.endswith((".lock", "/", ".")):
         raise PermissionError(f"the pipeline may only write ai/* branches: {branch!r}")
+
+
+def is_pipeline_branch(branch: str) -> bool:
+    return bool(PIPELINE_BRANCH_RE.match(branch))

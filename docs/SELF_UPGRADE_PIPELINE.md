@@ -52,9 +52,11 @@ tests. The client has no merge, delete or update-`main` call, rejects any
 branch that is not a plain `ai/...` name (`ai/x:main`, `refs/heads/...`,
 `+...` are refused) and only talks to `api.github.com`.
 
-**review**: `agent-repair-pr.yml` independently re-checks every
-`ai/self-upgrade-*` PR: the changed files against the same restricted paths,
-and the targeted tests listed in the PR body. All required checks, a
+**review**: `agent-repair-pr.yml` independently re-checks every PR whose
+branch has the pipeline's exact name format (`is_pipeline_branch`; a human
+branch named `ai/<topic>-<yyyymmdd>` is not one, and the pipeline refuses to
+publish a name the check would not recognise): the changed files against the
+same restricted paths, and the targeted tests listed in the PR body. All required checks, a
 code-owner approval and the merge queue still apply.
 
 ## Credential design (needs owner approval before any token is wired)
