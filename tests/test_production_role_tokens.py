@@ -33,6 +33,7 @@ def _env(**overrides: str) -> dict[str, str]:
         "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         "OMNIDESK_APPSYNC_SECRET_PEPPER": "p" * 40,
+        "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "p" * 40,
     }
     env.update(overrides)
     return env

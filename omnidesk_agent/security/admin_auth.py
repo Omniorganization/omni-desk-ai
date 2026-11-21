@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import json
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain, AuditIntegrityError
 from omnidesk_agent.security.break_glass import has_required_approvals
 
 
@@ -57,6 +56,7 @@ class AdminAuth:
         audit_log: Optional[Path] = None,
         break_glass_store: Any | None = None,
         break_glass_enabled: bool = False,
+        audit_key_env: str = DEFAULT_KEY_ENV,
     ):
         self.admin_token_env = admin_token_env
         self.role_token_envs = {
@@ -77,10 +77,19 @@ class AdminAuth:
         self.audit_log = Path(audit_log).expanduser() if audit_log else None
         self.break_glass_store = break_glass_store
         self.break_glass_enabled = bool(break_glass_enabled)
+        # Keyed hash chain, like the security audit log (audit_chain.AuditChain).
+        self.audit_chain = AuditChain(self.audit_log, key_env=audit_key_env) if self.audit_log else None
         if self.audit_log:
             self.audit_log.parent.mkdir(parents=True, exist_ok=True)
 
     def verify_headers(self, headers: Any, client_host: Optional[str] = None, required_role: str = "viewer", path: str = "") -> AdminAuthDecision:
+        try:
+            return self._verify_headers(headers, client_host, required_role, path)
+        except AuditIntegrityError as exc:
+            # Fail closed: an admin request that cannot be audited is refused.
+            return AdminAuthDecision(False, f"admin audit log unavailable: {exc}", actor="unknown", role="unknown")
+
+    def _verify_headers(self, headers: Any, client_host: Optional[str], required_role: str, path: str) -> AdminAuthDecision:
         legacy = os.getenv(self.legacy_secret_env, "") if self.legacy_secret_env else ""
         client_host = client_host or "unknown"
 
@@ -205,18 +214,9 @@ class AdminAuth:
         )
 
     def _audit_break_glass_use(self, session_id: str, actor: str, required_role: str, path: str) -> None:
-        if not self.audit_log:
+        if self.audit_chain is None:
             return
-        event = {
-            "ts": time.time(),
-            "event": "break_glass.use",
-            "session_id": session_id,
-            "actor": actor,
-            "required_role": required_role,
-            "path": path,
-        }
-        with self.audit_log.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        self.audit_chain.append("break_glass.use", {"session_id": session_id, "actor": actor, "required_role": required_role, "path": path})
 
     def _configured_role_tokens(self) -> list[tuple[str, str, str]]:
         tokens: list[tuple[str, str, str]] = []
@@ -238,18 +238,17 @@ class AdminAuth:
         return AdminAuthDecision(ok, reason, actor=actor, role=role)
 
     def _audit(self, decision: AdminAuthDecision, client_host: str, required_role: str, path: str) -> None:
-        if not self.audit_log:
+        if self.audit_chain is None:
             return
-        event = {
-            "ts": time.time(),
-            "event": "admin_auth",
-            "ok": decision.ok,
-            "reason": decision.reason,
-            "actor": decision.actor,
-            "role": decision.role,
-            "required_role": required_role,
-            "client_host": client_host,
-            "path": path,
-        }
-        with self.audit_log.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        self.audit_chain.append(
+            "admin_auth",
+            {
+                "ok": decision.ok,
+                "reason": decision.reason,
+                "actor": decision.actor,
+                "role": decision.role,
+                "required_role": required_role,
+                "client_host": client_host,
+                "path": path,
+            },
+        )

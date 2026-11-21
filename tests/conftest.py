@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from omnidesk_agent.appsync.store import AppSyncStore
@@ -44,6 +46,19 @@ def _inject_local_appsync_for_production_route_policy_tests(
             "omnidesk_agent.appsync.chat_routes.create_appsync_store",
         ):
             monkeypatch.setattr(target, create_test_store)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _audit_chain_key(monkeypatch):
+    """Production refuses to run without the audit chain key from the secret store.
+
+    Tests that simulate production by setting OMNIDESK_ENV get a fixed test key,
+    like a real deployment. Tests of the missing-key and local-key paths delete it.
+    """
+
+    if not os.environ.get("OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY"):
+        monkeypatch.setenv("OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY", "test-audit-chain-key-" + "k" * 32)
     yield
 
 

@@ -50,6 +50,7 @@ def test_production_security_boundaries_reject_individual_downgrades(section, fi
         "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
         "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
+        "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
     }
     assert validate_production_config(cfg, env)["ok"]
     if section == "channels.chrome":
@@ -91,6 +92,7 @@ def test_require_production_guards_env_is_production_signal():
             "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
+            "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
         },
     )
 
@@ -137,6 +139,7 @@ def test_production_config_accepts_hardened_minimal_runtime():
             "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
+            "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
         },
     )
 
@@ -291,6 +294,7 @@ def test_production_config_rejects_gmail_compose_without_human_approval():
             "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
+            "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
             "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY": "x" * 40,
         },
     )
@@ -395,6 +399,7 @@ def test_production_config_requires_channel_allowlists_and_narrow_ui_bridge():
             "OMNIDESK_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_POSTGRES_DSN": "postgresql://user:pass@db/omnidesk",
             "OMNIDESK_APPSYNC_SECRET_PEPPER": "x" * 40,
+            "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY": "x" * 40,
             "TELEGRAM_BOT_TOKEN": "x" * 40,
             "TELEGRAM_WEBHOOK_SECRET": "x" * 40,
         },

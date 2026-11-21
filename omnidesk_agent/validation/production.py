@@ -291,8 +291,10 @@ def _validate_emergency_access_policy(cfg: AppConfig, env: Mapping[str, str], is
     required_dual = set(getattr(cfg.permissions, "require_dual_approval_for_risks", []))
     if "critical" not in required_dual:
         issues.append("permissions.require_dual_approval_for_risks must include critical in production")
+    # Keys the audit hash chain and signs checkpoints; production never uses the
+    # local development key file (security/audit_chain.py).
+    _require_env(env, cfg.permissions.audit_checkpoint_hmac_key_env, "audit checkpoint HMAC key", issues, min_length=STRONG_SECRET_MIN_LENGTH)
     if getattr(cfg.permissions, "break_glass_enabled", False):
-        _require_env(env, cfg.permissions.audit_checkpoint_hmac_key_env, "audit checkpoint HMAC key", issues, min_length=STRONG_SECRET_MIN_LENGTH)
         if cfg.permissions.approval_mode == "auto_policy":
             issues.append("break-glass cannot be used with permissions.approval_mode=auto_policy in production")
 

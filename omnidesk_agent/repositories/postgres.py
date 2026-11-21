@@ -249,8 +249,8 @@ class PostgresRepositoryFactory:
             dual_approval_store=dual_approval_store,
         )
 
-    def break_glass_store(self, *, audit_log):
-        return self._runtime_state().break_glass_store(audit_log=audit_log)
+    def break_glass_store(self, *, audit_log, audit_key_env: str = "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY"):
+        return self._runtime_state().break_glass_store(audit_log=audit_log, audit_key_env=audit_key_env)
 
     def webhook_security(self):
         return self._runtime_state().webhook_security()
