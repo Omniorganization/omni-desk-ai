@@ -59,6 +59,10 @@ class OfflineRecords(Protocol):
     """What the conflict rules need from a backend, for one actor."""
 
     actor: str
+    # Errors that are not about the operation (a lock or statement timeout, a
+    # deadlock, a lost connection). They abort the whole upload, so it is retried
+    # or sent again; counted as a rejected operation, it would be lost.
+    aborting_errors: tuple[type[BaseException], ...]
 
     def organization(self) -> str: ...
 
@@ -190,6 +194,8 @@ def apply_operations(
         opened: list[dict[str, Any]] = []
         try:
             status = records.guarded(lambda: handler(records, payload, device_id, policy, operation_id, opened))
+        except records.aborting_errors:
+            raise
         except Exception:
             results.append({**entry, "status": "rejected", "reason": "invalid_operation"})
             continue
@@ -436,6 +442,8 @@ def resolve_record_conflict(records: OfflineRecords, conflict: SyncConflictRecor
 
 
 class _JsonRecords:
+    aborting_errors: tuple[type[BaseException], ...] = ()
+
     def __init__(self, store: AppSyncStore, actor: str) -> None:
         self.store = store
         self.actor = actor or "unknown"
@@ -507,8 +515,11 @@ class _SqlRecords:
     """The same rules as statements in the receiving transaction."""
 
     def __init__(self, store: Any, tx: Any, actor: str) -> None:
+        from psycopg import OperationalError  # type: ignore
+
         from omnidesk_agent.appsync.migrated_postgres_store import CONVERSATIONS, MESSAGES, SYNC_CONFLICTS, TASKS
 
+        self.aborting_errors: tuple[type[BaseException], ...] = (OperationalError,)
         self.store, self.tx, self.actor = store, tx, actor or "unknown"
         self._tables = {"conversation": CONVERSATIONS, "message": MESSAGES, "task": TASKS}
         self._conflicts = SYNC_CONFLICTS
