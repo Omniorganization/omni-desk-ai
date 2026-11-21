@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import uuid
 
-import psycopg
 import pytest
 
 from omnidesk_agent.appsync.postgres_migrations import LATEST_SCHEMA_VERSION, MIGRATIONS, apply_appsync_migrations, appsync_schema_status
@@ -20,6 +19,9 @@ def test_schema_status_reports_the_namespace_migrations() -> None:
     dsn = os.getenv("OMNIDESK_TEST_POSTGRES_DSN", "").strip()
     if not dsn:
         pytest.skip("OMNIDESK_TEST_POSTGRES_DSN is not configured")
+    # Only after the skip: the release, staging and promotion gates install only
+    # requirements.dev.lock, which has no psycopg.
+    psycopg = pytest.importorskip("psycopg")
     from omnidesk_agent.appsync.migrated_postgres_store import MigratedMultiInstancePostgresAppSyncStore
 
     namespace = f"schema_status_{uuid.uuid4().hex}"
