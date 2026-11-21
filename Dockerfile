@@ -12,6 +12,16 @@ RUN python -m pip install --no-cache-dir --require-hashes -r requirements.bootst
     && python -m pip install --no-cache-dir --require-hashes -r requirements.dev.lock \
     && python -m build --wheel --no-isolation
 
+# The wheel that goes into the image. Release builds replace this stage with
+# the verified, signed release wheel:
+#   docker build --build-context wheel=<dir with the release .whl> \
+#     --build-arg OMNIDESK_ARTIFACT_SHA256=<its sha256> .
+# so the image runs exactly the artifact the deploy gates verify, and /health
+# reports that artifact's sha256. Without the override it is built from source
+# and the identity stays "unknown", which no identity check will accept.
+FROM scratch AS wheel
+COPY --from=builder /build/dist/ /
+
 FROM ${PYTHON_BASE_IMAGE} AS runtime
 ARG OMNIDESK_VERSION=1.12.7+root-monorepo-production-ga-candidate
 ARG OMNIDESK_BUILD_SHA=unknown
@@ -34,9 +44,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     OMNIDESK_CONFIG=/data/config.production.yaml
 WORKDIR /app
 COPY requirements.bootstrap.lock requirements.runtime.lock requirements.enterprise.lock /tmp/
-COPY --from=builder /build/dist/*.whl /tmp/
+COPY --from=wheel /*.whl /tmp/
 # The runtime does not install packages. Remove bootstrap/install tooling after
 # installation so stale vendored metadata from the base image is not shipped.
+RUN set -e; wheels="$(find /tmp -maxdepth 1 -name '*.whl')"; \
+    test "$(printf '%s\n' "$wheels" | grep -c .)" -eq 1; \
+    if [ "$OMNIDESK_ARTIFACT_SHA256" != "unknown" ]; then \
+      echo "$OMNIDESK_ARTIFACT_SHA256  $wheels" | sha256sum -c -; \
+    fi
 RUN apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \

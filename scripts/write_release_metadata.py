@@ -32,7 +32,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--image-digest', default=os.getenv('OMNIDESK_IMAGE_DIGEST') or '')
     parser.add_argument('--image-ref', default=os.getenv('OMNIDESK_IMAGE_REF') or '')
     parser.add_argument('--output', default='release_metadata.json')
+    # server-staging-only releases (release.yml server-release) carry no native
+    # apps and never went through the Real GA gate; promote-production refuses them.
+    parser.add_argument('--release-scope', choices=('full', 'server-staging-only'), default='full')
+    parser.add_argument('--sandbox-runner-image-ref', default='')
+    parser.add_argument('--sandbox-runner-image-digest', default='')
     args = parser.parse_args(argv)
+    if bool(args.sandbox_runner_image_ref) != bool(args.sandbox_runner_image_digest):
+        print('--sandbox-runner-image-ref and --sandbox-runner-image-digest go together', file=sys.stderr)
+        return 2
+    if args.release_scope == 'server-staging-only' and not args.sandbox_runner_image_digest:
+        print('a server release must record the sandbox-runner image it ships', file=sys.stderr)
+        return 2
 
     dist = Path(args.dist_dir)
     wheels = sorted(dist.glob('*.whl'))
@@ -60,12 +71,15 @@ def main(argv: list[str] | None = None) -> int:
             'ref': args.image_ref,
             'digest': args.image_digest,
         },
+        'release_scope': args.release_scope,
         'integrity': {
             'checksums_manifest': 'checksums.txt',
             'signature_manifest': 'release_signatures.json',
             'note': 'checksums.txt covers release_metadata.json; release_signatures.json signs checksums.txt and all release artifacts.',
         },
     }
+    if args.sandbox_runner_image_digest:
+        metadata['sandbox_runner_image'] = {'ref': args.sandbox_runner_image_ref, 'digest': args.sandbox_runner_image_digest}
     output = dist / args.output
     output.write_text(json.dumps(metadata, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     print(f'wrote {output}')

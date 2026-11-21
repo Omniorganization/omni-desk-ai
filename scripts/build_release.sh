@@ -91,11 +91,17 @@ sbom = {
 
 PY_RELEASE_META
 
-if [[ -z "${OMNIDESK_IMAGE_DIGEST:-}" ]]; then
-  echo "OMNIDESK_IMAGE_DIGEST is required; release workflow must build/push the image and export the registry digest before metadata generation" >&2
-  exit 3
+if [[ "${OMNIDESK_RELEASE_DEFER_METADATA:-0}" == "1" ]]; then
+  # The server-release job builds this wheel once, then builds and pushes the
+  # images FROM it, and only then knows the digests it writes into the metadata.
+  echo "Release metadata deferred until the images built from this wheel are pushed" >&2
+else
+  if [[ -z "${OMNIDESK_IMAGE_DIGEST:-}" ]]; then
+    echo "OMNIDESK_IMAGE_DIGEST is required; release workflow must build/push the image and export the registry digest before metadata generation" >&2
+    exit 3
+  fi
+  python scripts/write_release_metadata.py dist --build-sha "${GITHUB_SHA:-${OMNIDESK_BUILD_SHA:-unknown}}" --image-ref "${OMNIDESK_IMAGE_REF:-}" --image-digest "${OMNIDESK_IMAGE_DIGEST}"
 fi
-python scripts/write_release_metadata.py dist --build-sha "${GITHUB_SHA:-${OMNIDESK_BUILD_SHA:-unknown}}" --image-ref "${OMNIDESK_IMAGE_REF:-}" --image-digest "${OMNIDESK_IMAGE_DIGEST}"
 
 if [[ "${OMNIDESK_RELEASE_SMOKE:-1}" == "1" ]]; then
   bash scripts/release_smoke_locked.sh

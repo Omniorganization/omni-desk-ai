@@ -94,6 +94,16 @@ jobs:
             echo "OMNIDESK_IMAGE_REF=$(python scripts/read_release_metadata.py dist image.ref)"
           } >> "$GITHUB_ENV"
 
+      - name: Refuse server/staging-only releases
+        run: |
+          set -euo pipefail
+          # The server-release job ships no native apps and never ran the Real GA /
+          # Customer GA gate; only the full release (build job) may reach production.
+          scope="$(python scripts/read_release_metadata.py dist release_scope 2>/dev/null || echo full)"
+          if [[ "$scope" != "full" ]]; then
+            echo "release_scope is $scope: server/staging-only releases cannot be promoted to production" >&2
+            exit 1
+          fi
       - name: Install Cosign
         run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
       - name: Verify release container image signature and attestations
