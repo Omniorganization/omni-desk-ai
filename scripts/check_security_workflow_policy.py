@@ -45,6 +45,8 @@ ATTACK_SURFACE_WORKFLOW_SNIPPETS = [
     "tests/test_admin_auth.py",
     "tests/test_webhook_forced_signatures.py",
     "tests/test_device_signed_requests.py",
+    "tests/test_sandbox_escape_negative.py",
+    "OMNIDESK_REQUIRE_CONTAINER_TESTS: \"1\"",
     "tests/test_agent_run_abuse_limits.py",
     "tests/test_files_path_escape_strict.py",
     "tests/test_browser_security.py",

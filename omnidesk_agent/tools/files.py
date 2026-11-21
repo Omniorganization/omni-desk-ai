@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, bound_content, proposal, permission_guarded
+from omnidesk_agent.sandbox.isolation import is_runtime_state
+from omnidesk_agent.tools.base import PolicyRefusal, ToolContext, bound_content, permission_guarded, proposal, record_access
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
 
 
@@ -41,22 +42,33 @@ class FilesTool:
         try:
             candidate.relative_to(self.root)
         except ValueError as exc:
-            raise PermissionError(f"path escapes workspace: {rel}") from exc
+            raise PolicyRefusal(f"path escapes workspace: {rel}", rule="path_escape") from exc
         return candidate
 
-    def _writable_path(self, rel: str) -> Path:
+    def _content_path(self, rel: str) -> Path:
+        """A workspace path whose content the agent may read or write."""
         path = self._safe_path(rel)
+        # OmniDesk's own state in the workspace root (runs, approvals, memory, audit files; the
+        # sandbox hides the same entries): an agent that could read them would see other runs
+        # and actors, one that could write them could approve itself. `path` is resolved, as
+        # is_runtime_state requires; it folds case and spelling variants itself.
+        if is_runtime_state(path.relative_to(self.root)):
+            raise PolicyRefusal(f"OmniDesk runtime state is not accessible to the agent: {rel}", rule="runtime_state")
+        return path
+
+    def _writable_path(self, rel: str) -> Path:
+        path = self._content_path(rel)
         # Allowlisted git commands run in this same root. Repository config,
         # hooks and nested .git dirs/files decide what git executes (fsmonitor,
         # diff/filter drivers, sshCommand, ...), so the agent must never write them.
         if any(part.lower() == ".git" for part in path.relative_to(self.root).parts):
-            raise PermissionError(f"writes to git metadata are not allowed: {rel}")
+            raise PolicyRefusal(f"writes to git metadata are not allowed: {rel}", rule="git_metadata_write")
         return path
 
     @permission_guarded
     async def call(self, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if action == "read_text":
-            path = self._safe_path(str(args["path"]))
+            path = self._content_path(str(args["path"]))
             ctx.permissions.verify(proposal("files", "read_text", {"path": str(path)}, "medium", "读取工作区文件", ctx))
             text = path.read_text(encoding="utf-8")
             if len(text) > 20000:
@@ -65,7 +77,7 @@ class FilesTool:
 
         if action == "write_text":
             if not self.allow_write:
-                raise PermissionError("File writes are disabled by capability policy")
+                raise PolicyRefusal("File writes are disabled by capability policy", rule="capability_disabled")
             path = self._writable_path(str(args["path"]))
             text = str(args.get("text", ""))
             expected = str(args.get("expected_result") or f"Write {path.name}")
@@ -81,6 +93,8 @@ class FilesTool:
 
         if action == "list":
             path = self._safe_path(str(args.get("path", ".")))
+            # Listing is ungated (names only, low risk) but audited; no audit, no listing.
+            record_access(ctx, proposal("files", "list", {"path": str(path)}, "low", "列出工作区目录", ctx))
             items = [{"name": p.name, "is_dir": p.is_dir(), "size": p.stat().st_size if p.is_file() else None} for p in path.iterdir()]
             return ToolResult(True, data={"items": items, "path": str(path)}, summary=f"listed {len(items)} items")
 

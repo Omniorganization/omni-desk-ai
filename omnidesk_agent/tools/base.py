@@ -31,6 +31,17 @@ class _DryRun(Exception):
     pass
 
 
+class PolicyRefusal(PermissionError):
+    """A tool refused a request by its own policy, before any approval: `rule` names the check."""
+
+    def __init__(self, message: str, *, rule: str):
+        super().__init__(message)
+        self.rule = rule
+
+
+_AUDITED = "_omnidesk_permission_audited"
+
+
 class _ExecutionPermissions(PermissionManager):
     """Call-local adapter: a returned denial must stop the protected operation."""
 
@@ -41,16 +52,50 @@ class _ExecutionPermissions(PermissionManager):
         return getattr(self._delegate, name)
 
     def verify(self, action_proposal: Any) -> PermissionDecision:
-        decision = self._delegate.verify(action_proposal)
+        try:
+            decision = self._delegate.verify(action_proposal)
+        except PermissionError as exc:
+            # The permission manager audited this denial itself.
+            setattr(exc, _AUDITED, True)
+            raise
         if getattr(decision, "mode", None) == "dry_run":
             raise _DryRun()
         if getattr(decision, "allowed", False) is not True:
-            raise PermissionError("Permission policy did not authorize execution")
+            refused = PermissionError("Permission policy did not authorize execution")
+            setattr(refused, _AUDITED, True)
+            raise refused
         return decision
+
+
+def record_access(ctx: ToolContext, action_proposal: ActionProposal) -> None:
+    """Audit an action that runs without an approval gate (files.list).
+
+    The permission manager raises when its audit log cannot be written; the
+    action must then not run.
+    """
+    record = getattr(ctx.permissions, "record_access", None)
+    if callable(record):
+        try:
+            record(action_proposal)
+        except PermissionError as exc:
+            setattr(exc, _AUDITED, True)  # the audit itself failed; nothing more to record
+            raise
+
+
+def _audit_policy_refusal(tool: str, action: str, args: dict[str, Any], ctx: ToolContext, exc: PermissionError) -> None:
+    record = getattr(ctx.permissions, "record_policy_block", None)
+    if not callable(record):
+        return
+    rule = str(getattr(exc, "rule", "") or "tool_policy")
+    record(proposal(tool, action, dict(args or {}), "low", "refused by tool policy", ctx), rule=rule, reason=str(exc)[:500])
 
 
 def permission_guarded(call: Callable[..., Awaitable[ToolResult]]) -> Callable[..., Awaitable[ToolResult]]:
     """Enforce decisions on direct calls as well as calls through the registry.
+
+    A PermissionError that did not come from the permission manager is a refusal
+    by the tool's own policy (a path outside the workspace, a disabled
+    capability, ...); it is audited before it propagates.
 
     Do not mutate the shared PermissionManager or ToolContext: concurrent tool
     calls must not inherit a different call's execution wrapper.
@@ -62,6 +107,10 @@ def permission_guarded(call: Callable[..., Awaitable[ToolResult]]) -> Callable[.
             return await call(self, action, args, guarded_ctx)
         except _DryRun:
             return ToolResult(False, data={"dry_run": True}, summary=f"dry-run {self.name}.{action}; no execution authorized")
+        except PermissionError as exc:
+            if not getattr(exc, _AUDITED, False):
+                _audit_policy_refusal(self.name, action, args, guarded_ctx, exc)
+            raise
 
     return guarded
 

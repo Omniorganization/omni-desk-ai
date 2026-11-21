@@ -195,7 +195,7 @@ def test_shell_argv_backend_runs_workspace_code_without_gateway_secrets(tmp_path
 
     # The docker CLI keeps its own environment (the container gets none of it).
     asyncio.run(ShellTool(tmp_path, cfg, SandboxConfig(backend="docker")).call("run", {"argv": ["pytest", "-q"]}, _ctx()))
-    assert spawns.calls[1][0][0] == "docker" and spawns.calls[1][1]["env"] is None
+    assert spawns.calls[1][0][0] == "docker" and spawns.calls[1][1].get("env") is None
 
 
 def test_upgrade_runner_argv_backend_runs_without_gateway_secrets(tmp_path, monkeypatch):

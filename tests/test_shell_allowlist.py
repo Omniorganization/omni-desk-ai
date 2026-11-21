@@ -74,7 +74,7 @@ def test_shell_upgrade_git_add_and_push_are_scoped(monkeypatch, tmp_path: Path):
     assert not tool._allowed(["git", "add", "."])
     assert not tool._allowed(["git", "add", "*.py"])
     assert not tool._allowed(["git", "add", ":(top)safe.py"])
-    assert tool._allowed(["git", "push", "origin", "HEAD:codex/source-fix"])
+    assert tool._allowed(["git", "push", "origin", "HEAD:refs/heads/ai/source-fix"])
     assert not tool._allowed(["git", "push", "upstream", "main"])
     assert not tool._allowed(["git", "push", "origin", "main"])
 
@@ -96,7 +96,7 @@ def test_shell_upgrade_git_add_and_push_are_scoped(monkeypatch, tmp_path: Path):
         ["git", "ls-tree", "-r", "HEAD"],
         ["git", "add", "safe.py"],
         ["git", "commit", "-m", "fix: tighten shell policy"],
-        ["git", "push", "origin", "HEAD:codex/source-fix"],
+        ["git", "push", "origin", "HEAD:refs/heads/ai/source-fix"],
         ["git", "pull"],
         ["git", "pull", "--rebase", "origin", "main"],
         ["pip", "install", "-e", "."],
