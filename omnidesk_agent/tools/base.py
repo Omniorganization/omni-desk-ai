@@ -18,6 +18,8 @@ class ToolContext:
     run_id: Optional[str] = None
     plan_id: Optional[str] = None
     step_index: Optional[int] = None
+    # Set by the agent loop for steps a model proposed; copied into proposals.
+    provenance: Optional[dict[str, Any]] = None
 
 
 class Tool(Protocol):
@@ -115,4 +117,6 @@ def proposal(tool: str, action: str, args: dict[str, Any], risk: RiskLevel, reas
         plan_id=ctx.plan_id,
         step_index=ctx.step_index,
         scope_hash=_scope_hash(tool, action, args, ctx),
+        # getattr: context-like objects from before this field may lack it.
+        provenance=dict(getattr(ctx, "provenance", None) or {}) or None,
     )
