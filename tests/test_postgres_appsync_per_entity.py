@@ -653,3 +653,67 @@ def test_an_upload_that_hits_a_lock_timeout_fails_instead_of_reporting_skips() -
     finally:
         holder.close()
         store.close()
+
+
+def test_bootstrap_never_misses_a_write_that_commits_while_it_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each read in bootstrap sees its own READ COMMITTED snapshot. A device that
+    another replica registers in between must be in the returned state or after the
+    returned cursor; otherwise a client resuming from that cursor never learns of it."""
+    from omnidesk_agent.appsync.migrated_postgres_store import DEVICES
+
+    with _replicas("bootstrap_race") as (store, other):
+        store.ensure_user(OWNER)
+        original = store._select
+        late: list[str] = []
+
+        def select(tx: Any, table: Any, *args: Any, **kwargs: Any) -> Any:
+            rows = original(tx, table, *args, **kwargs)
+            if table is DEVICES and not late:
+                late.append(other.register_device(actor=OWNER, device_id="dev_late", device_type="mobile", name="late", platform="ios")["device_id"])
+            return rows
+
+        monkeypatch.setattr(store, "_select", select)
+        snapshot = store.bootstrap(OWNER, role="owner")
+        monkeypatch.undo()
+        in_state = any(device["device_id"] == "dev_late" for device in snapshot["devices"])
+        after_cursor = any(
+            event["event_type"] == "device.registered" and event["payload"].get("device_id") == "dev_late"
+            for event in store.sync_since(snapshot["sync_seq"], actor=OWNER)["events"]
+        )
+        assert late == ["dev_late"] and (in_state or after_cursor)
+
+
+def test_a_racing_replica_never_marks_an_operation_with_an_open_conflict_synced() -> None:
+    """Two replicas record remote events with the same idempotency key. The one that
+    finds a mismatching payload opens a conflict first; the one with the matching
+    payload must then not mark the operation synced over that open conflict."""
+    namespace = _namespace("outbox_race")
+    psycopg = pytest.importorskip("psycopg")
+    store = _store(namespace)
+    holder = psycopg.connect(_dsn())
+    watcher = psycopg.connect(_dsn(), autocommit=True)
+    try:
+        store.ensure_user(OWNER)
+        payload = {"conversation_id": "conv_queued", "title": "queued offline"}
+        operation_id = store.enqueue_local_operation(actor=OWNER, operation_type="conversation.created", payload=payload, idempotency_key="key-1")["operation_id"]
+        # The other replica has recorded its conflict on this operation, not yet committed.
+        with holder.cursor() as cur:
+            cur.execute("UPDATE omnidesk_appsync_local_outbox SET status = 'conflict' WHERE namespace = %s AND operation_id = %s", (namespace, operation_id))
+        matching = [{"event_id": "remote-match", "seq": 7, "idempotency_key": "key-1", "event_type": "conversation.created", "payload": dict(payload)}]
+        worker = threading.Thread(target=lambda: store.record_remote_events(actor=OWNER, events=matching, remote="primary"))
+        worker.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            row = watcher.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").fetchone()
+            if row and int(row[0]) > 0:
+                break
+            time.sleep(0.05)
+        holder.commit()
+        worker.join(10)
+        assert not worker.is_alive()
+        row = watcher.execute("SELECT status FROM omnidesk_appsync_local_outbox WHERE namespace = %s AND operation_id = %s", (namespace, operation_id)).fetchone()
+        assert row is not None and row[0] == "conflict"
+    finally:
+        holder.close()
+        watcher.close()
+        store.close()
