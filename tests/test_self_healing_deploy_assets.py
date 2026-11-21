@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +26,7 @@ UNIT = ROOT / "deploy" / "systemd" / "omnidesk-watchdog.service"
 GATEWAY_UNIT = ROOT / "deploy" / "systemd" / "omnidesk-agent.production.service"
 PLAN = ROOT / "deploy" / "self-healing" / "drill-plan.bad-config.json"
 MAKE_BAD = ROOT / "deploy" / "self-healing" / "make_bad_config.py"
+DEPLOY_HELPER = ROOT / "deploy" / "systemd" / "omnidesk-deploy-artifact"
 
 
 def _exec_start(unit: Path) -> list[str]:
@@ -41,8 +44,9 @@ def test_watchdog_protects_the_config_and_unit_the_gateway_actually_uses() -> No
     assert argv[1:3] == ["-m", "omnidesk_agent.self_healing.watchdog"]
     gateway = _exec_start(GATEWAY_UNIT)
     assert _flag_values(argv, "--config") == _flag_values(gateway, "--config")
-    assert _flag_values(argv, "--restart-cmd") == ["/usr/bin/systemctl", "restart", "omnidesk-agent.service"]
-    assert GATEWAY_UNIT.name.replace(".production", "") == "omnidesk-agent.service"
+    # The deploy helper installs and restarts the gateway under this name.
+    (service,) = re.findall(r'SERVICE="\$\{OMNIDESK_SYSTEMD_SERVICE:-([A-Za-z0-9_.@-]+)\}"', DEPLOY_HELPER.read_text(encoding="utf-8"))
+    assert _flag_values(argv, "--restart-cmd") == ["/usr/bin/systemctl", "restart", f"{service}.service"]
     (health,) = _flag_values(argv, "--health-url")
     assert health.startswith("http://127.0.0.1:") and health.endswith("/health")
     assert _flag_values(argv, "--state-dir") == ["/var/lib/omnidesk-watchdog"]
@@ -59,6 +63,36 @@ def test_drill_plan_watches_the_watchdog_log_and_injects_without_a_shell() -> No
         assert isinstance(step, list) and step and all(isinstance(arg, str) for arg in step)
         assert Path(step[0]).is_absolute() and Path(step[0]).name not in {"sh", "bash", "dash", "zsh"}
     assert injection["inject"][-1] == ["/usr/bin/systemctl", "restart", "omnidesk-agent.service"]
+    # The drill breaks exactly the file the gateway reads, and writes it in place.
+    config = _flag_values(_exec_start(GATEWAY_UNIT), "--config")[0]
+    generate, write, _restart = injection["inject"]
+    assert generate[1].endswith("/make_bad_config.py") and generate[2] == config
+    assert write == ["/usr/bin/cp", generate[3], config]
+    assert "gateway.allow_local_admin_without_token must be false in production" in injection["description"]
+
+
+def test_the_bad_config_is_written_in_place_so_the_gateway_can_still_read_it(tmp_path: Path) -> None:
+    """Why: the drill runs as root. A writer that replaces the file (install, mv,
+    or cp with -p/-a/--remove-destination) leaves a new root-owned file that the
+    gateway (User=omnidesk, no capabilities) cannot read. The gateway then dies on
+    PermissionError before the production validator runs, and the drill still
+    passes while describing a validator refusal. cp into the existing file keeps
+    its inode, so owner and mode stay as the host provisioned them."""
+    (injection,) = json.loads(PLAN.read_text(encoding="utf-8"))["injections"]
+    write = injection["inject"][1]
+    live, bad = tmp_path / "config.yaml", tmp_path / "bad-config.yaml"
+    live.write_text("gateway: {}\n", encoding="utf-8")
+    live.chmod(0o640)
+    bad.write_text("gateway:\n  allow_local_admin_without_token: true\n", encoding="utf-8")
+    bad.chmod(0o600)
+    before = live.stat()
+    # The plan's binary on the Linux host; the same tool elsewhere (macOS: /bin/cp).
+    binary = write[0] if Path(write[0]).exists() else shutil.which(Path(write[0]).name)
+    assert binary, write[0]
+    subprocess.run([binary, str(bad), str(live)], check=True)
+    after = live.stat()
+    assert (after.st_ino, after.st_uid, after.st_gid, after.st_mode) == (before.st_ino, before.st_uid, before.st_gid, before.st_mode)
+    assert live.read_text(encoding="utf-8") == bad.read_text(encoding="utf-8")
 
 
 def test_the_injected_config_is_one_the_production_gateway_refuses_to_boot_with(tmp_path: Path) -> None:
