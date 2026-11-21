@@ -38,6 +38,38 @@ class DualApprovalDecision:
     reason: str
 
 
+ERASED_ACTOR = "[erased]"
+_REQUESTER_KEYS = ("created_by", "proposer", "actor", "requested_by")
+# What an erased subject's request keeps: structure, never free text. A
+# planner's "reason" or "summary" can describe the person's task.
+STRUCTURAL_REQUEST_KEYS = frozenset({
+    *_REQUESTER_KEYS,
+    "tool", "action", "risk", "source", "channel", "run_id", "plan_id", "step_id",
+    "approval_id", "scope_hash", "requires_dual_approval", "provenance", "args",
+})
+
+
+def anonymized_request(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
+    """A request made by an erased subject: requester fields become [erased]; only structure stays.
+
+    Argument values are withheld (their digests and lengths stay), and every
+    field outside STRUCTURAL_REQUEST_KEYS is dropped; ``fields_withheld`` names them.
+    """
+    out = {k: v for k, v in proposal.items() if k in STRUCTURAL_REQUEST_KEYS}
+    dropped = sorted(k for k in proposal if k not in STRUCTURAL_REQUEST_KEYS and k not in {"args_withheld", "fields_withheld"})
+    for key in _REQUESTER_KEYS:
+        if out.get(key) == actor:
+            out[key] = ERASED_ACTOR
+    args = out.get("args")
+    if isinstance(args, dict):
+        kept = {k: v for k, v in args.items() if str(k).endswith(("_sha256", "_length"))}
+        out["args"] = kept
+        out["args_withheld"] = len(kept) != len(args)
+    if dropped:
+        out["fields_withheld"] = dropped
+    return out
+
+
 class DualApprovalStore:
     """Two-person approval gate for critical production actions.
 
@@ -101,6 +133,40 @@ class DualApprovalStore:
                 (first, second, now, approval_id),
             )
         return self.status(approval_id)
+
+    def approvals_by(self, actor: str) -> list[str]:
+        """Ids of the dual approvals in which ``actor`` is the first or second approver."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute("SELECT approval_id FROM dual_approvals WHERE first_approver = ? OR second_approver = ?", (actor, actor)).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: withdraw the actor's lone first approval, anonymize them elsewhere.
+
+        A pending dual approval whose only approver is the actor loses that
+        approval, so it needs two fresh approvers and nobody can count twice. In
+        a ready one the actor becomes ``[erased]``, and so do requester fields
+        and argument content of a request they made. Returns the rows changed.
+        """
+        changed = 0
+        with connect_sqlite(self.db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            rows = con.execute("SELECT approval_id, first_approver, second_approver, proposal_json FROM dual_approvals").fetchall()
+            for approval_id, first, second, proposal_json in rows:
+                proposal = json.loads(proposal_json or "{}")
+                if first == actor and not second:
+                    new_first, new_second = None, None
+                else:
+                    new_first = ERASED_ACTOR if first == actor else first
+                    new_second = ERASED_ACTOR if second == actor else second
+                new_proposal = anonymized_request(proposal, actor) if actor in proposal_requesters(proposal) else proposal
+                if (new_first, new_second, new_proposal) != (first, second, proposal):
+                    con.execute(
+                        "UPDATE dual_approvals SET first_approver=?, second_approver=?, proposal_json=?, updated_at=? WHERE approval_id=?",
+                        (new_first, new_second, json.dumps(new_proposal, ensure_ascii=False), time.time(), approval_id),
+                    )
+                    changed += 1
+        return changed
 
     def status(self, approval_id: str) -> DualApprovalDecision:
         with connect_sqlite(self.db_path) as con:

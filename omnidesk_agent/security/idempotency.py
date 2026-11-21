@@ -6,7 +6,14 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from omnidesk_agent.privacy.data_subject import IncompleteSubjectRequest
 from omnidesk_agent.storage.sqlite import connect_sqlite
+
+# _PostgresJsonState.list returns at most this many rows.
+_LIST_CAP = 1000
+ERASED_ACTOR = "[erased]"
+# What a replay of an erased record returns: the request was handled, and its answer is gone.
+ERASED_RESPONSE = {"ok": True, "erased": True}
 
 
 class SideEffectIdempotencyConflict(ValueError):
@@ -127,6 +134,28 @@ class SQLiteSideEffectIdempotencyStore:
     def close(self) -> None:
         return None
 
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Data-subject export: the actor's replay records (which request, when, and its stored answer)."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute("SELECT route, resource_id, request_key, status, created_at, expires_at, response_json FROM side_effect_idempotency WHERE actor = ? OR instr(COALESCE(response_json, ''), ?) > 0", (actor, json.dumps(actor))).fetchall()
+        keys = ["route", "resource_id", "request_key", "status", "created_at", "expires_at"]
+        return [{**dict(zip(keys, row)), "response": json.loads(row[-1]) if row[-1] else None} for row in rows]
+
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: tombstone every replay record by or about the actor.
+
+        Records the actor made, and other people's records whose stored answer
+        names them (an approve response holds the requester's proposal), keep
+        their key but lose their answer: a replay then gets the tombstone and the
+        side effect never runs twice. Returns the records changed.
+        """
+        with connect_sqlite(self.db_path) as con:
+            cur = con.execute(
+                "UPDATE side_effect_idempotency SET actor = ?, response_json = ? WHERE actor = ? OR instr(COALESCE(response_json, ''), ?) > 0",
+                (ERASED_ACTOR, json.dumps(ERASED_RESPONSE), actor, json.dumps(actor)),
+            )
+            return int(cur.rowcount or 0)
+
 
 class JsonStateSideEffectIdempotencyStore:
     namespace = "side_effect_idempotency"
@@ -198,3 +227,34 @@ class JsonStateSideEffectIdempotencyStore:
 
     def close(self) -> None:
         return None
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Data-subject export: the actor's replay records (which request, when, and its stored answer)."""
+        return [{k: row.get(k) for k in ("route", "resource_id", "request_key", "status", "created_at", "expires_at", "response")} for row in self._subject_rows(actor)]
+
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: tombstone every replay record by or about the actor.
+
+        Records the actor made, and other people's records whose stored answer
+        names them (an approve response holds the requester's proposal), keep
+        their key but lose their answer: a replay then gets the tombstone and the
+        side effect never runs twice. Returns the records changed.
+        """
+        erased = 0
+        for row in self._subject_rows(actor):
+            scope = str(row.get("scope_key") or "")
+            if scope:
+                self.state.put(self.namespace, scope, {**row, "actor": ERASED_ACTOR, "response": dict(ERASED_RESPONSE)})
+                erased += 1
+        return erased
+
+    def _subject_rows(self, actor: str) -> list[dict[str, Any]]:
+        """Every row of the actor; refuses rather than silently missing rows past a listing cap."""
+        if hasattr(self.state, "values"):
+            rows = list(self.state.values(self.namespace))
+        else:
+            rows = self.state.list(self.namespace, limit=_LIST_CAP)
+            if len(rows) >= _LIST_CAP:
+                raise IncompleteSubjectRequest(f"{self.namespace}: the state lists at most {_LIST_CAP} rows; needs values()")
+        quoted = json.dumps(actor)
+        return [row for row in rows if row.get("actor") == actor or quoted in json.dumps(row.get("response"), default=str)]
