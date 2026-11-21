@@ -7,6 +7,7 @@ real runtime (rule planner, remote approval, SQLite stores in a temp workspace).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -19,7 +20,7 @@ import yaml
 from omnidesk_agent import cli
 from omnidesk_agent.config import AppConfig, load_config
 from omnidesk_agent.onboarding import build_model_doctor_checks
-from omnidesk_agent.validation.models import validate_models
+from omnidesk_agent.validation.models import REQUIRED_TASKS, live_connectivity_test, validate_models
 
 
 @pytest.fixture
@@ -167,6 +168,69 @@ def test_validate_models_reports_missing_keys_instead_of_ok(home, monkeypatch):
     with_key = validate_models(runtime())
     assert with_key["ok"] is True and with_key["tasks"]["code"]["missing_credentials"] == []
     assert with_key["credentials"]["planner"] == "present" and with_key["credentials"]["local"] == "not_required"
+
+
+def _model_runtime(cfg: AppConfig, home: Path) -> SimpleNamespace:
+    from omnidesk_agent.core.token_budget import TokenBudgetManager
+    from omnidesk_agent.models.router import ModelRouter
+
+    return SimpleNamespace(model_router=ModelRouter(cfg.models, TokenBudgetManager(home / "tb.sqlite3")))
+
+
+def _only_profile(name: str, profile: dict) -> AppConfig:
+    return AppConfig.model_validate({"models": {"default": name, "profiles": {name: profile}, "routing": {task: name for task in REQUIRED_TASKS}}})
+
+
+KEYLESS = {
+    "bedrock_claude": {"provider": "bedrock", "model": "anthropic.claude-3-5-sonnet-20240620-v1:0", "region": "us-east-1"},
+    "my_ollama": {"provider": "ollama", "model": "qwen2.5-coder:7b"},
+}
+
+
+@pytest.mark.parametrize("name", sorted(KEYLESS))
+def test_a_provider_that_reads_no_key_variable_is_not_reported_missing(home, monkeypatch, name):
+    # Bedrock (the AWS credential chain) and Ollama never read api_key_env, which defaults to
+    # OPENAI_API_KEY. Trusting it made validate-models exit 1 and doctor block with
+    # "Set OPENAI_API_KEY" for a working profile.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = _only_profile(name, KEYLESS[name])
+    assert cfg.models.profiles[name].api_key_env == "OPENAI_API_KEY"  # inherited, never read
+
+    report = validate_models(_model_runtime(cfg, home))
+    assert report["ok"] is True and report["credentials"] == {name: "not_required"}
+    assert {c.status for c in build_model_doctor_checks(cfg, required=True)} == {"warn"}  # usable, not contacted
+
+
+def test_the_live_check_calls_a_bedrock_profile_instead_of_skipping_it(home, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    runtime = _model_runtime(_only_profile("bedrock_claude", KEYLESS["bedrock_claude"]), home)
+    called = []
+
+    async def complete(request):
+        called.append(request.metadata["profile"])
+        return SimpleNamespace(text="ok", provider="bedrock", model="m")
+
+    monkeypatch.setattr(runtime.model_router, "complete", complete)
+    live = asyncio.run(live_connectivity_test(runtime))
+    assert called == ["bedrock_claude"] and live["results"]["bedrock_claude"]["ok"] is True
+
+
+def test_the_example_bedrock_profile_names_no_key_variable():
+    from omnidesk_agent.config import ModelProfileConfig
+
+    example = yaml.safe_load((Path(__file__).resolve().parents[1] / "examples" / "config.yaml").read_text(encoding="utf-8"))
+    profile = ModelProfileConfig.model_validate(example["models"]["profiles"]["bedrock_claude"])
+    assert profile.provider == "bedrock" and profile.api_key_env is None
+
+
+def test_a_chatgpt_plan_profile_is_checked_for_the_token_it_reads(home, monkeypatch):
+    monkeypatch.delenv("CHATGPT_PLAN_ACCESS_TOKEN", raising=False)
+    cfg = _only_profile("plan", {"provider": "chatgpt_plan", "model": "gpt-6.1-sol", "api_key_env": None})
+    checks = build_model_doctor_checks(cfg, required=True)
+    assert {c.status for c in checks} == {"blocked"} and all("CHATGPT_PLAN_ACCESS_TOKEN" in (c.fix or "") for c in checks)
+
+    monkeypatch.setenv("CHATGPT_PLAN_ACCESS_TOKEN", "set-for-test")
+    assert {c.status for c in build_model_doctor_checks(cfg, required=True)} == {"pass"}
 
 
 def test_doctor_reports_the_model_key_state(home, monkeypatch):

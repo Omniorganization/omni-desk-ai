@@ -9,6 +9,21 @@ from omnidesk_agent.models.providers import PROVIDER_CLASSES
 REQUIRED_TASKS = ["planner", "tool_plan", "chat", "code", "vision", "private", "summarize", "upgrade"]
 
 
+# Providers that read no key variable: Bedrock uses the AWS credential chain, Ollama a local
+# server, the CLI providers their own login. The OPENAI_API_KEY a profile inherits from the
+# defaults says nothing about whether they can run.
+_KEYLESS_PROVIDERS = frozenset({"bedrock", "ollama", "codex_cli", "claude_code_cli"})
+
+
+def key_variable(provider: Optional[str], api_key_env: Optional[str]) -> Optional[str]:
+    """The environment variable `provider` reads its key from, or None when it reads none."""
+    if provider in _KEYLESS_PROVIDERS:
+        return None
+    if provider == "chatgpt_plan":
+        return api_key_env or "CHATGPT_PLAN_ACCESS_TOKEN"  # what ChatGPTPlanProvider.access_token reads
+    return api_key_env
+
+
 def env_var_status(variable: Optional[str]) -> str:
     """'present' or 'missing' for the environment variable a profile names; 'not_required' when it names none.
 
@@ -18,6 +33,11 @@ def env_var_status(variable: Optional[str]) -> str:
     if not variable:
         return "not_required"
     return "present" if os.getenv(variable) else "missing"
+
+
+def _provider_key_variable(provider) -> Optional[str]:
+    settings = getattr(provider, "settings", None)
+    return key_variable(getattr(settings, "provider", None), getattr(settings, "api_key_env", None))
 
 
 def route_profiles(routing: dict, task: str, default: str = "") -> list[str]:
@@ -32,7 +52,7 @@ def validate_models(runtime) -> dict:
     router = runtime.model_router
     profiles = router.providers
     # Presence of each profile's key variable, not the key: no value is read into the report.
-    env_presence = {name: env_var_status(getattr(getattr(provider, "settings", None), "api_key_env", None)) for name, provider in profiles.items()}
+    env_presence = {name: env_var_status(_provider_key_variable(provider)) for name, provider in profiles.items()}
     coverage = {}
     tasks = {}
     for task in REQUIRED_TASKS:
@@ -72,7 +92,7 @@ async def live_connectivity_test(runtime, profiles: Optional[list[str]] = None) 
         if not provider:
             results[profile] = {"ok": False, "error": "profile not loaded"}
             continue
-        key_env = getattr(provider.settings, "api_key_env", None)
+        key_env = _provider_key_variable(provider)
         if key_env and not os.getenv(key_env):
             results[profile] = {"ok": False, "skipped": True, "reason": f"missing env {key_env}"}
             continue
