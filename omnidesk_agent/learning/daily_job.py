@@ -24,11 +24,13 @@ from omnidesk_agent.self_learning.knowledge_builder import KnowledgeBuilder
 from omnidesk_agent.self_learning.observability.audit import LearningAuditLog
 from omnidesk_agent.self_learning.observability.schema import LearningEvent
 from omnidesk_agent.self_learning.policy import SelfLearningBoundaryPolicy
+from omnidesk_agent.self_learning.policy_registry import PolicyRegistry
 from omnidesk_agent.self_learning.proposal_generator import ControlledProposalGenerator
 from omnidesk_agent.self_learning.rollback import RollbackManager
 from omnidesk_agent.self_learning.schemas import ControlledLearningReport
 from omnidesk_agent.self_learning.replay import ReplayReportBuilder
 from omnidesk_agent.self_learning.skill_learning import SkillLearningPipeline
+from omnidesk_agent.self_learning.skill_learning.structural_miner import StructuralSkillMiner
 from omnidesk_agent.self_learning.store import SelfLearningStore
 from omnidesk_agent.self_learning.validator import SandboxValidator
 
@@ -65,6 +67,13 @@ class DailySelfLearningJob:
             runner=SandboxRunner(self.workspace_root.expanduser().resolve(), sandbox_cfg=sandbox_cfg),
         )
         self.rollback_manager = RollbackManager(self.self_learning_store)
+        self.policy_registry = PolicyRegistry(
+            self.workspace_root / "learning_policy.sqlite3",
+            approvals=self.human_approval_gate,
+            audit=self.audit,
+            boundary=self.learning_policy,
+        )
+        self.skill_miner = StructuralSkillMiner()
 
     def run(self, days: int = 7) -> dict[str, Any]:
         growth_plan = GrowthPlan.load(self.workspace_root / "growth_plan.json")
@@ -118,6 +127,8 @@ class DailySelfLearningJob:
                 metadata={"status": candidate.get("status"), "source_experience_id": candidate.get("source_experience_id")},
             ))
 
+        learned_artifacts = self._register_learned_skills(days=days)
+
         proposals = self.growth_planner.propose(growth_plan=growth_plan, failure_summary=repeated or failure_counts, metrics=metrics)
         for signal in drift_signals:
             proposals.append({
@@ -166,6 +177,7 @@ class DailySelfLearningJob:
             "replay_report": replay_report,
             "drift_signals": drift_signals,
             "skill_candidates": skill_candidates,
+            "learned_artifacts": learned_artifacts,
             "proposals": safe_proposals,
             "persisted_upgrade_proposals": persisted_proposals,
             "controlled_self_learning": controlled_self_learning,
@@ -176,6 +188,24 @@ class DailySelfLearningJob:
         out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report["report_path"] = str(out_path)
         return report
+
+    def _register_learned_skills(self, *, days: int) -> dict[str, Any]:
+        """Register structural skills as registry candidates.
+
+        Registration only: a candidate reaches the planner after a passing
+        evaluation, a stored human approval and an explicit apply.
+        """
+        experiences = self.memory.list_structured(days=days, limit=500, statuses=["validated", "trusted"])
+        registered: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for skill in self.skill_miner.mine(experiences, limit=10):
+            try:
+                artifact = self.policy_registry.register_candidate("skill", skill.name, skill.body, source=skill.source())
+            except ValueError as exc:
+                errors.append({"name": skill.name, "error": str(exc)})
+                continue
+            registered.append({"artifact_id": artifact.artifact_id, "name": artifact.name, "status": artifact.status, "blockers": artifact.blockers})
+        return {"registered": registered, "errors": errors, "applied_by_this_job": 0, "active_policy_version": self.policy_registry.active_version()}
 
     def _run_controlled_self_learning(self, *, days: int) -> dict[str, Any]:
         source_records = self.data_collector.collect(memory=self.memory, audit_log=self.audit, days=days, limit=200)
