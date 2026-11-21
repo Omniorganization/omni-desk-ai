@@ -82,12 +82,18 @@ spec:
               value: {{ .Values.storage.chatRequestLeaseSeconds | quote }}
             - name: OMNIDESK_APPSYNC_POSTGRES_POOL_SIZE
               value: {{ .Values.storage.postgresPoolSize | quote }}
+            # The kubelet pulls exactly this digest, so /health reports the
+            # image that is really running (post-deploy identity check).
+            - name: OMNIDESK_IMAGE_DIGEST
+              value: {{ .Values.image.digest | quote }}
           volumeMounts:
             - name: config
               mountPath: /etc/omnidesk
               readOnly: true
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
           lifecycle:
             preStop:
               exec:
@@ -112,6 +118,7 @@ spec:
               port: http
             periodSeconds: 20
             timeoutSeconds: 3
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /ready
@@ -122,6 +129,9 @@ spec:
         - name: config
           configMap:
             name: omnidesk-config
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
         - name: data
 {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:

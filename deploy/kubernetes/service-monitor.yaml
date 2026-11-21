@@ -11,3 +11,10 @@ spec:
     - port: http
       path: /admin/metrics
       interval: 30s
+      # /admin/metrics requires an AdminAuth viewer token (external-secret-metrics.yaml);
+      # without it every scrape is a 403.
+      authorization:
+        type: Bearer
+        credentials:
+          name: omnidesk-metrics-viewer
+          key: token

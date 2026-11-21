@@ -1,0 +1,284 @@
+name: Kubernetes Ready (kind)
+
+# Proves the shipped Helm chart reaches Ready on a real cluster: a kind node
+# with NetworkPolicy enforcement, the namespace's restricted Pod Security
+# profile and default-deny policy, a real Postgres, and a real rootless sandbox
+# runner on a dedicated "runner host" (the CI VM). Substring contract checks
+# cannot catch a missing secret, a blocked DNS lookup or a failing hook.
+
+on:
+  pull_request:
+    paths:
+      - deploy/kubernetes/**
+      - Dockerfile
+      - requirements.runtime.lock
+      - requirements.enterprise.lock
+      - omnidesk_agent/server.py
+      - omnidesk_agent/validation/**
+      - omnidesk_agent/appsync/migrate.py
+      - omnidesk_agent/sandbox/runner_server.py
+      - scripts/check_helm_secret_contract.py
+      - .github/workflows/kubernetes-ready.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/kubernetes/**
+      - Dockerfile
+      - omnidesk_agent/server.py
+      - omnidesk_agent/validation/**
+      - scripts/check_helm_secret_contract.py
+      - .github/workflows/kubernetes-ready.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  KIND_VERSION: v0.33.0
+  HELM_VERSION: v3.22.1
+  KUBECONFORM_VERSION: v0.8.0
+  KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+  REGISTRY_IMAGE: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+  POSTGRES_IMAGE: postgres:16.16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
+  SANDBOX_IMAGE: python:3.11-slim@sha256:174bec68e0451bffabbb08c7d5d21c6b253f772d81d52b9558af97bb3159b761
+  CGO_ENABLED: "0"
+
+jobs:
+  render:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - name: Install pinned helm and kubeconform from the Go module proxy
+        run: |
+          go install "helm.sh/helm/v3/cmd/helm@${HELM_VERSION}"
+          go install "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Lint, render and schema-validate the chart and manifests
+        run: |
+          set -euo pipefail
+          mkdir -p reports/kubernetes
+          chart=deploy/kubernetes/helm/omnidesk
+          values=(--set image.digest=sha256:1b4e28ba2fa111d2883f0016d3cca4271b4e28ba2fa111d2883f0016d3cca427 --set 'sandboxRunner.external.addresses={10.20.30.40}')
+          helm lint "$chart" "${values[@]}"
+          helm template omnidesk "$chart" -n omnidesk "${values[@]}" > reports/kubernetes/rendered.yaml
+          kubeconform -strict -summary -kubernetes-version 1.35.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            reports/kubernetes/rendered.yaml deploy/kubernetes/*.yaml
+          # Fail closed: without runner addresses the runner egress rule would allow every IP.
+          if helm template omnidesk "$chart" -n omnidesk --set image.digest=sha256:1b4e28ba2fa111d2883f0016d3cca4271b4e28ba2fa111d2883f0016d3cca427 > /dev/null 2>&1; then
+            echo "chart rendered without sandboxRunner.external.addresses" >&2; exit 1
+          fi
+      - name: The rendered chart boots with exactly the ExternalSecret keys
+        run: python scripts/check_helm_secret_contract.py --rendered reports/kubernetes/rendered.yaml --report reports/kubernetes/secret-contract.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: kubernetes-render
+          path: reports/kubernetes/
+          if-no-files-found: warn
+
+  kind-ready:
+    needs: render
+    # Rootless Podman for the runner host needs unprivileged user namespaces,
+    # which Ubuntu 24.04's AppArmor default restricts.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - name: Install locked dependencies, rootless Podman, kind and helm
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns
+          python -m pip install --require-hashes -r requirements.dev.lock
+          go install "sigs.k8s.io/kind@${KIND_VERSION}"
+          go install "helm.sh/helm/v3/cmd/helm@${HELM_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          mkdir -p reports/kubernetes
+      - name: Delegate resource controllers to the unprivileged runner-host user
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$(whoami)"
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '%s\n' '[Service]' 'Delegate=cpu memory pids' | sudo tee /etc/systemd/system/user@.service.d/omnidesk-ci.conf
+          sudo systemctl daemon-reload
+          sudo systemctl is-active --quiet "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - name: Create the kind cluster with a local registry
+        run: |
+          set -euo pipefail
+          docker run -d --restart=always -p 127.0.0.1:5001:5000 --name kind-registry "$REGISTRY_IMAGE"
+          kind create cluster --name omnidesk --image "$KIND_NODE_IMAGE" --config deploy/kubernetes/kind/kind-config.yaml --wait 180s
+          for node in $(kind get nodes --name omnidesk); do
+            docker exec "$node" mkdir -p /etc/containerd/certs.d/localhost:5001
+            printf '[host."http://kind-registry:5000"]\n' | docker exec -i "$node" cp /dev/stdin /etc/containerd/certs.d/localhost:5001/hosts.toml
+          done
+          docker network connect kind kind-registry
+          gateway="$(docker network inspect kind | python -c 'import json,sys,ipaddress; cfg=json.load(sys.stdin)[0]["IPAM"]["Config"]; print(next(c["Gateway"] for c in cfg if "Gateway" in c and ipaddress.ip_address(c["Gateway"]).version == 4))')"
+          echo "RUNNER_HOST_IP=$gateway" >> "$GITHUB_ENV"
+          echo "runner host address seen from the cluster: $gateway"
+      - name: Build the app image and push it to the cluster registry
+        run: |
+          set -euo pipefail
+          docker build --build-arg OMNIDESK_BUILD_SHA="$GITHUB_SHA" -t localhost:5001/omnidesk-agent:ci .
+          docker push localhost:5001/omnidesk-agent:ci
+          ref="$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5001/omnidesk-agent:ci)"
+          digest="${ref##*@}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "APP_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+      - name: Generate deployment secrets (the ExternalSecret's keys, fresh values)
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, secrets, yaml
+          from cryptography.fernet import Fernet
+          docs = [d for d in yaml.safe_load_all(open("deploy/kubernetes/external-secret.yaml")) if d]
+          keys = [item["secretKey"] for d in docs if d["metadata"]["name"] == "omnidesk-secrets" for item in d["spec"]["data"]]
+          password = secrets.token_urlsafe(24)
+          dsn = f"postgresql://omnidesk:{password}@postgres.omnidesk-data.svc.cluster.local:5432/omnidesk"
+          values = {}
+          for key in keys:
+              if key.endswith("_DSN"):
+                  values[key] = dsn
+              elif key == "OMNIDESK_MEMORY_ENCRYPTION_KEY":
+                  values[key] = Fernet.generate_key().decode()
+              else:
+                  values[key] = secrets.token_urlsafe(48)
+          root = os.environ["RUNNER_TEMP"]
+          with open(f"{root}/omnidesk-secrets.env", "w") as handle:
+              handle.writelines(f"{k}={v}\n" for k, v in values.items())
+          with open(f"{root}/postgres-password", "w") as handle:
+              handle.write(password)
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              for name in ("OMNIDESK_SANDBOX_RUNNER_TOKEN", "OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET", "OMNIDESK_ADMIN_TOKEN"):
+                  print(f"::add-mask::{values[name]}")
+                  env.write(f"{name}={values[name]}\n")
+          print("secret keys:", ", ".join(keys))
+          PY
+      - name: Start the sandbox runner on the runner host (rootless Podman)
+        run: |
+          set -euo pipefail
+          podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
+          podman pull "$SANDBOX_IMAGE"
+          mkdir -p "$RUNNER_TEMP/runner/workspaces"
+          OMNIDESK_ENV=production OMNIDESK_REQUIRE_PRODUCTION_GUARDS=true \
+          OMNIDESK_CONTAINER_RUNTIME=podman \
+          OMNIDESK_SANDBOX_RUNNER_HOST="$RUNNER_HOST_IP" OMNIDESK_SANDBOX_RUNNER_PORT=18890 \
+          OMNIDESK_SANDBOX_IMAGE="$SANDBOX_IMAGE" OMNIDESK_SANDBOX_IMAGE_ALLOWLIST="$SANDBOX_IMAGE" \
+          OMNIDESK_SANDBOX_REQUIRE_HMAC=1 OMNIDESK_SANDBOX_READY_SMOKE=0 OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS=0 \
+          OMNIDESK_SANDBOX_ALLOWED_WORKSPACE_ROOT="$RUNNER_TEMP/runner/workspaces" \
+          OMNIDESK_SANDBOX_NONCE_DB="$RUNNER_TEMP/runner/nonces.sqlite3" \
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            nohup systemd-run --user --scope --property=Delegate=yes python -m omnidesk_agent.sandbox.runner_server \
+            > reports/kubernetes/sandbox-runner.log 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS "http://$RUNNER_HOST_IP:18890/health" && break; sleep 1; done
+          curl -fsS "http://$RUNNER_HOST_IP:18890/ready"
+      - name: Deploy Postgres and the namespace guardrails
+        run: |
+          set -euo pipefail
+          sed "s|POSTGRES_IMAGE_PLACEHOLDER|$POSTGRES_IMAGE|" deploy/kubernetes/kind/postgres.yaml > "$RUNNER_TEMP/postgres.yaml"
+          kubectl create namespace omnidesk-data
+          kubectl -n omnidesk-data create secret generic postgres-auth --from-file=password="$RUNNER_TEMP/postgres-password"
+          kubectl apply -f "$RUNNER_TEMP/postgres.yaml"
+          # The production namespace: restricted Pod Security and default-deny traffic.
+          kubectl apply -f deploy/kubernetes/namespace.yaml
+          kubectl apply -f deploy/kubernetes/networkpolicy.yaml
+          kubectl -n omnidesk create secret generic omnidesk-secrets --from-env-file="$RUNNER_TEMP/omnidesk-secrets.env"
+          kubectl -n omnidesk-data rollout status deployment/postgres --timeout=180s
+      - name: helm install (runs the pre-install migration hook)
+        run: |
+          set -euo pipefail
+          helm install omnidesk deploy/kubernetes/helm/omnidesk -n omnidesk \
+            --set image.repository=localhost:5001/omnidesk-agent \
+            --set image.digest="$APP_IMAGE_DIGEST" \
+            --set "sandboxRunner.external.addresses={$RUNNER_HOST_IP}" \
+            --set config.publicBaseUrl=https://omnidesk-kind-ci.test \
+            --timeout 15m
+          kubectl -n omnidesk rollout status deployment/omnidesk-agent --timeout=600s
+      - name: Every gateway replica is Ready and the post-deploy smoke passes
+        run: |
+          set -euo pipefail
+          kubectl -n omnidesk get pods -o wide
+          ready="$(kubectl -n omnidesk get deployment omnidesk-agent -o jsonpath='{.status.readyReplicas}')"
+          test "$ready" = "3"
+          kubectl -n omnidesk port-forward svc/omnidesk-agent 18789:18789 > reports/kubernetes/port-forward.log 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:18789/health >/dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18789/ready
+          curl -fsS -H "authorization: Bearer $OMNIDESK_ADMIN_TOKEN" http://127.0.0.1:18789/admin/ready > reports/kubernetes/admin-ready.json
+          python -c "import json; c=json.load(open('reports/kubernetes/admin-ready.json'))['checks']; assert c['database'] is True and c['sandbox_runner'] is True and c['secrets'] is True, c"
+          OMNIDESK_SMOKE_ADMIN_TOKEN="$OMNIDESK_ADMIN_TOKEN" \
+          OMNIDESK_SMOKE_SANDBOX_TOKEN="$OMNIDESK_SANDBOX_RUNNER_TOKEN" \
+          OMNIDESK_SMOKE_SANDBOX_HMAC_SECRET="$OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET" \
+            python scripts/production_smoke_test.py --base-url http://127.0.0.1:18789 \
+              --sandbox-url "http://$RUNNER_HOST_IP:18890" --strict-sandbox \
+              --check-admin-metrics --check-admin-slo \
+              --expected-image-digest "$APP_IMAGE_DIGEST" > reports/kubernetes/smoke.json
+          cat reports/kubernetes/smoke.json
+      - name: NetworkPolicy allows DNS, data plane and runner, and nothing else
+        run: |
+          set -euo pipefail
+          pod="$(kubectl -n omnidesk get pods -l app.kubernetes.io/name=omnidesk-agent -o jsonpath='{.items[0].metadata.name}')"
+          kubectl -n omnidesk exec -i "$pod" -- python - "$RUNNER_HOST_IP" <<'PY' | tee reports/kubernetes/egress-probe.json
+          import json, socket, sys
+          def connect(host, port):
+              try:
+                  socket.create_connection((host, port), timeout=5).close()
+                  return True
+              except OSError:
+                  return False
+          result = {
+              "dns_resolves_postgres": bool(socket.getaddrinfo("postgres.omnidesk-data.svc.cluster.local", 5432)),
+              "postgres_reachable": connect("postgres.omnidesk-data.svc.cluster.local", 5432),
+              "runner_reachable": connect(sys.argv[1], 18890),
+              # Open endpoints the policy must refuse: the internet, and the cluster API.
+              "internet_https_blocked": not connect("1.1.1.1", 443),
+              "kubernetes_api_blocked": not connect("kubernetes.default.svc.cluster.local", 443),
+          }
+          print(json.dumps(result))
+          sys.exit(0 if all(result.values()) else 1)
+          PY
+      - name: helm upgrade re-runs the migration hook under the network policies
+        run: |
+          set -euo pipefail
+          helm upgrade omnidesk deploy/kubernetes/helm/omnidesk -n omnidesk --reuse-values --timeout 10m
+          kubectl -n omnidesk rollout restart deployment/omnidesk-agent
+          kubectl -n omnidesk rollout status deployment/omnidesk-agent --timeout=600s
+          helm -n omnidesk history omnidesk
+      - name: Collect cluster evidence
+        if: always()
+        run: |
+          set +e
+          kubectl get nodes -o wide > reports/kubernetes/nodes.txt
+          kubectl -n omnidesk get all,networkpolicy,endpointslice,pdb,hpa -o wide > reports/kubernetes/omnidesk-resources.txt
+          kubectl -n omnidesk get events --sort-by=.lastTimestamp > reports/kubernetes/events.txt
+          kubectl -n omnidesk describe pods > reports/kubernetes/pods-describe.txt
+          for pod in $(kubectl -n omnidesk get pods -o name); do kubectl -n omnidesk logs "$pod" --all-containers --tail=200 > "reports/kubernetes/$(basename "$pod").log"; done
+          {
+            echo "{"
+            echo "  \"workflow_run\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\","
+            echo "  \"commit\": \"$GITHUB_SHA\","
+            echo "  \"kind_node_image\": \"$KIND_NODE_IMAGE\","
+            echo "  \"app_image_digest\": \"$APP_IMAGE_DIGEST\","
+            echo "  \"customer_ga\": false"
+            echo "}"
+          } > reports/kubernetes/run.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: kubernetes-ready-evidence
+          path: reports/kubernetes/
+          if-no-files-found: error
