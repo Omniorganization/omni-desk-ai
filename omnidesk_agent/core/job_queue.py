@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.core.subject_records import erasure_transaction, json_object
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.storage.migrations import Migration, apply_migrations
 
@@ -329,3 +330,30 @@ class JobQueue:
             "last_error", "result_json",
         ]
         return dict(zip(keys, row))
+
+    # ------------------------------------------------------------------ data-subject requests
+
+    _SUBJECT_COLUMNS = "id, channel, status, retry_count, created_at, updated_at, last_error, payload_json, result_json"
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Every queued, running, finished or dead-lettered task message `actor` sent, with its result."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute(f"SELECT {self._SUBJECT_COLUMNS} FROM jobs ORDER BY created_at").fetchall()  # nosec B608
+        records = []
+        for row in rows:
+            message = json_object(row[7])
+            if str(message.get("sender_id") or "") == str(actor):
+                keys = ("id", "channel", "status", "retry_count", "created_at", "updated_at", "last_error")
+                records.append({**dict(zip(keys, row[:7])), "message": message, "result": json_object(row[8]) if row[8] else None})
+        return records
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete the jobs of messages `actor` sent; returns how many. A queued one then never runs.
+
+        A job a worker is running at this moment finishes; its run is the run
+        store's to erase.
+        """
+        with erasure_transaction(self.db_path) as con:
+            ids = [str(row[0]) for row in con.execute("SELECT id, payload_json FROM jobs").fetchall() if str(json_object(row[1]).get("sender_id") or "") == str(actor)]
+            con.executemany("DELETE FROM jobs WHERE id=?", [(job_id,) for job_id in ids])
+        return len(ids)
