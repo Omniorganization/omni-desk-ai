@@ -236,12 +236,35 @@ tests:
               instance: host:9100
               kind: postgres
             exp_annotations:
-              summary: The last verified OmniDesk backup is older than 26 hours
-              description: No backup has passed verification for 26 hours, so the recovery point objective (24h) is no longer met.
+              summary: The last verified OmniDesk backup is older than its recovery point objective
+              description: The daily PostgreSQL backup has not passed verification for 26 hours (RPO 24 hours), or the hourly SQLite backup for 2 hours (RPO 1 hour); the kind label says which.
               runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupstale
       - eval_time: 26h20m
         alertname: OmniDeskBackupVerifyFailure
         exp_alerts: []
+
+  - name: a missed hourly SQLite backup pages after 2 hours, not 26
+    interval: 1m
+    input_series:
+      # Last verified at t=0; the hourly timer then stops producing verified sets.
+      - series: 'omnidesk_backup_last_verify_success_timestamp_seconds{job="node",instance="host:9100",kind="sqlite"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 1h50m
+        alertname: OmniDeskBackupStale
+        exp_alerts: []
+      - eval_time: 2h20m
+        alertname: OmniDeskBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              instance: host:9100
+              kind: sqlite
+            exp_annotations:
+              summary: The last verified OmniDesk backup is older than its recovery point objective
+              description: The daily PostgreSQL backup has not passed verification for 26 hours (RPO 24 hours), or the hourly SQLite backup for 2 hours (RPO 1 hour); the kind label says which.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupstale
 
   - name: a failed backup verification pages
     interval: 1m

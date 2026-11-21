@@ -65,13 +65,17 @@ groups:
           description: No backup on this host has passed verify_backup.py yet, or it runs without --metrics-file, or node_exporter's textfile directory is not mounted.
           runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupmissing
       - alert: OmniDeskBackupStale
-        expr: time() - omnidesk_backup_last_verify_success_timestamp_seconds > 26 * 3600
+        # Each kind pages once it misses about one scheduled run: the PostgreSQL
+        # dump runs daily (RPO 24h), the SQLite backup hourly (RPO 1h). docs/SLO.md.
+        expr: >-
+          time() - omnidesk_backup_last_verify_success_timestamp_seconds{kind="postgres"} > 26 * 3600
+          or time() - omnidesk_backup_last_verify_success_timestamp_seconds{kind!="postgres"} > 2 * 3600
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: The last verified OmniDesk backup is older than 26 hours
-          description: No backup has passed verification for 26 hours, so the recovery point objective (24h) is no longer met.
+          summary: The last verified OmniDesk backup is older than its recovery point objective
+          description: The daily PostgreSQL backup has not passed verification for 26 hours (RPO 24 hours), or the hourly SQLite backup for 2 hours (RPO 1 hour); the kind label says which.
           runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupstale
       - alert: OmniDeskBackupVerifyFailure
         expr: increase(omnidesk_backup_verify_failure_total[24h]) > 0

@@ -160,9 +160,9 @@ journal, that `verify_backup.py` runs with `--metrics-file` pointing at
 
 ## OmniDeskBackupStale
 
-No backup has passed verification for 26 hours (the `kind` label says SQLite or
-Postgres), so the 24-hour recovery point objective is not met. Run the backup
-unit by hand and read its journal.
+A backup kind missed its schedule: PostgreSQL (daily, RPO 24 hours) has had no
+verified backup for 26 hours, or SQLite (hourly, RPO 1 hour) for 2 hours. The
+`kind` label says which. Run that backup unit by hand and read its journal.
 
 ## OmniDeskBackupVerifyFailure
 

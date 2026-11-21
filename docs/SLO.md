@@ -28,6 +28,21 @@ behaviour, and `docs/runbooks/ALERTS.md` lists the response for every alert.
 Error budget policy: when less than 25% of the 30-day availability budget is
 left, only fixes and rollbacks are promoted to production until the budget recovers.
 
+## Recovery objectives (RPO and RTO)
+
+Only numbers that the code or a drill backs are stated here.
+
+| Deployment | RPO (writes that can be lost) | RTO (time until it serves again) |
+| --- | --- | --- |
+| Single host, PostgreSQL | Up to 24 hours: one verified logical dump a day (`omnidesk-postgres-backup.service` and its timer, #255). `OmniDeskBackupStale` pages at 26 hours. | Not measured yet. The restore drill on the real host (final server phase) records it. |
+| Single host, SQLite stores | About 1 hour: `omnidesk-backup.timer` runs hourly, with up to 5 minutes of random delay. `OmniDeskBackupStale` pages at 2 hours. | Not measured yet, as above. |
+| Kubernetes | Set by the external Postgres operator or managed service, not by OmniDesk. Requirement on it: continuous WAL archiving with point-in-time recovery and an RPO of 5 minutes or less. | Requirement on the operator: the database restored within 30 minutes. The OmniDesk steps after that (deploy the matching release, re-apply logged erasures, smoke test) are not measured yet. |
+
+The operator shows its numbers in its own restore drill. Lowering the
+single-host RPO needs continuous WAL archiving (pgBackRest or wal-g) to storage
+off the host. That is an owner decision for the final server phase and may cost
+money; it is not built.
+
 ## Runtime ratio snapshot
 
 `GET /admin/slo` returns the current runtime SLO snapshot. The endpoint is protected by viewer-level AdminAuth.
