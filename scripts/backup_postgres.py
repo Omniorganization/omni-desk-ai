@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from omnidesk_agent.storage.backup_policy import retention_warning  # noqa: E402
 from omnidesk_agent.storage.postgres_backup import BackupError, create_backup, record_verification, resolve_targets, verify_backup_set  # noqa: E402
 
 
@@ -28,10 +29,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sign-manifest", action="store_true", help="HMAC-sign the manifest with --manifest-key-env.")
     parser.add_argument("--manifest-key-env", default="OMNIDESK_BACKUP_MANIFEST_KEY")
     parser.add_argument("--keep", type=int, default=0, help="Keep only the newest N backup sets (0 keeps all).")
-    parser.add_argument("--retention-days", type=float, default=0, help="Delete backup sets older than this (0 keeps all).")
+    parser.add_argument("--retention-days", type=float, default=None, help="Delete backup sets older than this. Without it every set is kept; a scheduled run must pass it (at most 35 days for personal data).")
     parser.add_argument("--no-verify", action="store_true", help="Skip verifying the new set (checksums, decryption, table of contents).")
     parser.add_argument("--metrics-file", type=Path, help="node-exporter textfile to record the verification result in.")
     args = parser.parse_args(argv)
+    warning = retention_warning(args.retention_days)
+    if warning:
+        print(warning, file=sys.stderr)
     try:
         targets = resolve_targets(args.database)
         encryption = os.getenv(args.key_env, "") if args.encrypt else None
@@ -44,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 2
     try:
-        manifest_path, manifest = create_backup(args.dest, targets=targets, encryption_secret=encryption, signing_secret=signing, keep=args.keep, retention_days=args.retention_days)
+        manifest_path, manifest = create_backup(args.dest, targets=targets, encryption_secret=encryption, signing_secret=signing, keep=args.keep, retention_days=args.retention_days or 0)
         verified = None
         if not args.no_verify:
             verified = verify_backup_set(manifest_path, encryption_secret=encryption, signing_secret=signing, require_signature=bool(signing))
