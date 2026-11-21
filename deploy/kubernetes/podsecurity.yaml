@@ -1,3 +1,6 @@
+# Restricted Pod Security for the OmniDesk namespace. ServiceAccounts are owned
+# by the Helm chart (templates/serviceaccount.yaml); defining them here too made
+# `helm install` fail on ownership metadata after applying this file.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,17 +9,3 @@ metadata:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: omnidesk-agent
-  namespace: omnidesk
-automountServiceAccountToken: false
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: omnidesk-sandbox-runner
-  namespace: omnidesk
-automountServiceAccountToken: false

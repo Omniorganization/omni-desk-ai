@@ -1,0 +1,40 @@
+# The gateway's readiness requires the sandbox runner (config.sandboxRunnerUrl,
+# default http://sandbox-runner:18890). The runner needs a rootless container
+# runtime and therefore runs on dedicated runner hosts outside the restricted
+# namespace; this selector-less Service and its EndpointSlice publish them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-runner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: omnidesk-sandbox-runner
+spec:
+  type: ClusterIP
+  ports:
+    - name: runner
+      protocol: TCP
+      port: {{ .Values.sandboxRunner.external.port }}
+      targetPort: {{ .Values.sandboxRunner.external.port }}
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: sandbox-runner-hosts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    kubernetes.io/service-name: sandbox-runner
+    endpointslice.kubernetes.io/managed-by: helm
+    app.kubernetes.io/name: omnidesk-sandbox-runner
+addressType: IPv4
+ports:
+  - name: runner
+    protocol: TCP
+    port: {{ .Values.sandboxRunner.external.port }}
+endpoints:
+{{- range (include "omnidesk.runnerAddresses" . | fromJsonArray) }}
+  - addresses:
+      - {{ . | quote }}
+    conditions:
+      ready: true
+{{- end }}

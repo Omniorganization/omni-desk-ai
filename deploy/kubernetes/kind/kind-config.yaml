@@ -1,0 +1,13 @@
+# CI-only cluster for .github/workflows/kubernetes-ready.yml.
+# One node labelled with a zone so the chart's zone topology spread
+# (whenUnsatisfiable: DoNotSchedule) can schedule; kindnet enforces NetworkPolicy.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+nodes:
+  - role: control-plane
+    labels:
+      topology.kubernetes.io/zone: ci-zone-a

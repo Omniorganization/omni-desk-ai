@@ -1,35 +1,13 @@
+# Namespace-wide default deny. The Helm chart's NetworkPolicies
+# (helm/omnidesk/templates/networkpolicy.yaml) then allow exactly: ingress to
+# the gateway from ingress-nginx and Prometheus; egress to cluster DNS, the
+# dedicated sandbox runner hosts, Postgres/OTLP in data-plane namespaces and
+# owner-approved HTTPS CIDRs; and DNS + Postgres for the migration hook.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: omnidesk-default-deny-and-runner-only
+  name: omnidesk-default-deny
   namespace: omnidesk
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: omnidesk-allow-api-and-private-runner
-  namespace: omnidesk
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: omnidesk-agent
-  policyTypes: [Ingress, Egress]
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
-      ports:
-        - protocol: TCP
-          port: 18789
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: omnidesk-sandbox-runner
-      ports:
-        - protocol: TCP
-          port: 18890

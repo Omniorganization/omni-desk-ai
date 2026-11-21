@@ -19,24 +19,94 @@ spec:
           podSelector:
             matchLabels:
 {{ toYaml .Values.networkPolicy.ingressPodLabel | indent 14 }}
+        - namespaceSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.metricsNamespaceLabel | indent 14 }}
       ports:
         - protocol: TCP
           port: 18789
   egress:
+    # Cluster DNS.
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+{{ toYaml .Values.networkPolicy.dnsNamespaceLabel | indent 14 }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.dnsPodLabel | indent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Dedicated sandbox runner hosts, and nothing else on the runner port.
+    - to:
+{{- range (include "omnidesk.runnerAddresses" . | fromJsonArray) }}
+        - ipBlock:
+            cidr: {{ printf "%s/32" . | quote }}
+{{- end }}
       ports:
         - protocol: TCP
-          port: 18890
+          port: {{ .Values.sandboxRunner.external.port }}
+    # Postgres and the OTLP collector.
     - to:
         - namespaceSelector:
             matchLabels:
-              omnidesk.io/network: data-plane
+{{ toYaml .Values.networkPolicy.dataPlaneNamespaceLabel | indent 14 }}
       ports:
         - protocol: TCP
           port: 5432
         - protocol: TCP
           port: 4318
+{{- if .Values.networkPolicy.httpsEgressCIDRs }}
+    # Model providers and channel APIs (owner-approved CIDRs only).
+    - to:
+{{- range .Values.networkPolicy.httpsEgressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+{{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+---
+# The migration hook runs before the release's other resources exist, so its
+# policy is a hook too: DNS and Postgres only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omnidesk-migrate
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: omnidesk-migrate
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.dnsNamespaceLabel | indent 14 }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.dnsPodLabel | indent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.dataPlaneNamespaceLabel | indent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
 {{- end }}
