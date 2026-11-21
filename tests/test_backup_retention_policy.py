@@ -5,8 +5,9 @@ the backups only when every set older than the erasure is purged, and the
 privacy policy promises that within 35 days. The backup scripts default to
 --retention-days 0, which keeps every set forever, and --keep counts sets
 rather than days, so every scheduled run must pass --retention-days between 1
-and 35. A schedule that dumps Postgres directly bypasses the scripts' purge,
-so it fails too.
+and 35 (the schedules use 30). A schedule that dumps Postgres directly
+bypasses the scripts' purge, so it fails too. Only invocations count: a line
+that names a script without passing it flags (a unit's Description=) is prose.
 """
 from __future__ import annotations
 
@@ -17,8 +18,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_RETENTION_DAYS = 35
-BACKUP_RUN = re.compile(r"\bbackup_(?:sqlite|postgres)\.py\b")
-RAW_DUMP = re.compile(r"\bpg_dump(?:all)?\b")
+# An invocation names the program and passes it at least one flag later on the line.
+BACKUP_RUN = re.compile(r"\bbackup_(?:sqlite|postgres)\.py\b(?=.*?[\s\"',\[]--[a-z])")
+RAW_DUMP = re.compile(r"\bpg_dump(?:all)?\b(?=.*?[\s\"',\[]--?[A-Za-z])")
 RETENTION = re.compile(r"--retention-days(?:=|[\s\"',]+)(-?\d+(?:\.\d+)?)")
 
 
@@ -82,6 +84,7 @@ def test_the_check_rejects_every_way_of_keeping_backups_too_long() -> None:
     assert violations("unit", "ExecStart=/opt/venv/bin/python backup_sqlite.py --dest /b --retention-days 35 a.sqlite3") == []
     assert violations("cronjob", 'args: ["backup_postgres.py", "--encrypt", "--retention-days", "30"]') == []
     assert violations("unit", "# backup_postgres.py runs nightly from the timer") == []
+    assert violations("unit", "Description=OmniDesk PostgreSQL backup (backup_postgres.py, pg_dump)") == []
     for bad in (
         "ExecStart=python backup_sqlite.py --dest /b a.sqlite3",  # script default 0: forever
         "python backup_postgres.py --keep 14",  # a count of sets, not an age
@@ -90,5 +93,6 @@ def test_the_check_rejects_every_way_of_keeping_backups_too_long() -> None:
         "python backup_postgres.py --retention-days=90",
         "python backup_postgres.py --encrypt \\\n  --retention-days 40",
         "pg_dump --format=custom --file /backups/omnidesk.dump",
+        "pg_dump -Fc -f /backups/omnidesk.dump",
     ):
         assert violations("schedule", bad), bad
