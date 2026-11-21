@@ -7,15 +7,18 @@ Usage: omnidesk-deploy-artifact --artifact PATH --sha256 SHA256 --expected-versi
 
 Fixed remote systemd deploy helper for OmniDesk artifacts. It copies the
 uploaded wheel into a root-only staging directory, verifies the copy, installs
-that copy into a dedicated virtualenv, writes runtime identity environment
-variables, restarts the systemd service, runs a local health check, and rolls
-back to the previous wheel on failure.
+that copy into a dedicated virtualenv, writes the release identity to its own
+environment file (never the secrets file), restarts the systemd service, waits
+for /health to report this release, and rolls back to the previous wheel AND
+the previous identity on failure.
 
 Environment:
   OMNIDESK_SYSTEMD_SERVICE        default: omnidesk-agent
   OMNIDESK_INSTALL_DIR            default: /opt/omnidesk
-  OMNIDESK_RUNTIME_ENV_FILE       default: /etc/omnidesk/runtime.env
+  OMNIDESK_RUNTIME_ENV_FILE       default: /etc/omnidesk/runtime.env (secrets; only read)
+  OMNIDESK_RELEASE_ENV_FILE       default: <dir of runtime.env>/release.env (identity)
   OMNIDESK_HEALTH_URL             default: http://127.0.0.1:18789/health
+  OMNIDESK_HEALTH_TIMEOUT_SECONDS default: 90
 USAGE
 }
 
@@ -44,7 +47,10 @@ INSTALL_DIR="${OMNIDESK_INSTALL_DIR:-/opt/omnidesk}"
 VENV_DIR="$INSTALL_DIR/venv"
 ARTIFACT_DIR="$INSTALL_DIR/artifacts"
 RUNTIME_ENV_FILE="${OMNIDESK_RUNTIME_ENV_FILE:-/etc/omnidesk/runtime.env}"
+RELEASE_ENV_FILE="${OMNIDESK_RELEASE_ENV_FILE:-$(dirname "$RUNTIME_ENV_FILE")/release.env}"
 HEALTH_URL="${OMNIDESK_HEALTH_URL:-http://127.0.0.1:18789/health}"
+HEALTH_TIMEOUT="${OMNIDESK_HEALTH_TIMEOUT_SECONDS:-90}"
+[[ "$HEALTH_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || { echo "OMNIDESK_HEALTH_TIMEOUT_SECONDS must be a number of seconds" >&2; exit 64; }
 
 if [[ -z "$ARTIFACT" || -z "$EXPECTED_SHA" || -z "$EXPECTED_VERSION" ]]; then
   usage
@@ -115,12 +121,21 @@ if [[ -e "$ARTIFACT_DIR/current.whl" ]]; then
 fi
 ln -sfn "$RELEASE_WHEEL" "$ARTIFACT_DIR/current.whl"
 
+# The previous identity travels with the previous wheel: a rolled-back service
+# must not keep reporting the failed release's artifact_sha256.
+PREVIOUS_RELEASE_ENV=""
+if [[ -f "$RELEASE_ENV_FILE" ]]; then
+  PREVIOUS_RELEASE_ENV="$STAGE_DIR/release.env.previous"
+  cp -- "$RELEASE_ENV_FILE" "$PREVIOUS_RELEASE_ENV"
+fi
+
 rollback() {
   code=$?
   if [[ $code -ne 0 && -n "$PREVIOUS_WHEEL" && -f "$PREVIOUS_WHEEL" ]]; then
     echo "Deploy failed; rolling back to $PREVIOUS_WHEEL" >&2
     ln -sfn "$PREVIOUS_WHEEL" "$ARTIFACT_DIR/current.whl"
     "$VENV_DIR/bin/python" -m pip install --no-deps --force-reinstall "$PREVIOUS_WHEEL" || true
+    if [[ -n "$PREVIOUS_RELEASE_ENV" ]]; then cp -- "$PREVIOUS_RELEASE_ENV" "$RELEASE_ENV_FILE"; else rm -f -- "$RELEASE_ENV_FILE"; fi
     systemctl restart "$SERVICE" || true
   fi
   cleanup_stage
@@ -129,32 +144,50 @@ rollback() {
 trap rollback EXIT
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-  python3 -m venv "$VENV_DIR"
+  # The wheel is installed with --no-deps; a fresh venv would run without its
+  # dependencies. Bootstrap it from the hash-locked requirements first.
+  echo "no virtualenv at $VENV_DIR: create it and install requirements.runtime.lock and requirements.enterprise.lock with --require-hashes before deploying" >&2
+  exit 69
 fi
 "$VENV_DIR/bin/python" -m pip install --no-deps --force-reinstall "$STAGED_WHEEL"
 
-cat > "$RUNTIME_ENV_FILE" <<ENV
+# Identity only; runtime.env (the service's secrets) is never rewritten here.
+cat > "$RELEASE_ENV_FILE" <<ENV
 OMNIDESK_VERSION=$EXPECTED_VERSION
 OMNIDESK_ARTIFACT_SHA256=$actual_sha
 OMNIDESK_IMAGE_DIGEST=$IMAGE_DIGEST
 ENV
+chmod 0644 "$RELEASE_ENV_FILE"
 
 systemctl daemon-reload
 systemctl restart "$SERVICE"
 systemctl is-active "$SERVICE" >/dev/null
 
+# Type=simple returns before the server listens: wait for this release, with a
+# deadline, instead of one immediate request that races the restart.
 "$VENV_DIR/bin/python" - <<PY
-import json, urllib.request, sys
+import json, time, urllib.request
 url = ${HEALTH_URL@Q}
 expected_version = ${EXPECTED_VERSION@Q}
 expected_sha = ${actual_sha@Q}
-with urllib.request.urlopen(url, timeout=10) as r:
-    payload = json.loads(r.read().decode('utf-8'))
-if payload.get('version') != expected_version:
-    raise SystemExit(f"runtime version mismatch: expected {expected_version}, got {payload.get('version')}")
-if payload.get('artifact_sha256') != expected_sha:
-    raise SystemExit(f"runtime artifact sha mismatch: expected {expected_sha}, got {payload.get('artifact_sha256')}")
-print('systemd artifact deploy verified')
+deadline = time.monotonic() + int(${HEALTH_TIMEOUT@Q})
+problem = "no answer"
+while True:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            payload = json.loads(r.read().decode('utf-8'))
+        if payload.get('version') != expected_version:
+            problem = f"runtime version mismatch: expected {expected_version}, got {payload.get('version')}"
+        elif payload.get('artifact_sha256') != expected_sha:
+            problem = f"runtime artifact sha mismatch: expected {expected_sha}, got {payload.get('artifact_sha256')}"
+        else:
+            print('systemd artifact deploy verified')
+            break
+    except Exception as exc:  # connection refused while the service starts
+        problem = f"health check failed: {type(exc).__name__}"
+    if time.monotonic() >= deadline:
+        raise SystemExit(problem)
+    time.sleep(2)
 PY
 
 trap - EXIT

@@ -116,7 +116,7 @@ jobs:
           OMNIDESK_DEPLOY_NAMESPACE: ${{ vars.OMNIDESK_STAGING_NAMESPACE }}
           OMNIDESK_DEPLOYMENT_NAME: ${{ vars.OMNIDESK_STAGING_DEPLOYMENT_NAME }}
           OMNIDESK_CONTAINER_NAME: ${{ vars.OMNIDESK_STAGING_CONTAINER_NAME }}
-          OMNIDESK_IMAGE: ${{ vars.OMNIDESK_STAGING_IMAGE }}
+          OMNIDESK_IMAGE_REPOSITORY: ${{ vars.OMNIDESK_STAGING_IMAGE_REPOSITORY }}
           OMNIDESK_DEPLOY_HOST: ${{ vars.OMNIDESK_STAGING_HOST }}
           OMNIDESK_DEPLOY_USER: ${{ vars.OMNIDESK_STAGING_USER }}
           OMNIDESK_REMOTE_DEPLOY_SCRIPT: ${{ vars.OMNIDESK_STAGING_REMOTE_DEPLOY_SCRIPT }}
@@ -126,6 +126,9 @@ jobs:
         run: |
           artifact="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$artifact"
+          # Image modes deploy <repository>@<this release's digest>; a fixed image
+          # variable could only ever match one release.
+          if [[ -n "${OMNIDESK_IMAGE_REPOSITORY:-}" ]]; then export OMNIDESK_IMAGE="$OMNIDESK_IMAGE_REPOSITORY@$OMNIDESK_IMAGE_DIGEST"; fi
           bash scripts/deploy_artifact.sh --artifact "$artifact" --environment staging --mode "$OMNIDESK_DEPLOY_MODE" --expected-version "$EXPECTED_VERSION" --artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256" --image-digest "$OMNIDESK_IMAGE_DIGEST"
       - name: Staging smoke
         env:
@@ -134,7 +137,10 @@ jobs:
           OMNIDESK_SMOKE_SANDBOX_URL: ${{ vars.OMNIDESK_STAGING_SANDBOX_URL }}
           OMNIDESK_SMOKE_SANDBOX_TOKEN: ${{ secrets.OMNIDESK_STAGING_SANDBOX_TOKEN }}
           OMNIDESK_SMOKE_SANDBOX_HMAC_SECRET: ${{ secrets.OMNIDESK_STAGING_SANDBOX_HMAC_SECRET }}
-        run: python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --strict-sandbox --expected-version "$EXPECTED_VERSION" --expected-artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256"
+        run: |
+          identity=(--expected-version "$EXPECTED_VERSION" --expected-artifact-sha256 "$OMNIDESK_ARTIFACT_SHA256")
+          if [[ "${{ inputs.deploy_mode }}" != "systemd" ]]; then identity+=(--expected-image-digest "$OMNIDESK_IMAGE_DIGEST"); fi
+          python scripts/production_smoke_test.py --check-admin-metrics --check-admin-slo --fail-on-slo --strict-sandbox "${identity[@]}"
       - name: Staging SLO gate
         if: ${{ vars.OMNIDESK_STAGING_SLO_METRICS_FILE != '' }}
         run: python scripts/check_slo.py --metrics-file "${{ vars.OMNIDESK_STAGING_SLO_METRICS_FILE }}" --fail-on-error-budget

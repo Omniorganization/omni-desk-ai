@@ -8,6 +8,17 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # The official entrypoint chowns PGDATA and switches to the postgres user;
+    # with no capabilities at all it cannot start. These are the only ones it needs.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    mem_limit: ${OMNIDESK_POSTGRES_MEM_LIMIT:-768m}
+    cpus: ${OMNIDESK_POSTGRES_CPUS:-1.0}
+    pids_limit: 256
     environment:
       POSTGRES_DB: ${OMNIDESK_POSTGRES_DB:-omnidesk}
       POSTGRES_USER: ${OMNIDESK_POSTGRES_USER:-omnidesk}
@@ -35,19 +46,32 @@ services:
       - ALL
     ports:
       - "127.0.0.1:18789:18789"
+    mem_limit: ${OMNIDESK_GATEWAY_MEM_LIMIT:-1g}
+    cpus: ${OMNIDESK_GATEWAY_CPUS:-1.5}
+    pids_limit: 512
     environment:
       OMNIDESK_ENV: production
       OMNIDESK_REQUIRE_PRODUCTION_GUARDS: "true"
       OMNIDESK_RUNNING_IN_CONTAINER: "1"
       OMNIDESK_CONFIG: /data/config.production.yaml
+      # Every secret omnidesk_agent/validation/production.py requires at boot.
+      OMNIDESK_ADMIN_TOKEN: ${OMNIDESK_ADMIN_TOKEN:?required}
+      OMNIDESK_VIEWER_TOKEN: ${OMNIDESK_VIEWER_TOKEN:?required for the metrics scrape}
+      OMNIDESK_GATEWAY_SECRET: ${OMNIDESK_GATEWAY_SECRET:?required}
+      OMNIDESK_MEMORY_ENCRYPTION_KEY: ${OMNIDESK_MEMORY_ENCRYPTION_KEY:?required Fernet key}
+      OMNIDESK_PLUGIN_SIGNING_SECRET: ${OMNIDESK_PLUGIN_SIGNING_SECRET:?required}
+      OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY: ${OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY:?required}
       OMNIDESK_POSTGRES_DSN: ${OMNIDESK_POSTGRES_DSN:?set OMNIDESK_POSTGRES_DSN}
       OMNIDESK_APPSYNC_POSTGRES_DSN: ${OMNIDESK_APPSYNC_POSTGRES_DSN:-${OMNIDESK_POSTGRES_DSN}}
       OMNIDESK_APPSYNC_SECRET_PEPPER: ${OMNIDESK_APPSYNC_SECRET_PEPPER:?required}
+      # The image is pulled by this digest, so /health reports what is running.
+      OMNIDESK_IMAGE_DIGEST: ${OMNIDESK_IMAGE_DIGEST:?set to the digest in OMNIDESK_IMAGE}
+      OMNIDESK_OTLP_ENDPOINT: ${OMNIDESK_OTLP_ENDPOINT:-}
       OMNIDESK_SANDBOX_RUNNER_TOKEN: ${OMNIDESK_SANDBOX_RUNNER_TOKEN:?required}
       OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET: ${OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET:?required}
       OMNIDESK_SANDBOX_IMAGE_ALLOWLIST: ${OMNIDESK_SANDBOX_IMAGE_ALLOWLIST:?required digest-pinned sandbox image allowlist}
       OMNIDESK_CONTAINER_RUNTIME: ${OMNIDESK_CONTAINER_RUNTIME:-docker}
-      OMNIDESK_CONTAINER_SOCKET_PATH: ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}
+      OMNIDESK_CONTAINER_SOCKET_PATH: ${OMNIDESK_CONTAINER_SOCKET_PATH:?set to the dedicated rootless runner user's podman socket}
     volumes:
       - omnidesk-data:/data
     tmpfs:
@@ -63,7 +87,13 @@ services:
       timeout: 5s
       retries: 3
     networks:
+      # Postgres and the runner are reachable only on the internal network. The
+      # gateway alone also joins an egress network: model providers and channel
+      # APIs are outside the host, and an internal-only network cannot publish
+      # the loopback port above either. Host-level egress is limited by the
+      # cloud firewall's owner-approved destinations.
       - omnidesk-private
+      - omnidesk-egress
 
   sandbox-runner:
     image: ${OMNIDESK_SANDBOX_RUNNER_IMAGE:?set OMNIDESK_SANDBOX_RUNNER_IMAGE to a digest-pinned image}
@@ -75,6 +105,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    mem_limit: ${OMNIDESK_RUNNER_MEM_LIMIT:-512m}
+    cpus: ${OMNIDESK_RUNNER_CPUS:-1.0}
+    pids_limit: 256
     environment:
       OMNIDESK_ENV: production
       OMNIDESK_REQUIRE_PRODUCTION_GUARDS: "true"
@@ -85,7 +118,7 @@ services:
       OMNIDESK_SANDBOX_NONCE_DB: /runner-state/nonces.sqlite3
       OMNIDESK_CONTAINER_RUNTIME: ${OMNIDESK_CONTAINER_RUNTIME:-docker}
       DOCKER_HOST: ${OMNIDESK_CONTAINER_RUNTIME_HOST:-unix:///run/podman/podman.sock}
-      OMNIDESK_CONTAINER_SOCKET_PATH: ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}
+      OMNIDESK_CONTAINER_SOCKET_PATH: ${OMNIDESK_CONTAINER_SOCKET_PATH:?set to the dedicated rootless runner user's podman socket}
     expose:
       - "18890"
     volumes:
@@ -93,7 +126,7 @@ services:
       # A read-only bind mount does not restrict the container API; isolation comes
       # from the socket being rootless (the runner refuses to start on a rootful one
       # unless OMNIDESK_SANDBOX_ALLOW_ROOTFUL_RUNTIME=1) and from a dedicated host.
-      - ${OMNIDESK_CONTAINER_SOCKET_PATH:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock
+      - ${OMNIDESK_CONTAINER_SOCKET_PATH:?set to the dedicated rootless runner user's podman socket}:/run/podman/podman.sock
     tmpfs:
       - /tmp:size=128m,noexec,nosuid,nodev
     healthcheck:
@@ -112,6 +145,8 @@ networks:
   omnidesk-private:
     driver: bridge
     internal: true
+  omnidesk-egress:
+    driver: bridge
 
 volumes:
   omnidesk-data:
