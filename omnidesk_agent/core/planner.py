@@ -53,6 +53,11 @@ class HierarchicalPlanner:
                 dropped.append(f"{step.tool}.{step.action}")
         if not dropped:
             return plan
+        if any(name != "computer.screenshot" for name in dropped):
+            # The action the task asked for is unavailable. Run nothing: a plan that ran
+            # only what was left would report the task completed. (A screenshot taken for
+            # visual context is optional; the orchestrator fails a plan with no steps.)
+            kept = []
         rationale = "{}；已移除未注册的工具动作: {}".format(plan.rationale, ", ".join(dropped))
         return Plan(goal=plan.goal, steps=kept, rationale=rationale, plan_id=plan.plan_id)
 
