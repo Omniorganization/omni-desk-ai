@@ -383,7 +383,7 @@ class _Table:
             ),
         )
 
-    def select(self, *, where: str, order: str, limit: Optional[int], alias: str) -> Any:
+    def select(self, *, where: str, order: str, limit: Optional[int], alias: str, for_update: bool = False) -> Any:
         """``where`` and ``order`` are fixed fragments from this module, never input."""
 
         def build(sql: Any) -> Any:
@@ -398,9 +398,11 @@ class _Table:
                 query += sql.SQL(" ORDER BY ") + sql.SQL(order)
             if limit is not None:
                 query += sql.SQL(" LIMIT ") + sql.Literal(int(limit))
+            if for_update:
+                query += sql.SQL(" FOR UPDATE")
             return query
 
-        return _composed((self.name, "select", where, order, limit, alias), build)
+        return _composed((self.name, "select", where, order, limit, alias, for_update), build)
 
     def insert(self, *, if_absent: bool) -> Any:
         def build(sql: Any) -> Any:
@@ -792,8 +794,8 @@ class MigratedMultiInstancePostgresAppSyncStore:
         row = tx.cur.fetchone()
         return self._from_row(table, row) if row else None
 
-    def _select(self, tx: _Tx, table: _Table, where: str, params: dict[str, Any], *, order: str = "", limit: Optional[int] = None, alias: str = "") -> list[Any]:
-        tx.cur.execute(table.select(where=where, order=order, limit=limit, alias=alias), {**params, "namespace": self.namespace})
+    def _select(self, tx: _Tx, table: _Table, where: str, params: dict[str, Any], *, order: str = "", limit: Optional[int] = None, alias: str = "", for_update: bool = False) -> list[Any]:
+        tx.cur.execute(table.select(where=where, order=order, limit=limit, alias=alias, for_update=for_update), {**params, "namespace": self.namespace})
         return [self._from_row(table, row) for row in tx.cur.fetchall()]
 
     def _insert(self, tx: _Tx, table: _Table, record: Any, *, if_absent: bool = False) -> bool:
@@ -2074,10 +2076,14 @@ class MigratedMultiInstancePostgresAppSyncStore:
             payload_hash = _fingerprint(payload)
             matched: list[LocalOutboxRecord] = []
             if key:
+                # Locked, so a replica that recorded a conflict on the same operation
+                # first is waited for, and the operation is then no longer matched
+                # (READ COMMITTED re-checks the row): it is never marked synced
+                # while its conflict is open.
                 matched = self._select(
                     tx, LOCAL_OUTBOX,
                     "idempotency_key = %(key)s AND status IN ('pending', 'failed', 'syncing') AND actor = %(actor)s AND organization_id = %(organization_id)s",
-                    {"key": key, "actor": actor, "organization_id": organization_id}, order="created_at",
+                    {"key": key, "actor": actor, "organization_id": organization_id}, order="created_at", for_update=True,
                 )
             inbox = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied", received_at=tx.now)
             if matched and any(item.payload_hash != payload_hash for item in matched):
