@@ -66,9 +66,8 @@ def _dsn_for(admin: str, database: str) -> str:
 
 @pytest.fixture
 def databases() -> Iterator[dict[str, str]]:
-    import psycopg
-
-    admin = _admin_dsn()
+    admin = _admin_dsn()  # skips without a test database, before psycopg is needed
+    psycopg = pytest.importorskip("psycopg")
     names = {role: f"omnidesk_bk_{role}_{uuid.uuid4().hex[:10]}" for role in ("source", "target", "other")}
     with psycopg.connect(admin, autocommit=True) as conn:
         for name in names.values():
@@ -220,6 +219,9 @@ def test_counts_and_dump_share_one_snapshot_under_concurrent_writes(databases: d
 
 
 def test_passwords_never_reach_a_command_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tool parses DSNs with psycopg; the release, staging and promotion gates
+    # install only requirements.dev.lock, which has none.
+    pytest.importorskip("psycopg")
     seen: list[tuple[list[str], dict[str, str]]] = []
 
     class _Done:
