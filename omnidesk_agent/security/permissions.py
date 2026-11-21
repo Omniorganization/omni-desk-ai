@@ -211,8 +211,9 @@ class PermissionManager:
     def record_access(self, proposal: Any) -> None:
         """Audit an action that runs without an approval gate (for example files.list).
 
-        Raises AuditIntegrityError when the audit log cannot be written; the
-        caller must then not perform the action.
+        If the audit log cannot take the entry this raises, and the caller must
+        then not perform the action. It raises AuditIntegrityError with the
+        keyed audit chain (security #230); before that, the file write's OSError.
         """
         proposal_dict = self._proposal_dict(proposal)
         self._audit("access_without_approval", proposal_dict)
@@ -236,8 +237,9 @@ class PermissionManager:
         as approval decisions, policy blocks or break-glass transitions. The
         payload must be JSON-serialisable and at most AGENT_EVENT_MAX_BYTES; it
         passes the same redaction as proposals and should hold ids, counts,
-        digests and statuses, never tool output text. Raises AuditIntegrityError
-        when the entry cannot be written: stop the run then.
+        digests and statuses, never tool output text. If the entry cannot be
+        written this raises (AuditIntegrityError with the keyed audit chain of
+        security #230, OSError before): stop the run then.
         """
         name = str(event or "")
         if not re.fullmatch(r"agent_[a-z0-9_]{1,60}", name):
@@ -250,7 +252,9 @@ class PermissionManager:
             raise ValueError("agent loop audit payload must be JSON-serialisable") from exc
         if len(encoded.encode("utf-8")) > AGENT_EVENT_MAX_BYTES:
             raise ValueError(f"agent loop audit payload exceeds {AGENT_EVENT_MAX_BYTES} bytes")
-        self._audit(name, payload)
+        # Log exactly what was checked: tuples become lists, so redaction reaches
+        # every nested key, and the size cap applies to what is written.
+        self._audit(name, json.loads(encoded))
 
     def mark_audit_integrity_failure(self, message: str) -> None:
         """Fail closed after an audit log failed verification (see AuditIntegrityMonitor)."""
