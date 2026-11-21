@@ -34,8 +34,16 @@ function isLoopbackGateway(value: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
 }
 
+/** In production the gateway token travels over https only; plain http is for loopback. */
+function requireHttpsInProduction(value: string, env: GatewayEnv): string {
+  if (env.NODE_ENV === 'production' && new URL(value).protocol === 'http:' && !isLoopbackGateway(value)) {
+    throw new Error('gateway URL must use https in production (plain http only for loopback)');
+  }
+  return value;
+}
+
 export function resolveGatewayBaseUrl(candidate: string | undefined, env: GatewayEnv = process.env): string {
-  const configured = normalizeGatewayUrl(env.OMNI_GATEWAY_URL || DEFAULT_GATEWAY_URL);
+  const configured = requireHttpsInProduction(normalizeGatewayUrl(env.OMNI_GATEWAY_URL || DEFAULT_GATEWAY_URL), env);
   if (!candidate?.trim()) return configured;
 
   const normalized = normalizeGatewayUrl(candidate.trim());
@@ -43,7 +51,7 @@ export function resolveGatewayBaseUrl(candidate: string | undefined, env: Gatewa
   const clientOverrideAllowed = flagEnabled(env.OMNI_ALLOW_CLIENT_GATEWAY_URLS);
   const devLoopbackAllowed = env.NODE_ENV !== 'production' && isLoopbackGateway(normalized);
 
-  if (allowed.has(normalized)) return normalized;
+  if (allowed.has(normalized)) return requireHttpsInProduction(normalized, env);
   if (clientOverrideAllowed && devLoopbackAllowed) return normalized;
   return configured;
 }

@@ -2,8 +2,8 @@ import type { OmniApiClient } from './api';
 import type { DesktopDeviceIdentity } from './deviceIdentity';
 
 // A fresh desktop becomes challenge-verified the way the gateway requires in
-// production: an owner starts an enrollment for a desktop
-// (POST /app/devices/enrollment/start) and hands the operator its id and
+// production: an owner starts an enrollment for a desktop (Web Admin's devices
+// card, or POST /app/devices/enrollment/start) and hands the operator its id and
 // pairing code; this desktop binds its device id and public key with the code,
 // then signs the challenge with its device key, which never leaves Rust.
 

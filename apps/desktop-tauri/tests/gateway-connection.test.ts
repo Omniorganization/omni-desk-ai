@@ -21,7 +21,7 @@ function recordFetch(): string[] {
   globalThis.fetch = async (input) => {
     urls.push(input.toString());
     // Heartbeat and bootstrap answers that meet the contract.
-    return new Response(JSON.stringify({ ok: true, pending_approvals: [], notifications: [], runtime_status: [], devices: [] }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, pending_approvals: [], notifications: [], runtime_status: [], devices: [], sync_seq: 0 }), { status: 200 });
   };
   return urls;
 }

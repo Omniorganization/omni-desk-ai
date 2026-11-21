@@ -15,10 +15,11 @@ A production gateway accepts a desktop's signed calls (heartbeat, claims,
 status reports) only from a challenge-verified device, so a fresh install has
 to be enrolled once:
 
-1. An **owner** starts an enrollment for a desktop — `POST
-   /app/devices/enrollment/start` with `device_type: "desktop"` and a pairing
-   code of at least 8 characters — and hands the operator the enrollment id
-   (`enroll_` + 16 hex digits) and the pairing code.
+1. An **owner** starts an enrollment for a desktop — in Web Admin's devices
+   card ("为桌面发起注册", which shows the id and a generated pairing code
+   once), or with `POST /app/devices/enrollment/start` and `device_type:
+   "desktop"` — and hands the operator the enrollment id (`enroll_` + 16 hex
+   digits) and the pairing code.
 2. The desktop connects; when the gateway answers
    `device_not_challenge_verified`, it shows the "设备注册" panel and pauses
    its background heartbeat and claims.

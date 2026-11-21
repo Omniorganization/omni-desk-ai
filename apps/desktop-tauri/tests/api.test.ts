@@ -164,7 +164,8 @@ test('heartbeat, task status, and sync use the shared /app contract', async () =
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   globalThis.fetch = async (input, init) => {
     calls.push({ url: input.toString(), init });
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    // Meets the contract of all three routes (the sync feed's fields included).
+    return new Response(JSON.stringify({ ok: true, events: [], head_seq: 42, has_more: false }), { status: 200 });
   };
 
   const client = new OmniApiClient({ baseUrl: 'https://gateway.example.test', token: 'operator-token', actor: 'desktop-operator' });

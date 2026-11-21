@@ -105,7 +105,8 @@ function asRecordArray(value: unknown): GatewayRecord[] {
 function formatDate(value: unknown) {
   if (!value) return 'n/a';
   try {
-    const date = new Date(String(value));
+    // Gateway timestamps are epoch seconds.
+    const date = typeof value === 'number' ? new Date(value * 1000) : new Date(String(value));
     if (Number.isNaN(date.getTime())) return String(value);
     return date.toLocaleString();
   } catch {
@@ -124,6 +125,8 @@ export default function Page() {
   const [snapshot, setSnapshot] = useState<GatewayRecord | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<GatewayRecord | null>(null);
   const [ecosystem, setEcosystem] = useState<GatewayRecord | null>(null);
+  const [activity, setActivity] = useState<GatewayRecord[]>([]);
+  const [desktopEnrollment, setDesktopEnrollment] = useState<{ enrollmentId: string; pairingCode: string } | null>(null);
   const [chatConversationId, setChatConversationId] = useState('');
   const [chatInput, setChatInput] = useState('帮我分析今天任务状态');
   const [chatProfile, setChatProfile] = useState('fast');
@@ -252,9 +255,11 @@ export default function Page() {
       const session = csrfToken ? { csrfToken, actor, role } : await establishSession();
       const identity = await ensureWebAdminDevice(session.csrfToken, session.actor, session.role);
       const activeApi = webAdminApiFor(identity, session.csrfToken, session.actor, session.role);
-      setSnapshot(await activeApi.bootstrap());
+      const latest = await activeApi.bootstrap();
+      setSnapshot(latest);
       setRuntimeStatus(await activeApi.runtime());
       setEcosystem(await activeApi.ecosystem());
+      await refreshActivity(activeApi, Number(latest?.sync_seq || 0));
       await refreshProjects(activeApi);
     } catch (e: any) {
       setError(e.message || String(e));
@@ -340,6 +345,57 @@ export default function Page() {
       await refreshProjects(activeApi);
     } catch (e: any) {
       setProjectError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** The latest AppSync events this actor may see (approvals, devices, tasks), newest first. */
+  async function refreshActivity(activeApi: OmniAdminApi, headSeq: number) {
+    const feed = await activeApi.activity(headSeq - 50);
+    setActivity(asRecordArray(feed?.events).slice(-50).reverse());
+  }
+
+  async function ownerApi() {
+    const session = csrfToken ? { csrfToken, actor, role } : await establishSession();
+    const identity = deviceIdentity || await ensureWebAdminDevice(session.csrfToken, session.actor, session.role);
+    return webAdminApiFor(identity, session.csrfToken, session.actor, session.role);
+  }
+
+  async function revokeDevice(deviceId: string) {
+    if (!canApprove) {
+      setError('当前角色不是 owner，不能吊销设备。');
+      return;
+    }
+    if (!window.confirm(`吊销设备 ${deviceId}？它的签名请求和推送将立即失效。`)) return;
+    setLoading(true);
+    try {
+      const activeApi = await ownerApi();
+      await activeApi.revokeDevice(deviceId, decisionReason);
+      const latest = await activeApi.bootstrap();
+      setSnapshot(latest);
+      await refreshActivity(activeApi, Number(latest?.sync_seq || 0));
+    } catch (e: any) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** Starts an enrollment for a desktop; the operator enters id and code on that desktop. */
+  async function startDesktopEnrollment() {
+    if (!canApprove) {
+      setError('当前角色不是 owner，不能发起设备注册。');
+      return;
+    }
+    setLoading(true);
+    try {
+      const activeApi = await ownerApi();
+      const pairingCode = randomPairingCode();
+      const started = await activeApi.startDeviceEnrollment('desktop', pairingCode);
+      setDesktopEnrollment({ enrollmentId: String(started?.enrollment?.enrollment_id || ''), pairingCode });
+    } catch (e: any) {
+      setError(e.message || String(e));
     } finally {
       setLoading(false);
     }
@@ -483,12 +539,13 @@ export default function Page() {
 
       <section className="metrics-grid">
         <div className="side-card"><div className="card-title"><h3>当前项目</h3><StatusPill tone={activeProject ? 'green' : 'gray'}>{activeProject ? (activeProject.archived ? 'archived' : 'ready') : '待创建'}</StatusPill></div><p>{activeProject ? `${activeProject.name} · ${formatDate(activeProject.updatedAt)}` : '请先连接 Gateway 并创建或选择项目。'}</p>{activeProject && <><button type="button" className="secondary-action" onClick={() => void updateActiveProject('rename')} disabled={loading}>重命名</button>{' '}<button type="button" className="secondary-action" onClick={() => void updateActiveProject('archive')} disabled={loading}>{activeProject.archived ? '恢复' : '归档'}</button>{' '}<button type="button" className="secondary-action" onClick={() => void deleteProject(activeProject.id)} disabled={loading}>删除</button></>}</div>
-        <div className="side-card"><div className="card-title"><h3>设备</h3><StatusPill tone={deviceIdentity ? 'green' : 'gray'}>{deviceIdentity ? 'enrolled' : 'not enrolled'}</StatusPill></div><p>{deviceIdentity?.deviceId || '尚未注册 Web Admin 设备'}</p><p>Gateway devices: {devices.length}</p></div>
-        <div className="side-card"><div className="card-title"><h3>审批</h3><StatusPill tone={approvals.length ? 'orange' : 'green'}>{approvals.length} pending</StatusPill></div>{approvals.slice(0, 3).map((approval) => <div className="mini-row" key={String(approval.approval_id)}><strong>{approval.action || 'Approval'}</strong><span>{approval.risk || 'risk n/a'}</span><button type="button" disabled={!canApprove || loading} onClick={() => void decide(String(approval.approval_id), 'approved')}>批准</button></div>)}</div>
+        <div className="side-card"><div className="card-title"><h3>设备</h3><StatusPill tone={deviceIdentity ? 'green' : 'gray'}>{deviceIdentity ? 'enrolled' : 'not enrolled'}</StatusPill></div><p>{deviceIdentity?.deviceId || '尚未注册 Web Admin 设备'}</p>{devices.map((device) => <div className="mini-row" key={String(device.device_id)}><strong>{String(device.device_type)} · {String(device.name || device.device_id)}</strong><span>{device.revoked_at ? 'revoked' : `${device.credential_status}${device.trust_level ? ` / ${device.trust_level}` : ''}`}</span>{!device.revoked_at && device.device_id !== deviceIdentity?.deviceId && <button type="button" disabled={!canApprove || loading} onClick={() => void revokeDevice(String(device.device_id))}>吊销</button>}</div>)}<button type="button" className="secondary-action" disabled={!canApprove || loading} onClick={() => void startDesktopEnrollment()}>为桌面发起注册</button>{desktopEnrollment && <p>在桌面端「设备注册」中输入 注册 ID <code>{desktopEnrollment.enrollmentId}</code> 和 配对码 <code>{desktopEnrollment.pairingCode}</code>（只显示这一次）。</p>}</div>
+        <div className="side-card"><div className="card-title"><h3>审批</h3><StatusPill tone={approvals.length ? 'orange' : 'green'}>{approvals.length} pending</StatusPill></div>{approvals.slice(0, 3).map((approval) => <div className="mini-row" key={String(approval.approval_id)}><strong>{approval.action || 'Approval'}</strong><span>{approval.risk || 'risk n/a'}</span><button type="button" disabled={!canApprove || loading} onClick={() => void decide(String(approval.approval_id), 'approved')}>批准</button><button type="button" disabled={!canApprove || loading} onClick={() => void decide(String(approval.approval_id), 'rejected')}>拒绝</button></div>)}</div>
         <div className="side-card"><div className="card-title"><h3>通知</h3><StatusPill tone={notifications.length ? 'blue' : 'gray'}>{notifications.length}</StatusPill></div>{notifications.slice(0, 4).map((item) => <p key={String(item.notification_id || item.title)}>{item.title || item.body}</p>)}</div>
       </section>
 
       <section className="side-card centered-card"><div className="card-title"><h3>最近对话</h3><StatusPill tone={chatMessages.length ? 'blue' : 'gray'}>{chatMessages.length}</StatusPill></div><pre>{JSON.stringify(chatMessages.slice(-6).map((message) => ({ role: message.role, content: message.content, provider: message.model_provider, model: message.model_name, trace_id: message.trace_id })), null, 2)}</pre></section>
+      <section className="side-card centered-card"><div className="card-title"><h3>活动记录</h3><StatusPill tone={activity.length ? 'blue' : 'gray'}>{activity.length}</StatusPill></div><p>AppSync 事件（审批、设备、任务），最新在前。这里不是安全审计日志。</p>{activity.map((event) => <div className="mini-row" key={String(event.seq)}><strong>#{String(event.seq)} {String(event.event_type)}</strong><span>{String(event.actor)} · {formatDate(event.ts)}</span></div>)}</section>
       <section className="side-card centered-card"><div className="card-title"><h3>GA / Release Evidence</h3><StatusPill tone={releaseEvidence ? 'blue' : 'orange'}>{releaseEvidence ? 'loaded' : 'missing'}</StatusPill></div><pre>{releaseEvidenceText}</pre></section>
     </section>
 

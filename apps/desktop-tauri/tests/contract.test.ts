@@ -33,8 +33,8 @@ test('request paths map to their contract route', () => {
 test('the requirement check names what is missing or mistyped', () => {
   const bootstrap = RESPONSE_REQUIREMENTS['GET /app/bootstrap'];
   assert.deepEqual(contractProblems(bootstrap, exampleBody('GET /app/bootstrap')), []);
-  assert.deepEqual(contractProblems(bootstrap, { pending_approvals: [{ approval_id: 7, action: 'a', risk: 'high' }], notifications: [], runtime_status: [], devices: [] }), ['pending_approvals[0].approval_id: expected string, got integer']);
-  assert.ok(contractProblems(bootstrap, { notifications: [], runtime_status: [], devices: [] }).includes('pending_approvals: missing'));
+  assert.deepEqual(contractProblems(bootstrap, { pending_approvals: [{ approval_id: 7, action: 'a', risk: 'high' }], notifications: [], runtime_status: [], devices: [], sync_seq: 3 }), ['pending_approvals[0].approval_id: expected string, got integer']);
+  assert.ok(contractProblems(bootstrap, { notifications: [], runtime_status: [], devices: [], sync_seq: 3 }).includes('pending_approvals: missing'));
   // A claim may find nothing: a null task meets the contract.
   assert.deepEqual(contractProblems(RESPONSE_REQUIREMENTS['POST /app/runtime/desktop/claim'], { task: null }), []);
 });

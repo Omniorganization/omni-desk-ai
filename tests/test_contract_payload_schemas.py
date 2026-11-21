@@ -181,6 +181,8 @@ def test_the_gateway_meets_the_contract_on_every_client_route(tmp_path: Path, mo
         # Nothing left to claim: the contract allows a null task.
         gw.call("POST", "/app/runtime/desktop/claim", "/app/runtime/desktop/claim", OPERATOR, {"device_id": desktop_id, "capabilities": ["workspace.read_file"], "lease_seconds": 120})
         gw.call("GET", "/app/sync", "/app/sync?since_seq=0", OPERATOR)
+        # Web Admin's owner revokes the desktop.
+        gw.call("POST", "/app/devices/{device_id}/revoke", f"/app/devices/{desktop_id}/revoke", OWNER, {"reason": "lost laptop"})
 
         # Web Admin's admin routes.
         gw.call("GET", "/admin/session/identity", "/admin/session/identity", OWNER)

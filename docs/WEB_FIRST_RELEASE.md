@@ -86,7 +86,7 @@ Gateway-only 模板明确清空 `X-Forwarded-For`，避免 Uvicorn 信任 loopba
 `init` 会为新主机写入上述 Gateway 配置和 `web.env` 中的 `OMNI_WEB_SESSION_SECRET`。已部署主机（`init` 不覆盖已有配置）升级时需手动：
 
 1. 在 `/etc/omnidesk/web-first/config.yaml` 的 `api_resource_guard` 下设 `trusted_client_ip_header: x-omnidesk-client-ip` 与 `trusted_client_ip_header_peers: ["127.0.0.1"]`。只能列 loopback：Gateway 只监听 127.0.0.1，能连它的只有 nginx 与 Web 容器（pasta），二者都会覆盖该头。`trusted_proxy_ips` 保持 `[]`。
-2. 完整模式：在 `web.env` 加 `OMNI_WEB_SESSION_SECRET=<至少 32 字符随机值>`（如 `python3 -c 'import secrets;print(secrets.token_urlsafe(48))'`），权限保持 0600。未设置时 Web 每次启动随机生成密钥并在日志告警，重启后所有人需重新登录；多副本必须设置同一值。少于 32 字符时登录与会话请求直接失败（fail closed）。
+2. 完整模式：在 `web.env` 加 `OMNI_WEB_SESSION_SECRET=<至少 32 字符随机值>`（如 `python3 -c 'import secrets;print(secrets.token_urlsafe(48))'`），权限保持 0600。生产环境（`NODE_ENV=production`）未设置时 Web 拒绝签发和校验会话（fail closed）；随机进程密钥只用于开发环境；多副本必须设置同一值。少于 32 字符时登录与会话请求直接失败（fail closed）。
 3. Gateway-only：用新模板重新生成 nginx 配置（多了 `X-OmniDesk-Client-IP $remote_addr`），`nginx -t` 后重载。
 4. 升级后已登录用户的旧 cookie 没有印章，需要重新登录一次。
 5. Web 前面若不止 nginx 一跳（例如云负载均衡 → nginx），nginx 需先用 `real_ip` 模块还原真实客户端再写 `$remote_addr`，否则所有人共用负载均衡器的地址额度（登录 10 次/分钟会被一人占满）。
