@@ -232,7 +232,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         if not decision.ok:
             raise HTTPException(status_code=403, detail=decision.reason)
         actor = getattr(decision, "actor", "unknown")
-        resource_guard.check_authenticated(
+        await resource_guard.check_authenticated_async(
             request,
             actor=actor,
             role=getattr(decision, "role", role),
@@ -338,7 +338,10 @@ def create_app(cfg: AppConfig) -> FastAPI:
         checks["plugins"] = (not cfg.plugins.enabled) or bool(
             cfg.capabilities.plugins.enabled
         )
-        checks["schema_version"] = True
+        schema = _schema_status()
+        checks["schema_version"] = bool(schema.get("ready"))
+        if deep or not checks["schema_version"]:
+            checks["schema"] = schema
         critical_checks = {
             "runtime",
             "database",
@@ -355,6 +358,21 @@ def create_app(cfg: AppConfig) -> FastAPI:
             if key in critical_checks
         )
         return {"ok": ok, "checks": checks}
+
+    def _schema_status() -> dict:
+        # A store with versioned migrations (AppSync on PostgreSQL) reports them;
+        # the other stores create their schema when they open, which startup did.
+        store = getattr(rt, "app_sync", None)
+        status_fn = getattr(store, "schema_status", None)
+        if not callable(status_fn):
+            return {"ready": True, "versioned": False}
+        try:
+            status = status_fn()
+        except Exception as exc:
+            return {"ready": False, "versioned": True, "error": str(exc)[:200]}
+        if not isinstance(status, dict):
+            return {"ready": False, "versioned": True, "error": "schema status is not a mapping"}
+        return {**status, "ready": bool(status.get("ready")), "versioned": True}
 
     async def _readiness_snapshot(*, deep: bool = False) -> dict:
         now = time.monotonic()

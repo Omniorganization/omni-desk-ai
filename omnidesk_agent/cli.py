@@ -217,7 +217,12 @@ def main() -> None:
         return
 
     if args.cmd == "validate-webhook-signatures":
-        print(json.dumps({"ok": True, "tests": ["wechat_signature", "line_signature_valid"]}, ensure_ascii=False, indent=2))
+        from omnidesk_agent.server_routes.webhook_guard import self_test_webhook_signatures
+        with runtime_context(cfg) as rt:
+            result = self_test_webhook_signatures(cfg, rt)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result["ok"]:
+            raise SystemExit(1)
         return
 
     if args.cmd == "reconnect-once":

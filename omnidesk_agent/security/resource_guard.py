@@ -1,21 +1,38 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
+import logging
 import os
 import re
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from ipaddress import ip_address, ip_network
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Optional
 
 from fastapi import HTTPException, Request
 
+from omnidesk_agent.repositories.postgres_pool import SharedPostgresConnectionPool
 from omnidesk_agent.storage.sqlite import connect_sqlite
 
 
+log = logging.getLogger(__name__)
+
 _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9@._:/-]+")
+# The liveness probe is cheap, unauthenticated, reveals nothing internal and must
+# keep answering while the API is saturated or the rate-limit store is down, or
+# the orchestrator restarts healthy pods. Exactly GET/HEAD /health skips rate
+# limits and in-flight slots; readiness stays gated like every other route.
+PROBE_PATHS = frozenset({"/health"})
+PROBE_METHODS = frozenset({"GET", "HEAD"})
+
+
+def is_liveness_probe(request: Request) -> bool:
+    return request.url.path in PROBE_PATHS and str(getattr(request, "method", "")).upper() in PROBE_METHODS
 
 
 @dataclass(frozen=True)
@@ -113,48 +130,147 @@ class SQLiteRateLimiter:
 
 
 class PostgresRateLimiter:
-    backend = "postgres"
+    """Shared fixed-window limiter in PostgreSQL.
 
-    def __init__(self, *, dsn_env: str, clock: Callable[[], float] | None = None):
+    Connections come from a bounded pool (the repositories'
+    SharedPostgresConnectionPool), and the guard runs checks on the limiter's
+    own ``pool_size`` worker threads, so the number of connections stays the
+    same however many requests arrive. Each connection carries a statement and
+    a lock timeout: a slow or locked store fails the check, and the request is
+    refused, instead of hanging. A check is one autocommit upsert. Expired
+    windows are deleted every ``prune_interval_seconds``, in the background on
+    the limiter's executor and in batches of ``prune_batch_rows``, so a backlog
+    neither slows a request nor outlasts the statement timeout. A failed prune
+    is retried at the next interval; it never refuses a request.
+    """
+
+    backend = "postgres"
+    prune_interval_seconds = 300.0
+    prune_batch_rows = 5_000
+    prune_max_batches = 20
+    application_name = "omnidesk-rate-limiter"
+
+    def __init__(
+        self,
+        *,
+        dsn_env: str,
+        clock: Callable[[], float] | None = None,
+        pool_size: int = 4,
+        statement_timeout_ms: int = 2_000,
+        lock_timeout_ms: int = 1_000,
+        connect_timeout_seconds: float = 3.0,
+    ):
         self.dsn_env = dsn_env
         self.clock = clock or time.time
+        self._pool = SharedPostgresConnectionPool(
+            self._session_dsn(statement_timeout_ms, lock_timeout_ms),
+            max_size=pool_size,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
+        # One worker per connection: checks queue here, never on the pool.
+        self.executor = ThreadPoolExecutor(max_workers=self._pool.max_size, thread_name_prefix="omnidesk-rate-limit-db")
+        self._prune_lock = threading.Lock()
+        self._last_prune = 0.0
+        self._pruning = False
+        # The most recent background prune, for observability and tests.
+        self.last_prune: Optional[Future] = None
         self._init_schema()
 
-    def _dsn(self) -> str:
+    def _session_dsn(self, statement_timeout_ms: int, lock_timeout_ms: int) -> str:
         dsn = os.getenv(self.dsn_env, "")
         if not dsn:
             raise RuntimeError(f"{self.dsn_env} is required when api_resource_guard.backend=postgres")
-        return dsn
-
-    def _connect(self):  # type: ignore[no-untyped-def]
         try:
-            import psycopg  # type: ignore
+            from psycopg import conninfo  # type: ignore
         except Exception as exc:  # pragma: no cover - optional production dependency
             raise RuntimeError("Install psycopg to use api_resource_guard.backend=postgres") from exc
-        return psycopg.connect(self._dsn())
+        # Keep any options the DSN already sets (search_path, ...) and add the timeouts.
+        existing = str(conninfo.conninfo_to_dict(dsn).get("options") or "").strip()
+        timeouts = f"-c statement_timeout={int(statement_timeout_ms)} -c lock_timeout={int(lock_timeout_ms)}"
+        return conninfo.make_conninfo(dsn, options=f"{existing} {timeouts}".strip(), application_name=self.application_name)
 
     def _init_schema(self) -> None:
-        with self._connect() as con:
-            with con.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS omnidesk_api_resource_rate_limits (
-                        key TEXT PRIMARY KEY,
-                        window_started DOUBLE PRECISION NOT NULL,
-                        count INTEGER NOT NULL
-                    )
-                    """
+        self._run(
+            lambda cur: cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS omnidesk_api_resource_rate_limits (
+                    key TEXT PRIMARY KEY,
+                    window_started DOUBLE PRECISION NOT NULL,
+                    count INTEGER NOT NULL
                 )
+                """
+            )
+        )
+        self._run(
+            lambda cur: cur.execute(
+                "CREATE INDEX IF NOT EXISTS omnidesk_api_resource_rate_limits_window ON omnidesk_api_resource_rate_limits (window_started)"
+            )
+        )
+
+    def _run(self, work):  # type: ignore[no-untyped-def]
+        # A connection that broke since its last use (a database restart, say)
+        # is discarded by the pool and the work retried once on another. Any
+        # other failure, a lock or statement timeout included, propagates: the
+        # request is refused, never let through unmetered.
+        for attempt in (0, 1):
+            con = None
+            try:
+                with self._pool.connection() as con:
+                    con.autocommit = True  # one statement per check, no BEGIN/COMMIT round trips
+                    with con.cursor() as cur:
+                        return work(cur)
+            except Exception:
+                broken = con is not None and bool(getattr(con, "broken", False) or getattr(con, "closed", False))
+                if attempt or not broken:
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
+
+    def _maybe_prune(self, now: float, window_seconds: int) -> None:
+        with self._prune_lock:
+            if self._pruning or now - self._last_prune < self.prune_interval_seconds:
+                return
+            self._last_prune = now
+            self._pruning = True
+        try:
+            self.last_prune = self.executor.submit(self._prune, now - 2 * window_seconds)
+        except RuntimeError:  # the executor is shut down
+            with self._prune_lock:
+                self._pruning = False
+
+    def _prune(self, cutoff: float) -> int:
+        """Delete windows older than ``cutoff`` in bounded batches; returns the rows deleted."""
+
+        def batch(cur):  # type: ignore[no-untyped-def]
+            cur.execute(
+                "DELETE FROM omnidesk_api_resource_rate_limits WHERE key IN "
+                "(SELECT key FROM omnidesk_api_resource_rate_limits WHERE window_started < %s LIMIT %s)",
+                (cutoff, self.prune_batch_rows),
+            )
+            return int(cur.rowcount or 0)
+
+        deleted = 0
+        try:
+            for _ in range(self.prune_max_batches):
+                count = self._run(batch)
+                deleted += count
+                if count < self.prune_batch_rows:
+                    break
+        except Exception as exc:  # retried at the next interval; never refuses a request
+            log.warning("rate-limit prune failed: %s", type(exc).__name__)
+        finally:
+            with self._prune_lock:
+                self._pruning = False
+        return deleted
 
     def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
         if limit <= 0:
             return False
         now = self.clock()
         window_seconds = max(1, int(window_seconds))
-        with self._connect() as con:
-            with con.cursor() as cur:
-                cur.execute(
-                    """
+
+        def upsert(cur):  # type: ignore[no-untyped-def]
+            cur.execute(
+                """
                     INSERT INTO omnidesk_api_resource_rate_limits(key, window_started, count)
                     VALUES (%s, %s, 1)
                     ON CONFLICT (key) DO UPDATE SET
@@ -168,21 +284,30 @@ class PostgresRateLimiter:
                         END
                     RETURNING count
                     """,
-                    (key, now, now, window_seconds, now, now, window_seconds),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    raise RuntimeError("PostgreSQL rate limiter did not return a count")
-                return int(row[0]) <= limit
+                (key, now, now, window_seconds, now, now, window_seconds),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError("PostgreSQL rate limiter did not return a count")
+            return int(row[0])
+
+        count = self._run(upsert)
+        self._maybe_prune(now, window_seconds)
+        return count <= limit
 
     def size(self) -> int:
-        with self._connect() as con:
-            with con.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM omnidesk_api_resource_rate_limits")
-                row = cur.fetchone()
-                if row is None:
-                    raise RuntimeError("PostgreSQL rate limiter size query returned no row")
-                return int(row[0])
+        def count(cur):  # type: ignore[no-untyped-def]
+            cur.execute("SELECT COUNT(*) FROM omnidesk_api_resource_rate_limits")
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError("PostgreSQL rate limiter size query returned no row")
+            return int(row[0])
+
+        return self._run(count)
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True)
+        self._pool.close()
 
 
 class ApiResourceGuard:
@@ -199,15 +324,40 @@ class ApiResourceGuard:
         return bool(getattr(self.cfg, "enabled", True))
 
     async def before_request(self, request: Request) -> Callable[[], None]:
-        if not self._enabled():
+        return await self._admit(request, _route_class(request.url.path))
+
+    async def _admit(self, request: Request, route_class: str) -> Callable[[], None]:
+        if not self._enabled() or is_liveness_probe(request):
             return lambda: None
         client = _client_key(request, self.cfg)
         path = _path_key(request.url.path)
         window = int(getattr(self.cfg, "window_seconds", 60))
-        self._check_rate(f"ip:{client}", int(getattr(self.cfg, "max_requests_per_ip", 300)), window, "ip")
-        self._check_rate(f"ip-path:{client}:{path}", int(getattr(self.cfg, "max_requests_per_endpoint", 120)), window, "endpoint")
-        release = self._acquire(_route_class(request.url.path))
+        await self._check_rates_async(
+            [
+                (f"ip:{client}", int(getattr(self.cfg, "max_requests_per_ip", 300)), "ip"),
+                (f"ip-path:{client}:{path}", int(getattr(self.cfg, "max_requests_per_endpoint", 120)), "endpoint"),
+            ],
+            window,
+        )
+        release = self._acquire(route_class)
         return await self._ingest_admitted(request, release)
+
+    async def _off_loop(self, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        # Shared stores do network or disk I/O; keep it off the event loop, on
+        # the limiter's own bounded workers when it has them.
+        loop = asyncio.get_running_loop()
+        call = functools.partial(contextvars.copy_context().run, function, *args, **kwargs)
+        return await loop.run_in_executor(getattr(self.rate, "executor", None), call)
+
+    async def _check_rates_async(self, checks: list[tuple[str, int, str]], window_seconds: int) -> None:
+        if getattr(self.rate, "backend", "memory") == "memory":
+            self._check_rates(checks, window_seconds)
+            return
+        await self._off_loop(self._check_rates, checks, window_seconds)
+
+    def _check_rates(self, checks: list[tuple[str, int, str]], window_seconds: int) -> None:
+        for key, limit, label in checks:
+            self._check_rate(key, limit, window_seconds, label)
 
     async def _ingest_admitted(self, request: Request, release: Callable[[], None]) -> Callable[[], None]:
         try:
@@ -216,6 +366,12 @@ class ApiResourceGuard:
             release()
             raise
         return release
+
+    async def check_authenticated_async(self, request: Request, *, actor: str, role: str, organization: str | None = None) -> None:
+        if getattr(self.rate, "backend", "memory") == "memory":
+            self.check_authenticated(request, actor=actor, role=role, organization=organization)
+            return
+        await self._off_loop(self.check_authenticated, request, actor=actor, role=role, organization=organization)
 
     def check_authenticated(self, request: Request, *, actor: str, role: str, organization: str | None = None) -> None:
         if not self._enabled():
