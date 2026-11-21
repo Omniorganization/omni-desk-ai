@@ -23,6 +23,7 @@ SECURITY_SNIPPETS = [
     'gitleaks" detect --source . --redact --verbose --config .gitleaks.toml',
     "scripts/check_security_exceptions.py release/security-exceptions",
     "scripts/check_license_policy.py --lockfile requirements.dev.lock --policy release/license-policy.json",
+    "scripts/check_license_policy.py --lockfile requirements.gmail.lock --policy release/license-policy.json",
     "scripts/check_security_workflow_policy.py .",
     "scripts/check_security_attack_surface.py .",
     "security-events: write",
@@ -57,6 +58,8 @@ LOCKFILES = [
     "requirements.dev.lock",
     "requirements.security.lock",
     "requirements.enterprise.lock",
+    # Opt-in Gmail deployment lock (runtime + the gmail extra); audited like the rest.
+    "requirements.gmail.lock",
 ]
 
 DOCKER_SCAN_SNIPPETS = [

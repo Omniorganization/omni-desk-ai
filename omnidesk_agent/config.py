@@ -423,6 +423,11 @@ class GmailConfig(BaseModel):
     oauth_state_ttl_seconds: int = 600
     encrypt_token_at_rest: bool = True
     token_encryption_key_env: str = "OMNIDESK_GMAIL_TOKEN_ENCRYPTION_KEY"
+    # Inbound mail via users.watch -> Cloud Pub/Sub push to /webhooks/gmail.
+    # The route stays closed until both are set: the push subscription's OIDC
+    # audience and the service account it signs as.
+    push_audience: Optional[str] = None
+    push_service_account_email: Optional[str] = None
 
 class ChromeConfig(BaseModel):
     enabled: bool = False

@@ -341,6 +341,11 @@ def _validate_channel_allowlists(cfg: AppConfig, issues: list[str]) -> None:
         if not populated:
             joined = ", ".join(field_names)
             issues.append(f"channels.{channel_name} must configure at least one production allowlist: {joined}")
+    # Gmail is also used outbound only; its inbound path (POST /webhooks/gmail)
+    # exists once push is configured, and an empty allowed_senders admits anyone.
+    gmail = cfg.channels.gmail
+    if gmail.enabled and (gmail.push_audience or gmail.push_service_account_email) and not gmail.allowed_senders:
+        issues.append("channels.gmail must configure at least one production allowlist when push is configured: allowed_senders")
 
 
 def _validate_ui_bridge_policy(cfg: AppConfig, issues: list[str]) -> None:

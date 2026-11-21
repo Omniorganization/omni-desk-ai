@@ -78,8 +78,21 @@ def test_gmail_oauth_scopes_redirect_and_missing_dependency_paths(tmp_path, monk
         mgr.run_local_flow()
 
     cfg.credentials_file.write_text("{}", encoding="utf-8")
+    # The Gmail libraries are an optional extra (requirements.gmail.lock); an
+    # install without them must say what to install instead of crashing.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_google(name, *args, **kwargs):
+        if name.startswith(("google_auth_oauthlib", "googleapiclient")):
+            raise ImportError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_google)
     with pytest.raises(RuntimeError, match="google-auth-oauthlib"):
         mgr.build_authorization_url("http://127.0.0.1/callback")
+    monkeypatch.setattr(builtins, "__import__", real_import)
     with pytest.raises(PermissionError, match="Invalid"):
         mgr.exchange_code("code", "http://127.0.0.1/callback", state="missing")
     with pytest.raises(RuntimeError, match="token is missing"):

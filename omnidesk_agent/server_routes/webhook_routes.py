@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.server_routes.gmail_push import register_gmail_push_route
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard, enqueue_webhook_message, enqueue_webhook_messages
 
 
@@ -164,3 +165,6 @@ def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
     @app.post("/webhooks/qq")
     async def qq_webhook(request: Request):
         return await _json_webhook("qq", "qq", request)
+
+    # Gmail push (Pub/Sub OIDC-authenticated); closed unless configured.
+    register_gmail_push_route(app, cfg, rt)
