@@ -129,4 +129,5 @@ def test_the_terminal_prompt_masks_credentials_but_shows_the_content(tmp_path, m
 
     shown = capsys.readouterr().out
     assert TYPED_PASSWORD.replace(" ", "") not in shown and GITHUB_TOKEN not in shown
-    assert "please file the report" in shown and "example.org" in shown  # what is approved stays visible
+    # What is approved stays visible: the URL is shown with only its password masked.
+    assert "please file the report" in shown and "https://admin:[REDACTED_SECRET]@example.org/" in shown

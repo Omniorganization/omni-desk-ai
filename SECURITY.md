@@ -30,7 +30,7 @@ What the code enforces today:
   - exactly `GET`/`HEAD /health` is never rate limited and takes no concurrency slot, so liveness keeps answering under load or while the rate-limit store is down; `/ready` stays gated, so a saturated or store-less pod leaves the load balancer;
   - every other route fails closed when the store fails;
   - the PostgreSQL limiter takes connections from a bounded pool (4 by default), each with a 2 s statement timeout and a 1 s lock timeout, runs its checks on its own workers off the event loop, replaces a broken connection once, and prunes expired windows in the background in batches.
-- **`omnidesk validate-webhook-signatures`** runs the live `WebhookGuard` path for every enabled inbound channel. It exits 1 in any of these cases:
+- **`omnidesk validate-webhook-signatures`** runs the live `WebhookGuard` path for every enabled inbound channel. It requires only the secrets the channel's verification mode reads (WeChat's plaintext mode needs no AES key; Discord's Ed25519 needs no bridge secret). It sends forged deliveries in each provider's own format (Slack `v0` signatures, WeChat signed query parameters, Discord Ed25519, and so on), complete and wrongly signed, so they are refused at the signature comparison and not for a missing field. It exits 1 in any of these cases:
   - signatures are not enforced;
   - a configured secret variable is unset;
   - an unsigned delivery, or one signed with a wrong secret, would be accepted.

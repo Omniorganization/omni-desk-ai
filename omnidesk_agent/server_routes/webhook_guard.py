@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import os
-from typing import cast
+import secrets
+import time
+from typing import Any, Mapping, cast
 
 from fastapi import HTTPException, Request
 
@@ -235,58 +238,140 @@ SELF_TEST_CHANNELS: dict[str, tuple[str, str]] = {
 
 
 class _SelfTestRequest:
-    def __init__(self, headers: dict[str, str]):
+    def __init__(self, headers: dict[str, str], query: dict[str, str]):
         from starlette.datastructures import Headers, QueryParams
 
         self.headers = Headers(headers)
-        self.query_params = QueryParams("")
+        self.query_params = QueryParams(query)
+
+
+# Headers, query parameters and body of one self-test delivery.
+_Delivery = tuple[dict[str, str], dict[str, str], bytes]
+
+
+def _signature_checks(
+    channel: str, channel_cfg: Any, env: Mapping[str, str], production: bool, body: bytes
+) -> tuple[list[tuple[str, ...]], list[_Delivery]]:
+    """The secrets a channel's verify_request reads, and one wrongly signed delivery per comparison it makes.
+
+    Each entry of the first list names the variables that can satisfy one check;
+    one of them must be set. Variables used only to send, for a GET handshake, or
+    by modes no adapter implements (WeChat's AES key, Lark's encrypt key) are not
+    required. Each delivery is in the provider's format, every header, timestamp,
+    nonce and query parameter set and fresh, and signed with a random secret or
+    key, so the adapter refuses it at the signature comparison rather than for a
+    missing field. The deliveries go to every mode the adapter has; a mode the
+    channel has not configured must refuse its delivery too.
+    """
+    key = secrets.token_bytes(32)  # the wrong secret for every HMAC below
+    now = str(int(time.time()))
+
+    def bridge(data: bytes = body) -> _Delivery:  # the OmniDesk signed-bridge header
+        return {"x-omnidesk-webhook-signature-256": "sha256=" + hmac.new(key, data, hashlib.sha256).hexdigest()}, {}, data
+
+    def bearer() -> _Delivery:
+        return {"authorization": "Bearer " + secrets.token_urlsafe(32)}, {}, body
+
+    c = channel_cfg
+    if channel == "telegram":
+        return [(c.webhook_secret_env,)], [({"x-telegram-bot-api-secret-token": secrets.token_urlsafe(32)}, {}, body)]
+    if channel in {"whatsapp", "meta"}:
+        return [(c.app_secret_env,)], [({"x-hub-signature-256": "sha256=" + hmac.new(key, body, hashlib.sha256).hexdigest()}, {}, body)]
+    if channel == "wechat":
+        from omnidesk_agent.validation.webhook_signatures import wechat_signature
+
+        # Plaintext mode signs the sorted token, timestamp and nonce; no adapter mode reads the AES key.
+        nonce = str(secrets.randbelow(10**10))
+        query = {"signature": wechat_signature(os.urandom(16).hex(), now, nonce), "timestamp": now, "nonce": nonce, "openid": "o_selftest"}
+        return [(c.token_env,)], [({}, query, body)]
+    if channel == "line":
+        signature = base64.b64encode(hmac.new(key, body, hashlib.sha256).digest()).decode("ascii")
+        return [(c.channel_secret_env,)], [({"x-line-signature": signature}, {}, body)]
+    if channel == "slack":
+        signature = "v0=" + hmac.new(key, b"v0:" + now.encode("ascii") + b":" + body, hashlib.sha256).hexdigest()
+        return [(c.signing_secret_env,)], [({"x-slack-request-timestamp": now, "x-slack-signature": signature}, {}, body)]
+    if channel == "discord":
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        # Discord's own Ed25519 signature, or the bridge HMAC: either key is enough.
+        signature = Ed25519PrivateKey.generate().sign(now.encode("ascii") + body).hex()
+        ed25519: _Delivery = ({"x-signature-ed25519": signature, "x-signature-timestamp": now}, {}, body)
+        return [(c.public_key_env, c.webhook_secret_env)], [ed25519, bridge()]
+    if channel in {"lark", "feishu"}:
+        # The payload's verification token is checked first, then the bridge HMAC once its
+        # secret is set; that delivery carries the configured token so that it gets that far.
+        def event(token: str) -> bytes:
+            payload = {"uuid": secrets.token_hex(16), "token": token, "ts": now, "type": "event_callback", "event": {}}
+            return json.dumps(payload).encode("utf-8")
+
+        configured_token = str(env.get(c.verification_token_env, ""))
+        return [(c.verification_token_env,)], [({}, {}, event(secrets.token_urlsafe(24))), bridge(event(configured_token))]
+    if channel == "microsoft_teams":
+        return [(c.inbound_bearer_token_env, c.webhook_secret_env)], [bearer(), bridge()]
+    if channel == "matrix":
+        return [(c.webhook_token_env, c.webhook_secret_env)], [bearer(), bridge()]
+    if channel == "google_chat":
+        from omnidesk_agent.channels.channel_auth import GOOGLE_CHAT_ISSUER, google_chat_requires_jwt
+
+        # A project number turns on Google's signed bearer JWT, which needs no shared secret;
+        # without one, the channel token (outside production) or the bridge HMAC.
+        required: list[tuple[str, ...]] = []
+        if not (c.project_number or google_chat_requires_jwt(c, production=production)):
+            required = [(c.webhook_secret_env,) if production else (c.channel_token_env, c.webhook_secret_env)]
+        # Google's JWT format, but no key Google publishes: refused at the key lookup,
+        # since reaching the RS256 comparison would need one of Google's current key ids.
+        claims = {"iss": GOOGLE_CHAT_ISSUER, "aud": str(c.project_number or ""), "iat": int(now), "exp": int(now) + 3600}
+        segments = [
+            json.dumps({"alg": "RS256", "kid": secrets.token_hex(20), "typ": "JWT"}).encode("utf-8"),
+            json.dumps(claims).encode("utf-8"),
+            os.urandom(256),
+        ]
+        jwt = ".".join(base64.urlsafe_b64encode(segment).rstrip(b"=").decode("ascii") for segment in segments)
+        channel_token: _Delivery = ({"x-goog-channel-token": secrets.token_urlsafe(32)}, {}, body)
+        return required, [({"authorization": "Bearer " + jwt}, {}, body), channel_token, bridge()]
+    # dingtalk, x, signal, imessage and qq accept the bridge HMAC only.
+    return [(c.webhook_secret_env,)], [bridge()]
+
+
+def _delivery_outcome(guard: WebhookGuard, channel: str, adapter: Any, headers: dict[str, str], query: dict[str, str], body: bytes) -> str:
+    try:
+        request = cast(Request, _SelfTestRequest(headers, query))  # headers and query_params only
+        guard.verify_required_signature(channel, adapter, request, body, json.loads(body))
+    except Exception as exc:  # any refusal counts; the route turns it into 403 or 500
+        return f"refused ({type(exc).__name__})"
+    return "ACCEPTED"
 
 
 def self_test_webhook_signatures(cfg: AppConfig, runtime, environ=None) -> dict:
     """Check, through the live verification path, that inbound webhooks need a valid signature.
 
-    For every enabled inbound channel: the secret variables it is configured with
-    must be set, and an unsigned delivery and one signed with a wrong secret must
-    both be refused by WebhookGuard.verify_required_signature, the code the
-    webhook routes run. Accepting a correctly signed delivery needs each
-    provider's signing key and is covered by the channel tests, not here.
+    For every enabled inbound channel: the secrets its verification reads must be
+    set (see _signature_checks), and an unsigned delivery and wrongly signed ones
+    in the provider's format must all be refused by
+    WebhookGuard.verify_required_signature, the code the webhook routes run.
+    Accepting a correctly signed delivery needs each provider's signing key and is
+    covered by the channel tests, not here.
     """
-    import secrets as _secrets
+    from omnidesk_agent.validation.production import is_production_mode
 
     env = os.environ if environ is None else environ
     guard = WebhookGuard(cfg, runtime)
     enforced = bool(getattr(cfg.gateway, "require_webhook_signatures", True))
+    production = is_production_mode(cfg, env)
     channels: dict[str, dict] = {}
     for route_channel, (config_attr, adapter_key) in SELF_TEST_CHANNELS.items():
         channel_cfg = getattr(cfg.channels, config_attr, None)
         if channel_cfg is None or not bool(getattr(channel_cfg, "enabled", False)):
             continue
-        missing = [
-            str(getattr(channel_cfg, field))
-            for field in type(channel_cfg).model_fields
-            if field.endswith("_env") and getattr(channel_cfg, field) and not str(env.get(str(getattr(channel_cfg, field)), "")).strip()
-        ]
         adapter = getattr(runtime, "adapters", {}).get(adapter_key)
-        body = json.dumps({"omnidesk_selftest": _secrets.token_hex(8)}).encode("utf-8")
-        forged = "sha256=" + hmac.new(_secrets.token_bytes(32), body, hashlib.sha256).hexdigest()
-        attempts = {
-            "unsigned": {},
-            "wrong_secret": {
-                "x-omnidesk-webhook-signature-256": forged,
-                "x-hub-signature-256": forged,
-                "x-telegram-bot-api-secret-token": _secrets.token_hex(16),
-                "x-line-signature": _secrets.token_hex(16),
-            },
+        body = json.dumps({"omnidesk_selftest": secrets.token_hex(8)}).encode("utf-8")
+        required, forged = _signature_checks(route_channel, channel_cfg, env, production, body)
+        missing = [" or ".join(names) for names in required if not any(str(env.get(name, "")).strip() for name in names)]
+        wrong = {_delivery_outcome(guard, route_channel, adapter, *delivery) for delivery in forged}
+        results = {
+            "unsigned": _delivery_outcome(guard, route_channel, adapter, {}, {}, body),
+            "wrong_secret": "ACCEPTED" if "ACCEPTED" in wrong else ", ".join(sorted(wrong)),
         }
-        results = {}
-        for name, headers in attempts.items():
-            try:
-                request = cast(Request, _SelfTestRequest(headers))  # headers and query_params only
-                guard.verify_required_signature(route_channel, adapter, request, body, json.loads(body))
-            except Exception as exc:  # any refusal counts; the route turns it into 403 or 500
-                results[name] = f"refused ({type(exc).__name__})"
-            else:
-                results[name] = "ACCEPTED"
         ok = enforced and not missing and adapter is not None and all(v.startswith("refused") for v in results.values())
         channels[route_channel] = {"ok": ok, "missing_env": missing, "adapter": adapter is not None, **results}
     ok = enforced and all(item["ok"] for item in channels.values())
