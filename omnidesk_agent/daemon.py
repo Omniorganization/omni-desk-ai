@@ -100,6 +100,7 @@ class OmniDeskRuntime:
             break_glass_enabled=cfg.permissions.break_glass_enabled,
         )
         self.memory = self.repository_factory.memory_store(cfg.memory_privacy)
+        self._configure_memory_retrieval()
         self.token_budget = self.repository_factory.token_budget_manager(
             TokenBudgetConfig(
                 max_input_chars=cfg.llm.max_input_chars,
@@ -152,6 +153,20 @@ class OmniDeskRuntime:
         self.reconnect_worker: ReconnectSyncWorker | None = None
         self._reconnect_task: asyncio.Task | None = None
 
+
+    def _configure_memory_retrieval(self) -> None:
+        settings = self.cfg.memory_retrieval
+        configure = getattr(self.memory, "configure_retrieval", None)
+        if not callable(configure):
+            if settings.embeddings_enabled:
+                raise RuntimeError("memory_retrieval.embeddings_enabled is supported by the SQLite memory store only")
+            return
+        embedder = None
+        if settings.embeddings_enabled:
+            from omnidesk_agent.memory.embeddings import SentenceTransformerEmbedder
+
+            embedder = SentenceTransformerEmbedder(settings.embedding_model, revision=settings.embedding_revision)
+        configure(settings, embedder=embedder)
 
     def _build_channel_adapters(self) -> dict:
         production = is_production_mode(self.cfg)
