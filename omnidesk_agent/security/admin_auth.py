@@ -199,6 +199,44 @@ class AdminAuth:
         if self.audit_chain is not None:
             self.audit_chain.append(event, payload)
 
+    def record_device_request(
+        self,
+        *,
+        verified: bool,
+        device_id: str,
+        actor: str,
+        method: str,
+        path: str,
+        reason: str = "",
+        device_type: str = "",
+        client_host: str = "",
+    ) -> None:
+        """Audit a device-signed request in the chained admin audit log.
+
+        AppSync calls this after it has checked a device signature, for every
+        refused signature and for every verified request that changes state
+        (task claims and reports, approval decisions, key and registration
+        operations), never for heartbeats or reads. The entry records the
+        device, the actor, the method and path without its query, and for a
+        refusal the reason; it never records the signature or the body.
+
+        Raises AuditIntegrityError when the entry cannot be written. A verified
+        state change must then be refused, because it is not on the record. A
+        refused request stays refused.
+        """
+        self.audit_event(
+            "device_request.verified" if verified else "device_request.rejected",
+            {
+                "device_id": str(device_id or "")[:128],
+                "actor": self._sanitize_actor(str(actor or "")),
+                "device_type": str(device_type or "")[:32],
+                "method": str(method or "").upper()[:10],
+                "path": str(path or "").split("?", 1)[0][:200],
+                "client_host": str(client_host or "")[:64],
+                **({} if verified else {"reason": str(reason or "")[:200]}),
+            },
+        )
+
     async def verify_request(self, request: Any, required_role: str = "viewer", *, audit_best_effort: bool = False) -> AdminAuthDecision:
         host = getattr(getattr(request, "client", None), "host", None)
         path = str(getattr(getattr(request, "url", None), "path", ""))
