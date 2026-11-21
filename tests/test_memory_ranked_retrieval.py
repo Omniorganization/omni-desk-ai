@@ -9,11 +9,17 @@ paraphrased English and Chinese tasks and hold the ranking to a floor.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
+import types
 
 import pytest
 
-from omnidesk_agent.config import MemoryPrivacyConfig, MemoryRetrievalConfig
+from omnidesk_agent.config import AppConfig, MemoryPrivacyConfig, MemoryRetrievalConfig
+from omnidesk_agent.daemon import OmniDeskRuntime
+from omnidesk_agent.learning.experience_extractor import ExperienceExtractor
+from omnidesk_agent.memory import experience as experience_module
 from omnidesk_agent.memory.embeddings import SentenceTransformerEmbedder, cosine
 from omnidesk_agent.memory.experience import ExperienceStore
 from omnidesk_agent.memory.retrieval import bm25_scores, matches_memory_query, rank_memory_rows, tokenize
@@ -117,6 +123,50 @@ def test_paraphrased_english_and_chinese_tasks_find_their_memory(store):
     assert old_recall <= 0.2 and recall - old_recall >= 0.7, (old_recall, old_mrr)
 
 
+def _runtime_memory(goal: str, *, channel: str, ok: bool = True) -> dict:
+    """A memory as the orchestrator writes it: ExperienceExtractor output tagged with the channel."""
+    steps = [{"tool": "files", "action": "write_text", "risk": "medium"}, {"tool": "shell", "action": "run", "risk": "high"}]
+    results = [{"ok": ok, "summary": "done" if ok else "", "error": None if ok else "ToolError: exit 1"}]
+    run = {"status": "completed" if ok else "failed", "goal": goal, "steps": steps, "results": results}
+    return ExperienceExtractor().extract(task=goal, plan={"steps": steps}, run_result=run, tags=[channel])
+
+
+# Share no content word with any memory above; some are made of words every runtime memory carries.
+UNRELATED = [
+    "plan a trip to Kyoto",
+    "bake a birthday cake for Anna",
+    "订去成都的火车票",
+    "给妈妈打个电话",
+    "message them on telegram",  # the channel tag
+    "reuse the successful plan",  # the advice on every success
+    "use shell and write_text",  # tool names
+    "code_or_upgrade general",  # task types
+]
+
+
+def test_runtime_memories_are_found_by_their_content_not_by_shared_boilerplate(store):
+    # Every runtime memory carries the channel tag, the tools used and fixed advice. Matching
+    # on those put unrelated memories into the planner prompt for most tasks.
+    ids = {}
+    for n, (key, goal) in enumerate(MEMORIES):
+        ids[store.add_experience(_runtime_memory(goal, channel="telegram", ok=n % 3 != 0), channel="telegram", actor=ACTOR)] = key
+
+    ranked = [[ids[row["id"]] for row in store.retrieve_for_task(query, limit=4, channel="telegram", actor=ACTOR)] for query, _ in QUERIES]
+    recall, mrr = _metrics(ranked, [want for _query, want in QUERIES])
+    assert recall >= 0.9 and mrr >= 0.8, (recall, mrr, ranked)
+    for query in UNRELATED:
+        assert store.retrieve_for_task(query, limit=4, channel="telegram", actor=ACTOR) == [], query
+
+
+def test_fields_every_runtime_memory_shares_do_not_make_it_relevant():
+    for ok in (True, False):
+        row = {**_runtime_memory("Water the office plants", channel="telegram", ok=ok), "id": 1, "channel": "telegram", "updated_at": 1.0}
+        boilerplate = [row["recommended_next_action"], " ".join(row["solution_attempted"]), row["task_type"], "telegram"]
+        for query in boilerplate:
+            assert rank_memory_rows([row], query, 4) == [], query
+        assert rank_memory_rows([row], "water the plants", 4) == [row]
+
+
 def test_ranking_puts_the_closest_memory_first_not_the_newest(store):
     store.add_experience(_experience("Email the finance team the quarterly sales summary"), channel=CHANNEL, actor=ACTOR)
     time.sleep(0.01)
@@ -153,6 +203,36 @@ def test_retired_and_expired_memories_are_not_ranked(store):
     store.add_experience(_experience("Rotate the API logs nightly", expires_at=time.time() - 1), channel=CHANNEL, actor=ACTOR)
 
     assert [r["id"] for r in store.retrieve_for_task("rotate api logs", limit=4, channel=CHANNEL, actor=ACTOR)] == [active]
+
+
+def test_a_memory_blocked_while_it_is_ranked_is_neither_returned_nor_touched(store, monkeypatch):
+    # Ranking runs outside the write lock (with embeddings it can take seconds); each pick is
+    # re-checked under it. A curator who blocks the memory meanwhile must win.
+    blocked = store.add_experience(_experience("Rotate the API logs nightly"), channel=CHANNEL, actor=ACTOR)
+    rank = experience_module.rank_memory_rows
+
+    def rank_then_block(*args, **kwargs):
+        ranked = rank(*args, **kwargs)
+        store.update_memory_review(blocked, memory_status="blocked", confidence=0.0, reason="curator")
+        return ranked
+
+    monkeypatch.setattr(experience_module, "rank_memory_rows", rank_then_block)
+    assert store.retrieve_for_task("rotate api logs", limit=4, channel=CHANNEL, actor=ACTOR) == []
+    assert store.conn.execute("SELECT last_used_at FROM structured_experiences WHERE id=?", (blocked,)).fetchone()[0] is None
+
+
+def test_a_returned_memory_carries_its_review_status_from_under_the_lock(store, monkeypatch):
+    promoted = store.add_experience(_experience("Rotate the API logs nightly", memory_status="candidate"), channel=CHANNEL, actor=ACTOR)
+    rank = experience_module.rank_memory_rows
+
+    def rank_then_promote(*args, **kwargs):
+        ranked = rank(*args, **kwargs)
+        store.update_memory_review(promoted, memory_status="trusted", confidence=0.9, reason="curator")
+        return ranked
+
+    monkeypatch.setattr(experience_module, "rank_memory_rows", rank_then_promote)
+    rows = store.retrieve_for_task("rotate api logs", limit=4, channel=CHANNEL, actor=ACTOR)
+    assert [(row["id"], row["memory_status"]) for row in rows] == [(promoted, "trusted")]
 
 
 def test_retrieval_marks_only_returned_memories_as_used(store):
@@ -224,14 +304,119 @@ def test_embedding_cache_is_encrypted_with_the_memory(tmp_path, monkeypatch):
     assert "vector" not in payload and "sha256" not in payload
 
 
-def test_embeddings_need_an_embedder_and_the_extra():
+def test_a_purged_memory_takes_its_cached_embedding_with_it(tmp_path):
+    with ExperienceStore(tmp_path / "memory.sqlite3") as memory:
+        memory.configure_retrieval(MemoryRetrievalConfig(embeddings_enabled=True), embedder=FakeEmbedder())
+        expiring = memory.add_experience(_experience("Get the car repaired", expires_at=time.time() + 3600), channel=CHANNEL, actor=ACTOR)
+        kept = memory.add_experience(_experience("Wash the car"), channel=CHANNEL, actor=ACTOR)
+        memory.retrieve_for_task("fix my car", limit=2, channel=CHANNEL, actor=ACTOR)
+        cached = lambda: sorted(r[0] for r in memory.conn.execute("SELECT experience_id FROM structured_experience_embeddings"))  # noqa: E731
+        assert cached() == sorted([expiring, kept])
+
+        memory.purge_expired(dry_run=False, now=time.time() + 7200)
+        assert cached() == [kept]  # derived from the memory text: it must not outlive the memory
+
+
+def test_embeddings_need_an_embedder():
     with pytest.raises(ValueError):
         ExperienceStore.configure_retrieval(object.__new__(ExperienceStore), MemoryRetrievalConfig(embeddings_enabled=True))  # type: ignore[arg-type]
+
+
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+class RecordingSentenceTransformer:
+    calls: list = []
+
+    def __init__(self, *args, **kwargs):
+        type(self).calls.append((args, kwargs, os.environ.get("HF_HUB_OFFLINE")))
+
+    def encode(self, texts, normalize_embeddings=True):
+        return [[1.0, 0.0] for _ in texts]
+
+
+@pytest.fixture
+def sentence_transformers_stub(monkeypatch):
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = RecordingSentenceTransformer  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+    monkeypatch.setattr(RecordingSentenceTransformer, "calls", [])
+    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(name, raising=False)
+    return RecordingSentenceTransformer
+
+
+def test_the_embedding_model_loads_from_local_files_only_at_a_pinned_commit(sentence_transformers_stub):
+    # The daemon must not download a model, nor silently move to a new upstream revision.
+    embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2", revision=COMMIT)
+    assert sentence_transformers_stub.calls == [(("sentence-transformers/all-MiniLM-L6-v2",), {"revision": COMMIT, "local_files_only": True}, "1")]
+    # Cached vectors are keyed by model and revision: another revision is another vector space.
+    assert embedder.model_name == f"sentence-transformers/all-MiniLM-L6-v2@{COMMIT}"
+
+
+@pytest.mark.parametrize("revision", ["", "main", "v1.0", COMMIT[:12]])
+def test_a_hub_model_without_a_pinned_commit_is_refused(sentence_transformers_stub, revision):
+    with pytest.raises(ValueError, match="embedding_revision"):
+        SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2", revision=revision)
+    assert sentence_transformers_stub.calls == []
+
+
+def test_a_local_model_directory_needs_no_revision(sentence_transformers_stub, tmp_path):
+    embedder = SentenceTransformerEmbedder(str(tmp_path))
+    assert sentence_transformers_stub.calls == [((str(tmp_path),), {"revision": None, "local_files_only": True}, "1")]
+    assert embedder.model_name == str(tmp_path)
+
+
+def test_a_model_missing_from_the_local_cache_fails_with_a_fetch_hint(sentence_transformers_stub, monkeypatch):
+    def missing(self, *args, **kwargs):
+        raise OSError("not in the local cache")
+
+    monkeypatch.setattr(sentence_transformers_stub, "__init__", missing)
+    with pytest.raises(RuntimeError, match="not available locally"):
+        SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2", revision=COMMIT)
+
+
+def test_without_the_vector_extra_the_error_names_it(monkeypatch):
+    monkeypatch.setitem(sys.modules, "sentence_transformers", None)  # import fails, installed or not
+    with pytest.raises(RuntimeError, match="vector"):
+        SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2", revision=COMMIT)
+
+
+def _runtime(cfg: AppConfig, memory) -> OmniDeskRuntime:
+    runtime = object.__new__(OmniDeskRuntime)
+    runtime.cfg = cfg
+    runtime.memory = memory
+    return runtime
+
+
+def test_in_offline_mode_the_daemon_configures_embeddings_without_network(sentence_transformers_stub, tmp_path):
+    cfg = AppConfig.model_validate({
+        "runtime": {"offline_mode": True, "deny_external_services_in_offline_mode": True, "offline_cache_root": str(tmp_path / "offline-cache")},
+        "memory_retrieval": {"embeddings_enabled": True, "embedding_revision": COMMIT, "candidate_window": 50},
+    })
+    cfg.workspace.root = tmp_path
+    cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+    cfg.workspace.skills_dirs = [tmp_path / "skills"]
+    cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
+    cfg.permissions.audit_log = tmp_path / "audit.log"
+    cfg.channels.gmail.credentials_file = tmp_path / "google" / "credentials.json"
+    cfg.channels.gmail.token_file = tmp_path / "google" / "token.json"
+    cfg.learning.growth_plan_file = tmp_path / "growth_plan.json"
+    cfg.ensure_dirs()
+    runtime = OmniDeskRuntime(cfg)
     try:
-        import sentence_transformers  # noqa: F401
-    except ImportError:
-        with pytest.raises(RuntimeError, match="vector"):
-            SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
+        assert runtime.memory.retrieval.candidate_window == 50 and runtime.memory.embedder is not None
+    finally:
+        runtime.close()
+    [(_args, kwargs, hub_offline)] = sentence_transformers_stub.calls
+    assert kwargs["local_files_only"] is True and hub_offline == "1"
+
+
+def test_embeddings_are_refused_on_a_store_that_cannot_rank_with_them():
+    off, on = AppConfig(), AppConfig.model_validate({"memory_retrieval": {"embeddings_enabled": True, "embedding_revision": COMMIT}})
+    _runtime(off, object())._configure_memory_retrieval()  # nothing to configure
+    with pytest.raises(RuntimeError, match="SQLite memory store only"):
+        _runtime(on, object())._configure_memory_retrieval()
 
 
 def test_tokenizer_handles_cjk_runs_stems_and_stopwords():

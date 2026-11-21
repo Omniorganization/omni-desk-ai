@@ -579,12 +579,13 @@ class MemoryPrivacyConfig(BaseModel):
 
 class MemoryRetrievalConfig(BaseModel):
     """Planner memory retrieval: BM25 ranking of the actor's memories, optionally
-    blended with embedding similarity (local model, `vector` extra)."""
+    blended with embedding similarity (a model loaded from local files, `vector` extra)."""
 
     candidate_window: int = Field(default=500, ge=10, le=5000)  # most recent memories ranked
     fts_candidates: int = Field(default=200, ge=0, le=2000)  # older full-text matches added
     embeddings_enabled: bool = False
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"  # Hugging Face id or local directory
+    embedding_revision: str = ""  # the model's commit; required for a Hugging Face id
     embedding_weight: float = Field(default=0.5, ge=0, le=1)
     min_embedding_similarity: float = Field(default=0.35, ge=0, le=1)
 

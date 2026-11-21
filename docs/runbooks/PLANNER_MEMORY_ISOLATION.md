@@ -13,12 +13,15 @@ Local `experience-search` is an explicit operator diagnostic using
 context. Custom memory integrations must implement the scoped retrieval API.
 The planners do not fall back to a global legacy search.
 
-Scoped retrieval returns at most 100 matches from up to 1000 recent eligible
-owner records. Query terms are literal, case-insensitive tokens. This bounded
-context selection is not an exhaustive archive search or a semantic index.
-SQLite uses a separate immediate transaction for the read/touch operation;
-PostgreSQL rechecks the locked current row before touching or returning it,
-preserving concurrent curator decisions.
+Scoped retrieval returns at most 100 memories. SQLite ranks the owner's 500
+most recent eligible records plus up to 200 older full-text matches (BM25 over
+the goal, failure reason and own tags, optionally blended with embeddings; see
+`docs/MEMORY_RETRIEVAL.md`). PostgreSQL keeps records containing every literal,
+case-insensitive query token, from up to 1000 recent eligible owner records.
+Neither is an exhaustive archive search. Both stores re-check each pick under
+the write lock before touching or returning it (SQLite in an immediate
+transaction after ranking, PostgreSQL on the locked current row), preserving
+concurrent curator decisions.
 
 PostgreSQL token accounting now counts all usage records for a task with a
 parameterized SQL aggregate. It no longer invokes the SQLite parent method on
@@ -36,8 +39,9 @@ exactly-once effects still depend on the provider's idempotency contract.
 
 `test_planner_memory_boundaries.py` covers both storage backends, encrypted
 rows, missing/foreign identity, expiry/review filters before decoding, a
-concurrent curator block, planner request contents, call-cap behavior and the
-sent-state race. Three controls execute against immutable baseline
+concurrent curator block (PostgreSQL there; SQLite in
+`test_memory_ranked_retrieval.py`), planner request contents, call-cap behavior
+and the sent-state race. Three controls execute against immutable baseline
 `41cca0af821d45a98216dfc20a8e32903e2c4f23` in GitHub Actions and must fail there.
 The real PostgreSQL job verifies cross-instance counting beyond 1000 rows and
 owner selection despite 1005 newer foreign records.
