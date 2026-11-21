@@ -203,6 +203,25 @@ def test_a_proposal_held_for_review_can_still_reach_canary_with_shadow_evidence(
     gov.close()
 
 
+def test_a_proposal_a_human_rejected_never_reaches_canary(tmp_path):
+    # Coordinator review on #226: the HUMAN_REVIEW -> CANARY continuation must not
+    # override a human rejection, in the governance record or in the canary flag.
+    gov = _governance(tmp_path)
+    proposal = _proposal(gov)
+    asyncio.run(gov.evaluate_proposal(proposal.proposal_id, allow_canary=True))  # no shadow: HUMAN_REVIEW
+    gov.record_human_feedback(proposal.proposal_id, "rejected", "do not ship", reviewer="owner@example.com")
+
+    result = asyncio.run(gov.evaluate_proposal(
+        proposal.proposal_id, allow_canary=True,
+        stable_plan={"steps": [{"risk": "medium"}, {"risk": "medium"}]}, shadow_plan={"steps": [{"risk": "low"}]},
+    ))
+    assert result["evaluation"]["canary_result"] == {"enabled": False, "reason": "canary_refused_after_human_rejection"}
+    assert result["verdict"] != "canary_enabled"
+    assert gov.proposal_store.get(proposal.proposal_id).metadata["state"] == "HUMAN_REVIEW"
+    assert not (tmp_path / "ws" / "canary_state.json").exists()
+    gov.close()
+
+
 def test_canary_state_is_not_written_when_canary_is_unreachable(tmp_path):
     gov = _governance(tmp_path)
     proposal = _proposal(gov)
