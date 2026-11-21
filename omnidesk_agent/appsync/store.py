@@ -1581,6 +1581,123 @@ class AppSyncStore:
             self._persist()
             return {"conversation_id": conversation_id, "deleted": deleted}
 
+    # --- data-subject requests (privacy/data_subject.py; rules in subject_data.py)
+
+    def _subject_scope_locked(self, actor: str) -> dict[str, set[str]]:
+        """Ids of the actor's records, and of the records about them."""
+        from omnidesk_agent.appsync import subject_data as subject
+
+        conversations = {key for key, item in self.conversations.items() if item.actor == actor}
+        tasks = {key for key, item in self.tasks.items() if item.actor == actor}
+        approvals = {key for key, item in self.approvals.items() if item.requested_by == actor or item.task_id in tasks}
+        devices = {key for key, item in self.devices.items() if item.actor == actor}
+        related = conversations | tasks | approvals | devices
+        operations = {key for key, item in self.local_outbox.items() if item.actor == actor or subject.references(item.payload, related)}
+        cursors = {key for key, item in self.sync_cursors.items() if item.actor == actor}
+        return {
+            "conversations": conversations, "tasks": tasks, "approvals": approvals, "devices": devices,
+            "operations": operations, "cursors": cursors, "related": related,
+        }
+
+    @staticmethod
+    def _subject_log_entry(entry: dict[str, Any], scope: dict[str, set[str]]) -> bool:
+        """An operation-log entry about the actor's offline operations or sync cursors."""
+        payload = entry.get("payload") or {}
+        return payload.get("operation_id") in scope["operations"] or payload.get("cursor_id") in scope["cursors"]
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """What this store holds about ``actor``: the records an erasure deletes or anonymises."""
+        from omnidesk_agent.appsync import subject_data as subject
+
+        with self._lock:
+            scope = self._subject_scope_locked(actor)
+            related, devices = scope["related"], scope["devices"]
+            records: list[dict[str, Any]] = [subject.exported("user", self.users[actor])] if actor in self.users else []
+            records += [subject.exported("device", self.devices[key]) for key in sorted(devices)]
+            records += [subject.exported("runtime", item) for key, item in self.runtimes.items() if key in devices]
+            records += [subject.exported("conversation", self.conversations[key]) for key in sorted(scope["conversations"])]
+            records += [subject.exported("message", item) for item in self.messages.values() if item.actor == actor or item.conversation_id in scope["conversations"]]
+            records += [subject.exported("task", self.tasks[key]) for key in sorted(scope["tasks"])]
+            records += [subject.exported("approval", self.approvals[key]) for key in sorted(scope["approvals"])]
+            records += [subject.exported_decision(item, actor) for key, item in self.approvals.items() if key not in scope["approvals"] and subject.decided_by(item, actor)]
+            records += [subject.exported("notification", item) for item in self.notifications.values() if item.related_id in related]
+            records += [subject.exported("push", item) for item in self.push_outbox.values() if item.device_id in devices or item.related_id in related]
+            records += [subject.exported("device_enrollment", item) for item in self.device_enrollments.values() if item.requested_by == actor]
+            records += [subject.exported("local_outbox", self.local_outbox[key]) for key in sorted(scope["operations"])]
+            records += [subject.exported("local_inbox", item) for item in self.local_inbox.values() if subject.inbox_about(item, actor, related)]
+            records += [subject.exported("sync_cursor", item) for item in self.sync_cursors.values() if item.actor == actor]
+            records += [subject.exported("sync_conflict", item) for item in self.sync_conflicts.values() if subject.conflict_about(item, actor, related)]
+            records += [subject.exported("operation_log", entry) for entry in self.operation_log if self._subject_log_entry(entry, scope)]
+            records += [subject.exported("sync_event", event) for event in self.events if event.get("actor") == actor]
+            records += [subject.exported_idempotency(row) for row in self.idempotency.values() if row.get("actor") == actor]
+            records += [subject.exported("project", project) for project in self._subject_projects().export_subject(actor)]
+            return records
+
+    def erase_subject(self, actor: str) -> int:
+        """Delete or anonymise what this store holds about ``actor``; returns how many records."""
+        from omnidesk_agent.appsync import subject_data as subject
+
+        with self._lock:
+            scope = self._subject_scope_locked(actor)
+            related, devices, now = scope["related"], scope["devices"], _now()
+
+            def drop(table: dict[str, Any], doomed: Callable[[str, Any], bool]) -> int:
+                keys = [key for key, value in table.items() if doomed(key, value)]
+                for key in keys:
+                    del table[key]
+                return len(keys)
+
+            count = sum((
+                drop(self.messages, lambda _k, item: item.actor == actor or item.conversation_id in scope["conversations"]),
+                drop(self.conversations, lambda key, _v: key in scope["conversations"]),
+                drop(self.tasks, lambda key, _v: key in scope["tasks"]),
+                drop(self.notifications, lambda _k, item: item.related_id in related),
+                drop(self.push_outbox, lambda _k, item: item.device_id in devices or item.related_id in related),
+                drop(self.runtimes, lambda key, _v: key in devices),
+                drop(self.local_outbox, lambda key, _v: key in scope["operations"]),
+                drop(self.local_inbox, lambda _k, item: subject.inbox_about(item, actor, related)),
+                drop(self.sync_cursors, lambda _k, item: item.actor == actor),
+                drop(self.sync_conflicts, lambda _k, item: subject.conflict_about(item, actor, related)),
+                drop(self.idempotency, lambda _k, row: row.get("actor") == actor),
+                drop(self.users, lambda key, _v: key == actor),
+            ))
+            entries = len(self.operation_log)
+            self.operation_log = [entry for entry in self.operation_log if not self._subject_log_entry(entry, scope)]
+            count += entries - len(self.operation_log)
+            for key in devices:
+                subject.erase_device(self.devices[key], now=now)
+            count += len(devices)
+            # Notifications the actor caused on someone else's records stay with those records.
+            for notification in self.notifications.values():
+                if notification.actor == actor:
+                    notification.actor = subject.ERASED_ACTOR
+                    count += 1
+            for enrollment in self.device_enrollments.values():
+                if enrollment.requested_by == actor:
+                    subject.erase_enrollment(enrollment)
+                    count += 1
+            # Approvals stay, without the person; what they left pending is withdrawn.
+            for approval in self.approvals.values():
+                requested = approval.approval_id in scope["approvals"]
+                if requested:
+                    subject.erase_request(approval, actor=actor, now=now)
+                count += int(subject.erase_decision(approval, actor=actor) or requested)
+            for event in self.events:
+                raw = event.get("payload")
+                payload: dict[str, Any] = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+                scrubbed = subject.scrubbed_event(str(event.get("actor") or ""), payload, actor=actor, erased_ids=related)
+                if scrubbed is not None:
+                    event["actor"], event["payload"] = scrubbed
+                    count += 1
+            self._persist()
+            return count + self._subject_projects().erase_subject(actor)
+
+    def _subject_projects(self) -> Any:
+        """The project store kept beside this one (GatewayProjectStore)."""
+        from omnidesk_agent.appsync.projects import GatewayProjectStore
+
+        return GatewayProjectStore(cast(Any, self))
+
     def _conversation_owner(self, conversation_id: str) -> Optional[str]:
         conversation = self.conversations.get(conversation_id)
         return conversation.actor if conversation else None

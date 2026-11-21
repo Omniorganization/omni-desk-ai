@@ -599,6 +599,81 @@ class GatewayProjectStore:
                 response=response,
             )
 
+    # --- data-subject requests (privacy/data_subject.py, through the AppSync stores)
+
+    def export_subject(self, actor: str) -> list[dict[str, Any]]:
+        """Projects ``actor`` owns, in any organization, deleted ones included."""
+        if self._postgres_enabled:
+            backend: Any = self.app_sync  # the PostgreSQL store: it has _connect and a namespace
+            with backend._connect() as conn:  # noqa: SLF001 - same package boundary
+                self._ensure_postgres_schema(conn)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT project_id, name, description, owner_actor, organization_id, source_device_id,
+                            metadata, archived, created_at, updated_at, deleted_at
+                        FROM omnidesk_appsync_projects
+                        WHERE namespace=%s AND owner_actor=%s
+                        ORDER BY created_at
+                        """,
+                        (backend.namespace, actor),
+                    )
+                    return [self._project_from_row(row) for row in cur.fetchall()]
+        if not self.path.exists():
+            return []
+        with self._local_store_guard():
+            return [dict(project) for project in self._load().values() if project.get("owner_actor") == actor]
+
+    def erase_subject(self, actor: str) -> int:
+        """The actor's projects stay with their organization, owned by ``[erased]``; returns how many.
+
+        Every operation on a project is scoped by organization, so nothing about
+        it depends on its owner. The local store's backups hold earlier versions
+        of the file, so they are rewritten as well.
+        """
+        from omnidesk_agent.appsync.subject_data import ERASED_ACTOR
+
+        if self._postgres_enabled:
+            backend: Any = self.app_sync  # the PostgreSQL store: it has _connect and a namespace
+            with backend._connect() as conn:  # noqa: SLF001 - same package boundary
+                self._ensure_postgres_schema(conn)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE omnidesk_appsync_projects SET owner_actor=%s WHERE namespace=%s AND owner_actor=%s",
+                        (ERASED_ACTOR, backend.namespace, actor),
+                    )
+                    return int(cur.rowcount or 0)
+        if not self.path.exists():
+            return 0
+        with self._local_store_guard():
+            projects = self._load()
+            owned = [key for key, project in projects.items() if project.get("owner_actor") == actor]
+            for key in owned:
+                projects[key]["owner_actor"] = ERASED_ACTOR
+            if owned:
+                self._persist(projects)
+            self._erase_from_backups(actor, ERASED_ACTOR)
+            return len(owned)
+
+    def _erase_from_backups(self, actor: str, replacement: str) -> None:
+        for index in range(1, PROJECT_STORE_BACKUP_COUNT + 1):
+            path = Path(f"{self.path}.bak.{index}")
+            if not path.is_file() or actor not in path.read_text(encoding="utf-8", errors="replace"):
+                continue
+            try:
+                projects = self._read_store_file(path)
+            except ProjectStoreCorruptionError:
+                # Unreadable, so no recovery could use it, and it names the actor.
+                path.unlink()
+                continue
+            for project in projects.values():
+                if project.get("owner_actor") == actor:
+                    project["owner_actor"] = replacement
+            self._write_json_atomically(
+                path,
+                {"schema_version": PROJECT_STORE_SCHEMA_VERSION, "checksum": self._projects_checksum(projects), "projects": projects},
+            )
+
     def list_projects(self, *, actor: str, include_deleted: bool = False) -> list[dict[str, Any]]:
         if self._postgres_enabled:
             return self._postgres_list_projects(actor=actor, include_deleted=include_deleted)

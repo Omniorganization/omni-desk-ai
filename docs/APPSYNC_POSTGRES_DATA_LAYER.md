@@ -162,6 +162,36 @@ Sync events are pruned by sequence number: the watermark (`pruned_through`) is
 committed before any event is deleted, so a reader below it is reset rather than
 moved silently past the gap.
 
+## Data-subject export and erasure
+
+Security's privacy service (`privacy/data_subject.py`) calls
+`export_subject(actor)` and `erase_subject(actor)` on `rt.app_sync`. Both stores
+apply the rules in `appsync/subject_data.py`. Matching is by actor id, and the
+PostgreSQL store erases in one transaction. An export lists what an erasure
+deletes or anonymises, and never includes a credential: no push target, token
+hash or pairing code hash.
+
+| Records | Erasure |
+|---|---|
+| User profile, conversations, messages, chat requests and their stream events | Deleted |
+| The person's tasks | Deleted. A desktop still holding one gets "task not found" when it reports, so nothing is written back |
+| Approvals they requested, or that gate their tasks | Kept without the person, by security's one rule for approvals in every store (`SECURITY.md`): requester `[erased]`, content withheld (an agent step's proposal keeps only its structural fields and `*_sha256`/`*_length` arguments, as the ledger's does, and any free text such as a planner's reason is dropped and named in `fields_withheld`; a desktop task's action keeps only its capability). A pending one is withdrawn: rejected, "requester erased". The ledger applies the same rule to its own rows |
+| Notifications and pushes about these records and those approvals; pushes and runtime status of their devices | Deleted |
+| Offline-sync outbox, inbox, cursors, conflicts, their operation-log entries; idempotency replays | Deleted |
+| Their devices | Kept, revoked for good: no verification, registration or push again. Name and push token removed, actor `[erased]` |
+| Device enrollments they started | `requested_by` becomes `[erased]`. One not completed is revoked, so its pairing code cannot enrol a device |
+| Approvals they decided for someone else | `decided_by`/`approved_by` become `[erased]`, and their reason is removed. On a pending approval their partial approval is withdrawn: an approver nobody can identify must not count toward four eyes |
+| Notifications they caused on someone else's records | Actor becomes `[erased]` |
+| Projects they own | Kept with their organization; `owner_actor` becomes `[erased]`, also in the project store's local backups. Every project operation is scoped by organization, so the project stays usable |
+| Sync events | Numbers kept, so cursors stay valid. Actor `[erased]`. Events by the person or about an erased record keep only identifiers and states |
+
+Not covered:
+- the security audit logs, kept by design;
+- the PostgreSQL twins of the agent-core stores in `repositories/postgres_state.py` (#286);
+- the remote gateway, when erasing on a local-first daemon store: run the erasure on each;
+- backups taken before an erasure, until they are rotated out;
+- quarantined copies of a corrupt state file, kept for an operator to inspect.
+
 ## Approvals: four eyes
 
 `decide_approval` follows the same rule as the agent's own approvals (security, #224):
