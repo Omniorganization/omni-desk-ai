@@ -8,13 +8,22 @@ from typing import Any, Optional
 from omnidesk_agent.config import ModelProfileConfig, ModelsConfig
 from omnidesk_agent.core.token_budget import TokenBudgetManager
 from omnidesk_agent.models.base import ModelRequest, ModelResponse
-from omnidesk_agent.models.providers import PROVIDER_CLASSES, ProviderSettings
+from omnidesk_agent.models.providers import PROVIDER_CLASSES, ModelInputRejected, ProviderSettings
 from omnidesk_agent.models.cost_ledger import ModelCostLedger
 from omnidesk_agent.models.cost_store import ModelCostStore
 from omnidesk_agent.models.budget_policy import ModelBudgetEnforcer, ModelBudgetPolicy
 from omnidesk_agent.models.pricing import ModelPricingTable
 from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error, safe_error_text
 from omnidesk_agent.models.schema_retry import StructuredOutputError, build_repair_prompt, validate_json_text
+
+
+class ModelCallBlocked(RuntimeError):
+    """The local token guardrail refused the call before anything was sent."""
+
+
+# Refusals decided locally before any request leaves the process. They say
+# nothing about a provider's health and every profile would refuse them too.
+LOCAL_MODEL_REFUSALS = (ModelCallBlocked, ModelInputRejected)
 
 
 @dataclass
@@ -78,6 +87,7 @@ class ModelRouter:
         self.token_budget = token_budget
         self.providers = {name: self._build_provider(name, p) for name, p in cfg.profiles.items() if p.enabled}
         self._circuit: dict[str, dict[str, float]] = {}
+        self._forced_open: dict[str, tuple[float, str]] = {}
         if require_persistent_ledger and cost_store is None:
             raise RuntimeError("models.budget.require_persistent_ledger requires a configured model cost_store")
         self.cost_ledger = ModelCostLedger(store=cost_store)
@@ -255,6 +265,9 @@ class ModelRouter:
                 attempted.append(profile)
                 try:
                     return await self._complete_with_provider(request, profile, provider)
+                except LOCAL_MODEL_REFUSALS:
+                    # Not a provider failure: no circuit-breaker count, no fallback.
+                    raise
                 except Exception as exc:
                     last_error = exc
                     info = classify_provider_error(exc)
@@ -280,7 +293,7 @@ class ModelRouter:
             verified_required=request.verified_required,
         )
         if not decision.allowed:
-            raise RuntimeError(f"Model call blocked by token guardrail: {decision.reason}")
+            raise ModelCallBlocked(f"Model call blocked by token guardrail: {decision.reason}")
         cached = None if subscription else self.token_budget.get_cached(decision.cache_key or "")
         if cached is not None:
             return ModelResponse(text=cached, provider=getattr(provider, "provider_name", "cache"), model=getattr(provider, "model", "cache"), profile=profile, usage={"cache_hit": True})
@@ -364,6 +377,11 @@ class ModelRouter:
             return repaired
 
     def _circuit_open(self, profile: str, plan: RoutePlan) -> bool:
+        forced = self._forced_open.get(profile)
+        if forced is not None:
+            if time.time() - forced[0] < plan.reset_seconds:
+                return True
+            self._forced_open.pop(profile, None)
         state = self._circuit.get(profile)
         if not state:
             return False
@@ -383,6 +401,26 @@ class ModelRouter:
 
     def _record_success(self, profile: str) -> None:
         self._circuit.pop(profile, None)
+
+    def open_circuit(self, profile: str, *, reason: str) -> None:
+        """Open a profile's circuit now, for an operator or self-healing actuator.
+
+        It closes the way a tripped breaker does: after the route's reset_seconds.
+        """
+        if profile not in self.providers:
+            raise KeyError(f"model profile is not configured or is disabled: {profile}")
+        self._forced_open[profile] = (time.time(), str(reason)[:200])
+
+    def circuit_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Copy of the breaker state per profile; open/closed depends on each route's thresholds."""
+        snapshot: dict[str, dict[str, Any]] = {
+            profile: {"failures": int(state.get("failures", 0)), "last_failure_at": float(state.get("opened_at", 0.0)), "forced_open": False}
+            for profile, state in self._circuit.items()
+        }
+        for profile, (opened_at, reason) in self._forced_open.items():
+            entry = snapshot.setdefault(profile, {"failures": 0, "last_failure_at": None})
+            entry.update({"forced_open": True, "forced_at": opened_at, "forced_reason": reason})
+        return snapshot
 
     def close(self) -> None:
         close = getattr(self.cost_ledger, "close", None)

@@ -105,6 +105,7 @@ class OmniDeskRuntime:
                 max_input_chars=cfg.llm.max_input_chars,
                 max_output_tokens=cfg.llm.max_output_tokens,
                 per_task_max_llm_calls=cfg.llm.per_task_max_llm_calls,
+                per_task_window_seconds=cfg.llm.per_task_window_seconds,
                 cache_ttl_seconds=cfg.llm.cache_ttl_seconds,
                 enable_cache=cfg.llm.enable_cache,
                 require_approval_above_estimated_tokens=cfg.llm.require_approval_above_estimated_tokens,

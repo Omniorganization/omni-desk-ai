@@ -40,8 +40,10 @@ class ToolRegistry:
         }
 
     async def call(self, tool_name: str, action: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        tool = self.get(tool_name)
         try:
+            # Inside the try: a plan naming an unregistered tool is a failed step,
+            # not an exception that escapes the run.
+            tool = self.get(tool_name)
             result = await tool.call(action, args, ctx)
             self._metric("omnidesk_tool_calls_total", tool=tool_name, action=action, status="ok" if result.ok else "error")
             return result
