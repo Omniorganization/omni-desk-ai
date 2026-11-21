@@ -139,8 +139,11 @@ def test_outbound_stale_running_recovery(tmp_path: Path):
 
     assert store.recover_stale_running(lease_seconds=300) == 1
     row = store.get(outbound_id)
-    assert row["status"] == "retry"
-    assert row["retry_count"] == 1
+    # Telegram has no native idempotency: the interrupted send may have been
+    # delivered, so it waits for reconciliation instead of being sent twice.
+    assert row["status"] == "ambiguous"
+    assert row["error_category"] == "stale_running"
+    assert store.claim_next() is None
 
 class TimeoutAdapter:
     async def send_text(self, recipient: str, text: str, **kwargs):
