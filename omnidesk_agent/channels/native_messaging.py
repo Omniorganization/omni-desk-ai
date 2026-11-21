@@ -14,7 +14,7 @@ from omnidesk_agent.channels.channel_auth import CertFetcher, GoogleChatJwtVerif
 from omnidesk_agent.channels.bot_framework import BOT_FRAMEWORK_SCOPE, BotFrameworkJwtVerifier, token_endpoint as bot_framework_token_endpoint
 from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
 from omnidesk_agent.channels.idempotency import provider_retry_key
-from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success, token_step_failed
 from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
 from omnidesk_agent.config import (
     DiscordConfig,
@@ -507,12 +507,15 @@ class MicrosoftTeamsChannel:
             return self.bot_token or _require_env(self.cfg.bot_token_env, channel=self.name)
         if not refresh and self._access_token and self._access_token[1] > time.time() + 60:
             return self._access_token[0]
-        result = await self.http.post(
-            bot_framework_token_endpoint(self.tenant_id),
-            data={"grant_type": "client_credentials", "client_id": self.app_id, "client_secret": self.app_password, "scope": BOT_FRAMEWORK_SCOPE},
-            channel=self.name,
-            idempotent=True,
-        )
+        try:
+            result = await self.http.post(
+                bot_framework_token_endpoint(self.tenant_id),
+                data={"grant_type": "client_credentials", "client_id": self.app_id, "client_secret": self.app_password, "scope": BOT_FRAMEWORK_SCOPE},
+                channel=self.name,
+                idempotent=True,
+            )
+        except ChannelHttpError as exc:
+            raise token_step_failed(self.name, exc) from exc
         data = result.data if isinstance(result.data, dict) else {}
         token = data.get("access_token")
         if not isinstance(token, str) or not token:
@@ -529,10 +532,10 @@ class MicrosoftTeamsChannel:
         # configured value; a caller-supplied service_url kwarg is ignored.
         service_url = self.cfg.service_url
         if not service_url:
-            raise RuntimeError("Teams service_url is missing")
+            raise before_send(RuntimeError("Teams service_url is missing"), "config_error")
         recipient = str(recipient or "")
         if not recipient or any(ch in recipient for ch in "/?#") or any(ch.isspace() for ch in recipient):
-            raise PermissionError("Teams recipient must be a Bot Framework conversation id")
+            raise before_send(PermissionError("Teams recipient must be a Bot Framework conversation id"), "bad_request")
         url = f"{str(service_url).rstrip('/')}/v3/conversations/{recipient}/activities"
         body = {"type": "message", "text": text}
         for attempt in range(2):
@@ -760,8 +763,11 @@ class QQChannel:
         if self.bot_secret:
             if refresh or not self._access_token or self._access_token[1] <= time.time() + 60:
                 if not app_id:
-                    raise RuntimeError(f"qq required environment variable is missing: {self.cfg.bot_app_id_env}")
-                result = await self.http.post(QQ_ACCESS_TOKEN_URL, json={"appId": app_id, "clientSecret": self.bot_secret}, channel=self.name, idempotent=True)
+                    raise before_send(RuntimeError(f"qq required environment variable is missing: {self.cfg.bot_app_id_env}"), "config_error")
+                try:
+                    result = await self.http.post(QQ_ACCESS_TOKEN_URL, json={"appId": app_id, "clientSecret": self.bot_secret}, channel=self.name, idempotent=True)
+                except ChannelHttpError as exc:
+                    raise token_step_failed(self.name, exc) from exc
                 data = result.data if isinstance(result.data, dict) else {}
                 token = data.get("access_token")
                 if not isinstance(token, str) or not token:
@@ -781,7 +787,7 @@ class QQChannel:
         if not target:
             target_type, target = "group", recipient
         if not target or any(ch in target for ch in "/?#") or any(ch.isspace() for ch in target):
-            raise PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>")
+            raise before_send(PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>"), "bad_request")
         if target_type == "channel":
             path = f"/channels/{target}/messages"
             body: dict[str, Any] = {"content": text}
@@ -792,7 +798,7 @@ class QQChannel:
             path = f"/v2/groups/{target}/messages"
             body = {"content": text, "msg_type": 0}
         else:
-            raise PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>")
+            raise before_send(PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>"), "bad_request")
         app_id = self.bot_app_id or os.getenv(self.cfg.bot_app_id_env, "")
         for attempt in range(2):
             headers = {"Authorization": await self._auth_header(refresh=attempt > 0), **_JSON_HEADERS}

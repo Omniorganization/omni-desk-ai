@@ -278,3 +278,30 @@ def test_discord_command_gets_an_interaction_response(monkeypatch):
     assert response["type"] == 4 and response["data"]["flags"] == 64
     assert channel.webhook_response(None, {"type": 3}) == {"type": 6}
     assert channel.webhook_response({"type": 1}, {"type": 1}) is None  # PING keeps the route's {"type": 1}
+
+
+def test_teams_and_qq_failures_before_sending_get_a_plain_outcome(monkeypatch):
+    # Same rule as the other adapters: a failed token call is not_sent (not
+    # ambiguous), a refused recipient is bad_request, missing setup config_error.
+    from omnidesk_agent.channels.provider_errors import classify_channel_error
+
+    teams = _teams(monkeypatch, {}, MICROSOFT_TEAMS_APP_PASSWORD="pw")
+
+    async def timed_out(url, **kwargs):
+        raise ChannelHttpError("channel provider network error after the request was sent: timed out", channel="microsoft_teams", request_sent=True, category="timeout")
+
+    teams.http.post = timed_out
+    with pytest.raises(ChannelHttpError) as exc:
+        asyncio.run(teams.send_text("a:conv", "hi"))
+    assert classify_channel_error(exc.value).category == "not_sent"
+    with pytest.raises(PermissionError) as refused:
+        asyncio.run(teams.send_text("a:conv/x", "hi"))
+    assert classify_channel_error(refused.value).category == "bad_request"
+
+    qq = _qq(monkeypatch, QQ_BOT_SECRET=QQ_SECRET)
+    with pytest.raises(PermissionError) as refused:
+        asyncio.run(qq.send_text("dms:G1", "hi"))
+    assert classify_channel_error(refused.value).category == "bad_request"
+    with pytest.raises(RuntimeError) as missing:
+        asyncio.run(qq.send_text("group:G1", "hi"))  # no QQ_BOT_APP_ID
+    assert classify_channel_error(missing.value).category == "config_error"
