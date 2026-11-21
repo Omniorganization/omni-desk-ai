@@ -4,7 +4,8 @@
 ``RuntimeSignal``s, ``actuators`` carry out decisions, and ``supervisor`` runs
 the loop with cooldowns, budgets, an observe-only mode and an audit log.
 ``watchdog`` is the out-of-process loop for failures that stop the gateway
-itself (bad config, crash loop).
+itself (crash loop); it restarts the gateway and reports a changed config,
+but never reverts one.
 """
 from __future__ import annotations
 

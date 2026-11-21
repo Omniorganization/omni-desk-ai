@@ -5,6 +5,9 @@ Modes: ``off`` does nothing; ``observe`` decides and audits but never acts;
 per-component limit per hour and a global limit per hour. A component whose
 actions keep failing verification is escalated and no longer acted on until
 it recovers or an operator resets it (the healer's own circuit breaker).
+A decision that needs a human (not autonomous, or requiring approval) only
+ever reaches an actuator that files a request (``requests_human = True``);
+an actuator that would make the change itself cannot be registered for it.
 """
 from __future__ import annotations
 
@@ -20,8 +23,9 @@ from omnidesk_agent.self_healing.actuators import ActionResult, Actuator
 from omnidesk_agent.self_healing.policy import RecoveryDecision, RuntimeSelfHealingController, RuntimeSignal
 
 Mode = Literal["off", "observe", "act"]
-# Decisions whose actuator is itself the request for a human decision.
-HUMAN_ROUTED = frozenset({"create_upgrade_proposal", "escalate_human_approval", "rollback_release", "disable_capability"})
+# Actions the policy only returns for a human to decide: their actuator must
+# be a request (a record, a notification, a PR for review), never the change.
+REQUEST_ONLY_ACTIONS = frozenset({"create_upgrade_proposal", "escalate_human_approval", "rollback_release", "rollback_config", "disable_capability"})
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,10 @@ class HealingSupervisor:
             raise ValueError("mode must be off, observe or act")
         self.probes = list(probes)
         self.actuators = list(actuators)
+        for actuator in self.actuators:
+            claimed = set(actuator.actions) & REQUEST_ONLY_ACTIONS
+            if claimed and not getattr(actuator, "requests_human", False):
+                raise ValueError(f"{type(actuator).__name__} would carry out {sorted(claimed)} itself; only request actuators may claim them")
         self.audit_path = Path(audit_path).expanduser()
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         self.mode: Mode = mode
@@ -110,6 +118,8 @@ class HealingSupervisor:
     async def _handle(self, probe: Any, signal: RuntimeSignal) -> Optional[dict[str, Any]]:
         decision = self.controller.decide(signal)
         component = decision.component
+        if decision.action == "wait":
+            return None  # nothing to do yet, and not a recovery either
         if decision.action == "none":
             if component in self._quarantined or self._failed_verifications.get(component):
                 self._quarantined.discard(component)
@@ -119,23 +129,22 @@ class HealingSupervisor:
         base = {"component": component, "decision": decision.to_dict(), "signal": _signal_dict(signal), "mode": self.mode}
         if self.mode == "observe":
             return self._audit({**base, "event": "observed"})
-        if decision.action not in HUMAN_ROUTED and not decision.autonomous:
-            return self._audit({**base, "event": "needs_human", "reason": "decision is not autonomous"})
+        needs_human = decision.requires_human_approval or not decision.autonomous
         if component in self._quarantined:
             return self._audit({**base, "event": "quarantined", "reason": "earlier actions did not recover this component"})
         blocked = self._budget_block(component, decision)
         if blocked:
             return self._audit({**base, "event": "suppressed", "reason": blocked})
-        actuator = next((a for a in self.actuators if decision.action in a.actions), None)
+        actuator = self._actuator_for(decision, needs_human)
         if actuator is None:
-            return self._audit({**base, "event": "no_actuator"})
+            return self._audit({**base, "event": "needs_human" if needs_human else "no_actuator"})
         self._spend(component)
         try:
             result = await asyncio.wait_for(actuator.execute(decision, signal), timeout=self.action_timeout_seconds)
         except Exception as exc:
             result = ActionResult(False, decision.action, {"error_class": type(exc).__name__, "error": str(exc)[:300]})
         record = {**base, "event": "acted", "result": result.to_dict()}
-        if decision.action in HUMAN_ROUTED:
+        if needs_human:
             record["verified"] = None  # a human closes these
             return self._audit(record)
         await self.sleep(self.verify_delay_seconds)
@@ -152,6 +161,14 @@ class HealingSupervisor:
                 self._quarantined.add(component)
                 record["escalated"] = await self._escalate(decision, signal)
         return self._audit(record)
+
+    def _actuator_for(self, decision: RecoveryDecision, needs_human: bool) -> Optional[Actuator]:
+        if not needs_human:
+            return next((a for a in self.actuators if decision.action in a.actions and not getattr(a, "requests_human", False)), None)
+        requests = [a for a in self.actuators if getattr(a, "requests_human", False)]
+        # A decision no request actuator claims (e.g. rollback_config) is escalated as it is.
+        return next((a for a in requests if decision.action in a.actions), None) or next(
+            (a for a in requests if "escalate_human_approval" in a.actions), None)
 
     async def _verify(self, probe: Any, component: str) -> bool:
         for signal in await self._collect(probe):

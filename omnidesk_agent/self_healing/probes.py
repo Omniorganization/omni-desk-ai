@@ -9,27 +9,36 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
+import stat
 import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
 from omnidesk_agent.self_healing.policy import RuntimeSignal
 
-# Failures worth retrying once the dependency is back. Anything else stays
-# dead-lettered for a human.
-TRANSIENT_MARKERS = (
-    "timeout", "timed out", "temporarily", "connection reset", "connection refused", "connecterror",
-    "connectionerror", "remotedisconnected", "502", "503", "504", "429", "rate limit",
-    "stale running job recovered",
+# Failures worth retrying once the dependency is back: timeouts, connection
+# errors, rate limits and gateway errors. Status codes count only next to
+# "HTTP"/"status" or with their reason phrase, never as bare digits, which also
+# occur in order numbers and IDs. The queue's own crash-recovery message is not
+# transient: a job that hung or crashed its worker is left for a human.
+_TRANSIENT = re.compile(
+    r"\btimed out\b"
+    r"|\btemporar(?:y|ily) (?:unavailable|failure)\b"
+    r"|\bconnection (?:reset|refused|aborted)\b"
+    r"|\b(?:connecterror|connectionerror|remotedisconnected)\b"
+    r"|\bremote end closed connection\b"
+    r"|\brate[ -]?limit(?:ed)?\b|\btoo many requests\b"
+    r"|\b(?:502:? bad gateway|503:? service unavailable|504:? gateway time-?out)\b"
+    r"|\b(?:http(?:[ _]?error)?|status(?:[ _]?code)?)[\s:=]*(?:429|502|503|504)\b"
 )
 
 
 def is_transient(error: Optional[str]) -> bool:
-    text = str(error or "").lower()
-    return any(marker in text for marker in TRANSIENT_MARKERS)
+    return bool(_TRANSIENT.search(str(error or "").lower()))
 
 
 @dataclass
@@ -45,6 +54,7 @@ class WorkerRegistry:
 
     def __init__(self) -> None:
         self._handles: dict[str, WorkerHandle] = {}
+        self._restarted_at: dict[str, float] = {}
 
     def register(self, name: str, *, start: Callable[[], Any], stop: Callable[[], Any], is_alive: Callable[[], bool]) -> None:
         self._handles[name] = WorkerHandle(name, start, stop, is_alive)
@@ -54,6 +64,50 @@ class WorkerRegistry:
 
     def handles(self) -> list[WorkerHandle]:
         return list(self._handles.values())
+
+    def mark_restarted(self, name: str, at: float) -> None:
+        self._restarted_at[name] = at
+
+    def restarted_at(self, name: str) -> Optional[float]:
+        """When the healer last restarted ``name``: jobs it claimed before then have no live worker."""
+        return self._restarted_at.get(name)
+
+
+class RequeueLedger:
+    """Durable record of automatic dead-letter requeues.
+
+    ``JobQueue.requeue_dead_letter`` resets a job's retry count and last error,
+    so without this record a job that keeps failing would be requeued forever.
+    A job is requeued automatically at most ``max_per_job`` times; after that it
+    stays dead-lettered and is escalated to a human. Each requeue keeps the
+    error the queue row loses.
+    """
+
+    def __init__(self, path: Path, *, max_per_job: int = 1):
+        self.path = Path(path).expanduser()
+        self.max_per_job = max(1, int(max_per_job))
+
+    def _load(self) -> dict[str, list[dict[str, Any]]]:
+        if not self.path.exists():
+            return {}
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("requeue ledger is not a JSON object")
+        return data
+
+    def exhausted(self, job_ids: Iterable[str]) -> set[str]:
+        """The given jobs that may not be requeued automatically again."""
+        ids = [str(job_id) for job_id in job_ids]
+        try:
+            data = self._load()
+        except (OSError, ValueError):
+            return set(ids)  # an unreadable ledger allows no automatic requeue
+        return {job_id for job_id in ids if len(data.get(job_id, [])) >= self.max_per_job}
+
+    def record(self, job_id: str, *, at: float, last_error: Optional[str]) -> None:
+        data = self._load()
+        data.setdefault(str(job_id), []).append({"at": at, "last_error": str(last_error or "")[:500]})
+        _atomic_write(self.path, json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8"))
 
 
 class WorkerProbe:
@@ -74,12 +128,34 @@ class WorkerProbe:
 
 
 class JobQueueProbe:
+    """Stale running jobs and dead letters.
+
+    ``dependency_healthy`` must report whether the jobs' dependency (the model
+    provider, a tool backend) works again; there is no default. Pass
+    ``orphaned_before`` only for a queue this process alone consumes (the
+    SQLite queue): it returns the time before which no running job has a live
+    worker, e.g. ``lambda: registry.restarted_at("webhook")``. For a shared
+    queue (PostgreSQL behind several gateways) a job past its lease may still be
+    running elsewhere, so stale jobs are escalated, never recovered.
+    """
+
     name = "job_queue"
 
-    def __init__(self, queue: Any, *, lease_seconds: int = 300, dependency_healthy: Optional[Callable[[], bool]] = None, clock: Callable[[], float] = time.time):
+    def __init__(
+        self,
+        queue: Any,
+        *,
+        dependency_healthy: Callable[[], bool],
+        ledger: RequeueLedger,
+        lease_seconds: int = 300,
+        orphaned_before: Optional[Callable[[], Optional[float]]] = None,
+        clock: Callable[[], float] = time.time,
+    ):
         self.queue = queue
+        self.dependency_healthy = dependency_healthy
+        self.ledger = ledger
         self.lease_seconds = int(lease_seconds)
-        self.dependency_healthy = dependency_healthy or (lambda: True)
+        self.orphaned_before = orphaned_before
         self.clock = clock
 
     async def collect(self) -> list[RuntimeSignal]:
@@ -89,18 +165,23 @@ class JobQueueProbe:
         )
         cutoff = self.clock() - self.lease_seconds
         stale = [job for job in running if job.get("locked_at") is not None and float(job["locked_at"]) <= cutoff]
+        boundary = self.orphaned_before() if self.orphaned_before else None
+        orphaned = [job for job in stale if boundary is not None and float(job["locked_at"]) <= boundary]
         transient = [job for job in dead if is_transient(job.get("last_error"))]
+        exhausted = self.ledger.exhausted(str(job["id"]) for job in transient)
         try:
             healthy = bool(self.dependency_healthy())
         except Exception:
             healthy = False
         return [
-            RuntimeSignal(component="queue:stale_jobs", health_ok=not stale, metadata={"stale_count": len(stale)}),
+            RuntimeSignal(component="queue:stale_jobs", health_ok=not stale, metadata={"stale_count": len(stale), "orphaned_count": len(orphaned)}),
             RuntimeSignal(
                 component="queue:dead_letters",
                 health_ok=not transient and len(dead) < 200,
                 metadata={
                     "transient_count": len(transient),
+                    "retryable_count": len(transient) - len(exhausted),
+                    "exhausted_count": len(exhausted),
                     "dead_letter_count": len(dead),
                     "dependency_healthy": healthy,
                     # JobQueue.list returns the newest 200 only.
@@ -153,14 +234,15 @@ class HttpHealthProbe:
 
 
 class ConfigSnapshots:
-    """Last-known-good copies of a config file, written atomically."""
+    """Last-known-good copies of a config file, written atomically and readable by their owner only."""
 
     def __init__(self, root: Path):
         self.root = Path(root).expanduser()
         self.root.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.root, 0o700)
 
-    def save_known_good(self, config_path: Path) -> str:
-        data = Path(config_path).read_bytes()
+    def save_known_good(self, data: bytes) -> str:
+        """Save exactly these bytes (the ones that were checked) as known-good."""
         digest = hashlib.sha256(data).hexdigest()[:16]
         target = self.root / f"{digest}.snapshot"
         if not target.exists():
@@ -184,10 +266,13 @@ class ConfigSnapshots:
             raise ValueError("snapshot content does not match its id")
         config_path = Path(config_path)
         rejected = None
+        mode, owner = 0o600, None
         if config_path.exists():
+            info = config_path.stat()
+            mode, owner = stat.S_IMODE(info.st_mode), (info.st_uid, info.st_gid)
             rejected = self.root / f"rejected-{int(time.time())}-{hashlib.sha256(config_path.read_bytes()).hexdigest()[:8]}.config"
             shutil.copy2(config_path, rejected)
-        _atomic_write(config_path, data)
+        _atomic_write(config_path, data, mode=mode, owner=owner)  # keep the replaced file's mode and owner
         return rejected or config_path
 
 
@@ -214,11 +299,15 @@ class ConfigFileProbe:
             )]
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _atomic_write(path: Path, data: bytes, *, mode: int = 0o600, owner: Optional[tuple[int, int]] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with open(tmp, "wb") as handle:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as handle:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
+    os.chmod(tmp, mode)
+    if owner is not None and hasattr(os, "chown") and hasattr(os, "geteuid") and os.geteuid() == 0:
+        os.chown(tmp, *owner)  # a root watchdog must not leave a root-owned config behind
     os.replace(tmp, path)
