@@ -32,6 +32,10 @@ LARK_WS_ENDPOINT = "https://open.larksuite.com/callback/ws/endpoint"
 METHOD_CONTROL = 0
 METHOD_DATA = 1
 MAX_PENDING_FRAGMENTS = 64
+# Endpoint codes the official SDKs retry (ws/const.py): 1 system busy,
+# 1000040343 internal error. Any other non-zero code is final.
+TRANSIENT_ENDPOINT_CODES = frozenset({1, 1000040343})
+ENDPOINT_ATTEMPTS = 3
 
 # --------------------------------------------------------------------------- pbbp2.Frame codec
 # message Header { required string key = 1; required string value = 2; }
@@ -168,14 +172,19 @@ class LarkLongConnection:
     async def open(self) -> tuple[str, int]:
         if not self.channel.app_id or not self.channel.app_secret:
             raise RuntimeError(f"{self.channel.name} app id/secret missing")
-        result = await self.http.post(
-            self.endpoint,
-            headers={"locale": "zh"},
-            json={"AppID": self.channel.app_id, "AppSecret": self.channel.app_secret},
-            channel=self.channel.name,
-            idempotent=True,
-        )
-        data = result.data if isinstance(result.data, dict) else {}
+        for attempt in range(ENDPOINT_ATTEMPTS):
+            result = await self.http.post(
+                self.endpoint,
+                headers={"locale": "zh"},
+                json={"AppID": self.channel.app_id, "AppSecret": self.channel.app_secret},
+                channel=self.channel.name,
+                idempotent=True,
+            )
+            data = result.data if isinstance(result.data, dict) else {}
+            if data.get("code") in TRANSIENT_ENDPOINT_CODES and attempt + 1 < ENDPOINT_ATTEMPTS:
+                await asyncio.sleep(2 ** attempt)
+                continue
+            break
         if data.get("code") != 0:
             raise ChannelHttpError(
                 f"{self.channel.name} long-connection endpoint refused: code={data.get('code')} {str(data.get('msg') or '')[:200]}",

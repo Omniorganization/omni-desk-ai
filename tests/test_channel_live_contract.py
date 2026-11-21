@@ -443,3 +443,41 @@ def test_feishu_endpoint_refusal_is_a_clear_config_error(runner, feishu_env):
     provider.responses["endpoint"] = {"code": 1000040346, "msg": "app_id is invalid", "data": {"URL": ""}}
     with pytest.raises(Exception, match="1000040346"):
         asyncio.run(runner.run_feishu(mode="send-receive", reply_timeout_seconds=60, http=provider, connect=FakeConnect([])))
+
+
+def test_lark_endpoint_transient_codes_are_retried_like_the_sdk(monkeypatch):
+    # Lark international answered a probe with 1000040343 (internal error),
+    # which the official SDKs retry; a final code must still fail clearly.
+    from omnidesk_agent.channels import lark_long_connection as module
+    from omnidesk_agent.channels.lark_feishu import LarkChannel
+    from omnidesk_agent.config import LarkConfig
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(module.asyncio, "sleep", no_sleep)
+    monkeypatch.setenv("LARK_APP_ID", "cli_placeholder")
+    monkeypatch.setenv("LARK_APP_SECRET", "secret")
+    answers = iter([{"code": 1000040343, "msg": "internal error"}, {"code": 1, "msg": "system busy"}, _shape("feishu", "ws_endpoint")])
+    calls = []
+
+    class Http:
+        async def post(self, url, **kwargs):
+            calls.append(url)
+            return ChannelHttpResult(200, next(answers))
+
+    connection = module.LarkLongConnection(LarkChannel(LarkConfig(enabled=True)), lambda message: None, http=Http())
+    url, service_id = asyncio.run(connection.open())
+
+    assert calls == ["https://open.larksuite.com/callback/ws/endpoint"] * 3
+    assert url.startswith("wss://") and service_id == 33554678
+
+    final = iter([{"code": 1000040346, "msg": "app_id is invalid"}])
+
+    class Refusing:
+        async def post(self, url, **kwargs):
+            return ChannelHttpResult(200, next(final))
+
+    refused = module.LarkLongConnection(LarkChannel(LarkConfig(enabled=True)), lambda message: None, http=Refusing())
+    with pytest.raises(Exception, match="1000040346"):
+        asyncio.run(refused.open())
