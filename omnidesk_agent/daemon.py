@@ -41,6 +41,7 @@ from omnidesk_agent.core.worker import WebhookWorker
 from omnidesk_agent.learning.daily_job import DailySelfLearningJob
 from omnidesk_agent.models.router import build_model_router
 from omnidesk_agent.offline.connectivity import ConnectivityManager, ReconnectSyncWorker
+from omnidesk_agent.offline.uploader import build_outbox_uploader
 from omnidesk_agent.plugins.registry import PluginRegistry
 from omnidesk_agent.repositories.runtime import build_repository_factory, storage_plan
 from omnidesk_agent.security.admin_auth import AdminAuth
@@ -320,7 +321,8 @@ class OmniDeskRuntime:
             )
             return runner.run_once(current_version=__version__)
 
-        return ReconnectSyncWorker(connectivity=connectivity, store=self._app_sync_store(), actor="system", upload=None, update_check=update_check)
+        uploader = build_outbox_uploader(self.cfg)
+        return ReconnectSyncWorker(connectivity=connectivity, store=self._app_sync_store(), actor=uploader.actor if uploader else "system", upload=uploader, update_check=update_check)
 
     def run_reconnect_once(self) -> dict[str, Any]:
         worker = self.reconnect_worker or self._build_reconnect_worker()

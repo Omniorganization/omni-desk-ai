@@ -189,6 +189,20 @@
       "client_surfaces": []
     },
     {
+      "method": "GET",
+      "path": "/app/sync/conflicts",
+      "role": "viewer",
+      "description": "The caller's own offline-sync conflicts (status open or resolved).",
+      "client_surfaces": []
+    },
+    {
+      "method": "POST",
+      "path": "/app/sync/conflicts/{conflict_id}/resolve",
+      "role": "operator",
+      "description": "Resolve one of the caller's open conflicts with keep_server, apply_client or merged (with payload).",
+      "client_surfaces": []
+    },
+    {
       "method": "WS",
       "path": "/app/ws",
       "role": "gateway-protected",

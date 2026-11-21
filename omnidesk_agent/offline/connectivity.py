@@ -55,6 +55,8 @@ class SyncStore(Protocol):
     def pending_local_outbox(self, *, actor: str | None = None, limit: int = 100) -> list[dict[str, Any]]: ...
     def mark_local_operation_synced(self, operation_id: str, *, remote_seq: int | None = None) -> dict[str, Any]: ...
     def mark_local_operation_failed(self, operation_id: str, *, error: str, retry_delay_seconds: int = 60) -> dict[str, Any]: ...
+    def mark_local_operation_conflict(self, operation_id: str, *, detail: str) -> dict[str, Any]: ...
+    def mark_local_operation_rejected(self, operation_id: str, *, reason: str) -> dict[str, Any]: ...
     def set_network_state(self, state: str, *, reason: str | None = None) -> dict[str, Any]: ...
     def sync_state(self, *, actor: str | None = None) -> dict[str, Any]: ...
 
@@ -175,14 +177,43 @@ class ReconnectSyncWorker:
                 self.connectivity.transition("failed")
                 self.store.set_network_state("failed", reason="outbox upload failed")
                 return {"ok": False, "state": "failed", "connectivity": report.to_dict(), "error": str(exc), "synced": 0, "update": None}
+        outcomes = per_operation_outcomes(upload_result)
+        held: list[str] = []
+        rejected = 0
         for item in pending:
-            self.store.mark_local_operation_synced(str(item.get("operation_id")), remote_seq=upload_result.get("remote_seq"))
-            synced += 1
+            operation_id = str(item.get("operation_id"))
+            outcome = outcomes.get(operation_id, {}) if outcomes is not None else {}
+            status = str(outcome.get("status") or "applied")
+            if status == "conflict":
+                # Delivered, and held at the gateway for the actor to resolve
+                # (POST /app/sync/conflicts/{id}/resolve); not sent again.
+                conflict_id = str(outcome.get("conflict_id") or "")
+                self.store.mark_local_operation_conflict(operation_id, detail=f"held for review at the gateway as {conflict_id or 'a conflict'}")
+                held.append(conflict_id)
+            elif status == "rejected":
+                # The gateway will never accept it (for example a server-authored
+                # event type): terminal, so it is not retried forever.
+                rejected += 1
+                self.store.mark_local_operation_rejected(operation_id, reason=f"rejected by the gateway: {outcome.get('reason') or 'rejected'}")
+            elif status == "deferred":
+                # Not sent: no upload credentials for its actor yet.
+                self.store.mark_local_operation_failed(operation_id, error=str(outcome.get("reason") or "not uploaded"), retry_delay_seconds=3600)
+            else:
+                self.store.mark_local_operation_synced(operation_id, remote_seq=upload_result.get("remote_seq"))
+                synced += 1
         state = self.store.sync_state(actor=self.actor)
-        if state.get("conflicts", {}).get("open", 0):
-            self.connectivity.transition("failed")
-            self.store.set_network_state("failed", reason="sync conflicts require manual review")
-            return {"ok": False, "state": "failed", "connectivity": report.to_dict(), "synced": synced, "update": None, "sync_state": state}
+        local_conflicts = int(state.get("conflicts", {}).get("open", 0) or 0)
+        if local_conflicts:
+            # Conflicts no longer fail the sync: everything else was delivered.
+            # Updates wait until this node's own conflicts are resolved.
+            self.connectivity.transition("healthy")
+            self.store.set_network_state("healthy", reason=f"synced={synced}; {local_conflicts} local sync conflicts need review")
+            return {
+                "ok": True, "state": "healthy", "connectivity": report.to_dict(), "synced": synced, "rejected": rejected,
+                "held_conflicts": held, "local_conflicts_open": local_conflicts, "upload": upload_result,
+                "update": {"status": "deferred", "reason": "local sync conflicts need review first"}, "sync_state": state,
+                "finished_at": time.time(),
+            }
 
         update_result = None
         if self.update_check is not None:
@@ -196,7 +227,21 @@ class ReconnectSyncWorker:
             "state": "healthy",
             "connectivity": report.to_dict(),
             "synced": synced,
+            "rejected": rejected,
+            "held_conflicts": held,
             "upload": upload_result,
             "update": update_result,
             "finished_at": time.time(),
         }
+
+
+def per_operation_outcomes(upload_result: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
+    """Per-operation results from the gateway's ``POST /app/sync``, if it sent them.
+
+    A gateway that predates them returns only counts; then every uploaded
+    operation counts as delivered.
+    """
+    operations = upload_result.get("operations") if isinstance(upload_result, dict) else None
+    if not isinstance(operations, list):
+        return None
+    return {str(item.get("operation_id")): item for item in operations if isinstance(item, dict) and item.get("operation_id")}

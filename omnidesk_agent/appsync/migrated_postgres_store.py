@@ -297,11 +297,15 @@ SELECT
     (SELECT COUNT(*) FROM omnidesk_appsync_local_outbox WHERE namespace = %(namespace)s AND status IN ('pending', 'failed') AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text)),
     (SELECT COUNT(*) FROM omnidesk_appsync_local_outbox WHERE namespace = %(namespace)s AND status = 'synced' AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text)),
     (SELECT COUNT(*) FROM omnidesk_appsync_local_outbox WHERE namespace = %(namespace)s AND status = 'conflict' AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text)),
+    (SELECT COUNT(*) FROM omnidesk_appsync_local_outbox WHERE namespace = %(namespace)s AND status = 'rejected' AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text)),
     (SELECT COUNT(*) FROM omnidesk_appsync_local_inbox WHERE namespace = %(namespace)s AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text)),
     (SELECT COUNT(*) FROM omnidesk_appsync_sync_conflicts WHERE namespace = %(namespace)s AND status = 'open' AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text))
 """
 
 _JSON_COLUMNS = frozenset({"capabilities", "usage", "payload", "local_payload", "remote_payload"})
+
+# How a resolution is recorded in SyncConflictRecord.strategy.
+RESOLUTION_STRATEGY: dict[str, Any] = {"keep_server": "server-wins", "apply_client": "client-wins", "merged": "merge"}
 
 
 _QUERIES: dict[tuple[Any, ...], Any] = {}
@@ -1967,6 +1971,39 @@ class MigratedMultiInstancePostgresAppSyncStore:
 
         return self._transaction(body)
 
+    def mark_local_operation_rejected(self, operation_id: str, *, reason: str) -> dict[str, Any]:
+        """The remote gateway refused the operation; it is not sent again."""
+
+        def body(tx: _Tx) -> dict[str, Any]:
+            item: Optional[LocalOutboxRecord] = self._get(tx, LOCAL_OUTBOX, operation_id, for_update=True)
+            if not item:
+                raise KeyError("local outbox operation not found")
+            item.status = "rejected"
+            item.last_error = str(reason)[:1000]
+            item.next_retry_at = None
+            item.updated_at = tx.now
+            self._update(tx, LOCAL_OUTBOX, item)
+            self._operation_log(tx, "operation.rejected", {"operation_id": operation_id, "reason": item.last_error, "organization_id": item.organization_id})
+            return self._record(item)
+
+        return self._transaction(body)
+
+    def mark_local_operation_conflict(self, operation_id: str, *, detail: str) -> dict[str, Any]:
+        """The remote gateway received the operation and holds it as a conflict for review."""
+
+        def body(tx: _Tx) -> dict[str, Any]:
+            item: Optional[LocalOutboxRecord] = self._get(tx, LOCAL_OUTBOX, operation_id, for_update=True)
+            if not item:
+                raise KeyError("local outbox operation not found")
+            item.status = "conflict"
+            item.last_error = str(detail)[:1000]
+            item.updated_at = tx.now
+            self._update(tx, LOCAL_OUTBOX, item)
+            self._operation_log(tx, "operation.conflict", {"operation_id": operation_id, "detail": item.last_error, "organization_id": item.organization_id})
+            return self._record(item)
+
+        return self._transaction(body)
+
     def _record_cursor(self, tx: _Tx, *, actor: str, remote: str, since_seq: int, device_id: Optional[str]) -> dict[str, Any]:
         organization_id = self._org_for_actor(tx, actor)
         cursor_id = f"{organization_id}:{actor or 'unknown'}:{remote or 'default'}:{device_id or ''}"
@@ -2016,6 +2053,15 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 )
             inbox = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied", received_at=tx.now)
             if matched and any(item.payload_hash != payload_hash for item in matched):
+                if conflict_policy in {"server-wins", "client-wins"}:
+                    # server-wins: the remote version supersedes the queued local one.
+                    # client-wins: the local operation stays queued and is sent again.
+                    self._closed_conflict(tx, operation=matched[0], remote_event_id=remote_event_id, actor=actor, organization_id=organization_id, strategy=conflict_policy, remote_payload=payload)
+                    if conflict_policy == "server-wins":
+                        self._mark_synced(tx, matched[0].operation_id, remote_seq=remote_seq)
+                    self._insert(tx, LOCAL_INBOX, inbox)
+                    applied += 1
+                    continue
                 conflicts.append(self._open_conflict(tx, operation=matched[0], remote_event_id=remote_event_id, actor=actor, organization_id=organization_id, strategy=conflict_policy, remote_payload=payload, conflict_type="idempotency_payload_mismatch"))
                 inbox.status = "conflict"
                 self._insert(tx, LOCAL_INBOX, inbox)
@@ -2043,6 +2089,69 @@ class MigratedMultiInstancePostgresAppSyncStore:
         self._operation_log(tx, "sync.conflict.opened", {"conflict_id": conflict.conflict_id, "operation_id": operation.operation_id, "strategy": strategy, "organization_id": organization_id})
         return self._record(conflict)
 
+    def _closed_conflict(self, tx: _Tx, *, operation: LocalOutboxRecord, remote_event_id: Optional[str], actor: str, organization_id: str, strategy: ConflictPolicy, remote_payload: dict[str, Any]) -> None:
+        conflict = SyncConflictRecord(
+            conflict_id=_id("conflict"), operation_id=operation.operation_id, remote_event_id=remote_event_id,
+            conflict_type="idempotency_payload_mismatch", strategy=strategy, status="resolved", actor=actor or "unknown",
+            organization_id=organization_id, local_payload=dict(operation.payload or {}), remote_payload=dict(remote_payload or {}),
+            created_at=tx.now, resolved_at=tx.now,
+        )
+        self._insert(tx, SYNC_CONFLICTS, conflict)
+        self._operation_log(tx, "sync.conflict.resolved", {"conflict_id": conflict.conflict_id, "operation_id": operation.operation_id, "strategy": strategy, "organization_id": organization_id})
+
+    def list_sync_conflicts(self, *, actor: str, status: Optional[str] = "open", limit: int = 200) -> list[dict[str, Any]]:
+        """The actor's own sync conflicts, newest first."""
+
+        def body(tx: _Tx) -> list[dict[str, Any]]:
+            clauses = "actor = %(actor)s AND organization_id = %(organization_id)s" + (" AND status = %(status)s" if status else "")
+            rows = self._select(tx, SYNC_CONFLICTS, clauses, {"actor": actor, "organization_id": self._org_for_actor(tx, actor), "status": status}, order="created_at DESC", limit=max(1, min(int(limit or 200), LIST_LIMIT)))
+            return [self._record(row) for row in rows]
+
+        return self._read(body)
+
+    def resolve_sync_conflict(self, *, actor: str, conflict_id: str, resolution: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Settle one of the actor's open conflicts: keep_server, apply_client or merged."""
+        from omnidesk_agent.appsync.offline_sync_apply import RESOLUTIONS, resolve_record_conflict, sql_records
+
+        if resolution not in RESOLUTIONS:
+            raise ValueError("resolution must be keep_server, apply_client or merged")
+
+        def body(tx: _Tx) -> dict[str, Any]:
+            conflict: Optional[SyncConflictRecord] = self._get(tx, SYNC_CONFLICTS, conflict_id, for_update=True)
+            if conflict is None or conflict.actor != actor or self._normalize_org_id(conflict.organization_id) != self._org_for_actor(tx, actor):
+                raise KeyError("conflict not found")
+            if conflict.status != "open":
+                raise ValueError("conflict already resolved")
+            if conflict.conflict_type == "idempotency_payload_mismatch":
+                self._resolve_outbox_conflict(tx, conflict, resolution=resolution, payload=payload)
+            else:
+                resolve_record_conflict(sql_records(self, tx, actor), conflict, resolution=resolution, payload=payload)
+            conflict.status = "resolved"
+            conflict.resolved_at = tx.now
+            conflict.strategy = RESOLUTION_STRATEGY[resolution]
+            self._update(tx, SYNC_CONFLICTS, conflict)
+            self._operation_log(tx, "sync.conflict.resolved", {"conflict_id": conflict_id, "operation_id": conflict.operation_id, "strategy": conflict.strategy, "organization_id": conflict.organization_id})
+            return self._record(conflict)
+
+        return self._transaction(body)
+
+    def _resolve_outbox_conflict(self, tx: _Tx, conflict: SyncConflictRecord, *, resolution: str, payload: Optional[dict[str, Any]]) -> None:
+        operation: Optional[LocalOutboxRecord] = self._get(tx, LOCAL_OUTBOX, conflict.operation_id, for_update=True)
+        if operation is None:
+            return
+        if resolution == "keep_server":
+            operation.status = "synced"
+        else:
+            if resolution == "merged":
+                if not isinstance(payload, dict):
+                    raise ValueError("a merged resolution needs the merged payload")
+                operation.payload = dict(payload)
+                operation.payload_hash = _fingerprint(operation.payload)
+            operation.status = "pending"
+            operation.next_retry_at = None
+        operation.updated_at = tx.now
+        self._update(tx, LOCAL_OUTBOX, operation)
+
     def receive_outbox_operations(self, *, actor: str, operations: list[dict[str, Any]], remote: str = "default", device_id: Optional[str] = None, conflict_policy: ConflictPolicy = "manual-review") -> dict[str, Any]:
         events: list[dict[str, Any]] = []
         for operation in operations:
@@ -2057,10 +2166,23 @@ class MigratedMultiInstancePostgresAppSyncStore:
             })
 
         def body(tx: _Tx) -> dict[str, Any]:
-            result = self._record_remote_events(tx, actor=actor, events=events, remote=remote, device_id=device_id, conflict_policy=conflict_policy)
-            from omnidesk_agent.appsync.offline_sync_apply import apply_uploaded_operations_sql
+            from omnidesk_agent.appsync.offline_sync_apply import apply_uploaded_operations_sql, held_operations, merge_receive_results, remote_event_id
 
-            return {**result, **apply_uploaded_operations_sql(self, tx, actor=actor, operations=operations, remote=remote, device_id=device_id)}
+            organization_id = self._org_for_actor(tx, actor)
+            # Operations this server received before are duplicates: a retry is
+            # never applied twice, and so can never become a conflict.
+            received_before = {
+                str(operation.get("operation_id") or operation.get("id") or "")
+                for operation in operations
+                if isinstance(operation, dict)
+                and self._get(tx, LOCAL_INBOX, AppSyncStore._inbox_key(organization_id, actor, remote_event_id(operation, remote))) is not None
+            }
+            result = self._record_remote_events(tx, actor=actor, events=events, remote=remote, device_id=device_id, conflict_policy=conflict_policy)
+            application = apply_uploaded_operations_sql(
+                self, tx, actor=actor, operations=operations, remote=remote, device_id=device_id,
+                conflict_policy=conflict_policy, duplicates=received_before, held=held_operations(result),
+            )
+            return merge_receive_results(result, application)
 
         return self._transaction(body)
 
@@ -2089,9 +2211,9 @@ class MigratedMultiInstancePostgresAppSyncStore:
             )
             return {
                 "network_state": dict(self.network_state),
-                "outbox": {"pending": int(counts[0]), "synced": int(counts[1]), "conflict": int(counts[2])},
-                "inbox": {"received": int(counts[3])},
-                "conflicts": {"open": int(counts[4])},
+                "outbox": {"pending": int(counts[0]), "synced": int(counts[1]), "conflict": int(counts[2]), "rejected": int(counts[3])},
+                "inbox": {"received": int(counts[4])},
+                "conflicts": {"open": int(counts[5])},
                 "cursors": [self._record(cursor) for cursor in cursors],
             }
 

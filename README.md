@@ -71,7 +71,7 @@ docs/history/                  历史版本补丁清单、GA 证据与修复报�
 
 ## Offline-First / Reconnect Update
 
-`runtime.offline_mode: true` 会把 `chat/planner/code/upgrade/summarize` 等核心任务强制路由到本地 Ollama profile，并阻断显式外部模型 profile 与外部 channel HTTP 调用。断网期间 AppSync 写入本地 durable outbox；重连 worker 会先同步 outbox 和远端事件，再检查 signed update manifest。
+`runtime.offline_mode: true` 会把 `chat/planner/code/upgrade/summarize` 等核心任务强制路由到本地 Ollama profile，并阻断显式外部模型 profile 与外部 channel HTTP 调用。断网期间 AppSync 写入本地 durable outbox；重连 worker 先把 outbox 上传到远端 gateway 的 `POST /app/sync`（需配置 `OMNIDESK_SYNC_UPLOAD_URL`/`OMNIDESK_SYNC_UPLOAD_TOKEN`，冲突按 `conflict_policy` 处理或留待人工解决），上传成功后再检查 signed update manifest；它不下载远端事件。
 
 运行时自动更新只处理签名 release 包：校验 manifest、artifact SHA-256、SBOM、source commit、release channel 和外部 GA evidence 后，先 staging 到 release slot，再 health check，失败自动切回 `previous`。源码改动、PR merge、权限提升和缺失证据放行仍然必须人工审查。
 
