@@ -20,6 +20,7 @@ from omnidesk_agent.appsync.store import (
     normalize_task_result,
     public_device_view,
 )
+from omnidesk_agent.appsync.agent_approvals import decide_agent_approval, is_agent_approval
 from omnidesk_agent.appsync.push import dispatch_pending_push, normalize_push_target
 from omnidesk_agent.appsync.sync_websocket import (
     MAX_CONCURRENT_SYNC_POLLS,
@@ -827,17 +828,37 @@ def register_appsync_routes(
             ).strip(),
             metrics=metrics,
         )
+        actor = _actor(decision)
+        # A break-glass elevation never approves a critical action.
+        break_glass = bool(getattr(decision, "break_glass_session_id", None))
+        run: Optional[dict[str, Any]] = None
         try:
-            approval = await run_blocking(store.decide_approval,
-                approval_id=approval_id,
-                actor=_actor(decision),
-                decision=verdict,
-                reason=payload.get("reason"),
-                idempotency_key=_require_idempotency(cfg, request, payload),
-                idempotency_payload=payload,
-                # An operator raised by break-glass is never one of the four eyes.
-                break_glass=bool(getattr(decision, "break_glass_session_id", None)),
-            )
+            if is_agent_approval(approval_id):
+                # An agent step: the ledger decides, AppSync mirrors, the run resumes or ends.
+                outcome = await decide_agent_approval(
+                    store=store,
+                    approval_store=getattr(rt, "approval_store", None),
+                    orchestrator=getattr(rt, "orchestrator", None),
+                    approval_id=approval_id,
+                    actor=actor,
+                    decision=str(verdict),
+                    reason=payload.get("reason"),
+                    break_glass=break_glass,
+                    idempotency_key=_require_idempotency(cfg, request, payload),
+                    idempotency_payload=payload,
+                )
+                approval, run = outcome["approval"], outcome["run"]
+            else:
+                approval = await run_blocking(store.decide_approval,
+                    approval_id=approval_id,
+                    actor=actor,
+                    decision=verdict,
+                    reason=payload.get("reason"),
+                    idempotency_key=_require_idempotency(cfg, request, payload),
+                    idempotency_payload=payload,
+                    # An operator raised by break-glass is never one of the four eyes.
+                    break_glass=break_glass,
+                )
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
@@ -849,7 +870,7 @@ def register_appsync_routes(
         metrics.inc(
             "omnidesk_app_approval_decision_total", decision=verdict
         ) if metrics else None
-        return {"ok": True, "approval": approval}
+        return {"ok": True, "approval": approval, **({"run": run} if run is not None else {})}
 
     @app.get("/app/notifications")
     async def app_notifications(

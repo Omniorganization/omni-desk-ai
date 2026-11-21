@@ -201,7 +201,8 @@ def test_the_firebase_provider_gets_the_target_and_the_routing_data(tmp_path: Pa
     assert [(r.ok, r.error) for r in results] == [(True, None)]
     kind, target, notification, data = fcm.calls[0]
     assert (kind, target) == ("fcm_token", "fcm-token-1")
-    assert notification["title"] == "Omni approval required"
+    # A fixed text: pushes travel through FCM and carry no content.
+    assert notification == {"title": "Omni: approval required", "body": "Open Omni to review the request."}
     assert data["event_type"] == "approval.requested" and data["related_id"] == approval_id
 
 

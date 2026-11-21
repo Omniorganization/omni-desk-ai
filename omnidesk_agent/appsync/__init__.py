@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
+from omnidesk_agent.appsync.agent_approvals import attach_approval_plane
 from omnidesk_agent.appsync.chat_routes import register_first_class_chat_routes
 from omnidesk_agent.appsync.contract import CONTRACT_HEADER, ContractVersionMiddleware
 from omnidesk_agent.validation.production import is_production_mode
@@ -146,6 +147,8 @@ def register_appsync_routes(
     register_project_routes(app, cfg, rt, metrics, admin)
     _start_retention(getattr(rt, "app_sync", None), metrics, getattr(rt, "repository_factory", None))
     _start_push_dispatch(app, getattr(rt, "app_sync", None), metrics)
+    # Agent steps that wait for approval show up in the clients' approval plane.
+    attach_approval_plane(rt)
 
 
 def _start_push_dispatch(app: FastAPI, store: Any, metrics: Any) -> None:

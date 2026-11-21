@@ -5,6 +5,7 @@ import hmac
 import json
 import base64
 import os
+import re
 import secrets
 import threading
 import time
@@ -341,6 +342,55 @@ class ApprovalRecord:
 
 CRITICAL_APPROVERS = 2
 
+# An agent step that waits for approval in the orchestrator's ApprovalStore is
+# shown to the clients as an AppSync approval with this id prefix; the ledger
+# (security's ApprovalStore) stays the authority, AppSync mirrors its state.
+AGENT_APPROVAL_PREFIX = "agt_"
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_STEP_RE = re.compile(r"[^A-Za-z0-9_.-]")
+_RISKS = ("low", "medium", "high", "critical")
+
+# Pushes travel through third parties (FCM, APNs), so they carry no content:
+# a fixed text per event and, for an agent step, only its tool.action and risk.
+# Devices fetch the details from the authenticated API.
+_PUSH_TEXT = {
+    "approval.requested": ("Omni: approval required", "Open Omni to review the request."),
+    "approval.decided": ("Omni: approval decided", "Open Omni for the details."),
+    "task.status": ("Omni: task updated", "Open Omni for the details."),
+    "conversation.ask.completed": ("Omni: new reply", "Open Omni to read it."),
+}
+
+
+def push_text(event_type: str, *, step: Optional[str] = None) -> tuple[str, str]:
+    title, body = _PUSH_TEXT.get(event_type, ("Omni", "Open Omni for the details."))
+    return title, (f"{step} needs approval." if step else body)
+
+
+def agent_step_label(proposal: dict[str, Any]) -> str:
+    """``tool.action`` of a proposal, reduced to identifier characters (never its args)."""
+    tool = _STEP_RE.sub("", str(proposal.get("tool") or proposal.get("capability") or "agent"))[:64] or "agent"
+    action = _STEP_RE.sub("", str(proposal.get("action") or ""))[:64]
+    return f"{tool}.{action}" if action else tool
+
+
+def agent_approval_record(*, source_approval_id: str, run_id: str, organization_id: str, requester: str, risk: str, proposal: dict[str, Any], requires_dual_approval: bool, expires_at: Optional[float], channel: str, now: float) -> ApprovalRecord:
+    if not _SOURCE_ID_RE.fullmatch(source_approval_id):
+        raise ValueError("invalid agent approval id")
+    if not requester.strip():
+        raise ValueError("an agent approval needs its requester")
+    level = risk if risk in _RISKS else "high"
+    step = agent_step_label(proposal)
+    dual = bool(requires_dual_approval) or level == "critical"
+    return ApprovalRecord(
+        approval_id=AGENT_APPROVAL_PREFIX + source_approval_id, task_id="", risk=level,  # type: ignore[arg-type]
+        action=f"Agent step {step}", reason=str(proposal.get("reason") or "An agent step waits for approval.")[:500],
+        requested_by=requester.strip(), organization_id=organization_id, created_at=now, expires_at=expires_at,
+        # ledger_dual: the ledger opened a dual approval (its proposal flag). A
+        # critical step needs two approvers here even when it did not.
+        action_detail={"kind": "agent", "source_approval_id": source_approval_id, "run_id": run_id, "channel": channel, "step": step, "ledger_dual": bool(requires_dual_approval), "proposal": proposal},
+        required_approvals=CRITICAL_APPROVERS if dual else 1,
+    )
+
 
 def approvals_required(risk: str) -> int:
     """A critical action needs two distinct approvers; anything else one."""
@@ -375,6 +425,24 @@ def apply_approval_decision(approval: ApprovalRecord, *, actor: str, decision: s
     approval.decision_idempotency_key = idempotency_key
     approval.decided_at = now
     return True
+
+
+def mirror_ledger_outcome(approval: ApprovalRecord, *, outcome: str, deciders: list[str], reason: Optional[str], now: float) -> None:
+    """Copy onto an agent approval the outcome its ledger already holds, naming the ledger's deciders.
+
+    The plane's checks in apply_approval_decision gate decisions made through it;
+    this decision was made in the ledger (security's ApprovalStore), which stays
+    the authority, so it is recorded as the ledger states it.
+    """
+    if outcome not in ("approved", "rejected") or not deciders:
+        raise ValueError("a ledger outcome needs approved or rejected and at least one decider")
+    if outcome == "approved":
+        approval.approved_by = list(dict.fromkeys(deciders))
+    approval.status = "approved" if outcome == "approved" else "rejected"
+    approval.decided_by = deciders[-1]
+    approval.decision_reason = reason
+    approval.decision_idempotency_key = None
+    approval.decided_at = now
 
 
 @dataclass
@@ -868,6 +936,11 @@ class AppSyncStore:
 
     def organization_for_new_actor(self, actor: Optional[str]) -> str:
         return self._normalize_org_id(self.actor_organizations.get(actor or ""))
+
+    def organization_for_actor(self, actor: Optional[str]) -> str:
+        """The organization an actor acts in (the orchestrator's organization resolver)."""
+        with self._lock:
+            return self._organization_for_actor(actor)
 
     def _organization_for_actor(self, actor: Optional[str]) -> str:
         user = self.users.get(actor or "unknown")
@@ -1605,6 +1678,29 @@ class AppSyncStore:
         self._notify_locked(audience="web_admin", title="High-risk action pending", body=reason, event_type="approval.requested", actor=actor, related_id=approval_id)
         return self._record(approval)
 
+    def get_approval(self, approval_id: str, *, actor: str) -> dict[str, Any]:
+        with self._lock:
+            approval = self.approvals.get(approval_id)
+            if not approval:
+                raise KeyError("approval not found")
+            self._require_actor_org(actor, approval.organization_id)
+            return self._record(approval)
+
+    def record_agent_approval(self, *, source_approval_id: str, run_id: str, organization_id: str, requester: str, risk: str, proposal: dict[str, Any], requires_dual_approval: bool, expires_at: Optional[float], channel: str = "") -> dict[str, Any]:
+        """Shows an agent step waiting in the ApprovalStore to the clients (idempotent)."""
+        with self._lock:
+            record = agent_approval_record(source_approval_id=source_approval_id, run_id=run_id, organization_id=self._normalize_org_id(organization_id), requester=requester, risk=risk, proposal=proposal, requires_dual_approval=requires_dual_approval, expires_at=expires_at, channel=channel, now=_now())
+            existing = self.approvals.get(record.approval_id)
+            if existing:
+                return self._record(existing)
+            self.approvals[record.approval_id] = record
+            self._event("approval.requested", record.requested_by, {"approval_id": record.approval_id, "kind": "agent", "run_id": run_id, "risk": record.risk, "organization_id": record.organization_id})
+            label = f"Agent step {record.action_detail['step']} ({record.risk})"
+            for audience in ("mobile", "web_admin"):
+                self._notify_locked(audience=audience, title="Agent step needs approval", body=record.action, event_type="approval.requested", actor=record.requested_by, related_id=record.approval_id, push_step=label)
+            self._persist()
+            return self._record(record)
+
     def decide_approval(self, *, approval_id: str, actor: str, decision: Literal["approved", "rejected"], reason: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, break_glass: bool = False) -> dict[str, Any]:
         with self._lock:
             cached = self._idempotency_get(actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload)
@@ -1636,11 +1732,30 @@ class AppSyncStore:
                 task.status = "queued" if decision == "approved" else "cancelled"
                 task.updated_at = _now()
             self._event("approval.decided", actor, {"approval_id": approval_id, "decision": decision, "task_id": approval.task_id, "organization_id": approval.organization_id})
-            self._notify_locked(audience="desktop", title=f"Approval {decision}", body=approval.action[:180], event_type="approval.decided", actor=actor, related_id=approval.task_id)
+            if approval.task_id:
+                self._notify_locked(audience="desktop", title=f"Approval {decision}", body=approval.action[:180], event_type="approval.decided", actor=actor, related_id=approval.task_id)
             result = self._record(approval)
             self._idempotency_put(actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload, response={"approval": result})
             self._persist()
             return result
+
+    def mirror_agent_decision(self, *, approval_id: str, outcome: Literal["approved", "rejected"], deciders: list[str], reason: Optional[str] = None) -> dict[str, Any]:
+        """Record on an agent approval the outcome its ledger already holds (see mirror_ledger_outcome).
+
+        For a ledger decided outside this plane (``/approvals/*``, the CLI), or by
+        an attempt whose mirror was lost. A decided approval is returned as it is.
+        """
+        if not approval_id.startswith(AGENT_APPROVAL_PREFIX):
+            raise ValueError("only an agent approval mirrors its ledger")
+        with self._lock:
+            approval = self.approvals.get(approval_id)
+            if not approval:
+                raise KeyError("approval not found")
+            if approval.status == "pending":
+                mirror_ledger_outcome(approval, outcome=outcome, deciders=deciders, reason=reason, now=_now())
+                self._event("approval.decided", str(approval.decided_by), {"approval_id": approval_id, "decision": outcome, "task_id": approval.task_id, "organization_id": approval.organization_id})
+                self._persist()
+            return self._record(approval)
 
     def heartbeat_runtime(self, *, actor: str, device_id: str, status: Literal["online", "offline", "degraded"], version: Optional[str] = None, hostname: Optional[str] = None, active_task_id: Optional[str] = None, capabilities: Optional[list[str]] = None) -> dict[str, Any]:
         with self._lock:
@@ -1773,7 +1888,7 @@ class AppSyncStore:
             self._persist()
             return result
 
-    def _notify_locked(self, *, audience: Literal["desktop", "mobile", "web_admin", "all"], title: str, body: str, event_type: str, actor: str, related_id: Optional[str]) -> dict[str, Any]:
+    def _notify_locked(self, *, audience: Literal["desktop", "mobile", "web_admin", "all"], title: str, body: str, event_type: str, actor: str, related_id: Optional[str], push_step: Optional[str] = None) -> dict[str, Any]:
         nid = _id("notif")
         organization_id = self._organization_for_related(related_id, actor)
         notification = NotificationRecord(notification_id=nid, audience=audience, title=title, body=body, event_type=event_type, actor=actor, organization_id=organization_id, related_id=related_id)
@@ -1790,7 +1905,8 @@ class AppSyncStore:
             if recipient is not None and device.actor != recipient:
                 continue
             push_id = _id("push")
-            self.push_outbox[push_id] = PushOutboxRecord(push_id=push_id, device_id=device.device_id, platform=device.platform, audience=audience, title=title, body=body, organization_id=organization_id, related_id=related_id, event_type=event_type)
+            push_title, push_body = push_text(event_type, step=push_step)
+            self.push_outbox[push_id] = PushOutboxRecord(push_id=push_id, device_id=device.device_id, platform=device.platform, audience=audience, title=push_title, body=push_body, organization_id=organization_id, related_id=related_id, event_type=event_type)
         self._event("notification.created", actor, {"notification_id": nid, "audience": audience, "event_type": event_type, "related_id": related_id, "organization_id": organization_id})
         return self._record(notification)
 

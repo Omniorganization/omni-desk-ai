@@ -31,6 +31,7 @@ from typing import Any, Literal, Optional, TypeVar, cast
 
 from omnidesk_agent.appsync.postgres_migrations import assert_appsync_schema_current
 from omnidesk_agent.appsync.store import (
+    AGENT_APPROVAL_PREFIX,
     LEGACY_HMAC_KEY_REFUSED,
     SYNC_PAGE_LIMIT,
     TERMINAL_TASK_STATUSES,
@@ -54,8 +55,11 @@ from omnidesk_agent.appsync.store import (
     SyncCursorRecord,
     TaskRecord,
     TaskStatus,
+    agent_approval_record,
     apply_approval_decision,
     approvals_required,
+    mirror_ledger_outcome,
+    push_text,
     UserProfile,
     _approval_decision_message,
     _device_request_message,
@@ -938,6 +942,10 @@ class MigratedMultiInstancePostgresAppSyncStore:
         tx.organizations[key] = organization_id
         return organization_id
 
+    def organization_for_actor(self, actor: Optional[str]) -> str:
+        """The organization an actor acts in (the orchestrator's organization resolver)."""
+        return self._organization_for_actor(actor)
+
     def _organization_for_actor(self, actor: Optional[str]) -> str:
         return self._read(lambda tx: self._org_for_actor(tx, actor))
 
@@ -1076,6 +1084,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
         event_type: str,
         actor: str,
         related_id: Optional[str],
+        push_step: Optional[str] = None,
     ) -> dict[str, Any]:
         organization_id = self._org_for_related(tx, related_id, actor)
         notification = NotificationRecord(
@@ -1086,8 +1095,10 @@ class MigratedMultiInstancePostgresAppSyncStore:
         tx.cur.execute(
             PUSH_FANOUT_SQL,
             {
+                # Pushes carry a fixed text, never the notification's content.
                 "namespace": self.namespace, "organization_id": organization_id, "audience": audience,
-                "title": title, "body": body, "related_id": related_id, "now": tx.now, "event_type": event_type,
+                **dict(zip(("title", "body"), push_text(event_type, step=push_step))),
+                "related_id": related_id, "now": tx.now, "event_type": event_type,
                 "recipient": self._conversation_owner(tx, related_id),
             },
         )
@@ -1742,6 +1753,32 @@ class MigratedMultiInstancePostgresAppSyncStore:
 
         return self._transaction(body)
 
+    def get_approval(self, approval_id: str, *, actor: str) -> dict[str, Any]:
+        def body(tx: _Tx) -> dict[str, Any]:
+            approval: Optional[ApprovalRecord] = self._get(tx, APPROVALS, approval_id)
+            if not approval:
+                raise KeyError("approval not found")
+            self._require_actor_org(tx, actor, approval.organization_id)
+            return self._record(approval)
+
+        return self._read(body)
+
+    def record_agent_approval(self, *, source_approval_id: str, run_id: str, organization_id: str, requester: str, risk: str, proposal: dict[str, Any], requires_dual_approval: bool, expires_at: Optional[float], channel: str = "") -> dict[str, Any]:
+        """Shows an agent step waiting in the ApprovalStore to the clients (idempotent)."""
+
+        def body(tx: _Tx) -> dict[str, Any]:
+            record = agent_approval_record(source_approval_id=source_approval_id, run_id=run_id, organization_id=self._normalize_org_id(organization_id), requester=requester, risk=risk, proposal=proposal, requires_dual_approval=requires_dual_approval, expires_at=expires_at, channel=channel, now=tx.now)
+            if not self._insert(tx, APPROVALS, record, if_absent=True):
+                existing: Optional[ApprovalRecord] = self._get(tx, APPROVALS, record.approval_id)
+                return self._record(existing) if existing else self._record(record)
+            self._event(tx, "approval.requested", record.requested_by, {"approval_id": record.approval_id, "kind": "agent", "run_id": run_id, "risk": record.risk, "organization_id": record.organization_id})
+            label = f"Agent step {record.action_detail['step']} ({record.risk})"
+            for audience in ("mobile", "web_admin"):
+                self._notify(tx, audience=audience, title="Agent step needs approval", body=record.action, event_type="approval.requested", actor=record.requested_by, related_id=record.approval_id, push_step=label)  # type: ignore[arg-type]
+            return self._record(record)
+
+        return self._transaction(body)
+
     def decide_approval(self, *, approval_id: str, actor: str, decision: Literal["approved", "rejected"], reason: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, break_glass: bool = False) -> dict[str, Any]:
         def body(tx: _Tx) -> Any:
             cached = self._idempotency_lookup(tx, actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload, lock=True)
@@ -1775,10 +1812,29 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 task.updated_at = tx.now
                 self._update(tx, TASKS, task)
             self._event(tx, "approval.decided", actor, {"approval_id": approval_id, "decision": decision, "task_id": approval.task_id, "organization_id": approval.organization_id})
-            self._notify(tx, audience="desktop", title=f"Approval {decision}", body=approval.action[:180], event_type="approval.decided", actor=actor, related_id=approval.task_id)
+            if approval.task_id:
+                self._notify(tx, audience="desktop", title=f"Approval {decision}", body=approval.action[:180], event_type="approval.decided", actor=actor, related_id=approval.task_id)
             result = self._record(approval)
             self._idempotency_store(tx, actor=actor, endpoint="approvals.decide", key=idempotency_key, payload=idempotency_payload, response={"approval": result})
             return result
+
+        return self._transaction(body)
+
+    def mirror_agent_decision(self, *, approval_id: str, outcome: Literal["approved", "rejected"], deciders: list[str], reason: Optional[str] = None) -> dict[str, Any]:
+        """Record on an agent approval the outcome its ledger already holds
+        (see :meth:`AppSyncStore.mirror_agent_decision`), in one transaction."""
+        if not approval_id.startswith(AGENT_APPROVAL_PREFIX):
+            raise ValueError("only an agent approval mirrors its ledger")
+
+        def body(tx: _Tx) -> dict[str, Any]:
+            approval: Optional[ApprovalRecord] = self._get(tx, APPROVALS, approval_id, for_update=True)
+            if not approval:
+                raise KeyError("approval not found")
+            if approval.status == "pending":
+                mirror_ledger_outcome(approval, outcome=outcome, deciders=deciders, reason=reason, now=tx.now)
+                self._update(tx, APPROVALS, approval)
+                self._event(tx, "approval.decided", str(approval.decided_by), {"approval_id": approval_id, "decision": outcome, "task_id": approval.task_id, "organization_id": approval.organization_id})
+            return self._record(approval)
 
         return self._transaction(body)
 
