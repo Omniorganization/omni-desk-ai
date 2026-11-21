@@ -97,6 +97,11 @@ RUNTIME_STATE_NAMES = frozenset({
     "model_costs.sqlite3",
     "admin_auth_audit.jsonl",
     "audit_checkpoints",
+    # Kept next to the audit log, which some deployments put in the workspace
+    # root: removing the stop file would lift the emergency stop, and the
+    # session store holds the admin sessions.
+    "emergency_stop.json",
+    "admin_sessions.sqlite3",
     "app_sync_state.json",
     "learning_audit.jsonl",
     "self_learning.sqlite3",

@@ -211,8 +211,11 @@ def test_shell_docker_backend_masks_runtime_state_and_contains_escape(container_
     # the probe stands in for hostile workspace code such as a conftest.py.
     argv = shell._docker_argv(["pytest"])
     image_index = argv.index(container_image)
-    # Same masks the sandbox layer adds for OmniDesk's own state files.
-    argv = [*argv[:image_index], *runtime_state_masks(workspace), container_image, "python3", "-I", "probe.py"]
+    # The shell adds the state masks itself (ea1fbc8): run the argv as the product
+    # builds it. Adding them again here made Docker refuse a duplicate mount point.
+    masks = runtime_state_masks(workspace)
+    assert masks and all(spec in argv[:image_index] for spec in masks)
+    argv = [*argv[:image_index], container_image, "python3", "-I", "probe.py"]
 
     observed = _run_probe([RUNTIME, *argv[1:]])
 

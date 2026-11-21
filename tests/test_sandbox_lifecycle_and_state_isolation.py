@@ -221,6 +221,12 @@ def test_state_is_recognised_however_a_case_insensitive_filesystem_spells_it(nam
     assert is_runtime_state(name)
 
 
+def test_security_files_kept_next_to_the_audit_log_are_state_too():
+    # Some deployments put the audit log in the workspace root.
+    assert is_runtime_state("emergency_stop.json") and is_runtime_state("admin_sessions.sqlite3-wal")
+    assert is_runtime_state("admin_sessions.sqlite3.key")
+
+
 def test_folding_matches_only_the_top_level_state_entries():
     assert not is_runtime_state("pkg/RUNS.SQLITE3")
     assert not is_runtime_state("runs.sqlite3.bak")
