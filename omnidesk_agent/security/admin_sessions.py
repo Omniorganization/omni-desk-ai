@@ -53,11 +53,11 @@ ROLES = frozenset({"viewer", "operator", "owner"})
 
 _LOOKUP_LABEL = b"omnidesk/admin-session/lookup/v1"
 _SEAL_LABEL = b"omnidesk/admin-session/seal/v1"
-_TABLE = "omnidesk_admin_sessions"
-_COLUMNS = "session_id, lookup, actor, role, organization, label, created_at, expires_at, revoked_at, seal"
+# SQL is written out literally (no string building): nothing user-supplied is
+# ever part of a statement, and bandit's B608 stays meaningful.
 _SCHEMA = (
-    f"""
-    CREATE TABLE IF NOT EXISTS {_TABLE} (
+    """
+    CREATE TABLE IF NOT EXISTS omnidesk_admin_sessions (
         session_id TEXT PRIMARY KEY,
         lookup TEXT NOT NULL UNIQUE,
         actor TEXT NOT NULL,
@@ -70,7 +70,7 @@ _SCHEMA = (
         seal TEXT NOT NULL
     )
     """,
-    f"CREATE INDEX IF NOT EXISTS {_TABLE}_actor ON {_TABLE} (actor, created_at)",
+    "CREATE INDEX IF NOT EXISTS omnidesk_admin_sessions_actor ON omnidesk_admin_sessions (actor, created_at)",
 )
 
 
@@ -158,12 +158,12 @@ class AdminSessionStore:
             raise ValueError(f"unknown admin role: {role!r}")
         ttl = DEFAULT_TTL_SECONDS if ttl_seconds is None else max(MIN_TTL_SECONDS, min(int(ttl_seconds), MAX_TTL_SECONDS))
         now = self.clock()
-        self._run(f"DELETE FROM {_TABLE} WHERE expires_at <= %s", (int(now),))
-        recent = self._run(f"SELECT created_at FROM {_TABLE} WHERE actor = %s AND created_at > %s", (actor, now - 60), fetch=True)
+        self._run("DELETE FROM omnidesk_admin_sessions WHERE expires_at <= %s", (int(now),))
+        recent = self._run("SELECT created_at FROM omnidesk_admin_sessions WHERE actor = %s AND created_at > %s", (actor, now - 60), fetch=True)
         if len(recent) >= MAX_LOGINS_PER_MINUTE:
             oldest = min(float(r[0]) for r in recent)
             raise AdminSessionLimit("too many admin logins for this actor; try again shortly", math.ceil(oldest + 60 - now))
-        live = self._run(f"SELECT expires_at FROM {_TABLE} WHERE actor = %s AND revoked_at IS NULL AND expires_at > %s", (actor, int(now)), fetch=True)
+        live = self._run("SELECT expires_at FROM omnidesk_admin_sessions WHERE actor = %s AND revoked_at IS NULL AND expires_at > %s", (actor, int(now)), fetch=True)
         if len(live) >= MAX_ACTIVE_SESSIONS_PER_ACTOR:
             first_expiry = min(int(r[0]) for r in live)
             raise AdminSessionLimit("too many live admin sessions for this actor; revoke some", min(3600, math.ceil(first_expiry - now)))
@@ -172,7 +172,7 @@ class AdminSessionStore:
         lookup = self._lookup(token)
         seal = self._seal(session.session_id, lookup, actor, role, organization, session.expires_at)
         self._run(
-            f"INSERT INTO {_TABLE} ({_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s)",
+            "INSERT INTO omnidesk_admin_sessions (session_id, lookup, actor, role, organization, label, created_at, expires_at, revoked_at, seal) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s)",
             (session.session_id, lookup, actor, role, organization, session.label, now, session.expires_at, seal),
         )
         return token, session
@@ -182,24 +182,24 @@ class AdminSessionStore:
         token = str(token or "")
         if not token.startswith(SESSION_TOKEN_PREFIX):
             return None
-        rows = self._run(f"SELECT {_COLUMNS} FROM {_TABLE} WHERE lookup = %s", (self._lookup(token),), fetch=True)
+        rows = self._run("SELECT session_id, lookup, actor, role, organization, label, created_at, expires_at, revoked_at, seal FROM omnidesk_admin_sessions WHERE lookup = %s", (self._lookup(token),), fetch=True)
         return self._session(rows[0]) if rows else None
 
     def get(self, session_id: str) -> Optional[AdminSession]:
-        rows = self._run(f"SELECT {_COLUMNS} FROM {_TABLE} WHERE session_id = %s", (str(session_id),), fetch=True)
+        rows = self._run("SELECT session_id, lookup, actor, role, organization, label, created_at, expires_at, revoked_at, seal FROM omnidesk_admin_sessions WHERE session_id = %s", (str(session_id),), fetch=True)
         return self._session(rows[0]) if rows else None
 
     def revoke(self, session_id: str) -> bool:
-        changed = self._run(f"UPDATE {_TABLE} SET revoked_at = %s WHERE session_id = %s AND revoked_at IS NULL", (self.clock(), str(session_id)))
+        changed = self._run("UPDATE omnidesk_admin_sessions SET revoked_at = %s WHERE session_id = %s AND revoked_at IS NULL", (self.clock(), str(session_id)))
         return bool(changed)
 
     def revoke_actor(self, actor: str) -> list[str]:
         """Revoke every live session of ``actor``; returns their ids."""
         now = self.clock()
-        rows = self._run(f"SELECT session_id FROM {_TABLE} WHERE actor = %s AND revoked_at IS NULL AND expires_at > %s", (str(actor), int(now)), fetch=True)
+        rows = self._run("SELECT session_id FROM omnidesk_admin_sessions WHERE actor = %s AND revoked_at IS NULL AND expires_at > %s", (str(actor), int(now)), fetch=True)
         revoked = [str(r[0]) for r in rows]
         if revoked:
-            self._run(f"UPDATE {_TABLE} SET revoked_at = %s WHERE actor = %s AND revoked_at IS NULL", (now, str(actor)))
+            self._run("UPDATE omnidesk_admin_sessions SET revoked_at = %s WHERE actor = %s AND revoked_at IS NULL", (now, str(actor)))
         return revoked
 
 
