@@ -65,6 +65,35 @@ def _emergency_stop(rt: Any) -> Any:
     return stop
 
 
+async def _stopping(rt: Any, *, route: str, actor: str, key: str, payload: dict[str, Any], call: Any, resource_id: Optional[str] = None) -> Any:
+    """Run a stopping action idempotently, but never let bookkeeping prevent it.
+
+    Cancelling a run and engaging the emergency stop only take capability away.
+    If the idempotency store cannot be written (unavailable, read-only, full),
+    the action still runs, without replay protection. The action itself
+    failing is still an error.
+    """
+    outcome: dict[str, Any] = {}
+
+    async def tracked():
+        outcome["started"] = True
+        outcome["result"] = await call()
+        return outcome["result"]
+
+    try:
+        return await _idempotent_side_effect(rt, route=route, actor=actor, key=key, payload=payload, call=tracked, resource_id=resource_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if "result" in outcome:  # done; only recording its answer failed
+            log.warning("%s ran, but its idempotency record failed: %s", route, type(exc).__name__)
+            return outcome["result"]
+        if outcome.get("started"):  # the action itself failed
+            raise
+        log.warning("%s runs without idempotency: the store failed: %s", route, type(exc).__name__)
+        return await call()
+
+
 def register_run_control_routes(app: FastAPI, cfg: Any, rt: Any, admin: AdminVerifier) -> None:
     @app.post("/agent/runs/{run_id}/cancel")
     async def cancel_run(run_id: str, request: Request, body: Optional[StopRequest] = None):
@@ -94,7 +123,7 @@ def register_run_control_routes(app: FastAPI, cfg: Any, rt: Any, admin: AdminVer
                     raise HTTPException(503, "the audit log is unavailable and the run was not cancelled") from exc
                 return {"ok": True, "status": "cancelled", "run_id": run_id, "audit_error": type(exc).__name__}
 
-        return await _idempotent_side_effect(
+        return await _stopping(
             rt,
             route="/agent/runs/{run_id}/cancel",
             actor=actor,
@@ -129,7 +158,7 @@ def register_run_control_routes(app: FastAPI, cfg: Any, rt: Any, admin: AdminVer
                 audit = f"not recorded: {type(exc).__name__}"
             return {"ok": True, **state.to_dict(), "audit": audit}
 
-        return await _idempotent_side_effect(rt, route="/admin/emergency-stop/engage", actor=actor, key=key, payload={"reason": reason}, call=call)
+        return await _stopping(rt, route="/admin/emergency-stop/engage", actor=actor, key=key, payload={"reason": reason}, call=call)
 
     @app.post("/admin/emergency-stop/release")
     async def release_emergency_stop(request: Request, body: Optional[StopRequest] = None):

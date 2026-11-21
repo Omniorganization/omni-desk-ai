@@ -249,3 +249,26 @@ def test_the_routes_answer_501_until_the_runtime_supports_them():
         assert client.get("/admin/emergency-stop").status_code == 501
         assert client.post("/admin/emergency-stop/engage", headers={"idempotency-key": "s-1"}).status_code == 501
         assert client.post("/admin/emergency-stop/release", headers={"idempotency-key": "r-1"}).status_code == 501
+
+
+def test_a_broken_idempotency_store_never_blocks_a_stop(app, monkeypatch):
+    # Codex review: begin() needs a write transaction; an unavailable, read-only
+    # or full store made engage fail before the stop ran.
+    import sqlite3
+
+    rt = app.state.runtime
+    own = _run(app, "operator-a")
+
+    def unavailable(**kwargs):
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    monkeypatch.setattr(rt.side_effect_idempotency, "begin", unavailable)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        engaged = client.post("/admin/emergency-stop/engage", headers=_h("operator", "s-1"))
+        cancelled = client.post(f"/agent/runs/{own}/cancel", headers=_h("operator", "c-1"))
+        released = client.post("/admin/emergency-stop/release", headers=_h("owner", "r-1"))
+
+    assert engaged.status_code == 200 and rt.emergency_stop.status().engaged is True
+    assert cancelled.status_code == 200 and app.state.cancels == [(own, "", "operator-a")]
+    # Giving capability back stays strict: without bookkeeping the release fails and the stop holds.
+    assert released.status_code == 500 and rt.emergency_stop.status().engaged is True
