@@ -23,6 +23,45 @@ The manifest records encrypted file hashes plus plaintext hashes. Verification d
 
 `deploy/systemd/omnidesk-backup.service` backs up every `*.sqlite3` in `/var/lib/omnidesk` (`--discover`).
 
+## Retention: at most 35 days
+
+Backups hold the same personal data as the stores they copy, including records
+that a data-subject erasure has since removed. Security's privacy requirement
+(`SECURITY.md`) is that backups are kept for **at most 35 days**.
+- Every scheduled backup prunes after 30 days (`--retention-days 30`): the hourly
+  SQLite unit `omnidesk-backup.service` and the daily PostgreSQL unit
+  `omnidesk-postgres-backup.service`, each with its timer. Operations use 30 in
+  the Helm chart and the compose stack too.
+- Operators may lower that value, but must not raise it above 35.
+- `tests/test_backup_retention_policy.py` reads every scheduled path in `deploy/`:
+  systemd units and timers, Helm charts (including a `{{ .Values... }}` value from
+  the chart's `values.yaml`), compose files, launchd plists, cron and shell
+  scripts. It fails if any command that runs a backup script stops pruning or
+  keeps backups longer than 35 days, and if a backup timer runs a service that
+  does not prune.
+
+Run by hand, `backup_sqlite.py` and `backup_postgres.py` keep every set unless you
+pass `--retention-days` (or `--keep`). Without it they print a warning that
+backups holding personal data must be pruned within 35 days; a value above 35
+also warns. A restored backup can hold records erased after it was taken.
+
+### Scheduled PostgreSQL backup
+
+`deploy/systemd/omnidesk-postgres-backup.service` runs `backup_postgres.py
+--dest /var/backups/omnidesk/postgres --encrypt --retention-days 30`. It reads
+`OMNIDESK_POSTGRES_DSN`, `OMNIDESK_APPSYNC_POSTGRES_DSN` and
+`OMNIDESK_BACKUP_ENCRYPTION_KEY` from `/etc/omnidesk/backup.env`, and verifies
+each new set before it succeeds. Its timer runs it daily:
+
+```bash
+sudo systemctl enable --now omnidesk-postgres-backup.timer
+```
+
+To feed the backup-verification alert, add `--metrics-file
+/var/lib/node_exporter/textfile_collector/omnidesk_backup.prom` and that
+directory to `ReadWritePaths`. A daily logical backup cannot meet a recovery
+point of minutes; that needs WAL archiving, which is not part of this unit.
+
 ## PostgreSQL backup / restore
 
 Production keeps multi-instance state in PostgreSQL: the core runtime state

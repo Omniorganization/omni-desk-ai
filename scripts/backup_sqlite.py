@@ -8,11 +8,16 @@ import hmac
 import json
 import os
 import sqlite3
+import sys
 from contextlib import closing
 import time
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from omnidesk_agent.storage.backup_policy import retention_warning  # noqa: E402
 
 
 def sha256(path: Path) -> str:
@@ -99,13 +104,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dest", required=True, type=Path)
     parser.add_argument("--encrypt", action="store_true", help="Encrypt backup files with a key derived from --key-env.")
     parser.add_argument("--key-env", default="OMNIDESK_BACKUP_ENCRYPTION_KEY")
-    parser.add_argument("--retention-days", type=float, default=0, help="Delete *.bak and *.bak.enc files older than this many days.")
+    parser.add_argument("--retention-days", type=float, default=None, help="Delete *.bak and *.bak.enc files older than this many days. Without it every backup is kept; a scheduled run must pass it (at most 35 days for personal data).")
     parser.add_argument("--sign-manifest", action="store_true", help="HMAC-sign backup_manifest.json with --manifest-key-env.")
     parser.add_argument("--manifest-key-env", default="OMNIDESK_BACKUP_MANIFEST_KEY")
     parser.add_argument("--redact-manifest-paths", action="store_true", help="Also write backup_manifest.public.json with absolute paths redacted.")
     parser.add_argument("--discover", type=Path, action="append", default=[], help="Also back up every *.sqlite3 file in this directory, so new runtime databases are never missed.")
     parser.add_argument("db", nargs="*", type=Path)
     args = parser.parse_args(argv)
+    warning = retention_warning(args.retention_days)
+    if warning:
+        print(warning, file=sys.stderr)
+    retention_days = args.retention_days or 0
     databases = list(args.db)
     for directory in args.discover:
         databases.extend(sorted(path for path in directory.expanduser().glob("*.sqlite3") if path.is_file()))
@@ -114,9 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     manifest = {
         "created_at": time.time(),
         "encrypted": bool(args.encrypt),
-        "retention_days": args.retention_days,
+        "retention_days": retention_days,
         "items": [backup_one(db, args.dest, encrypt=args.encrypt, key_env=args.key_env) for db in dict.fromkeys(databases)],
-        "retention_purged": apply_retention(args.dest, args.retention_days),
+        "retention_purged": apply_retention(args.dest, retention_days),
     }
     if args.sign_manifest:
         manifest["manifest_hmac_key_env"] = args.manifest_key_env
