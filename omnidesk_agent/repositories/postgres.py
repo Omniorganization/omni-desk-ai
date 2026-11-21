@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import RLock
 from typing import Any
 
@@ -251,6 +252,13 @@ class PostgresRepositoryFactory:
 
     def break_glass_store(self, *, audit_log):
         return self._runtime_state().break_glass_store(audit_log=audit_log)
+
+    def admin_session_store(self, *, path, key_env: str):
+        # Shared by every gateway instance; ``path`` only names the local dev key file.
+        from omnidesk_agent.security.admin_sessions import PostgresAdminSessionStore
+        from omnidesk_agent.security.audit_chain import dev_key_file_for
+
+        return PostgresAdminSessionStore(self._connection_pool(), key_env=key_env, dev_key_file=dev_key_file_for(Path(path)))
 
     def webhook_security(self):
         return self._runtime_state().webhook_security()

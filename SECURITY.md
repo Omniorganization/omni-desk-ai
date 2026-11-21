@@ -49,6 +49,28 @@ What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_w
   - A chain detects edits; it does not prevent them. Logs written before this change, at `workspace.root/admin_auth_audit.jsonl`, are left where they are.
 - **Keyed digests.** `PermissionManager.keyed_digest(data)` is HMAC-SHA256 under a sub-key derived from the audit key (label `omnidesk/scope-hash/v1`). Agent-core's tools use it for content digests (`x_sha256`) and scope hashes, so a low-entropy value such as a typed password cannot be guessed offline from an audit entry or approval record. The key is the same across restarts and replicas. Without the audit key in production, no digest can be computed, which fails closed. Digests written before the switch stay plain SHA-256.
 
+## Admin Sessions
+
+Web Admin and other admin clients should not keep the long-lived role token. They exchange it for a short-lived, revocable session token (`security/admin_sessions.py`, `server_routes/admin_session_routes.py`).
+
+- **Login.** `POST /admin/session/login` with a role token (viewer and up) returns an `omds_...` token once.
+  - The session has that token's actor and role, and the organization the gateway assigns to the actor. It lasts 8 hours by default and at most 12.
+  - Only a real credential opens a session: a role token or the legacy gateway secret. A session token cannot open another session, local-development access (no token, loopback only) cannot become a session usable from anywhere, and a break-glass elevation cannot open one.
+  - The response is `Cache-Control: no-store`. The route takes no idempotency key, so the token is never cached.
+- **Use.** Send the session token like a role token (`Authorization: Bearer omds_...`). Expired, revoked or tampered sessions are refused.
+- **Storage.**
+  - The store keeps an HMAC of the token, never the token itself.
+  - Each row is sealed over its id, actor, role, organization and expiry. Both keys derive from the audit key in the secret store, with their own labels. A row inserted or edited without that key does not authenticate.
+  - SQLite sits next to the audit log, outside the workspace, and the name is also runtime state. PostgreSQL uses one shared table, so every gateway instance sees the same sessions.
+- **Revoke.** `POST /admin/session/revoke`:
+  - `{}` revokes the current session (logout);
+  - `{"session_id": ...}` revokes one of the caller's sessions; an owner can revoke anyone's;
+  - `{"all": true}` revokes all of the caller's sessions; `{"all": true, "actor": ...}` is owner-only.
+  - Revocation takes effect on the next request. It works even while the admin audit log cannot take entries: the revoker is authenticated with best-effort auditing, because revoking only takes access away. Every other admin request still fails closed.
+- **Limits.** At most 10 logins a minute and 20 live sessions per actor (429 with `Retry-After`). They are counted in the shared store.
+- **Audit.** `admin_session.login` and `admin_session.revoke` go to the chained admin audit log with the session id, never the token. Every request made with a session records its session id. A login that cannot be audited is revoked again (503). A revoke is never undone because its audit entry failed.
+- **Known limit.** Revocation is a column, not sealed history. Someone who can write the table and kept a copy of a row from before its revocation could restore it until its original expiry.
+
 ## Reporting
 
 Do not include secrets, credentials, private keys, tokens, customer data, or production evidence payloads in public issues. Use a private security channel controlled by the repository owner.
