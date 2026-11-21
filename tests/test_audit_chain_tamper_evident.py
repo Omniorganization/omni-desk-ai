@@ -568,3 +568,150 @@ def test_keyed_digest_fails_closed_without_the_key_in_production(tmp_path, monke
     monkeypatch.setenv("OMNIDESK_ENV", "production")
     with pytest.raises(AuditIntegrityError):
         _digest_manager(tmp_path).keyed_digest(b"x")
+
+
+# --- Codex review findings on #230 ------------------------------------------------------------
+
+
+def _chain_with(tmp_path, monkeypatch, entries=4) -> Path:
+    from omnidesk_agent.security.audit_chain import AuditChain
+
+    monkeypatch.setenv(KEY_ENV, KEY.decode())
+    log = tmp_path / "audit.log"
+    chain = AuditChain(log)
+    for i in range(entries):
+        chain.append("agent_step_finished", {"i": i})
+    return log
+
+
+def _monitor(log: Path):
+    from omnidesk_agent.security.audit_chain import AuditIntegrityMonitor
+
+    failures: list[str] = []
+    return AuditIntegrityMonitor([log], on_failure=failures.append), failures
+
+
+def test_a_verified_log_that_disappears_is_a_failure(tmp_path, monkeypatch):
+    log = _chain_with(tmp_path, monkeypatch)
+    monitor, failures = _monitor(log)
+    assert monitor.check_once() is True
+
+    log.unlink()  # deleting the whole trail must not pass as "nothing to check"
+
+    assert monitor.check_once() is False and "disappeared" in failures[0]
+
+
+def test_a_full_check_still_catches_entries_removed_since_the_last_check(tmp_path, monkeypatch):
+    log = _chain_with(tmp_path, monkeypatch, entries=6)
+    monitor, failures = _monitor(log)
+    assert monitor.check_once() is True
+
+    lines = log.read_bytes().splitlines(keepends=True)
+    log.write_bytes(b"".join(lines[:-2]))  # drop two complete trailing entries
+    monitor._last_full_at = -1e9  # the scheduled full pass is due
+
+    assert monitor.check_once() is False and "no longer holds" in failures[0]
+
+
+def test_a_legitimate_rotation_keeps_the_monitor_and_the_anchors_green(tmp_path, monkeypatch):
+    from omnidesk_agent.security.audit_chain import AuditChain, rotate
+
+    log = _chain_with(tmp_path, monkeypatch)
+    monitor, failures = _monitor(log)
+    anchors = WormAuditCheckpoint(tmp_path / "anchors")
+    assert monitor.check_once() is True and anchors.verify_and_anchor(log, KEY)["ok"] is True
+
+    rotate(log, reason="key rotation drill", key=KEY)
+    AuditChain(log).append("agent_step_finished", {"after": "rotation"})
+
+    assert monitor.check_once() is True, failures  # incremental pass across the rotation
+    monitor._last_full_at = -1e9
+    assert monitor.check_once() is True, failures  # and the full pass
+    rotated = anchors.verify_and_anchor(log, KEY)
+    assert rotated["ok"] is True and rotated.get("rotated_from_anchor") is True
+    assert anchors.verify_and_anchor(log, KEY)["ok"] is True  # anchored again on the new chain
+
+
+def test_rotation_cannot_hide_a_truncation(tmp_path, monkeypatch):
+    from omnidesk_agent.security.audit_chain import rotate
+
+    log = _chain_with(tmp_path, monkeypatch, entries=6)
+    monitor, failures = _monitor(log)
+    anchors = WormAuditCheckpoint(tmp_path / "anchors")
+    assert monitor.check_once() is True and anchors.verify_and_anchor(log, KEY)["ok"] is True
+
+    lines = log.read_bytes().splitlines(keepends=True)
+    log.write_bytes(b"".join(lines[:-2]))  # truncate, then seal the truncated log
+    rotate(log, reason="cover-up", key=KEY)
+
+    assert monitor.check_once() is False
+    assert anchors.verify_and_anchor(log, KEY)["ok"] is False
+
+
+def test_the_verifier_streams_instead_of_loading_the_whole_log(tmp_path, monkeypatch):
+    from omnidesk_agent.security import audit_chain
+
+    log = _chain_with(tmp_path, monkeypatch, entries=50)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(AssertionError("read the whole log")))
+
+    full = audit_chain.verify_audit_log(log, KEY)
+    incremental = audit_chain.verify_audit_log(log, KEY, start=full.last)
+
+    assert full.ok and full.entries == 51 and incremental.ok and incremental.entries == 0  # genesis + 50
+
+
+def test_a_pre_chain_log_is_upgraded_before_the_monitor_reads_it(tmp_path, monkeypatch):
+    # Codex review: on an upgraded install the first monitor pass met the legacy
+    # log before any decision wrote its genesis, failed, and latched the gate shut.
+    from fastapi.testclient import TestClient
+
+    from omnidesk_agent.config import AppConfig
+    from omnidesk_agent.server import create_app
+
+    monkeypatch.setenv(KEY_ENV, KEY.decode())
+    cfg = AppConfig()
+    cfg.workspace.root = tmp_path / "ws"
+    cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+    cfg.workspace.skills_dirs = [tmp_path / "skills"]
+    cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
+    cfg.permissions.audit_log = tmp_path / "state" / "audit.log"
+    cfg.learning.growth_plan_file = tmp_path / "growth.json"
+    cfg.channels.gmail.credentials_file = tmp_path / "g" / "c.json"
+    cfg.channels.gmail.token_file = tmp_path / "g" / "t.json"
+    cfg.plugins.enabled = False
+    cfg.ensure_dirs()
+    cfg.permissions.audit_log.write_text('{"event": "allowed_interactive", "ts": 1}\n', encoding="utf-8")
+
+    app = create_app(cfg)
+    with TestClient(app):
+        assert app.state.audit_monitor.check_once() is True
+
+    assert app.state.runtime.permissions.audit_integrity_failure is None
+    first_chain_line = next(json.loads(line) for line in cfg.permissions.audit_log.read_text(encoding="utf-8").splitlines() if '"chain"' in line)
+    assert first_chain_line["payload"]["reason"] == "legacy_upgrade"  # the legacy line is committed to, not lost
+
+
+def test_every_writer_uses_the_configured_audit_key_name(tmp_path, monkeypatch):
+    # Codex review: break-glass stores were built without the configured key
+    # name, so they used the default secret while the monitor used the configured one.
+    from omnidesk_agent.config import AppConfig
+    from omnidesk_agent.server import create_app
+
+    monkeypatch.setenv("CUSTOM_AUDIT_KEY", KEY.decode())
+    cfg = AppConfig()
+    cfg.workspace.root = tmp_path / "ws"
+    cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+    cfg.workspace.skills_dirs = [tmp_path / "skills"]
+    cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
+    cfg.permissions.audit_log = tmp_path / "state" / "audit.log"
+    cfg.permissions.audit_checkpoint_hmac_key_env = "CUSTOM_AUDIT_KEY"
+    cfg.learning.growth_plan_file = tmp_path / "growth.json"
+    cfg.channels.gmail.credentials_file = tmp_path / "g" / "c.json"
+    cfg.channels.gmail.token_file = tmp_path / "g" / "t.json"
+    cfg.plugins.enabled = False
+    cfg.ensure_dirs()
+
+    rt = create_app(cfg).state.runtime
+
+    writers = [rt.permissions.audit_chain, rt.admin_auth.audit_chain, rt.break_glass_store.audit_chain]
+    assert [w.key_env for w in writers] == ["CUSTOM_AUDIT_KEY"] * 3

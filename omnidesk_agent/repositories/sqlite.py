@@ -123,10 +123,10 @@ class SQLiteRepositoryFactory:
 
         return ApprovalStore(self.workspace_root / "approvals.sqlite3", ttl_seconds=ttl_seconds, dual_approval_store=dual_approval_store)
 
-    def break_glass_store(self, *, audit_log: Path):
+    def break_glass_store(self, *, audit_log: Path, audit_key_env: str = "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY"):
         from omnidesk_agent.security.break_glass import BreakGlassStore
 
-        return BreakGlassStore(self.workspace_root / "break_glass.sqlite3", audit_log=audit_log)
+        return BreakGlassStore(self.workspace_root / "break_glass.sqlite3", audit_log=audit_log, audit_key_env=audit_key_env)
 
     def webhook_security(self):
         from omnidesk_agent.security.webhook_security import WebhookSecurity

@@ -41,6 +41,12 @@ What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_w
   - `python -m omnidesk_agent.security.audit_chain verify <log>...` verifies the whole chain. It exits 1 on any edited, inserted, deleted or reordered entry, a wrong key, or a damaged tail, and exits 2 when no key is available.
   - With `--checkpoint-dir`, it also checks the newest signed anchor and writes a new one. Truncating the tail is then caught as well, because the anchored entry must still be present. Mirror anchor files to storage the gateway cannot delete.
 - The gateway re-verifies both logs in the background. Every `OMNIDESK_AUDIT_VERIFY_INTERVAL_SECONDS` (default 300) it checks what was appended since the last check, and every `OMNIDESK_AUDIT_FULL_VERIFY_INTERVAL_SECONDS` (default 3600) it re-verifies everything. On a failure every permission decision is refused, `/ready` reports not ready, and `omnidesk_audit_chain_verify_failures_total` increases.
+  - A log that was verified once and then disappears is a failure.
+  - A full pass also confirms that the last entry it verified before is still there, so removing complete trailing entries between checks is caught.
+  - A rotation is not mistaken for tampering: the new chain's first entry pins the sealed log's SHA-256, and that sealed log must still hold the earlier entry. The same rule lets anchors continue across a rotation. A truncated log sealed by a rotation is still caught.
+  - Verification streams the file, and incremental checks seek to the last verified point, so memory does not grow with the log.
+  - At startup each log is opened through its locked writer first, so a pre-chain log from an older version gets its genesis entry before the monitor reads it.
+  - Every writer (permission gate, admin auth, break-glass, on SQLite and PostgreSQL) uses the configured `permissions.audit_checkpoint_hmac_key_env`.
 - Recovery: keep the damaged log as evidence, then run `python -m omnidesk_agent.security.audit_chain rotate <log> --reason "..."`. It seals the log under a new name and starts a chain whose first entry records the sealed file's SHA-256 and verification result. To rotate the key, use `--previous-key-env`.
 - CI (`security-attack-surface`) runs `scripts/check_audit_chain.py`. The script writes a log through the real writers on the CI runner, verifies it, and checks that the verifier rejects each kind of damage. That is evidence about the verifier, not about any production log.
 - Known limits:

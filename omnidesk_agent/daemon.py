@@ -79,7 +79,9 @@ class OmniDeskRuntime:
             ttl_seconds=cfg.permissions.approval_ttl_seconds,
             dual_approval_store=self.dual_approval_store,
         )
-        self.break_glass_store = self.repository_factory.break_glass_store(audit_log=cfg.permissions.audit_log)
+        self.break_glass_store = self.repository_factory.break_glass_store(
+            audit_log=cfg.permissions.audit_log, audit_key_env=cfg.permissions.audit_checkpoint_hmac_key_env
+        )
         # Security state lives next to the audit log, outside the agent's workspace.
         audit_dir = cfg.permissions.audit_log.expanduser().parent
         self.audit_checkpoint = WormAuditCheckpoint(audit_dir / "audit_checkpoints", hmac_key_env=cfg.permissions.audit_checkpoint_hmac_key_env)

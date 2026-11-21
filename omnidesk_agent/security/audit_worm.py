@@ -94,7 +94,7 @@ class WormAuditCheckpoint:
 
     def verify_and_anchor(self, audit_log: Path, raw_key: bytes) -> dict[str, Any]:
         """Verify the whole chain, check it still holds the newest anchor, then anchor its tail."""
-        from omnidesk_agent.security.audit_chain import verify_audit_log
+        from omnidesk_agent.security.audit_chain import ChainPoint, rotation_preserves, verify_audit_log
 
         try:
             anchor = self.latest_anchor(audit_log, raw_key)
@@ -105,9 +105,15 @@ class WormAuditCheckpoint:
         result["anchor_checked"] = anchor is not None
         if report.ok and anchor is not None:
             point = report.points.get(int(anchor["seq"]))
+            anchored = ChainPoint(int(anchor["offset"]), int(anchor["seq"]), str(anchor["hash"]))
             if point is None or point.hash != anchor["hash"] or point.offset != anchor["offset"]:
-                result["ok"] = False
-                result["error"] = "the log no longer holds the anchored entry (entries removed or rewritten since the last check)"
+                if rotation_preserves(audit_log, anchored):
+                    # Rotated: the anchored entry is in the sealed predecessor, which
+                    # the new chain's genesis pins. Anchor the new chain from here.
+                    result["rotated_from_anchor"] = True
+                else:
+                    result["ok"] = False
+                    result["error"] = "the log no longer holds the anchored entry (entries removed or rewritten since the last check)"
         if result["ok"]:
             result["anchor_written"] = self.create_anchor(audit_log, report, raw_key).name
         return result

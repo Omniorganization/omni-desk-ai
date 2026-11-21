@@ -1965,8 +1965,8 @@ class PostgresRuntimeStateStores:
             self.state, ttl_seconds=ttl_seconds, dual_approval_store=dual_approval_store or self.dual_approval_store()
         )
 
-    def break_glass_store(self, *, audit_log: Path) -> PostgresBreakGlassStore:
-        return PostgresBreakGlassStore(self.state, audit_log=audit_log)
+    def break_glass_store(self, *, audit_log: Path, audit_key_env: str = "OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY") -> PostgresBreakGlassStore:
+        return PostgresBreakGlassStore(self.state, audit_log=audit_log, audit_key_env=audit_key_env)
 
     def run_store(self) -> PostgresRunStore:
         return PostgresRunStore(self.state)

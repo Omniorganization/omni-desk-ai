@@ -39,7 +39,7 @@ from omnidesk_agent.server_routes.agent_routes import (
 )
 from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
 from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
-from omnidesk_agent.security.audit_chain import AuditIntegrityMonitor
+from omnidesk_agent.security.audit_chain import AuditIntegrityError, AuditIntegrityMonitor
 from omnidesk_agent.validation.production import assert_production_config_safe, is_production_mode
 
 
@@ -108,6 +108,15 @@ def create_app(cfg: AppConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await rt.start()
+        # Start (or upgrade a pre-chain) log through its locked writer first: the
+        # monitor would otherwise read a legacy log before its genesis exists,
+        # fail, and latch the gate closed for good.
+        for chain in (rt.permissions.audit_chain, getattr(rt.admin_auth, "audit_chain", None)):
+            if chain is not None:
+                try:
+                    await asyncio.to_thread(chain.check)
+                except AuditIntegrityError as exc:
+                    rt.permissions.mark_audit_integrity_failure(str(exc))
         audit_task = asyncio.create_task(audit_monitor.run())
         try:
             yield

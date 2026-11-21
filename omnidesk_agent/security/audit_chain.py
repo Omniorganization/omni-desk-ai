@@ -35,6 +35,7 @@ import contextlib
 import dataclasses
 import hashlib
 import hmac
+import itertools
 import json
 import os
 import secrets
@@ -205,6 +206,11 @@ def _exclusive_lock(log_path: Path) -> Iterator[None]:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+
+def _exists_under_lock(log_path: Path) -> bool:
+    with _exclusive_lock(log_path):
+        return log_path.exists()
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -440,90 +446,156 @@ def verify_audit_log(
     start: Optional[ChainPoint] = None,
     want_points: Optional[set[int]] = None,
 ) -> AuditVerifyReport:
-    """Verify a whole audit log, or (``start``) only what was appended after a verified point."""
+    """Verify a whole audit log, or (``start``) only what was appended after a verified point.
+
+    The file is streamed a line at a time, and an incremental check seeks to
+    ``start``, so memory stays flat however long the log grows.
+    """
     path = Path(path).expanduser()
     report = AuditVerifyReport(path=str(path), ok=False, incremental=start is not None)
     chain_key = derive_chain_key(raw_key)
     key_id = key_id_for(chain_key)
     try:
-        data = path.read_bytes()
+        handle = path.open("rb")
     except FileNotFoundError:
         report.error = "audit log does not exist"
         return report
-    report.file_bytes = len(data)
-    if data and not data.endswith(b"\n"):
-        report.error = "audit log ends with a partial line"
-        return report
+    with handle:
+        size = os.fstat(handle.fileno()).st_size
+        report.file_bytes = size
+        if size:
+            handle.seek(size - 1)
+            if handle.read(1) != b"\n":
+                report.error = "audit log ends with a partial line"
+                return report
+        prefix_bytes, prefix_digest = 0, hashlib.sha256()
+        first_lines: list[bytes] = []
+        if start is not None:
+            if start.offset > size:
+                report.error = "audit log is shorter than the last verified point (truncated or replaced)"
+                return report
+            anchor_line, newline = _read_last_line(handle.fileno(), start.offset) if start.offset else (b"", False)
+            try:
+                anchor = json.loads(anchor_line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                anchor = None
+            if (
+                not newline
+                or not isinstance(anchor, dict)
+                or anchor.get("seq") != start.seq
+                or anchor.get("hash") != start.hash
+                or _check_entry(anchor, chain_key, key_id) is not None
+            ):
+                report.error = "entry at the last verified point changed (log rewritten)"
+                return report
+            handle.seek(start.offset)
+            offset, previous, expected_seq, line_no = start.offset, start.hash, start.seq + 1, None
+            report.last = start
+        else:
+            handle.seek(0)
+            line_no = 0
+            for raw in handle:
+                if _is_chain_line(raw):
+                    first_lines.append(raw)
+                    break
+                prefix_digest.update(raw)
+                prefix_bytes += len(raw)
+                line_no += 1
+            if not first_lines:
+                report.error = "audit log has no keyed chain entries" if size else "audit log is empty"
+                return report
+            report.legacy_prefix_bytes = prefix_bytes
+            offset, previous, expected_seq = prefix_bytes, ZERO_HASH, 0
 
-    if start is not None:
-        if start.offset > len(data):
-            report.error = "audit log is shorter than the last verified point (truncated or replaced)"
-            return report
-        line_start = data.rfind(b"\n", 0, max(0, start.offset - 1)) + 1
-        anchor_line = data[line_start : start.offset - 1] if start.offset else b""
-        try:
-            anchor = json.loads(anchor_line.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
-            anchor = None
-        if (
-            data[start.offset - 1 : start.offset] != b"\n"
-            or not isinstance(anchor, dict)
-            or anchor.get("seq") != start.seq
-            or anchor.get("hash") != start.hash
-            or _check_entry(anchor, chain_key, key_id) is not None
-        ):
-            report.error = "entry at the last verified point changed (log rewritten)"
-            return report
-        offset, previous, expected_seq, line_no = start.offset, start.hash, start.seq + 1, None
-        report.last = start
-    else:
-        first = _first_chained_offset(data)
-        if first is None:
-            report.error = "audit log has no keyed chain entries" if data else "audit log is empty"
-            return report
-        report.legacy_prefix_bytes = first
-        offset, previous, expected_seq, line_no = first, ZERO_HASH, 0, data.count(b"\n", 0, first)
-
-    for raw in data[offset:].splitlines(keepends=True):
-        line_no = (line_no or 0) + 1 if line_no is not None else None
-        try:
-            parsed = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
-            parsed = None
-        reason = _check_entry(parsed, chain_key, key_id)
-        entry: dict[str, Any] = parsed if isinstance(parsed, dict) else {}
-        if reason is None and entry["seq"] != expected_seq:
-            reason = f"sequence number {entry['seq']} where {expected_seq} was expected (entries removed or reordered)"
-        if reason is None and entry["previous_hash"] != previous:
-            reason = "previous_hash does not match the preceding entry"
-        if reason is None and expected_seq == 0:
-            reason = _check_genesis(entry, data[:offset])
-        if reason is None and expected_seq > 0 and entry["event"] == GENESIS_EVENT:
-            reason = "a second genesis entry inside the chain"
-        if reason is not None:
-            report.error = reason
-            report.error_line = line_no
-            return report
-        offset += len(raw)
-        previous = entry["hash"]
-        point = ChainPoint(offset, entry["seq"], entry["hash"])
-        if want_points and point.seq in want_points:
-            report.points[point.seq] = point
-        report.last = point
-        report.entries += 1
-        expected_seq += 1
+        for raw in itertools.chain(first_lines, handle):
+            line_no = line_no + 1 if line_no is not None else None
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                parsed = None
+            reason = _check_entry(parsed, chain_key, key_id)
+            entry: dict[str, Any] = parsed if isinstance(parsed, dict) else {}
+            if reason is None and entry["seq"] != expected_seq:
+                reason = f"sequence number {entry['seq']} where {expected_seq} was expected (entries removed or reordered)"
+            if reason is None and entry["previous_hash"] != previous:
+                reason = "previous_hash does not match the preceding entry"
+            if reason is None and expected_seq == 0:
+                reason = _check_genesis(entry, prefix_bytes, prefix_digest.hexdigest())
+            if reason is None and expected_seq > 0 and entry["event"] == GENESIS_EVENT:
+                reason = "a second genesis entry inside the chain"
+            if reason is not None:
+                report.error = reason
+                report.error_line = line_no
+                return report
+            offset += len(raw)
+            previous = entry["hash"]
+            point = ChainPoint(offset, entry["seq"], entry["hash"])
+            if want_points and point.seq in want_points:
+                report.points[point.seq] = point
+            report.last = point
+            report.entries += 1
+            expected_seq += 1
 
     report.ok = True
     return report
 
 
-def _check_genesis(entry: Mapping[str, Any], prefix: bytes) -> Optional[str]:
+def _is_chain_line(raw: bytes) -> bool:
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("chain") == CHAIN_FORMAT
+
+
+def rotation_preserves(path: Path, point: ChainPoint) -> bool:
+    """Whether ``path`` was rotated and its sealed predecessor still holds ``point``.
+
+    rotate() starts the new chain with a genesis entry that names the sealed
+    file and pins its SHA-256. Callers verify the new log under the key first,
+    which authenticates that genesis. Then the sealed file must be unchanged and
+    hold the earlier verified entry. It is matched by its sequence number and
+    MAC; the old key is not needed, so this also holds after a key rotation.
+    """
+    path = Path(path).expanduser()
+    try:
+        with path.open("rb") as handle:
+            for raw in handle:
+                if _is_chain_line(raw):
+                    genesis = json.loads(raw.decode("utf-8"))
+                    break
+            else:
+                return False
+    except OSError:
+        return False
+    payload = genesis.get("payload") if isinstance(genesis, dict) else None
+    if genesis.get("event") != GENESIS_EVENT or not isinstance(payload, dict) or payload.get("reason") != "rotation":
+        return False
+    sealed_name = str(payload.get("sealed_file") or "")
+    if not sealed_name or Path(sealed_name).name != sealed_name:
+        return False
+    sealed = path.with_name(sealed_name)
+    digest = hashlib.sha256()
+    found = False
+    try:
+        with sealed.open("rb") as handle:
+            for raw in handle:
+                digest.update(raw)
+                if not found and _is_chain_line(raw):
+                    entry = json.loads(raw.decode("utf-8"))
+                    found = entry.get("seq") == point.seq and entry.get("hash") == point.hash
+    except OSError:
+        return False
+    return found and digest.hexdigest() == payload.get("sealed_sha256")
+
+
+def _check_genesis(entry: Mapping[str, Any], prefix_bytes: int, prefix_sha256: str) -> Optional[str]:
     if entry.get("event") != GENESIS_EVENT:
         return "the chain does not start with a genesis entry"
     payload = entry.get("payload")
     if not isinstance(payload, dict):
         return "genesis payload is missing"
-    if payload.get("prefix_bytes") != len(prefix) or payload.get("prefix_sha256") != _sha256(prefix):
+    if payload.get("prefix_bytes") != prefix_bytes or payload.get("prefix_sha256") != prefix_sha256:
         return "the lines before the chain changed since it started"
     return None
 
@@ -604,17 +676,24 @@ class AuditIntegrityMonitor:
     def check_once(self) -> bool:
         reports = []
         now = time.monotonic()
-        if self._last_full_at is None or now - self._last_full_at >= self.full_interval_seconds:
+        full = self._last_full_at is None or now - self._last_full_at >= self.full_interval_seconds
+        if full:
             # Incremental checks skip what was verified before; a periodic full
             # pass also catches edits inside the already-verified part.
-            self._points.clear()
             self._last_full_at = now
         for log in self.logs:
             if not log.exists():
+                if str(log) in self._points and not _exists_under_lock(log):
+                    # A log that was verified once must not silently disappear.
+                    # Checked under the writers' lock, since rotate() replaces it.
+                    report = AuditVerifyReport(path=str(log), ok=False, error="audit log disappeared after it was verified")
+                    reports.append(report.summary())
+                    self._fail(f"audit log failed verification: {log}: {report.error}")
                 continue
+            previous = self._points.get(str(log))
             try:
                 key = load_audit_key(self.key_env, dev_key_file=dev_key_file_for(log), environ=self._environ)
-                report = verify_audit_log(log, key, start=self._points.get(str(log)))
+                report = self._verify(log, key, previous, full)
             except Exception as exc:  # an unreadable log is a failure too, never a crashed monitor
                 report = AuditVerifyReport(path=str(log), ok=False, error=f"{type(exc).__name__}: {exc}")
             reports.append(report.summary())
@@ -626,6 +705,31 @@ class AuditIntegrityMonitor:
         self.last_checked_at = time.time()
         self._metric("omnidesk_audit_chain_verifications_total", status="ok" if self.failure is None else "failed")
         return self.failure is None
+
+    @staticmethod
+    def _verify(log: Path, key: bytes, previous: Optional[ChainPoint], full: bool) -> AuditVerifyReport:
+        """Verify ``log``. The last verified point must still be in it, unless a rotation sealed it away intact."""
+        if previous is not None and not full:
+            report = verify_audit_log(log, key, start=previous)
+            if report.ok:
+                return report
+        else:
+            report = verify_audit_log(log, key, want_points={previous.seq} if previous is not None else None)
+            if not report.ok or previous is None:
+                return report
+            held = report.points.get(previous.seq)
+            if held is not None and held.hash == previous.hash:
+                return report
+            report = AuditVerifyReport(
+                path=str(log), ok=False, file_bytes=report.file_bytes, entries=report.entries, last=report.last,
+                error="the log no longer holds an entry it held before (truncated or replaced)",
+            )
+        # A legitimate rotation replaces the log with a new chain whose genesis
+        # pins the sealed predecessor, which must still hold the earlier entry.
+        rotated = verify_audit_log(log, key)
+        if rotated.ok and rotation_preserves(log, previous):
+            return rotated
+        return report
 
     def _fail(self, message: str) -> None:
         self._metric("omnidesk_audit_chain_verify_failures_total")
