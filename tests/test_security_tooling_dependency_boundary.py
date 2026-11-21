@@ -37,6 +37,23 @@ def test_gmail_deployment_lock_is_the_explicit_urllib3_allowance() -> None:
     assert {name: (gmail[name], enterprise[name]) for name in gmail.keys() & enterprise.keys() if gmail[name] != enterprise[name]} == {}
 
 
+def test_gmail_lock_license_gate_is_required_by_the_security_policy(tmp_path: Path) -> None:
+    # The Gmail lock is resolved apart from the dev lock, so the dev-lock
+    # license gate does not cover its 19 extra packages. Deleting its own gate
+    # from security.yml must fail the policy, not pass silently.
+    from scripts.check_security_workflow_policy import check
+
+    gate = "scripts/check_license_policy.py --lockfile requirements.gmail.lock --policy release/license-policy.json"
+    workflow = Path(".github/workflows/security.yml").read_text(encoding="utf-8")
+    assert gate in workflow
+    assert not [issue for issue in check(Path(".")) if gate in issue]
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "security.yml").write_text(
+        "\n".join(line for line in workflow.splitlines() if gate not in line), encoding="utf-8"
+    )
+    assert [issue for issue in check(tmp_path) if gate in issue]
+
+
 @pytest.mark.parametrize("filename", ["requirements.lock", "requirements.dev.lock", "requirements.security.lock", "requirements.runtime.lock", "requirements.enterprise.lock"])
 def test_anyio_constraint_is_realized_in_all_affected_locks(filename: str) -> None:
     constraints = Path("requirements.security-constraints.in").read_text(encoding="utf-8")
