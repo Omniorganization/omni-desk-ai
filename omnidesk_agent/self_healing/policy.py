@@ -97,6 +97,15 @@ class RuntimeSelfHealingController:
                 requires_human_approval=True,
                 rollback_ref=signal.rollback_ref,
             )
+        if component.startswith("worker:") and (not signal.health_ok or meta.get("hung_seconds")) and meta.get("restartable") is False:
+            return RecoveryDecision(
+                action="escalate_human_approval",
+                component=component,
+                reason="worker is down, but restarting it would recover a queue other gateways share and could re-run their jobs",
+                autonomous=False,
+                requires_human_approval=True,
+                cooldown_seconds=3600,
+            )
         if component.startswith("worker:") and (not signal.health_ok or meta.get("hung_seconds")):
             return RecoveryDecision(
                 action="restart_worker",
@@ -152,7 +161,9 @@ class RuntimeSelfHealingController:
                 requires_human_approval=False,
                 cooldown_seconds=300,
             )
-        if component == "queue:dead_letters" and int(meta.get("exhausted_count") or 0) > 0:
+        # A component of its own, so this escalation never waits behind the
+        # cooldown of other jobs' requeues or a dependency outage.
+        if component == "queue:dead_letters_exhausted" and int(meta.get("exhausted_count") or 0) > 0:
             return RecoveryDecision(
                 action="escalate_human_approval",
                 component=component,

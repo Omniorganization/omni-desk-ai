@@ -13,7 +13,9 @@ the snapshot back with ``--restore-known-good``.
 A config becomes known-good only after this watchdog restarted the gateway
 with it on disk and the gateway then stayed healthy for ``--good-after``
 seconds. The gateway reads its config only at start, so a file written while
-the old process keeps serving proves nothing. Restarts are limited per hour;
+the old process keeps serving proves nothing; for the same reason
+``--restart-cmd`` must return only once the new process has started (not, for
+example, ``systemctl --no-block``). Restarts are limited per hour;
 past the limit the watchdog only records an escalation. The restart command is
 a fixed argv from the command line (no shell). Every step is appended to
 ``<state-dir>/watchdog.jsonl``.
@@ -68,6 +70,9 @@ class GatewayWatchdog:
         self.sleep = sleep
         self.consecutive_failures = 0
         self.healthy_since: Optional[float] = None
+        # When the current run of failed checks began; records carry it so a
+        # drill can tell which failure a recovery answered.
+        self.first_failure_at: Optional[float] = None
         # The config the running gateway loaded, when known: only a restart by
         # this watchdog tells. For a process it did not start it stays unknown.
         self.loaded_digest: Optional[str] = None
@@ -86,6 +91,7 @@ class GatewayWatchdog:
         now = self.clock()
         if await self.healthy():
             self.consecutive_failures = 0
+            self.first_failure_at = None
             if self.healthy_since is None:
                 self.healthy_since = now
             data = self._read_config()
@@ -100,13 +106,15 @@ class GatewayWatchdog:
                 return self._audit({"event": "known_good_saved", "snapshot": digest})
             return {"event": "healthy"}
         self.healthy_since = None
+        if self.consecutive_failures == 0:
+            self.first_failure_at = now
         self.consecutive_failures += 1
         if self.consecutive_failures < self.failures_before_action:
-            return self._audit({"event": "unhealthy", "consecutive_failures": self.consecutive_failures})
+            return self._audit({"event": "unhealthy", "consecutive_failures": self.consecutive_failures, "first_failure_at": self.first_failure_at})
         while self._restarts and now - self._restarts[0] > 3600:
             self._restarts.popleft()
         if len(self._restarts) >= self.max_restarts_per_hour:
-            return self._audit({"event": "escalated", "reason": "restart limit reached; a human must intervene"})
+            return self._audit({"event": "escalated", "reason": "restart limit reached; a human must intervene", "first_failure_at": self.first_failure_at})
         return await self._recover()
 
     async def _recover(self) -> dict[str, Any]:
@@ -126,6 +134,7 @@ class GatewayWatchdog:
             return self._audit({
                 "event": "recovery_failed",
                 "containment_action": "restart",
+                "first_failure_at": self.first_failure_at,
                 "config_differs_from_known_good": changed,
                 "restart": {"error_class": type(exc).__name__, "error": str(exc)[:300]},
             })
@@ -143,6 +152,7 @@ class GatewayWatchdog:
         return self._audit({
             "event": "recovered" if recovered else "recovery_failed",
             "containment_action": "restart",
+            "first_failure_at": self.first_failure_at,
             "config_differs_from_known_good": changed,
             "restart": restart,
             "recovery_seconds": round(self.clock() - started, 3),

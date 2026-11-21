@@ -72,6 +72,9 @@ class HealingSupervisor:
         self._last_action: dict[str, float] = {}
         self._failed_verifications: dict[str, int] = defaultdict(int)
         self._quarantined: set[str] = set()
+        # When each component was first seen unhealthy since it was last healthy;
+        # records carry it so a drill can tell which failure an action answered.
+        self._unhealthy_since: dict[str, float] = {}
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------ loop
@@ -118,6 +121,10 @@ class HealingSupervisor:
     async def _handle(self, probe: Any, signal: RuntimeSignal) -> Optional[dict[str, Any]]:
         decision = self.controller.decide(signal)
         component = decision.component
+        if decision.action == "none":
+            self._unhealthy_since.pop(component, None)
+        else:
+            self._unhealthy_since.setdefault(component, self.clock())
         if decision.action == "wait":
             return None  # nothing to do yet, and not a recovery either
         if decision.action == "none":
@@ -126,7 +133,8 @@ class HealingSupervisor:
                 self._failed_verifications.pop(component, None)
                 return self._audit({"event": "recovered", "component": component, "decision": decision.to_dict()})
             return None
-        base = {"component": component, "decision": decision.to_dict(), "signal": _signal_dict(signal), "mode": self.mode}
+        base = {"component": component, "decision": decision.to_dict(), "signal": _signal_dict(signal), "mode": self.mode,
+                "first_unhealthy_at": self._unhealthy_since.get(component)}
         if self.mode == "observe":
             return self._audit({**base, "event": "observed"})
         needs_human = decision.requires_human_approval or not decision.autonomous

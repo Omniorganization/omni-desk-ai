@@ -16,9 +16,10 @@ trail.
 
 ## Detection (`probes.py`)
 
-- `WorkerProbe`: every registered worker (`WorkerRegistry.register(name, start=, stop=, is_alive=)`) must be alive.
-- `JobQueueProbe`: running jobs past their lease, and which of them were claimed before their worker was restarted (`queue:stale_jobs`; only for a queue this process alone consumes, through `orphaned_before`); dead letters whose last error was transient and whether their dependency is healthy (`queue:dead_letters`). Transient means a timeout, connection error, rate limit or 429/502/503/504 next to "HTTP"/"status" or with its reason phrase; digits inside an order number or ID do not count, and neither does the queue's crash-recovery message (a job that hung or crashed its worker stays for a human). `dependency_healthy` has no default.
-- `RequeueLedger`: a durable file recording each automatic requeue with the error the queue row loses; a job is requeued automatically at most once.
+- `WorkerProbe`: every registered worker (`WorkerRegistry.register(name, start=, stop=, is_alive=, restartable=True)`) must be alive. Register the webhook worker on the shared PostgreSQL queue with `restartable=False`: its `start()` runs a queue-wide lease recovery that could re-run another replica's healthy job, so a dead one is escalated, not restarted (a start without that recovery needs agent-core's `core/worker.py`).
+- `JobQueueProbe`: running jobs past their lease, and which of them were claimed before their worker was restarted (`queue:stale_jobs`; only for a queue this process alone consumes, through `orphaned_before`, which is refused for any other queue); dead letters whose last error was transient and whether their dependency is healthy (`queue:dead_letters`). Transient means a timeout, connection error, rate limit or 429/502/503/504 next to "HTTP"/"status" or with its reason phrase; digits inside an order number or ID do not count, and neither does the queue's crash-recovery message (a job that hung or crashed its worker stays for a human). `dependency_healthy` has no default.
+- `RequeueLedger(queue)`: each automatic requeue is claimed atomically in the queue's own store (a table in the SQLite queue's file; a namespace of the PostgreSQL state behind `PostgresJobQueue`), so every replica and every pod generation sees the same claim: a job is requeued automatically at most once. The claim keeps the error the queue row loses and is pruned after 30 days. An unreadable ledger allows no requeue.
+- Jobs the healer requeued that are dead-lettered again, with any error, are their own signal (`queue:dead_letters_exhausted`), so their escalation never waits behind other jobs' requeue cooldown or a dependency outage. While they stay dead-lettered they are escalated again every hour.
 - `ModelRouterProbe`: per-profile failure counts from `ModelRouter.status()`.
 - `ConfigFileProbe`: the config file passes the validator; otherwise the signal carries the last known-good snapshot.
 - `HttpHealthProbe`: a health URL returns 2xx.
@@ -31,12 +32,13 @@ trail.
 | config invalid, snapshot known | `rollback_config` | no: an owner decides, the config holds security, sandbox and approval settings | escalation naming the snapshot |
 | config invalid, no snapshot | `escalate_human_approval` | no | escalation |
 | release unhealthy, rollback ref | `rollback_release` | no | escalation |
-| worker dead | `restart_worker` | yes | stop, start, check alive |
+| worker dead | `restart_worker` | yes | stop; if it is still running, no restart is recorded and the action fails (its jobs are not orphans); otherwise start and check alive |
+| worker dead, `restartable=False` | `escalate_human_approval` | no | escalation |
 | stale jobs claimed before their worker was restarted | `recover_stale_jobs` | yes | re-reads each such job and returns it to retry (`JobQueue.fail`); never stops a worker |
 | other stale jobs (or a shared queue) | `escalate_human_approval` | no | escalation: the queue does not renew leases, so a long healthy run looks like a hung one, and re-running it would repeat its side effects |
 | transient dead letters not requeued before, dependency healthy | `requeue_dead_letters` | yes | requeues at most 20; each job at most once (`RequeueLedger`); others stay for a human |
 | the same, dependency down | `wait` | | waits; not counted as recovery |
-| transient dead letters already requeued once | `escalate_human_approval` | no | escalation |
+| dead letters the healer already requeued once (`queue:dead_letters_exhausted`) | `escalate_human_approval` | no | escalation, hourly while they remain |
 | 200 or more dead letters, none transient among the newest 200 | `escalate_human_approval` | no | escalation: older transient failures may be hidden (`JobQueue.list` returns the newest 200) |
 | model profile failures over threshold | `switch_model_profile` | yes | `ModelRouter.open_circuit(profile)`; the router has no such public API yet, so today the action reports unavailable and the router's own breaker acts |
 | repeated failures elsewhere | `create_upgrade_proposal` | files a request | one repair request per component per day, handed to the self-upgrade pipeline (which opens an `ai/*` PR for review) or queued in `<workspace>/repair_requests/` |
@@ -62,7 +64,10 @@ with `python -m omnidesk_agent.self_healing.watchdog --config PATH --state-dir D
 becomes known-good only after the watchdog restarted the gateway with it on
 disk and the gateway stayed healthy for `--good-after` seconds; the gateway
 reads its config only at start, so a file written while the old process keeps
-serving proves nothing. Snapshots are private (directory 0700, files 0600). A
+serving proves nothing; `--restart-cmd` must therefore return only once the
+new process has started (not `systemctl --no-block`). Snapshots are private
+(directory 0700, files 0600). Every record carries `first_failure_at`, when
+the run of failed checks it answers began. A
 failing restart command is recorded as `recovery_failed` and the watchdog
 keeps checking. Restarts are limited per hour; past the limit it records an
 escalation and stops restarting. The restart command is a fixed argv (no
@@ -79,11 +84,17 @@ runs each planned injection (argv lists, no shell) on the real host, waits for
 the self-healing audit record that proves containment (for the injected
 `component`, with a successful and verified action), checks health
 afterwards and writes the report in the external GA evidence format with the
-audit excerpts attached by SHA-256. It reports only what it observed: nothing
-is injected when the baseline health check fails, an injection counts only
-when every inject command exited 0, and `status` is `passed` only when every
-injection was injected and contained and health passed. Tests run the report
-through `scripts/check_external_ga_evidence.py`.
+audit excerpts attached by SHA-256. It reports only what it observed. Before
+every injection health must pass `settle_checks` times in a row (default 3,
+`settle_seconds` apart); otherwise that injection and the rest of the plan are
+skipped. An injection counts only when every inject command exited 0, and a
+record contains it only when the failure it answered began after the
+injection did (`first_failure_at` from the watchdog, `first_unhealthy_at` from
+the supervisor), so a no-op injection, or a recovery from an earlier outage,
+does not count. `status` is `passed` only when every injection was injected and
+contained and health passed. What remains: an unrelated failure of the same
+component that begins inside an injection's window would still be credited.
+Tests run the report through `scripts/check_external_ga_evidence.py`.
 
 ## Failure-injection tests
 
