@@ -185,7 +185,14 @@ jobs:
           bin="$RUNNER_TEMP/pg16/bin"
           mkdir -p "$bin"
           for tool in pg_dump pg_restore; do
-            printf '#!/bin/sh\nexec docker run --rm -i --network host --user "$(id -u):$(id -g)" -e PGPASSWORD -v /tmp:/tmp -v "%s:%s" -v "$PWD:$PWD" -w "$PWD" %s %s "$@"\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$image" "$tool" > "$bin/$tool"
+            # The values are fixed now; the quoted heredoc's $ expressions expand when the wrapper runs.
+            {
+              printf '#!/bin/sh\n'
+              printf 'image="%s"\ntool="%s"\nmount="%s"\n' "$image" "$tool" "$RUNNER_TEMP"
+              cat <<'EOF'
+          exec docker run --rm -i --network host --user "$(id -u):$(id -g)" -e PGPASSWORD -v /tmp:/tmp -v "$mount:$mount" -v "$PWD:$PWD" -w "$PWD" "$image" "$tool" "$@"
+          EOF
+            } > "$bin/$tool"
             chmod +x "$bin/$tool"
           done
           "$bin/pg_dump" --version
