@@ -14,6 +14,7 @@ from omnidesk_agent.config import PermissionConfig
 from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain, AuditIntegrityError, dev_key_file_for, load_audit_key
 from omnidesk_agent.security.dual_approval import stamp_requester
+from omnidesk_agent.security.provenance import proposal_taint, requires_fresh_approval
 
 
 # Upper bound for one agent-loop audit payload (record_event).
@@ -87,7 +88,12 @@ class PermissionManager:
         tool = str(proposal_dict.get("tool", ""))
         action = str(proposal_dict.get("action", ""))
         fallback_scope = f"{tool}.{action}"
-        return f"{source}|{actor}|{risk}|{scope_hash or fallback_scope}"
+        key = f"{source}|{actor}|{risk}|{scope_hash or fallback_scope}"
+        taint = proposal_taint(proposal_dict)
+        if taint is not None:
+            # A grant covers the exact context the approver saw, untrusted inputs included.
+            key += f"|taint:{taint['digest']}"
+        return key
 
     def dual_approval_risks(self) -> frozenset[str]:
         return frozenset(getattr(self.cfg, "require_dual_approval_for_risks", None) or ()) | ALWAYS_DUAL_APPROVAL_RISKS
@@ -102,8 +108,16 @@ class PermissionManager:
         dual = risk in self.dual_approval_risks()
         if dual:
             proposal_dict["requires_dual_approval"] = True
+        # A model-proposed high/critical action taken while untrusted content was in
+        # its context needs a fresh human approval of this exact proposal (provenance.py).
+        fresh = requires_fresh_approval(proposal_dict)
+        if fresh:
+            proposal_dict["requires_fresh_approval"] = True
         self._audit("proposal", proposal_dict)
         self._metric("omnidesk_approval_proposals_total", tool=tool, risk=risk, source=source)
+        if fresh:
+            self._audit("fresh_approval_required_untrusted", proposal_dict)
+            self._metric("omnidesk_fresh_approval_required_total", tool=tool, risk=risk)
 
         if not dual and risk == "low" and source in getattr(self.cfg, "allow_low_risk_from", []):
             self._audit("allowed_low_risk", proposal_dict)
@@ -115,7 +129,7 @@ class PermissionManager:
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="resume_grant")
             return PermissionDecision(True, "allow", "remote approval resume grant")
 
-        if not dual and session_key in self.session_allows:
+        if not dual and not fresh and session_key in self.session_allows:
             self._audit("allowed_session", {"session_key": session_key, **proposal_dict})
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="session")
             return PermissionDecision(True, "allow", "session allow")
@@ -124,7 +138,7 @@ class PermissionManager:
         default_mode = getattr(self.cfg, "default_mode", "ask")
 
         if mode == "auto_policy":
-            if not dual and risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
+            if not dual and not fresh and risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
                 self._audit("allowed_auto_policy", proposal_dict)
                 self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="auto_policy")
                 return PermissionDecision(True, "allow", "auto_policy")
@@ -133,12 +147,12 @@ class PermissionManager:
         if mode == "remote_approval":
             return self._remote_or_deny(proposal_dict)
 
-        if default_mode == "allow":
-            if dual:
-                # default allow is a development convenience; it never stands
-                # in for the two remote owner approvals a dual-approval risk needs.
-                self._audit("dual_approval_required", proposal_dict)
-                return self._remote_or_deny(proposal_dict)
+        if default_mode == "allow" and dual:
+            # default allow is a development convenience; it never stands
+            # in for the two remote owner approvals a dual-approval risk needs.
+            self._audit("dual_approval_required", proposal_dict)
+            return self._remote_or_deny(proposal_dict)
+        if default_mode == "allow" and not fresh:
             self._audit("allowed_default", proposal_dict)
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="default")
             return PermissionDecision(True, "allow", "default allow")
@@ -167,6 +181,10 @@ class PermissionManager:
         print("\nPermission request:")
         print(json.dumps(proposal_dict, ensure_ascii=False, indent=2))
         ans = input("Allow? [y]es / [n]o / [s]ession / [d]ry-run: ").strip().lower()
+        if fresh and ans in {"y", "yes", "s", "session"}:
+            # Untrusted-derived action: this answer approves this one call only.
+            self._audit("allowed_interactive_fresh", proposal_dict)
+            return PermissionDecision(True, "allow", "interactive fresh approval")
         if ans in {"y", "yes"}:
             self._audit("allowed_interactive", proposal_dict)
             return PermissionDecision(True, "allow", "interactive")
@@ -225,8 +243,9 @@ class PermissionManager:
     def record_access(self, proposal: Any) -> None:
         """Audit an action that runs without an approval gate (for example files.list).
 
-        Raises AuditIntegrityError when the audit log cannot be written; the
-        caller must then not perform the action.
+        If the audit log cannot take the entry this raises, and the caller must
+        then not perform the action. It raises AuditIntegrityError with the
+        keyed audit chain (security #230); before that, the file write's OSError.
         """
         proposal_dict = self._proposal_dict(proposal)
         self._audit("access_without_approval", proposal_dict)
@@ -250,8 +269,9 @@ class PermissionManager:
         as approval decisions, policy blocks or break-glass transitions. The
         payload must be JSON-serialisable and at most AGENT_EVENT_MAX_BYTES; it
         passes the same redaction as proposals and should hold ids, counts,
-        digests and statuses, never tool output text. Raises AuditIntegrityError
-        when the entry cannot be written: stop the run then.
+        digests and statuses, never tool output text. If the entry cannot be
+        written this raises (AuditIntegrityError with the keyed audit chain of
+        security #230, OSError before): stop the run then.
         """
         name = str(event or "")
         if not re.fullmatch(r"agent_[a-z0-9_]{1,60}", name):
@@ -264,7 +284,9 @@ class PermissionManager:
             raise ValueError("agent loop audit payload must be JSON-serialisable") from exc
         if len(encoded.encode("utf-8")) > AGENT_EVENT_MAX_BYTES:
             raise ValueError(f"agent loop audit payload exceeds {AGENT_EVENT_MAX_BYTES} bytes")
-        self._audit(name, payload)
+        # Log exactly what was checked: tuples become lists, so redaction reaches
+        # every nested key, and the size cap applies to what is written.
+        self._audit(name, json.loads(encoded))
 
     def mark_audit_integrity_failure(self, message: str) -> None:
         """Fail closed after an audit log failed verification (see AuditIntegrityMonitor)."""

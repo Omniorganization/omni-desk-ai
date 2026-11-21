@@ -55,6 +55,26 @@ What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_w
   - A chain detects edits; it does not prevent them. Logs written before this change, at `workspace.root/admin_auth_audit.jsonl`, are left where they are.
 - **Keyed digests.** `PermissionManager.keyed_digest(data)` is HMAC-SHA256 under a sub-key derived from the audit key (label `omnidesk/scope-hash/v1`). Agent-core's tools use it for content digests (`x_sha256`) and scope hashes, so a low-entropy value such as a typed password cannot be guessed offline from an audit entry or approval record. The key is the same across restarts and replicas. Without the audit key in production, no digest can be computed, which fails closed. Digests written before the switch stay plain SHA-256.
 
+## Prompt-Injection Defences
+
+What the code provides today (`omnidesk_agent/security/provenance.py`, `prompt_injection.py`):
+
+- Text that reaches a model is tagged with its provenance:
+  - `system`: OmniDesk's own instructions;
+  - `user`: the authenticated requester's task;
+  - `untrusted`: anything else, including tool output, page, file or mail contents, third-party messages and retrieved memory.
+- `PromptEnvelope` keeps instructions and data apart. Only OmniDesk's instructions go into the system prompt. Each data item is fenced with a random per-envelope boundary that is removed from the data itself, so the data cannot close its fence. The planner's older `build_untrusted_task_payload` strips its own delimiter tags from the message for the same reason. Keyword detection (`detect_prompt_injection`) only adds informational flags; it does not decide trust.
+- `TaintTracker` records per run whether untrusted text reached the model. Its snapshot travels with each model-proposed tool call as `ActionProposal.provenance`. When it is tainted and the risk is `high` or `critical`, `PermissionManager.verify()` requires a fresh approval of that exact proposal:
+  - `default_mode=allow`, `auto_policy`, interactive session allows and earlier grants do not apply;
+  - a console answer approves one call only;
+  - in remote mode the approval record carries the provenance and `requires_fresh_approval`;
+  - grants are bound to the provenance digest;
+  - `critical` still needs two owners;
+  - malformed provenance counts as tainted.
+- Known limits:
+  - The agent loop must route model input through these helpers and set `ToolContext.provenance`. Until that wiring lands (agent-core), the rule applies only to proposals that carry provenance.
+  - Medium-risk actions derived from untrusted text follow the normal policy.
+
 ## Reporting
 
 Do not include secrets, credentials, private keys, tokens, customer data, or production evidence payloads in public issues. Use a private security channel controlled by the repository owner.
