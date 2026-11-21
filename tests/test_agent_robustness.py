@@ -36,6 +36,7 @@ from omnidesk_agent.skills.registry import SkillRegistry
 from omnidesk_agent.tools.base import ToolContext
 from omnidesk_agent.tools.files import FilesTool
 from omnidesk_agent.tools.registry import ToolRegistry
+from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
 from omnidesk_agent.tools.vision import VisionGroundingTool
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -336,6 +337,51 @@ def test_rule_plan_for_an_unregistered_tool_fails_cleanly(tmp_path):
     assert result["results"][0]["error"] == "plan has no executable steps"
     assert "computer.screenshot" in result["rationale"]
     assert runs.get(result["run_id"])["status"] == "failed"
+
+
+class ScreenshotOnly:
+    """A computer tool that can only take a screenshot."""
+
+    name = "computer"
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def spec(self):
+        return ToolSpec(name="computer", description="test", permissions=[], actions={"screenshot": ActionSpec("screenshot", "shot", {}, risk="medium", side_effect=False, requires_approval=False)})
+
+    async def call(self, action, args, ctx):
+        self.calls.append(action)
+        return ToolResult(True, summary="screenshot taken")
+
+
+def test_a_task_whose_own_action_is_unavailable_fails_instead_of_completing_the_rest(tmp_path):
+    # 'write file ...' with 'screenshot' in it plans a context screenshot and the write.
+    # With writes disabled, running only the screenshot used to report the task completed.
+    orchestrator, memory, runs = build_runtime(tmp_path, router=None, allow_write=False)
+    computer = ScreenshotOnly()
+    orchestrator.tools.register(computer)
+    try:
+        result = asyncio.run(orchestrator.handle_message(cli_message("write file screenshot notes")))
+    finally:
+        memory.close()
+
+    assert result["status"] == "failed" and runs.get(result["run_id"])["status"] == "failed"
+    assert result["results"][0]["error"] == "plan has no executable steps"
+    assert "files.write_text" in result["rationale"]
+    assert computer.calls == []  # nothing ran
+
+
+def test_an_unavailable_context_screenshot_is_dropped_and_the_task_still_runs(tmp_path):
+    orchestrator, memory, _runs = build_runtime(tmp_path, router=None, allow_write=True)
+    try:
+        result = asyncio.run(orchestrator.handle_message(cli_message("write file screenshot notes")))
+    finally:
+        memory.close()
+
+    assert result["status"] == "completed"
+    assert [(s["tool"], s["action"]) for s in result["steps"]] == [("files", "write_text")]
+    assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "write file screenshot notes"
 
 
 def test_rule_plan_keeps_registered_actions(tmp_path):
