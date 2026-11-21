@@ -98,14 +98,27 @@ def _json_object(value: Any) -> dict[str, Any]:
 
 # Approvals follow security's one rule for every store (SECURITY.md, #270): the
 # subject is anonymized, and what they left pending is withdrawn. Until #270 is
-# on main these copy its helpers (security.dual_approval.anonymized_request,
-# security.approval_store._deciders and _anonymized_decision).
+# on main these copy its helpers (security.dual_approval.STRUCTURAL_REQUEST_KEYS
+# and anonymized_request, security.approval_store._deciders and
+# _anonymized_decision).
 _APPROVAL_REQUESTER_KEYS = ("created_by", "proposer", "actor", "requested_by")
+# What an erased subject's request keeps: structure, never free text. A
+# planner's "reason" or "summary" can describe the person's task.
+_STRUCTURAL_REQUEST_KEYS = frozenset({
+    *_APPROVAL_REQUESTER_KEYS,
+    "tool", "action", "risk", "source", "channel", "run_id", "plan_id", "step_id",
+    "approval_id", "scope_hash", "requires_dual_approval", "provenance", "args",
+})
 
 
 def _anonymized_request(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
-    """A request by an erased subject: requester fields become [erased], argument content is withheld."""
-    out = dict(proposal)
+    """A request by an erased subject: requester fields become [erased]; only structure stays.
+
+    Argument values are withheld (their digests and lengths stay), and every
+    field outside the structural keys is dropped; ``fields_withheld`` names them.
+    """
+    out = {key: value for key, value in proposal.items() if key in _STRUCTURAL_REQUEST_KEYS}
+    dropped = sorted(key for key in proposal if key not in _STRUCTURAL_REQUEST_KEYS and key not in {"args_withheld", "fields_withheld"})
     for key in _APPROVAL_REQUESTER_KEYS:
         if out.get(key) == actor:
             out[key] = ERASED_ACTOR
@@ -114,6 +127,8 @@ def _anonymized_request(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
         kept = {k: v for k, v in cast(dict[str, Any], args).items() if str(k).endswith(("_sha256", "_length"))}
         out["args"] = kept
         out["args_withheld"] = len(kept) != len(cast(dict[str, Any], args))
+    if dropped:
+        out["fields_withheld"] = dropped
     return out
 
 

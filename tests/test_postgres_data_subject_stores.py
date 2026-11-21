@@ -106,6 +106,23 @@ def test_erasure_withdraws_what_the_subject_left_pending_and_anonymizes_the_rest
     assert store.erase_subject("alice") == 0
 
 
+def test_an_erased_request_keeps_structure_and_no_free_text() -> None:
+    # Security's case of the same name (#270): a planner's "reason" can describe
+    # the person's task, so only structural fields survive, here as in the ledger.
+    from omnidesk_agent.repositories.postgres_state import _anonymized_request
+
+    kept = _anonymized_request(
+        {"tool": "files", "action": "write_text", "risk": "high", "created_by": "sam", "scope_hash": "s" * 64,
+         "reason": "Sam asked for the clinic letter", "summary": "letter to Dr. X", "args": {"text": "...", "text_length": 3}},
+        "sam",
+    )
+
+    assert kept == {
+        "tool": "files", "action": "write_text", "risk": "high", "created_by": "[erased]", "scope_hash": "s" * 64,
+        "args": {"text_length": 3}, "args_withheld": True, "fields_withheld": ["reason", "summary"],
+    }
+
+
 def test_a_finished_run_goes_and_one_in_flight_becomes_a_tombstone_nobody_can_write_back(pg: Any) -> None:
     runs = pg.factory.run_store()
     finished = runs.create({"channel": "telegram", "sender_id": SUBJECT, "text": "summarise my clinic letter"})
