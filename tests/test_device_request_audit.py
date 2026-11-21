@@ -121,3 +121,17 @@ def test_a_state_change_that_cannot_be_recorded_does_not_happen(gateway: Any) ->
     refused = client.post(path, headers=_signed(key, path, body, "nonce-push-00000001"), content=body)
     assert refused.status_code == 503 and "audit log unavailable" in refused.text
     assert store.devices[DEVICE].push_token is None and recorded == []
+
+
+def test_a_registration_with_a_checked_signature_is_recorded_either_way(gateway: Any) -> None:
+    # Registration accepts unsigned first registrations, so a supplied signature that
+    # fails falls back to the unsigned rules; it is still a refused signature.
+    client, store, key, recorded, _ = gateway
+    path = "/app/devices/register"
+    public_key = store.devices[DEVICE].public_key
+    body = json.dumps({"device_id": DEVICE, "device_type": "desktop", "name": "Desktop", "platform": "macOS", "public_key": public_key, "capabilities": ["local-runtime"]}, separators=(",", ":"))
+    # The record is written once the signature is checked, before the store applies
+    # its registration rules (which may still refuse the change).
+    client.post(path, headers={**_signed(key, path, body, "nonce-register-000001"), "idempotency-key": "register-1"}, content=body)
+    client.post(path, headers={**_signed(Ed25519PrivateKey.generate(), path, body, "nonce-register-000002"), "idempotency-key": "register-2"}, content=body)
+    assert [(entry["path"], entry["verified"], entry["reason"]) for entry in recorded] == [(path, True, ""), (path, False, "signature_mismatch")]

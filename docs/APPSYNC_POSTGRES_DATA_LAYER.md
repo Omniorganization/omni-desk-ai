@@ -48,8 +48,9 @@ signatures in metrics), and the network state is an event only when it changes.
 Signed device requests are on security's tamper-evident admin audit log instead
 (`AdminAuth.record_device_request`, #278). Every refused signature is recorded with
 its reason, and so is every verified request that changes state: task claims and
-reports, approval decisions, and device push-token, key, token and revocation
-operations. Heartbeats are not recorded. A state change that cannot be recorded is
+reports, approval decisions, device push-token, key, token and revocation
+operations, and a device registration that carries a signature. Heartbeats are
+not recorded. A state change that cannot be recorded is
 refused with `503`. Until #278 provides the hook, nothing is recorded.
 
 ## Timeouts

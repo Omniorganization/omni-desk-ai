@@ -475,7 +475,7 @@ def register_appsync_routes(
         # unsigned rules, which still allow first registration.
         device_signature_verified = False
         if supplied_device_id and request.headers.get("x-omnidesk-device-signature"):
-            device_signature_verified, _ = _verify_device_request(
+            device_signature_verified, signature_reason = _verify_device_request(
                 cfg=cfg,
                 store=store,
                 request=request,
@@ -483,6 +483,12 @@ def register_appsync_routes(
                 device_id=supplied_device_id,
                 actor=actor,
                 required_device_types={device_type},
+            )
+            # A registration with a checked signature is on security's audit chain
+            # either way: verified (it may refresh the device) or refused.
+            await _record_device_request(
+                rt, request, verified=device_signature_verified, device_id=supplied_device_id, actor=actor,
+                device_types={device_type}, reason="" if device_signature_verified else signature_reason,
             )
         try:
             device = store.register_device(
