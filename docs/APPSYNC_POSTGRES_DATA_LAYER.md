@@ -8,9 +8,11 @@ it in production and multi-instance mode.
 
 ## How a call runs
 
-- Every public method is one short transaction. It reads rows by primary key or
-  through an index, locks only the rows it changes (`SELECT ... FOR UPDATE`;
-  task claims use `FOR UPDATE SKIP LOCKED`), and writes only those rows.
+- Public methods run as short transactions, most as one; `bootstrap` reads in up
+  to three and `verify_approval_signature` in two. A transaction reads rows by
+  primary key or through an index, locks only the rows it changes
+  (`SELECT ... FOR UPDATE`; task claims use `FOR UPDATE SKIP LOCKED`), and writes
+  only those rows.
 - Nothing is cached between calls. Replicas share the database and nothing else,
   so a revocation, a consumed approval or a completed enrollment is visible to
   every replica as soon as it commits.
@@ -19,7 +21,12 @@ it in production and multi-instance mode.
   first response.
 - Insert races (two transactions creating the same new row), deadlocks and
   serialization failures are retried up to three times. Lock and statement
-  timeouts are not retried; they fail the request.
+  timeouts are not retried; they fail the request. In an offline upload
+  (`POST /app/sync`) they abort the whole upload rather than skipping the
+  operation, so the client sends it again instead of marking it synced.
+- Each signed request stores its nonce until its replay window ends, and each
+  nonce claim also deletes up to 100 expired nonces of its namespace, so the
+  table stays about as large as the replay window.
 - The authorization rules that both backends apply (task status reports,
   enrollment binding, verified-device updates) are shared functions in
   `store.py`, and `tests/test_postgres_appsync_per_entity.py` runs one
@@ -76,6 +83,12 @@ environment; the defaults are shown.
 A failed statement or a domain error (not found, permission, conflict) rolls back
 and keeps the pooled connection; only a dead or interrupted connection is
 discarded.
+
+The session limits travel as the libpq `options` startup parameter. PgBouncer in
+transaction pooling mode refuses an unknown startup parameter, or drops it when
+it is listed in `ignore_startup_parameters`, in which case the limits silently do
+not apply. Behind PgBouncer, set them on the database role instead (`ALTER ROLE
+... SET lock_timeout = ...`), or connect the gateway to PostgreSQL directly.
 
 ## Off the event loop, and busy databases
 
@@ -254,13 +267,17 @@ both releases run during a rolling upgrade, writing transactions of this release
 take the same key with `pg_advisory_xact_lock_shared`: they never wait for each
 other, only for a previous-release operation, so a stale write-back cannot
 overwrite their rows. The event counter also stays above event numbers that a
-previous-release replica assigned. This shared lock can be removed in a later
+previous-release replica assigned. A write of this release waits behind queued
+previous-release operations for at most `lock_timeout` (5 s by default) and then
+fails with `LockNotAvailable`, answered as `503 database_busy`, so keep the roll short and scale the
+previous release down quickly. This shared lock can be removed in a later
 release, once no previous-release replica can run against the database.
 
 ## Rollback
 
-Migrations 5 and 6 only add a table, a column, a sequence and indexes; the
-previous release ignores them, so rolling back the application needs no database
+Migrations 5 and 6 only add two tables (the event counter, seeded from the
+existing events, and projects), a column, a sequence and indexes; the previous
+release ignores them, so rolling back the application needs no database
 change. Events pruned by retention stay deleted. Events
 numbered by this release are ordinary rows the previous release reads. Operation
 log entries written by this release use ids from 10^12 upward and sort after the
