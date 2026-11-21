@@ -13,6 +13,12 @@ from omnidesk_agent.security.approval_required import ApprovalRequired
 from omnidesk_agent.security.dual_approval import stamp_requester
 
 
+# Risks that may only run after two distinct owners approved the exact
+# proposal through the remote approval store, whatever the configuration says.
+# Configuration can add risks (require_dual_approval_for_risks), never remove these.
+ALWAYS_DUAL_APPROVAL_RISKS = frozenset({"critical"})
+
+
 class PermissionDecision:
     def __init__(self, allowed: bool, mode: str = "allow", reason: str = ""):
         self.allowed = allowed
@@ -26,7 +32,11 @@ class PermissionManager:
     def __init__(self, cfg: PermissionConfig, approval_store=None):
         self.cfg = cfg
         self.approval_store = approval_store
+        # Interactive "[s]ession" answers. Never consulted for dual-approval risks.
         self.session_allows: set[str] = set()
+        # Single-use grants for a remotely approved proposal that a resume is
+        # about to execute: session key -> monotonic expiry.
+        self._resume_grants: dict[str, float] = {}
         self.metrics: Any = None
         self.audit_log = cfg.audit_log.expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
@@ -44,6 +54,9 @@ class PermissionManager:
         fallback_scope = f"{tool}.{action}"
         return f"{source}|{actor}|{risk}|{scope_hash or fallback_scope}"
 
+    def dual_approval_risks(self) -> frozenset[str]:
+        return frozenset(getattr(self.cfg, "require_dual_approval_for_risks", None) or ()) | ALWAYS_DUAL_APPROVAL_RISKS
+
     def verify(self, proposal: Any) -> PermissionDecision:
         proposal_dict = self._proposal_dict(proposal)
         tool = str(proposal_dict.get("tool", ""))
@@ -51,17 +64,23 @@ class PermissionManager:
         source = str(proposal_dict.get("source", "unknown"))
         session_key = self.session_key(proposal_dict)
 
-        if risk in set(getattr(self.cfg, "require_dual_approval_for_risks", [])):
+        dual = risk in self.dual_approval_risks()
+        if dual:
             proposal_dict["requires_dual_approval"] = True
         self._audit("proposal", proposal_dict)
         self._metric("omnidesk_approval_proposals_total", tool=tool, risk=risk, source=source)
 
-        if risk == "low" and source in getattr(self.cfg, "allow_low_risk_from", []):
+        if not dual and risk == "low" and source in getattr(self.cfg, "allow_low_risk_from", []):
             self._audit("allowed_low_risk", proposal_dict)
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="low_risk")
             return PermissionDecision(True, "allow", "low risk allowed")
 
-        if session_key in self.session_allows:
+        if self._consume_resume_grant(session_key):
+            self._audit("allowed_resume_grant", {"session_key": session_key, **proposal_dict})
+            self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="resume_grant")
+            return PermissionDecision(True, "allow", "remote approval resume grant")
+
+        if not dual and session_key in self.session_allows:
             self._audit("allowed_session", {"session_key": session_key, **proposal_dict})
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="session")
             return PermissionDecision(True, "allow", "session allow")
@@ -70,7 +89,7 @@ class PermissionManager:
         default_mode = getattr(self.cfg, "default_mode", "ask")
 
         if mode == "auto_policy":
-            if risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
+            if not dual and risk in {"low", "medium"} and tool not in getattr(self.cfg, "always_ask_tools", []):
                 self._audit("allowed_auto_policy", proposal_dict)
                 self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="auto_policy")
                 return PermissionDecision(True, "allow", "auto_policy")
@@ -80,6 +99,11 @@ class PermissionManager:
             return self._remote_or_deny(proposal_dict)
 
         if default_mode == "allow":
+            if dual:
+                # default allow is a development convenience; it never stands
+                # in for the two remote owner approvals a dual-approval risk needs.
+                self._audit("dual_approval_required", proposal_dict)
+                return self._remote_or_deny(proposal_dict)
             self._audit("allowed_default", proposal_dict)
             self._metric("omnidesk_approval_decisions_total", tool=tool, risk=risk, decision="allow", mode="default")
             return PermissionDecision(True, "allow", "default allow")
@@ -98,6 +122,12 @@ class PermissionManager:
                 return PermissionDecision(False, "dry_run", "no tty dry_run")
             self._audit("denied_no_tty", proposal_dict)
             raise PermissionError("Permission required but no TTY available")
+
+        if dual:
+            # A console 'y' is one unattributed approval; dual-approval risks
+            # wait for two distinct owners on the remote approval path instead.
+            self._audit("dual_approval_required", proposal_dict)
+            return self._remote_or_deny(proposal_dict)
 
         print("\nPermission request:")
         print(json.dumps(proposal_dict, ensure_ascii=False, indent=2))
@@ -118,18 +148,27 @@ class PermissionManager:
         raise PermissionError("Denied by user")
 
     def allow_approved_proposal(self, proposal: Any) -> str:
-        """Allow the exact approved proposal scope during a resume call.
+        """Allow the exact approved proposal scope once, for the resume call.
 
         Remote approval is normally implemented by raising ApprovalRequired. After
         a human approves that proposal, resume must execute the originally blocked
-        step once instead of creating a fresh approval for the same scope.
+        step once instead of creating a fresh approval for the same scope. The
+        grant is used up by that execution (or expires with the approval TTL), so
+        one approval never authorizes a second run of the same scope.
         """
         proposal_dict = self._proposal_dict(proposal)
         session_key = self.session_key(proposal_dict)
-        self.session_allows.add(session_key)
+        ttl = max(1, int(getattr(self.cfg, "approval_ttl_seconds", 600) or 600))
+        self._resume_grants[session_key] = time.monotonic() + ttl
         self._audit("allowed_after_remote_approval", {"session_key": session_key, **proposal_dict})
         self._metric("omnidesk_approval_resume_grants_total", tool=str(proposal_dict.get("tool", "")), risk=str(proposal_dict.get("risk", "medium")))
         return session_key
+
+    def _consume_resume_grant(self, session_key: str) -> bool:
+        now = time.monotonic()
+        for key in [k for k, expires_at in self._resume_grants.items() if expires_at <= now]:
+            self._resume_grants.pop(key, None)
+        return self._resume_grants.pop(session_key, None) is not None
 
     def _remote_or_deny(self, proposal_dict: dict[str, Any]) -> PermissionDecision:
         if self.approval_store is None:

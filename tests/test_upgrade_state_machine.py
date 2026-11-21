@@ -61,7 +61,13 @@ def test_generate_artifact_then_evaluate_canary_continues_from_current_state(tmp
 
     gov.regression_runner = _OkRunner()
     gov.security_runner = _OkRunner()
-    result = asyncio.run(gov.evaluate_proposal(proposal.proposal_id, allow_canary=True))
+    # SHADOW_MODE -> CANARY is recorded only with a shadow comparison on file.
+    result = asyncio.run(gov.evaluate_proposal(
+        proposal.proposal_id,
+        allow_canary=True,
+        stable_plan={"steps": [{"risk": "medium"}, {"risk": "medium"}]},
+        shadow_plan={"steps": [{"risk": "low"}]},
+    ))
 
     assert result["proposal"]["metadata"]["state"] == "CANARY"
     history = result["proposal"]["metadata"].get("state_history", [])
