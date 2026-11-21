@@ -121,6 +121,8 @@ Host-level points that also apply to any dedicated VM:
     required; `tests/test_backup_retention_policy.py` fails on a scheduled
     backup without it or above 35.
     `web_first_host.py backup` stays a manual one-off: it never deletes old dumps.
+    RPO on the host: up to 24 hours for PostgreSQL (one dump a day) and about
+    1 hour for the SQLite stores (hourly timer). Nothing on the host is faster.
   - After every restore, the drill included, the restored gateway serves no
     traffic until each erasure logged since the backup was taken
     (`privacy.subject_erased` in the security audit log) has been applied
@@ -139,6 +141,10 @@ Host-level points that also apply to any dedicated VM:
 ## Final-phase order
 
 1. Owner chooses the variant and approves cost and access. Run the inventory (variant A).
+   The owner also decides on point-in-time recovery for the host. Continuous
+   WAL archiving (pgBackRest or wal-g) to storage off the host would cut the
+   PostgreSQL RPO from up to 24 hours to minutes. The storage is the owner's
+   choice and may cost money; it is not built.
 2. Bootstrap with the reviewed commit. Deploy the latest server release and run the smoke with strict sandbox.
 3. Send the TLS host name for the channels webhooks to the coordinator.
 4. Run the drills on the host and keep raw outputs with run URLs: deploy,
