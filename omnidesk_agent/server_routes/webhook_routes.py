@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -15,6 +16,9 @@ from omnidesk_agent.server_routes.webhook_guard import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
     async def _duplicate_delivery(request: Request, exc: Exception) -> Response:
         # Signature verified, already enqueued: acknowledge so the provider stops
@@ -26,7 +30,9 @@ def register_webhook_routes(app: FastAPI, cfg, rt, guard: WebhookGuard) -> None:
             try:
                 shaped = shape(None, getattr(exc, "payload", None))
             except PermissionError as refused:
-                return JSONResponse(status_code=403, content={"detail": str(refused)})
+                # The reason stays in the log; the provider learns only that it was refused.
+                logger.warning("webhook response refused for a duplicate %s delivery: %s", getattr(exc, "channel", "unknown"), refused)
+                return JSONResponse(status_code=403, content={"detail": "webhook response refused"})
             if isinstance(shaped, Response):
                 return shaped
             if shaped is not None:

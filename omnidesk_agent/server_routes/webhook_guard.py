@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -241,11 +242,27 @@ class WebhookGuard:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def enqueue_webhook_message(runtime, message, *, batch: bool = False) -> dict:
+def _with_stable_id(message, index: int):
+    """Give a message without a provider id one derived from its verified delivery.
+
+    The job queue deduplicates by message id, and otherwise by a hash of the
+    whole message, which includes the receive time. A redelivered batch whose
+    messages carry no id (Meta's) would then enqueue them again. The delivery
+    digest and the position are the same in every redelivery of that body.
+    """
+    pending = _PENDING_DELIVERY.get()
+    if message is None or getattr(message, "message_id", None) or pending is None:
+        return message
+    _store, _channel, digest = pending
+    return dataclasses.replace(message, message_id=f"delivery:{str(digest)[:32]}:{index}")
+
+
+def enqueue_webhook_message(runtime, message, *, batch: bool = False, index: int = 0) -> dict:
     metrics = getattr(runtime, "metrics", None)
     inc = getattr(metrics, "inc", None)
     if message is None:
         return {"ok": True, "ignored": True}
+    message = _with_stable_id(message, index)
     if callable(inc):
         inc("omnidesk_webhook_enqueue_attempts_total", channel=getattr(message, "channel", "unknown"))
     source_key = message.thread_id or message.sender_id or "unknown"
@@ -263,6 +280,6 @@ def enqueue_webhook_message(runtime, message, *, batch: bool = False) -> dict:
 def enqueue_webhook_messages(runtime, messages: list) -> dict:
     # The delivery counts as processed only once every message is enqueued; the
     # job queue deduplicates the ones a redelivery enqueues again.
-    jobs = [enqueue_webhook_message(runtime, message, batch=True) for message in messages]
+    jobs = [enqueue_webhook_message(runtime, message, batch=True, index=index) for index, message in enumerate(messages)]
     commit_webhook_delivery()
     return {"ok": True, "queued": True, "count": len(messages), "jobs": jobs}

@@ -131,7 +131,8 @@ def test_a_duplicate_body_the_adapter_refuses_is_403_not_500(client, monkeypatch
 
     refused = _post(test_client, body)
 
-    assert refused.status_code == 403 and "plain_token" in refused.json()["detail"]
+    # The reason stays in the log (CodeQL: no exception text to the caller).
+    assert refused.status_code == 403 and refused.json() == {"detail": "webhook response refused"}
 
 
 def test_an_unsigned_duplicate_is_still_refused(client):
@@ -239,3 +240,43 @@ def test_both_stores_check_without_claiming_until_mark_seen(tmp_path, backend):
     with pytest.raises(WebhookRateLimited) as limited:
         store.guard(channel="telegram", body=b"{}", source_key="u", message_id="update:10", claim=False)
     assert limited.value.retry_after_seconds >= 1
+
+
+
+def test_a_redelivered_batch_without_message_ids_is_enqueued_once(tmp_path):
+    # Codex review: Meta's messages carry no id, so the queue hashed the whole
+    # message, receive time included, and a redelivered batch enqueued the
+    # messages that had made it the first time again.
+    from types import SimpleNamespace
+
+    from omnidesk_agent.core.job_queue import JobQueue
+    from omnidesk_agent.core.models import ChannelMessage
+    from omnidesk_agent.server_routes.webhook_guard import _PENDING_DELIVERY, enqueue_webhook_messages
+
+    queue = JobQueue(tmp_path / "jobs.sqlite3")
+    marked: list[str] = []
+    store = SimpleNamespace(mark_seen=lambda channel, digest: marked.append(digest))
+    calls = {"n": 0}
+    real_enqueue = queue.enqueue
+
+    def second_fails_once(message, *, source_key):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("database is locked")
+        return real_enqueue(message, source_key=source_key)
+
+    runtime = SimpleNamespace(job_queue=SimpleNamespace(enqueue=second_fails_once), metrics=None)
+
+    def deliver():
+        # Every delivery parses fresh messages: same content, a later receive time.
+        _PENDING_DELIVERY.set((store, "meta", "d" * 64))
+        return enqueue_webhook_messages(runtime, [ChannelMessage(channel="meta", sender_id="u1", text=f"part {i}") for i in (1, 2)])
+
+    with pytest.raises(RuntimeError):
+        deliver()  # part 1 queued, part 2 failed: nothing recorded as seen
+    assert marked == []
+    time.sleep(0.01)
+    result = deliver()
+
+    assert [job["created"] for job in result["jobs"]] == [False, True]  # part 1 is the same job, part 2 new
+    assert len(queue.list()) == 2 and marked == ["d" * 64]
