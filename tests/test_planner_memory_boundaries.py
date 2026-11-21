@@ -7,7 +7,7 @@ import time
 import pytest
 
 from omnidesk_agent.config import MemoryPrivacyConfig
-from omnidesk_agent.core.models import ChannelMessage
+from omnidesk_agent.core.models import ChannelMessage, Plan
 from omnidesk_agent.core.structured_planner import LLMStructuredPlanner
 from omnidesk_agent.core.token_budget import TokenBudgetConfig
 from omnidesk_agent.memory.experience import ExperienceStore
@@ -155,7 +155,7 @@ def test_structured_planner_provider_context_is_actor_scoped(memory):
 
     class Fallback:
         async def plan(self, msg):
-            return None
+            return Plan(goal=msg.text, steps=[])
 
     router = Router()
     planner = LLMStructuredPlanner(router, memory, Skills(), Tools(), Fallback())

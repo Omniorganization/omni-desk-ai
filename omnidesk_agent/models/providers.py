@@ -33,6 +33,10 @@ IMAGE_MIME_TYPES = {
 }
 
 
+class ModelInputRejected(PermissionError):
+    """A model input (such as an image path) failed local policy; nothing was sent."""
+
+
 @dataclass
 class ProviderSettings:
     profile_name: str
@@ -93,29 +97,29 @@ def _image_part_from_path(raw_path: str, metadata: dict[str, Any]) -> dict[str, 
         "upload_roots",
     )
     if not upload_roots:
-        raise PermissionError("image inputs require a bound upload root")
+        raise ModelInputRejected("image inputs require a bound upload root")
 
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
-        raise PermissionError("image input path must be absolute")
+        raise ModelInputRejected("image input path must be absolute")
     if path.is_symlink():
-        raise PermissionError("image input path must not be a symlink")
+        raise ModelInputRejected("image input path must not be a symlink")
 
     resolved = path.resolve(strict=True)
     allowed_roots = [Path(root).expanduser().resolve(strict=True) for root in upload_roots]
     if not any(_is_relative_to(resolved, root) for root in allowed_roots):
-        raise PermissionError("image input path is outside the bound upload root")
+        raise ModelInputRejected("image input path is outside the bound upload root")
 
     max_bytes = int(metadata.get("max_image_bytes") or 10 * 1024 * 1024)
     stat = resolved.stat()
     if stat.st_size <= 0:
-        raise PermissionError("image input is empty")
+        raise ModelInputRejected("image input is empty")
     if stat.st_size > max_bytes:
-        raise PermissionError("image input exceeds the configured size limit")
+        raise ModelInputRejected("image input exceeds the configured size limit")
 
     suffix = resolved.suffix.lower()
     if suffix not in ALLOWED_IMAGE_SUFFIXES:
-        raise PermissionError("image input type is not allowed")
+        raise ModelInputRejected("image input type is not allowed")
 
     data = resolved.read_bytes()
     return {

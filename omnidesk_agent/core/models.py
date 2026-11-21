@@ -99,6 +99,10 @@ class ActionProposal(_NoPublicDict):
     plan_id: Optional[str] = None
     step_index: Optional[int] = None
     scope_hash: Optional[str] = None
+    # Where the proposed call came from (the loop's taint snapshot for steps a
+    # model proposed, None for operator and rule steps). Shown to the approver
+    # and stored with the approval; deliberately not part of scope_hash.
+    provenance: Optional[dict[str, Any]] = None
 
 
 @dataclass
