@@ -261,6 +261,20 @@ WHERE omnidesk_appsync_device_request_nonces.expires_at <= %(now)s
 RETURNING nonce_key
 """
 
+# Every signed request adds a nonce row, so each claim also deletes a bounded
+# batch of expired ones; their replay window is over. Concurrent requests skip
+# each other's rows instead of waiting on them.
+NONCE_PRUNE_BATCH = 100
+NONCE_PRUNE_SQL = """
+DELETE FROM omnidesk_appsync_device_request_nonces
+WHERE ctid IN (
+    SELECT ctid FROM omnidesk_appsync_device_request_nonces
+    WHERE namespace = %(namespace)s AND expires_at <= %(now)s
+    LIMIT %(batch)s
+    FOR UPDATE SKIP LOCKED
+)
+"""
+
 OPERATION_LOG_SQL = """
 INSERT INTO omnidesk_appsync_operation_log(namespace, organization_id, seq, event, payload, created_at)
 VALUES (%(namespace)s, %(organization_id)s, nextval('omnidesk_appsync_operation_log_entry_seq'), %(event)s, %(payload)s, %(created_at)s)
@@ -1237,6 +1251,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
         return self._read(body)
 
     def _claim_nonce(self, tx: _Tx, nonce_key: str, *, ttl_seconds: int) -> bool:
+        tx.cur.execute(NONCE_PRUNE_SQL, {"namespace": self.namespace, "now": tx.now, "batch": NONCE_PRUNE_BATCH})
         tx.cur.execute(
             NONCE_SQL,
             {"namespace": self.namespace, "nonce_key": nonce_key, "expires_at": tx.now + max(60, int(ttl_seconds or 600)), "now": tx.now},
