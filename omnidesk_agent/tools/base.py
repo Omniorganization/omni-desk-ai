@@ -31,14 +31,27 @@ class _DryRun(Exception):
     pass
 
 
+# What the execution wrapper answers itself; everything else is the wrapped manager's.
+_WRAPPER_OWN_ATTRIBUTES = frozenset({"verify", "_delegate", "__class__", "__dict__"})
+
+
 class _ExecutionPermissions(PermissionManager):
-    """Call-local adapter: a returned denial must stop the protected operation."""
+    """Call-local adapter: a returned denial must stop the protected operation.
+
+    It subclasses PermissionManager for its type only. Every attribute except
+    verify, methods included, is the wrapped manager's: an inherited method
+    run with this throwaway object as self would write its state here (an
+    audit-integrity failure flag, a derived key) instead of on the manager,
+    which then would keep accepting decisions.
+    """
 
     def __init__(self, delegate: PermissionManager):
         self._delegate = delegate
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._delegate, name)
+    def __getattribute__(self, name: str) -> Any:
+        if name in _WRAPPER_OWN_ATTRIBUTES:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_delegate"), name)
 
     def verify(self, action_proposal: Any) -> PermissionDecision:
         decision = self._delegate.verify(action_proposal)
@@ -74,12 +87,8 @@ def _digest(data: bytes, ctx: Optional[Any]) -> str:
     test guesses offline. ``PermissionManager.keyed_digest(data)`` keys it with a key
     derived from the audit key, stable across restarts and replicas.
     """
-    manager = getattr(ctx, "permissions", None) if ctx is not None else None
-    # The execution wrapper inherits PermissionManager's methods, so look the method up on
-    # the manager itself: it then runs on its own state (cached sub-key, lock), not the wrapper's.
-    while isinstance(manager, _ExecutionPermissions):
-        manager = manager._delegate
-    keyed = getattr(manager, "keyed_digest", None)
+    # Through the execution wrapper this is the manager's own bound method (see _ExecutionPermissions).
+    keyed = getattr(getattr(ctx, "permissions", None), "keyed_digest", None) if ctx is not None else None
     if callable(keyed):
         value = keyed(data)
         if isinstance(value, str) and value:
