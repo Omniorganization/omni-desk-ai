@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from omnidesk_agent.self_learning import cli
 from omnidesk_agent.self_learning.routes import register_learning_policy_routes
+from omnidesk_agent.server_routes.agent_routes import _idempotent_side_effect, _require_idempotency_key
 
 ROLES = {"op-token": ("operator", "op@example.com"), "owner-token": ("owner", "owner@example.com"), "bot-token": ("owner", "agent")}
 RANK = {"operator": 1, "owner": 2}
@@ -28,7 +29,8 @@ async def admin(request: Request, role: str):
 @pytest.fixture()
 def client(tmp_path):
     app = FastAPI()
-    register_learning_policy_routes(app, SimpleNamespace(), admin, open_registry=lambda: cli.open_registry(tmp_path))
+    register_learning_policy_routes(app, SimpleNamespace(), admin, open_registry=lambda: cli.open_registry(tmp_path),
+                                    require_idempotency_key=_require_idempotency_key, idempotent_side_effect=_idempotent_side_effect)
     with cli.open_registry(tmp_path) as registry:
         artifact = registry.register_candidate("workflow", "check-stock", "Check stock before quoting.")
         registry.record_evaluation(artifact.artifact_id, {"verdict": "improved", "method": "paired_replay_v1", "trace_count": 8})

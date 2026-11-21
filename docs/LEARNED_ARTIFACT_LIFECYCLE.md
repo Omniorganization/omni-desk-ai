@@ -85,7 +85,7 @@ approval history).
 - The planner does not consume the policy (see above).
 - Evaluation is recorded, not produced: the replay evaluator that re-plans
   recorded traces with `candidate_policy()` is a separate change.
-- HTTP: `omnidesk_agent/self_learning/routes.py` has the admin routes (operator: list, policy, request approval; owner: decide, apply, rollback; the reviewer is the authenticated admin identity; idempotency keys required). `server.py` does not register them yet; that is one line in the wiring change.
+- HTTP: `omnidesk_agent/self_learning/routes.py` has the admin routes (operator: list, policy, request approval; owner: decide, apply, rollback; the reviewer is the authenticated admin identity; idempotency keys required). `self_learning` may not import the HTTP layers, so `server.py` passes in its admin check and idempotency helpers when it registers them; it does not register them yet, that is one line in the wiring change.
 - Knowledge, prompt and workflow drafts from `KnowledgeBuilder` are still
   human-facing review notes under `self_learning/pending_updates/`; they are
   not artefacts and are never applied.
