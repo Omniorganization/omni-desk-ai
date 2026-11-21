@@ -17,6 +17,7 @@ These tests pin what must stay true while it does:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -24,6 +25,7 @@ import zipfile
 from pathlib import Path
 
 import yaml
+from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -103,6 +105,45 @@ def test_dockerfile_installs_the_provided_wheel_and_checks_its_sha256() -> None:
     assert "FROM scratch AS wheel" in dockerfile
     assert "COPY --from=wheel /*.whl /tmp/" in dockerfile
     assert 'echo "$OMNIDESK_ARTIFACT_SHA256  $wheels" | sha256sum -c -' in dockerfile
+
+
+def _release_dist(dist: Path, metadata_version: str) -> None:
+    dist.mkdir()
+    wheel = dist / f"omnidesk_agent-{metadata_version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("omnidesk_agent-x.dist-info/METADATA", f"Name: omnidesk-agent\nVersion: {metadata_version}\n")
+    (dist / "checksums.txt").write_text(f"{hashlib.sha256(wheel.read_bytes()).hexdigest()}  {wheel.name}\n", encoding="utf-8")
+
+
+def test_the_declared_release_version_matches_the_wheel_setuptools_builds(tmp_path: Path) -> None:
+    """Why: setuptools stores the PEP 440 form of the declared version in the
+    wheel's METADATA (the local part's hyphens become dots). Comparing raw
+    strings failed every signed release before staging or production could
+    verify it. The check must still be exact on the normalized form."""
+    from scripts import verify_release_artifact
+
+    declared = _workflow("release.yml")["env"]["EXPECTED_VERSION"]
+    normalized = str(Version(declared))
+    assert normalized != declared  # the shape that broke
+    _release_dist(tmp_path / "release", normalized)
+    assert verify_release_artifact.main([str(tmp_path / "release"), "--expected-version", declared]) == 0
+    for index, other in enumerate((normalized.replace("1.12.7", "1.12.8", 1), normalized.replace("1.12.7", "1.12.7.0", 1), declared)):
+        _release_dist(tmp_path / f"other{index}", other)
+        expected = 0 if other == declared else 1  # a wheel carrying the declared form verbatim still matches
+        assert verify_release_artifact.main([str(tmp_path / f"other{index}"), "--expected-version", declared]) == expected, other
+
+
+def test_image_run_checks_compare_the_wheels_own_version() -> None:
+    """Why: inside the image importlib.metadata reports the PEP 440 form, so a
+    check against the declared version can never pass (Release Images run
+    44811517452). The image must run exactly the wheel's version, and
+    OMNIDESK_VERSION must still equal the declared version."""
+    for name, job in (("release.yml", "server-release"), ("release-images.yml", "images")):
+        text = _run_text(_workflow(name)["jobs"][job])
+        assert 'v == os.environ["OMNIDESK_VERSION"]' not in text, name
+        assert 'n.endswith(".dist-info/METADATA")' in text and '"$wheel")"' in text and "v == sys.argv[2]" in text, name
+        assert 'os.environ["OMNIDESK_VERSION"] == sys.argv[3]' in text, name
+    assert 'verify_release_artifact.py "$check" --expected-version "$EXPECTED_VERSION"' in _run_text(_workflow("release-images.yml")["jobs"]["images"])
 
 
 def _fake_wheel(dist: Path) -> None:

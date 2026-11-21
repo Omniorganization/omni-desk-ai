@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import sys
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -15,6 +16,18 @@ SIGNATURE_MANIFEST_NAME = "release_signatures.json"
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _normalized_version(value: str | None) -> str | None:
+    """PEP 440 local-label normalization, which setuptools applies to the
+    wheel's METADATA: 1.12.7+root-monorepo-... is stored as
+    1.12.7+root.monorepo.... Only the local label is rewritten (lowercase, "-"
+    and "_" become "."), so any other difference still fails. Stdlib only: the
+    verifier runs on any python3."""
+    if not value or "+" not in value:
+        return value
+    public, local = value.split("+", 1)
+    return public + "+" + re.sub(r"[-_]", ".", local.lower())
 
 
 def _read_checksums(dist: Path) -> dict[str, str]:
@@ -114,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.expected_version:
             versions = {_version_from_wheel(wheel) for wheel in wheels}
-            if versions != {args.expected_version}:
+            if {_normalized_version(version) for version in versions} != {_normalized_version(args.expected_version)}:
                 print(f"wheel version mismatch: expected {args.expected_version}, got {sorted(versions)}", file=sys.stderr)
                 return 1
         if args.require_signatures:

@@ -791,8 +791,11 @@ jobs:
           docker push "$image_ref"
           digest="$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "registry did not return a valid digest for $image_ref: $digest" >&2; exit 65; }
-          # The pushed image must run the signed wheel and report it.
-          docker run --rm --entrypoint python "$image_ref@$digest" -c 'import importlib.metadata as m, os, sys; v=m.version("omnidesk-agent"); s=os.environ["OMNIDESK_ARTIFACT_SHA256"]; print(v, s); sys.exit(0 if v == os.environ["OMNIDESK_VERSION"] and s == sys.argv[1] else 1)' "$artifact_sha"
+          # The pushed image must run the signed wheel and report it: compare with
+          # the version in the wheel's own METADATA (the PEP 440 form).
+          # OMNIDESK_VERSION keeps the declared release version.
+          wheel_version="$(python -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA")); print(next(l.split(": ", 1)[1] for l in z.read(meta).decode().splitlines() if l.startswith("Version: ")))' "$wheel")"
+          docker run --rm --entrypoint python "$image_ref@$digest" -c 'import importlib.metadata as m, os, sys; v=m.version("omnidesk-agent"); s=os.environ["OMNIDESK_ARTIFACT_SHA256"]; print(v, s); sys.exit(0 if v == sys.argv[2] and os.environ["OMNIDESK_VERSION"] == sys.argv[3] and s == sys.argv[1] else 1)' "$artifact_sha" "$wheel_version" "$EXPECTED_VERSION"
           {
             echo "OMNIDESK_IMAGE_NAME=${image_ref%:*}"
             echo "OMNIDESK_IMAGE_REF=$image_ref"

@@ -58,12 +58,28 @@ jobs:
           docker build -q --build-context wheel="$RUNNER_TEMP/release-wheel" \
             --build-arg OMNIDESK_VERSION="$EXPECTED_VERSION" --build-arg OMNIDESK_ARTIFACT_SHA256="$artifact_sha" \
             -t omnidesk-agent:pr .
-          docker run --rm --entrypoint python omnidesk-agent:pr -c 'import hashlib, importlib.metadata as m, os, sys; v=m.version("omnidesk-agent"); s=os.environ["OMNIDESK_ARTIFACT_SHA256"]; print(v, s); sys.exit(0 if v == os.environ["OMNIDESK_VERSION"] and s == sys.argv[1] else 1)' "$artifact_sha"
+          # The image must run exactly that wheel: compare with the version in the
+          # wheel's own METADATA (the PEP 440 form, 1.12.7+root.monorepo...).
+          # OMNIDESK_VERSION keeps the declared release version.
+          wheel_version="$(python -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA")); print(next(l.split(": ", 1)[1] for l in z.read(meta).decode().splitlines() if l.startswith("Version: ")))' "$wheel")"
+          docker run --rm --entrypoint python omnidesk-agent:pr -c 'import importlib.metadata as m, os, sys; v=m.version("omnidesk-agent"); s=os.environ["OMNIDESK_ARTIFACT_SHA256"]; print(v, s); sys.exit(0 if v == sys.argv[2] and os.environ["OMNIDESK_VERSION"] == sys.argv[3] and s == sys.argv[1] else 1)' "$artifact_sha" "$wheel_version" "$EXPECTED_VERSION"
           # A sha256 that does not match the wheel must fail the build: the image
           # can never claim an identity it does not have.
           if docker build -q --build-context wheel="$RUNNER_TEMP/release-wheel" \
                --build-arg OMNIDESK_ARTIFACT_SHA256="$(printf '%064d' 0)" -t omnidesk-agent:wrong . > /dev/null 2>&1; then
             echo "image built with a sha256 that is not its wheel's" >&2; exit 1
+          fi
+      - name: The wheel passes the release verifier's version check
+        # staging, production and rollback run verify_release_artifact.py
+        # --expected-version on this wheel; prove the declared version matches it.
+        run: |
+          set -euo pipefail
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          check="$RUNNER_TEMP/version-check" && mkdir -p "$check" && cp -- "$wheel" "$check/"
+          (cd "$check" && sha256sum -- *.whl > checksums.txt)
+          python scripts/verify_release_artifact.py "$check" --expected-version "$EXPECTED_VERSION"
+          if python scripts/verify_release_artifact.py "$check" --expected-version 0.0.0+other 2>/dev/null; then
+            echo "verifier accepted a version that is not the wheel's" >&2; exit 1
           fi
       - name: The sandbox-runner image starts and refuses to run without its token
         run: |
