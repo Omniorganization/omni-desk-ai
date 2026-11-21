@@ -36,4 +36,5 @@ def test_governance_evaluation_writes_results_back(tmp_path):
     assert "shadow_result" in evidence
     assert "canary_result" in evidence
     assert "permission_diff" in evidence
-    assert result["verdict"] in {"effective", "pending_review", "requires_human_approval", "blocked_by_tests"}
+    # "effective" needs measured before/after outcomes, which evaluation never has.
+    assert result["verdict"] in {"canary_enabled", "pending_review", "requires_human_approval", "blocked_by_tests"}

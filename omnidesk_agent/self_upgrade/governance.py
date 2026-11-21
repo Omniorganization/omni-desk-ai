@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import getpass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -129,7 +130,13 @@ class GovernedSelfImprovement:
             "reason": "not eligible",
         }
         checks_ok = bool(regression.get("ok")) and bool(security.get("ok"))
-        if allow_canary and checks_ok and risk.get("can_auto_canary") and not perm_diff.requires_human_approval:
+        if allow_canary and checks_ok and shadow_result is None:
+            # The state history must not claim a shadow run that never happened,
+            # and the canonical path reaches CANARY only through SHADOW_MODE.
+            canary_result["reason"] = "canary_requires_shadow_evidence"
+        elif allow_canary and checks_ok and self._governance_sequence(str(proposal.metadata.get("state") or "PROPOSED"), "CANARY") is None:
+            canary_result["reason"] = f"canary_not_reachable_from_{proposal.metadata.get('state')}"
+        elif allow_canary and checks_ok and risk.get("can_auto_canary") and not perm_diff.requires_human_approval:
             canary_result = self.canary.enable(
                 target=proposal.proposal_id,
                 version=f"proposal-{proposal.proposal_id}",
@@ -171,7 +178,9 @@ class GovernedSelfImprovement:
         proposal.metadata["checks"] = checks
         self.proposal_store.save(proposal)
 
-        verdict = "effective" if canary_result.get("enabled") else "pending_review"
+        # "effective" would need measured before/after outcomes; enabling a
+        # canary flag only means the proposal may be tried.
+        verdict = "canary_enabled" if canary_result.get("enabled") else "pending_review"
         if perm_diff.requires_human_approval or risk.get("requires_human_approval"):
             verdict = "requires_human_approval"
         if not checks_ok:
@@ -198,15 +207,25 @@ class GovernedSelfImprovement:
         working["metadata"] = metadata
         return self.state_machine.transition_metadata(working, target_state, reason=reason)
 
+    CANONICAL_PATHS = {
+        "HUMAN_REVIEW": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "HUMAN_REVIEW"],
+        "CANARY": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "SHADOW_MODE", "CANARY"],
+    }
+
+    def _governance_sequence(self, current: str, target_state: str) -> Optional[list[str]]:
+        """States to walk from ``current`` to ``target_state``, or None if unreachable."""
+        if target_state == "CANARY" and current == "HUMAN_REVIEW":
+            # A proposal held for review (e.g. canary asked for without shadow
+            # evidence) continues once the shadow comparison is supplied.
+            return ["HUMAN_REVIEW", "SHADOW_MODE", "CANARY"]
+        sequence = self.CANONICAL_PATHS.get(target_state, [current, target_state])
+        return sequence if current in sequence else None
+
     def _transition_governance_path(self, proposal_dict: dict, target_state: str) -> dict:
         metadata = dict(proposal_dict.get("metadata") or {})
         current = metadata.get("state") or "PROPOSED"
         if current == target_state:
             return metadata
-        canonical_paths = {
-            "HUMAN_REVIEW": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "HUMAN_REVIEW"],
-            "CANARY": ["PROPOSED", "RISK_CLASSIFIED", "ARTIFACT_GENERATED", "REGRESSION_TESTED", "SECURITY_TESTED", "SHADOW_MODE", "CANARY"],
-        }
         if target_state == "BLOCKED":
             if self.state_machine.can_transition(current, "BLOCKED"):
                 working = dict(proposal_dict)
@@ -216,8 +235,8 @@ class GovernedSelfImprovement:
             metadata.setdefault("state_history", []).append({"from": current, "to": "BLOCKED", "reason": "governance_evaluation_forced_block"})
             return metadata
 
-        sequence = canonical_paths.get(target_state, [current, target_state])
-        if current not in sequence:
+        sequence = self._governance_sequence(current, target_state)
+        if sequence is None:
             raise ValueError(f"cannot continue governance path from {current} to {target_state}")
         start = sequence.index(current) + 1
         for state in sequence[start:]:
@@ -230,30 +249,44 @@ class GovernedSelfImprovement:
                 return metadata
         return metadata
 
-    def record_human_feedback(self, proposal_id: str, decision: str, reason: str) -> dict:
+    def record_human_feedback(self, proposal_id: str, decision: str, reason: str, *, reviewer: Optional[str] = None) -> dict:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("decision must be approved or rejected")
+        current = self.proposal_store.get(proposal_id)
+        if current is None:
+            raise KeyError(proposal_id)
+        state = (current.metadata or {}).get("state")
+        if decision == "approved" and state == "BLOCKED":
+            raise PermissionError("proposal is BLOCKED by failed governance checks; it cannot be approved")
+        # CLI callers pass no identity: record the OS account that ran the command.
+        reviewer_id = str(reviewer or "").strip() or f"os-user:{_os_user()}"
+        review = {"decision": decision, "reason": reason, "reviewer": reviewer_id}
         if decision == "approved":
             proposal = self.proposal_store.approve(proposal_id, reason)
-            proposal.metadata.setdefault("checks", {})["human_review"] = {"decision": "approved", "reason": reason}
-            proposal.metadata["human_review"] = {"decision": "approved", "reason": reason}
-            self.proposal_store.save(proposal)
-        elif decision == "rejected":
-            proposal = self.proposal_store.reject(proposal_id, reason)
-            proposal.metadata.setdefault("checks", {})["human_review"] = {"decision": "rejected", "reason": reason}
-            proposal.metadata["human_review"] = {"decision": "rejected", "reason": reason}
-            self.proposal_store.save(proposal)
         else:
-            raise ValueError("decision must be approved or rejected")
-        self.memory.record({
-            "upgrade_id": proposal_id,
-            "change_type": proposal.upgrade_type,
-            "target": ",".join(proposal.affected_modules) or proposal.title,
-            "rollback": False,
-            "verdict": decision,
-            "human_feedback": reason,
-        })
+            proposal = self.proposal_store.reject(proposal_id, reason)
+        proposal.metadata.setdefault("checks", {})["human_review"] = review
+        proposal.metadata["human_review"] = review
+        self.proposal_store.save(proposal)
+        # Keep the governance evaluation row; only attach the human decision.
+        self.memory.record_feedback(
+            proposal_id,
+            decision=decision,
+            feedback=reason,
+            reviewer=reviewer_id,
+            change_type=proposal.upgrade_type,
+            target=",".join(proposal.affected_modules) or proposal.title,
+        )
         return proposal.to_dict()
 
     def close(self) -> None:
         close = getattr(self.memory, "close", None)
         if callable(close):
             close()
+
+
+def _os_user() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:  # no login name in some containers
+        return "unknown"

@@ -80,6 +80,7 @@ def test_otlp_probe_uses_runtime_exporter_wire_format() -> None:
 
 def test_production_config_requires_critical_dual_approval_and_break_glass_hmac() -> None:
     cfg = AppConfig()
+    cfg.permissions.approval_mode = "remote_approval"
     cfg.plugins.enabled = False
     cfg.channels.chrome.enabled = False
     cfg.memory_privacy.encrypt_at_rest = True
