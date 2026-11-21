@@ -42,7 +42,7 @@ class FakeGovernance:
 
 class FakeOrchestrator:
     async def handle_message(self, msg):
-        return {"channel": msg.channel, "text": msg.text}
+        return {"status": "completed", "channel": msg.channel, "text": msg.text}
 
 
 class FakeGmailOAuth:
@@ -68,7 +68,13 @@ def _run_cli(monkeypatch, capsys, args):
     monkeypatch.setattr(cli, "load_config", lambda path: AppConfig())
     monkeypatch.setattr(cli, "OmniDeskRuntime", FakeRuntime)
     monkeypatch.setattr(sys, "argv", ["omnidesk", "--config", "ignored.yaml", *args])
-    cli.main()
+    try:
+        cli.main()
+    except SystemExit as exit_info:
+        # run/resume/doctor/validate-models report their outcome as the exit status.
+        assert args[0] in {"run", "resume", "doctor", "validate-models", "approve", "deny"}, exit_info
+        if args[0] == "run":
+            assert exit_info.code == 0  # the fake run completed
     return capsys.readouterr().out
 
 

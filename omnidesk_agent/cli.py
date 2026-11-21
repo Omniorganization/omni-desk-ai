@@ -12,10 +12,17 @@ import uvicorn
 from omnidesk_agent.config import AppConfig, load_config
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.daemon import OmniDeskRuntime
+from omnidesk_agent.models.provider_errors import safe_error_text
 from omnidesk_agent.observability.access_log import uvicorn_log_config
 from omnidesk_agent.server import create_app
 from omnidesk_agent.storage.sqlite import close_all_open_connections
-from omnidesk_agent.validation.production import assert_production_config_safe, validate_production_config
+from omnidesk_agent.validation.production import assert_production_config_safe, is_production_mode, validate_production_config
+
+# `omnidesk run` / `omnidesk resume` exit codes.
+EXIT_COMPLETED = 0
+EXIT_FAILED = 1
+EXIT_WAITING_APPROVAL = 3
+_WAITING_STATUSES = {"waiting_approval", "approval_pending"}
 
 
 _PRODUCTION_ISSUE_CATEGORY_MARKERS = (
@@ -83,6 +90,48 @@ def _production_check_output(cfg: AppConfig, result: dict) -> dict:
     }
 
 
+def run_exit_code(result: dict) -> int:
+    """0 completed, 3 waiting for an approval (resume later), 1 anything else."""
+    status = str(result.get("status") or "")
+    if status == "completed":
+        return EXIT_COMPLETED
+    if status in _WAITING_STATUSES:
+        return EXIT_WAITING_APPROVAL
+    return EXIT_FAILED
+
+
+def _print_run(call) -> int:
+    try:
+        result = asyncio.run(call())
+    except Exception as exc:
+        # An expected failure (no model key, refused task) is a result, not a traceback.
+        result = {"status": "error", "error": f"{type(exc).__name__}: {safe_error_text(exc)}"}
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return run_exit_code(result)
+
+
+def decide_approval(cfg: AppConfig, rt: OmniDeskRuntime, approval_id: str, *, approve: bool, reason: str = "") -> dict:
+    """Approve or deny a pending approval as the local operator.
+
+    Approving is refused for critical actions (they need two different owners,
+    POST /approvals/{id}/dual-approve) and in production, where decisions go
+    through the authenticated approval API. Denying is always allowed.
+    """
+    approval = rt.approval_store.get(approval_id)
+    if approval is None:
+        return {"ok": False, "status": "not_found", "approval_id": approval_id}
+    proposal = approval.get("proposal") or {}
+    if approve and is_production_mode(cfg):
+        return {"ok": False, "status": "refused", "approval_id": approval_id, "error": "in production, approve through the authenticated API: POST /approvals/{id}/approve"}
+    if approve and proposal.get("requires_dual_approval"):
+        return {"ok": False, "status": "refused", "approval_id": approval_id, "error": "critical actions need two different owners: POST /approvals/{id}/dual-approve"}
+    try:
+        decided = rt.approval_store.decide(approval_id, "approved" if approve else "denied", {"decided_by": "local-cli", "reason": reason})
+    except (KeyError, PermissionError) as exc:
+        return {"ok": False, "status": "refused", "approval_id": approval_id, "error": str(exc)}
+    return {"ok": True, "status": decided["status"], "approval_id": approval_id, "proposal": proposal}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="omnidesk")
     parser.add_argument("--config", default="~/.omnidesk/config.yaml")
@@ -137,8 +186,17 @@ def main() -> None:
     fb_p.add_argument("--reason", default="")
     eval_p = sub.add_parser("upgrade-evaluate")
     eval_p.add_argument("proposal_id")
-    run_p = sub.add_parser("run")
+    run_p = sub.add_parser("run", help="run a task; exit 0 completed, 3 waiting for approval, 1 failed")
     run_p.add_argument("message")
+    approve_p = sub.add_parser("approve", help="approve a pending approval as the local operator")
+    approve_p.add_argument("approval_id")
+    approve_p.add_argument("--reason", default="")
+    deny_p = sub.add_parser("deny", help="deny a pending approval")
+    deny_p.add_argument("approval_id")
+    deny_p.add_argument("--reason", default="")
+    resume_p = sub.add_parser("resume", help="resume a run after its approval was decided; exit codes as for run")
+    resume_p.add_argument("run_id")
+    resume_p.add_argument("--token", required=True, help="the resume_token printed when the run paused")
     remember_p = sub.add_parser("remember")
     remember_p.add_argument("text")
     remember_p.add_argument("--tags", default="")
@@ -158,7 +216,10 @@ def main() -> None:
     if args.cmd == "doctor":
         from omnidesk_agent.onboarding import run_doctor
 
-        print(json.dumps(run_doctor(cfg, profile=args.profile, fix=args.fix, root=Path.cwd()).to_dict(), ensure_ascii=False, indent=2))
+        report = run_doctor(cfg, profile=args.profile, fix=args.fix, root=Path.cwd())
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        if not report.ok:
+            raise SystemExit(1)
         return
 
     if args.cmd == "onboard":
@@ -207,7 +268,10 @@ def main() -> None:
     if args.cmd == "validate-models":
         from omnidesk_agent.validation.models import validate_models
         with runtime_context(cfg) as rt:
-            print(json.dumps(validate_models(rt), ensure_ascii=False, indent=2))
+            result = validate_models(rt)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result["ok"]:
+            raise SystemExit(1)
         return
 
     if args.cmd == "validate-models-live":
@@ -283,8 +347,19 @@ def main() -> None:
     if args.cmd == "run":
         with runtime_context(cfg) as rt:
             msg = ChannelMessage(channel="local-cli", sender_id="owner", text=args.message)
-            print(json.dumps(asyncio.run(rt.orchestrator.handle_message(msg)), ensure_ascii=False, indent=2))
-        return
+            code = _print_run(lambda: rt.orchestrator.handle_message(msg))
+        raise SystemExit(code)
+
+    if args.cmd in {"approve", "deny"}:
+        with runtime_context(cfg) as rt:
+            decision = decide_approval(cfg, rt, args.approval_id, approve=args.cmd == "approve", reason=args.reason)
+            print(json.dumps(decision, ensure_ascii=False, indent=2, default=str))
+        raise SystemExit(0 if decision["ok"] else 1)
+
+    if args.cmd == "resume":
+        with runtime_context(cfg) as rt:
+            code = _print_run(lambda: rt.orchestrator.resume(args.run_id, resume_token=args.token))
+        raise SystemExit(code)
 
     if args.cmd == "remember":
         with runtime_context(cfg) as rt:

@@ -70,7 +70,7 @@ models:
     gemini: {enabled: false, provider: gemini, model: gemini-2.5-pro, api_key_env: GEMINI_API_KEY, max_output_tokens: 4000}
     cohere: {enabled: false, provider: cohere, model: command-a-03-2025, api_key_env: COHERE_API_KEY, max_output_tokens: 1600}
     baidu_qianfan: {enabled: false, provider: baidu_qianfan, model: ernie-4.0-turbo-8k, api_key_env: BAIDU_QIANFAN_ACCESS_TOKEN, base_url: https://qianfan.baidubce.com/v2}
-    bedrock_claude: {enabled: false, provider: bedrock, model: 'anthropic.claude-3-5-sonnet-20240620-v1:0', region: us-east-1, max_output_tokens: 4000}
+    bedrock_claude: {enabled: false, provider: bedrock, model: 'anthropic.claude-3-5-sonnet-20240620-v1:0', region: us-east-1, api_key_env: null, max_output_tokens: 4000}
 
 updates:
   enabled: true
