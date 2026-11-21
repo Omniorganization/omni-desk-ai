@@ -101,7 +101,11 @@ class PermissionManager:
             raise PermissionError("Permission required but no TTY available")
 
         print("\nPermission request:")
-        print(json.dumps(proposal_dict, ensure_ascii=False, indent=2))
+        # Credentials are masked, content is kept: the person at the terminal must
+        # see what they approve, but a password in a URL or a token in a note
+        # should not land in the scrollback or a recorded session.
+        shown = {**proposal_dict, "args": redact_secret_values(proposal_dict.get("args") or {})}
+        print(json.dumps(shown, ensure_ascii=False, indent=2))
         ans = input("Allow? [y]es / [n]o / [s]ession / [d]ry-run: ").strip().lower()
         if ans in {"y", "yes"}:
             self._audit("allowed_interactive", proposal_dict)

@@ -23,11 +23,13 @@ What the code enforces today:
   - secret-named keys are dropped;
   - self-identifying credentials inside strings are redacted: private keys, GitHub, Slack, AWS, Stripe and `sk-` keys, Google keys and OAuth tokens, JWTs, URL passwords and secret query values, long bearer tokens;
   - content bound by a digest (`x` next to `x_sha256`: typed text, file bodies, messages, plugin arguments) is withheld; the digest and the approval record identify it.
+  - **Known limit.** The digests (`x_sha256`) and the scope hash are unkeyed SHA-256. For low-entropy content, such as a password the agent types, someone who can read the audit log or the approval records can test guesses offline. Follow-up (agent-core, `tools/base.py`): key both digests with a server secret derived from the audit key.
+- **Terminal approval prompt** (interactive CLI) shows the proposal with those credentials masked and the content kept: the person at the terminal sees what they approve, but a URL password or a token in a note does not land in the scrollback.
 - **Approval records** and the run's copy of a pending proposal keep the content the approver judges, with those credentials redacted. Identities such as `token:OMNIDESK_OWNER_TOKEN` are never redacted, because they drive the requester-cannot-approve rule. Execution binding is unaffected: it uses the scope hash computed over the unredacted arguments.
 - **API resource guard:**
   - exactly `GET`/`HEAD /health` is never rate limited and takes no concurrency slot, so liveness keeps answering under load or while the rate-limit store is down; `/ready` stays gated, so a saturated or store-less pod leaves the load balancer;
   - every other route fails closed when the store fails;
-  - the PostgreSQL limiter keeps one connection per worker thread, reconnects once, prunes expired windows every 5 minutes, and runs off the event loop.
+  - the PostgreSQL limiter takes connections from a bounded pool (4 by default), each with a 2 s statement timeout and a 1 s lock timeout, runs its checks on its own workers off the event loop, replaces a broken connection once, and prunes expired windows in the background in batches.
 - **`omnidesk validate-webhook-signatures`** runs the live `WebhookGuard` path for every enabled inbound channel. It exits 1 in any of these cases:
   - signatures are not enforced;
   - a configured secret variable is unset;

@@ -113,3 +113,20 @@ def test_known_credential_formats_are_redacted(secret):
 ])
 def test_identities_digests_and_ordinary_text_are_kept(ordinary):
     assert redact_secret_values(ordinary) == ordinary
+
+
+def test_the_terminal_prompt_masks_credentials_but_shows_the_content(tmp_path, monkeypatch, capsys):
+    # The interactive approval prompt printed the raw proposal, so a password in a
+    # URL or a token in a note reached the terminal's scrollback. CodeQL flagged it.
+    pm = PermissionManager(PermissionConfig(audit_log=tmp_path / "audit.log"))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    url = f"https://admin:{TYPED_PASSWORD.replace(' ', '')}@example.org/"
+
+    with pytest.raises(PermissionError):
+        pm.verify({"tool": "browser", "action": "navigate", "risk": "high", "source": "local-cli", "actor": "owner",
+                   "args": {"url": url, "note": f"use {GITHUB_TOKEN}", "text": "please file the report"}})
+
+    shown = capsys.readouterr().out
+    assert TYPED_PASSWORD.replace(" ", "") not in shown and GITHUB_TOKEN not in shown
+    assert "please file the report" in shown and "example.org" in shown  # what is approved stays visible
