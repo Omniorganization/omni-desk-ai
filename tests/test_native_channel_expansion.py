@@ -129,5 +129,7 @@ def test_google_chat_never_posts_to_caller_chosen_urls(monkeypatch):
     monkeypatch.setenv(GoogleChatConfig().incoming_webhook_url_env, "https://chat.googleapis.com/v1/spaces/CFG/messages")
     configured = GoogleChatChannel(GoogleChatConfig())
     configured.http = Http()
-    asyncio.run(configured.send_text("anything", "hi", webhook_url="https://attacker.example"))
+    with pytest.raises(PermissionError):
+        asyncio.run(configured.send_text("anything", "hi", webhook_url="https://attacker.example"))
+    asyncio.run(configured.send_text("spaces/CFG", "hi", webhook_url="https://attacker.example"))
     assert posted[-1] == "https://chat.googleapis.com/v1/spaces/CFG/messages"

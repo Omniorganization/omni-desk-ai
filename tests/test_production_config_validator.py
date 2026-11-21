@@ -412,3 +412,27 @@ def test_production_config_requires_channel_allowlists_and_narrow_ui_bridge():
         "channels.ui_bridge.allowed_apps must not include browser apps" in issue
         for issue in result["issues"]
     )
+
+
+def test_production_dingtalk_requires_a_conversation_allowlist():
+    # DingTalk was missing from the allowlist map, so a production DingTalk
+    # channel accepted every conversation that could reach the robot.
+    from omnidesk_agent.validation.production import CHANNEL_ALLOWLIST_FIELDS
+
+    cfg = AppConfig()
+    cfg.channels.dingtalk.enabled = True
+    issues = validate_production_config(cfg, {"OMNIDESK_ENV": "production"})["issues"]
+    assert "channels.dingtalk must configure at least one production allowlist: allowed_conversation_ids" in issues
+
+    cfg.channels.dingtalk.allowed_conversation_ids = ["cidGROUP=="]
+    issues = validate_production_config(cfg, {"OMNIDESK_ENV": "production"})["issues"]
+    assert not any(issue.startswith("channels.dingtalk must configure") for issue in issues)
+
+    # Every inbound channel with a sender/conversation allowlist is covered.
+    not_inbound_allowlists = {"allowed_apps", "allowed_origins", "allowed_outbound_spaces"}
+    for name in type(cfg.channels).model_fields:
+        if name in {"gmail", "chrome", "ui_bridge"}:
+            continue
+        fields = type(getattr(cfg.channels, name)).model_fields
+        if any(field.startswith("allowed_") and field not in not_inbound_allowlists for field in fields):
+            assert name in CHANNEL_ALLOWLIST_FIELDS, name

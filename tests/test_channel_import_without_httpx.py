@@ -14,9 +14,11 @@ def test_channel_envelope_import_without_httpx(monkeypatch):
             raise ModuleNotFoundError("No module named 'httpx'")
         return real_import(name, *args, **kwargs)
 
+    # monkeypatch puts the original modules back afterwards, so later tests
+    # keep using the same class objects their adapters were imported with.
     for name in list(sys.modules):
         if name.startswith("omnidesk_agent.channels") or name == "httpx":
-            sys.modules.pop(name, None)
+            monkeypatch.delitem(sys.modules, name, raising=False)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 

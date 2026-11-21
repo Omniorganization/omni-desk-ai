@@ -12,6 +12,8 @@ from uuid import uuid4
 from omnidesk_agent.channels.base import WebhookEnvelope
 from omnidesk_agent.channels.channel_auth import CertFetcher, GoogleChatJwtVerifier, bearer_token, google_chat_requires_jwt, secret_equals
 from omnidesk_agent.channels.http_client import ChannelHttpClient
+from omnidesk_agent.channels.idempotency import provider_retry_key
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success
 from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
 from omnidesk_agent.config import (
     DiscordConfig,
@@ -120,9 +122,8 @@ class SlackChannel:
         if kwargs.get("thread_ts"):
             body["thread_ts"] = kwargs["thread_ts"]
         result = await self.http.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {token}", **_JSON_HEADERS}, json=body, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
-        data = result.data or {}
-        if data and data.get("ok") is False:
-            raise RuntimeError(f"Slack API error: {data.get('error')}")
+        ensure_provider_success(self.name, result)
+        data = result.data if isinstance(result.data, dict) else {}
         return {"message_id": data.get("ts"), "request_id": result.request_id}
 
 
@@ -190,8 +191,16 @@ class DiscordChannel:
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
         token = self.bot_token or _require_env(self.cfg.bot_token_env, channel=self.name)
         url = f"https://discord.com/api/v10/channels/{recipient}/messages"
-        result = await self.http.post(url, headers={"Authorization": f"Bot {token}", **_JSON_HEADERS}, json={"content": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
-        data = result.data or {}
+        body: dict[str, Any] = {"content": text}
+        idempotency_key = kwargs.get("idempotency_key")
+        if idempotency_key:
+            # With enforce_nonce Discord returns the message already created
+            # with this nonce (for a few minutes) instead of posting again, so
+            # the transport may repeat this request; the outbox may not.
+            body["nonce"] = provider_retry_key(str(idempotency_key)).replace("-", "")[:25]
+            body["enforce_nonce"] = True
+        result = await self.http.post(url, headers={"Authorization": f"Bot {token}", **_JSON_HEADERS}, json=body, idempotency_key=idempotency_key, channel=self.name, idempotent=bool(idempotency_key))
+        data = result.data if isinstance(result.data, dict) else {}
         return {"message_id": data.get("id"), "request_id": result.request_id}
 
 
@@ -281,13 +290,24 @@ class GoogleChatChannel:
         # Never post to a caller-chosen URL (kwargs or an LLM-chosen recipient):
         # use the operator-configured webhook, or a recipient that is itself a
         # Google Chat incoming-webhook URL for an allowlisted space.
-        url = self.incoming_webhook_url or str(recipient or "")
-        if not url.startswith("https://"):
-            raise RuntimeError("Google Chat incoming webhook URL is missing")
-        if not self.incoming_webhook_url and google_chat_webhook_space(url) not in self.allowed_outbound_spaces:
-            raise PermissionError("Google Chat space is not in channels.google_chat.allowed_outbound_spaces")
+        recipient = str(recipient or "")
+        if self.incoming_webhook_url:
+            # The approver saw ``recipient``; with a configured webhook the
+            # message lands in that webhook's space, so the recipient has to
+            # name that space (or be the webhook URL itself).
+            configured_space = google_chat_webhook_space(self.incoming_webhook_url)
+            named = recipient if recipient.startswith("spaces/") else (google_chat_webhook_space(recipient) if recipient.startswith("https://") else "")
+            if named != configured_space:
+                raise before_send(PermissionError(f"Google Chat recipient must be {configured_space}, the space of GOOGLE_CHAT_WEBHOOK_URL"), "bad_request")
+            url = self.incoming_webhook_url
+        else:
+            url = recipient
+            if not url.startswith("https://"):
+                raise before_send(RuntimeError("Google Chat incoming webhook URL is missing"), "config_error")
+            if google_chat_webhook_space(url) not in self.allowed_outbound_spaces:
+                raise before_send(PermissionError("Google Chat space is not in channels.google_chat.allowed_outbound_spaces"), "bad_request")
         result = await self.http.post(str(url), json={"text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
-        data = result.data or {}
+        data = result.data if isinstance(result.data, dict) else {}
         return {"message_id": data.get("name"), "request_id": result.request_id}
 
 
