@@ -260,39 +260,23 @@ function App() {
     }
   }
 
-  async function claim() {
+  /** Claims, executes and reports one task now, through the same path as the auto worker. */
+  async function runNextTask() {
     setError('');
     try {
-      const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
-      setDeviceIdentity(identity);
-      const client = confirmedClient(identity);
-      const result = await client.claimTask(identity.deviceId, CAPABILITIES, 60);
-      setClaimedTask(result.task || null);
-      if (result.task) {
-        await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, result.task.task_id);
-      }
-      setSnapshot(await client.bootstrap());
+      if (!confirmedGateway) throw new Error(NOT_CONNECTED_MESSAGE);
+      if (draftState === 'pending') throw new Error(PENDING_ACTION_MESSAGE);
+      const ran = await runSafeWorkerCycle(confirmedGateway);
+      if (!ran) setWorkerLog(items => [`${new Date().toISOString()} no task to run`, ...items].slice(0, 20));
     } catch (e: any) {
       setError(e.message || String(e));
     }
   }
 
-  async function complete(status: 'completed' | 'failed') {
-    if (!claimedTask?.task_id) return;
-    setError('');
-    try {
-      const client = confirmedClient();
-      await client.updateTaskStatus(claimedTask.task_id, status, status === 'completed' ? 'Completed by Omni Desktop Runtime' : 'Failed by Omni Desktop Runtime', deviceIdentity?.deviceId);
-      setWorkerLog(items => [`${new Date().toISOString()} ${status}: ${claimedTask.task_id}`, ...items].slice(0, 20));
-      setClaimedTask(null);
-      setSnapshot(await client.bootstrap());
-    } catch (e: any) {
-      setError(e.message || String(e));
-    }
-  }
-
-  async function runSafeWorkerCycle(gateway: GatewayTarget) {
-    if (workerBusy.current) return;
+  /** One claim → execute → report cycle; returns whether a task was claimed. A
+   * task is reported "completed" only when its approved action actually ran. */
+  async function runSafeWorkerCycle(gateway: GatewayTarget): Promise<boolean> {
+    if (workerBusy.current) return false;
     workerBusy.current = true;
     try {
     const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
@@ -304,17 +288,18 @@ function App() {
     const task = result.task || null;
     if (!task) {
       await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES);
-      return;
+      return false;
     }
     if (isCurrent()) setClaimedTask(task);
     await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, task.task_id);
     const execution = await executeRuntimeTask(task);
-    await client.updateTaskStatus(task.task_id, execution.status, execution.summary, identity.deviceId);
+    await client.updateTaskStatus(task.task_id, execution.status, execution.summary, identity.deviceId, undefined, execution.result);
     setWorkerLog(items => [`${new Date().toISOString()} ${execution.status}: ${execution.summary}`, ...items].slice(0, 20));
-    if (!isCurrent()) return;
+    if (!isCurrent()) return true;
     setClaimedTask(null);
     const latest = await client.bootstrap();
     if (isCurrent()) setSnapshot(latest);
+    return true;
     } finally {
       workerBusy.current = false;
     }
@@ -445,7 +430,7 @@ function App() {
     </aside>
 
     <section className="desktop-workspace">
-      <header className="topbar"><button type="button" className="workspace-switcher">▣ {activeProjectName} ⌄</button><button type="button" onClick={connect}>▦ 连接 Gateway</button><button type="button" onClick={claim}>Claim Task</button><label className="worker-toggle"><input type="checkbox" checked={autoWorkerEnabled} onChange={e => setAutoWorkerEnabled(e.target.checked)} /> 自动 Worker</label></header>
+      <header className="topbar"><button type="button" className="workspace-switcher">▣ {activeProjectName} ⌄</button><button type="button" onClick={connect}>▦ 连接 Gateway</button><button type="button" onClick={() => void runNextTask()}>执行下一个任务</button><label className="worker-toggle"><input type="checkbox" checked={autoWorkerEnabled} onChange={e => setAutoWorkerEnabled(e.target.checked)} /> 自动 Worker</label></header>
 
       <section className="hero">
         <div className="orb" />
@@ -468,7 +453,7 @@ function App() {
       </section>
 
       <section className="grid data-grid">
-        <div className="panel"><h2>Claimed Task</h2><pre>{JSON.stringify(claimedTask || {}, null, 2)}</pre><button disabled={!claimedTask} onClick={() => complete('completed')}>标记完成</button>{' '}<button disabled={!claimedTask} onClick={() => complete('failed')}>标记失败</button><h3>Worker log</h3><pre>{workerLog.join('\n')}</pre></div>
+        <div className="panel"><h2>Claimed Task</h2><p>任务只会执行其已审批的范围内动作；状态由执行结果上报，无法手动标记完成。</p><pre>{JSON.stringify(claimedTask ? { task_id: claimedTask.task_id, title: claimedTask.title, action: claimedTask.action || null } : {}, null, 2)}</pre><h3>Worker log</h3><pre>{workerLog.join('\n')}</pre></div>
         <div className="panel"><h2>最近对话</h2><pre>{JSON.stringify(chatMessages.slice(-6).map(message => ({ role: message.role, content: message.content, provider: message.model_provider, model: message.model_name, profile: message.model_profile, audit_trace_id: message.trace_id })), null, 2)}</pre></div>
         <div className="panel"><h2>Runtime</h2><pre>{JSON.stringify(snapshot?.runtime_status || [], null, 2)}</pre></div>
       </section>

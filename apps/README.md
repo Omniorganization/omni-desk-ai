@@ -2,7 +2,7 @@
 
 This folder contains the productized clients for OmniDesk 1.11:
 
-- `desktop-tauri/` — local Agent runner and runtime control shell.
+- `desktop-tauri/` — desktop client that executes approved, scoped workspace actions and reports their results.
 - `mobile-flutter/` — mobile approval, chat, notification, and task-status shell.
 - `web-admin-next/` — enterprise administration console for users, channels, approvals, audit, and runtime state.
 - `shared/` — API contract shared by all client surfaces.
@@ -13,7 +13,7 @@ All clients use the same Gateway API namespace: `/app/*`.
 
 | Client | Primary role | Capabilities |
 | --- | --- | --- |
-| Desktop App | execution endpoint | local runtime heartbeat, task execution status, local permissions |
+| Desktop App | execution endpoint for approved scoped actions | heartbeat, claiming tasks it can execute, reading files and listing directories in `~/OmniDesktopWorkspace`, reporting results |
 | Mobile App | mobile control endpoint | chat, approval, notifications, task status |
 | Web Admin | governance endpoint | user/device/channel/approval/audit/runtime management |
 

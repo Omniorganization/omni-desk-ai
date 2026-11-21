@@ -291,20 +291,24 @@ class OmniApiClient {
     }
   }
 
+  /// [action] makes the task executable by a desktop runtime: one scoped
+  /// action (see [desktopAction]) that the approval shows and binds.
   Future<Map<String, dynamic>> sendMessage(
     String conversationId,
     String content, {
     bool requiresDesktopRuntime = false,
     String risk = 'medium',
     String? idempotencyKey,
+    Map<String, dynamic>? action,
   }) =>
       _request(
         'POST',
         '/app/conversations/${_pathSegment(conversationId)}/messages',
         <String, dynamic>{
           'content': content,
-          'requires_desktop_runtime': requiresDesktopRuntime,
+          'requires_desktop_runtime': requiresDesktopRuntime || action != null,
           'risk': risk,
+          if (action != null) 'action': action,
         },
         idempotencyKey ?? 'mobile-message-$conversationId-${content.hashCode}',
       );
@@ -476,4 +480,27 @@ String _safeStreamError(int statusCode, String body) {
     // Keep mobile UI/log errors body-free even when the gateway returns text.
   }
   return 'Omni API request failed ($statusCode, $code)';
+}
+
+/// The desktop capabilities a task can request (the gateway validates the scope).
+const desktopCapabilities = <String>['workspace.read_file', 'workspace.list_directory'];
+
+/// One scoped desktop action: [relativePath] inside ~/OmniDesktopWorkspace.
+Map<String, dynamic> desktopAction(String capability, String relativePath) {
+  if (!desktopCapabilities.contains(capability)) {
+    throw ArgumentError.value(capability, 'capability', 'not a desktop capability');
+  }
+  final path = relativePath.trim();
+  return <String, dynamic>{
+    'capability': capability,
+    'scope': <String, dynamic>{'workspace': '.', 'relative_path': path.isEmpty ? '.' : path},
+  };
+}
+
+/// What an approval card shows for an executable task: the exact action.
+String describeApprovalAction(Map<String, dynamic> approval) {
+  final detail = approval['action_detail'];
+  if (detail is! Map || detail.isEmpty) return '';
+  final scope = detail['scope'] is Map ? detail['scope'] as Map : const <String, dynamic>{};
+  return 'Action: ${detail['capability']} → ${scope['workspace']}/${scope['relative_path']}';
 }

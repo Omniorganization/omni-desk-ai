@@ -237,11 +237,23 @@ fn approved_workspace_root() -> Result<PathBuf, String> {
 }
 
 fn safe_workspace(workspace: &str) -> Result<PathBuf, String> {
-    let requested = Path::new(workspace);
-    if !requested.is_absolute() {
-        return Err("workspace path must be absolute".to_string());
-    }
-    let metadata = fs::symlink_metadata(requested).map_err(|error| error.to_string())?;
+    workspace_under(&approved_workspace_root()?, workspace)
+}
+
+/// The workspace root a task names: a directory inside the approved root, given
+/// relative to it (as gateway task scopes are; "." is the root itself) or as an
+/// absolute path. Symlinks and escapes are refused either way.
+fn workspace_under(approved: &Path, workspace: &str) -> Result<PathBuf, String> {
+    let requested = if workspace == "." {
+        approved.to_path_buf()
+    } else if Path::new(workspace).is_absolute() {
+        PathBuf::from(workspace)
+    } else {
+        validate_relative_path(workspace)?;
+        reject_symlink_components(approved, Path::new(workspace))?;
+        approved.join(workspace)
+    };
+    let metadata = fs::symlink_metadata(&requested).map_err(|error| error.to_string())?;
     if metadata.file_type().is_symlink() {
         return Err("workspace root cannot be a symlink".to_string());
     }
@@ -251,8 +263,7 @@ fn safe_workspace(workspace: &str) -> Result<PathBuf, String> {
     let path = requested
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let approved = approved_workspace_root()?;
-    if !path.starts_with(&approved) {
+    if !path.starts_with(approved) {
         return Err("workspace must be inside ~/OmniDesktopWorkspace".to_string());
     }
     Ok(path)
@@ -350,7 +361,7 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        load_or_create_identity, readable_keychain_key, validate_relative_path,
+        load_or_create_identity, readable_keychain_key, validate_relative_path, workspace_under,
         writable_keychain_key, DEVICE_ID_KEY, DEVICE_PRIVATE_KEY_KEY, DEVICE_PUBLIC_KEY_KEY,
     };
     use std::cell::RefCell;
@@ -373,6 +384,44 @@ mod tests {
     fn rejects_control_and_oversized_paths() {
         assert!(validate_relative_path("bad\0path").is_err());
         assert!(validate_relative_path(&"a".repeat(1025)).is_err());
+    }
+
+    fn approved_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("omnidesk-ws-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("reports")).unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn task_workspaces_resolve_inside_the_approved_root() {
+        let root = approved_root("resolve");
+        assert_eq!(workspace_under(&root, ".").unwrap(), root);
+        assert_eq!(
+            workspace_under(&root, "reports").unwrap(),
+            root.join("reports")
+        );
+        let absolute = root.join("reports");
+        assert_eq!(
+            workspace_under(&root, absolute.to_str().unwrap()).unwrap(),
+            absolute
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn task_workspaces_cannot_escape_or_follow_symlinks() {
+        let root = approved_root("escape");
+        assert!(workspace_under(&root, "../").is_err());
+        assert!(workspace_under(&root, "reports/../..").is_err());
+        assert!(workspace_under(&root, "missing").is_err());
+        assert!(workspace_under(&root, std::env::temp_dir().to_str().unwrap()).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(std::env::temp_dir(), root.join("link")).unwrap();
+            assert!(workspace_under(&root, "link").is_err());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

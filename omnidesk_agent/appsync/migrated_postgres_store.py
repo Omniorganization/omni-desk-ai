@@ -67,6 +67,11 @@ from omnidesk_agent.appsync.store import (
     _verify_device_signature,
     authorize_task_status_change,
     check_enrollment_device,
+    describe_task_action,
+    normalize_task_action,
+    normalize_task_result,
+    task_action_hash,
+    task_view_for_actor,
     is_legacy_hmac_device_key,
     public_device_view,
     runtime_status_changed,
@@ -186,6 +191,7 @@ WITH candidate AS (
       AND t.status IN ('queued', 'running')
       AND (t.status = 'queued' OR t.lease_expires_at IS NULL OR t.lease_expires_at <= %(now)s)
       AND (t.approval_id IS NULL OR (t.status = 'queued' AND a.task_id = t.task_id AND a.status = 'approved'))
+      AND (t.capability IS NULL OR t.capability = ANY(%(capabilities)s))
     ORDER BY t.created_at ASC
     FOR UPDATE OF t SKIP LOCKED
     LIMIT 1
@@ -319,7 +325,7 @@ SELECT
     (SELECT COUNT(*) FROM omnidesk_appsync_sync_conflicts WHERE namespace = %(namespace)s AND status = 'open' AND (%(organization_id)s::text IS NULL OR organization_id = %(organization_id)s::text))
 """
 
-_JSON_COLUMNS = frozenset({"capabilities", "usage", "payload", "local_payload", "remote_payload"})
+_JSON_COLUMNS = frozenset({"capabilities", "usage", "payload", "local_payload", "remote_payload", "action", "result", "action_detail"})
 
 # How a resolution is recorded in SyncConflictRecord.strategy.
 RESOLUTION_STRATEGY: dict[str, Any] = {"keep_server": "server-wins", "apply_client": "client-wins", "merged": "merge"}
@@ -901,10 +907,8 @@ class MigratedMultiInstancePostgresAppSyncStore:
         return str(row[0]) if row else None
 
     def _task_for_actor(self, tx: _Tx, task: dict[str, Any], actor: Optional[str]) -> dict[str, Any]:
-        """Tasks are organization-wide work items; the conversation they came from is not."""
-        if actor and self._conversation_owner(tx, str(task.get("conversation_id") or "")) != actor:
-            return {key: value for key, value in task.items() if key != "conversation_id"}
-        return task
+        """Tasks are organization-wide work items; their conversation and result are not."""
+        return task_view_for_actor(task, actor=actor, conversation_owner=self._conversation_owner(tx, str(task.get("conversation_id") or "")))
 
     # ----------------------------------------------------------------- events
 
@@ -1627,6 +1631,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
         approval = ApprovalRecord(
             approval_id=_id("appr"), task_id=task.task_id, risk=risk, action=action, reason=reason, requested_by=actor,
             organization_id=self._normalize_org_id(task.organization_id), created_at=tx.now, expires_at=tx.now + 900,
+            action_detail=dict(task.action or {}), action_hash=task.action_hash,
         )
         self._insert(tx, APPROVALS, approval)
         self._event(tx, "approval.requested", actor, {"approval_id": approval.approval_id, "task_id": task.task_id, "risk": risk, "organization_id": approval.organization_id})
@@ -1634,7 +1639,11 @@ class MigratedMultiInstancePostgresAppSyncStore:
         self._notify(tx, audience="web_admin", title="High-risk action pending", body=reason, event_type="approval.requested", actor=actor, related_id=approval.approval_id)
         return approval
 
-    def add_message_and_task(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None, requires_desktop_runtime: bool = False, risk: str = "medium", idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def add_message_and_task(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None, requires_desktop_runtime: bool = False, risk: str = "medium", idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, action: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        executable = normalize_task_action(action) if action is not None else None
+        if executable is not None:
+            requires_desktop_runtime = True
+
         def body(tx: _Tx) -> dict[str, Any]:
             cached = self._idempotency_lookup(tx, actor=actor, endpoint="messages.create", key=idempotency_key, payload=idempotency_payload, lock=True)
             if cached is not None:
@@ -1646,6 +1655,8 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 task_id=task_id, conversation_id=conversation_id, title=(content or "Task")[:120], actor=actor,
                 organization_id=conversation.organization_id, status="queued", requires_desktop_runtime=bool(requires_desktop_runtime),
                 idempotency_key=idempotency_key, created_at=tx.now, updated_at=tx.now,
+                capability=executable["capability"] if executable else None, action=executable or {},
+                action_hash=task_action_hash(executable) if executable else None,
             )
             self._insert(tx, MESSAGES, message)
             self._insert(tx, TASKS, task)
@@ -1653,7 +1664,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
             self._event(tx, "task.created", actor, {"task_id": task_id, "conversation_id": conversation_id, "requires_desktop_runtime": requires_desktop_runtime, "organization_id": conversation.organization_id})
             approval: Optional[ApprovalRecord] = None
             if risk in {"high", "critical"} or requires_desktop_runtime:
-                approval = self._create_approval(tx, task=task, actor=actor, risk="high" if risk not in {"critical"} else "critical", action=task.title, reason="Desktop/runtime action requires cross-device approval")
+                approval = self._create_approval(tx, task=task, actor=actor, risk="high" if risk not in {"critical"} else "critical", action=describe_task_action(executable) if executable else task.title, reason="Desktop/runtime action requires cross-device approval")
                 task.status = "blocked"
                 task.approval_id = approval.approval_id
                 self._update(tx, TASKS, task)
@@ -1742,7 +1753,7 @@ class MigratedMultiInstancePostgresAppSyncStore:
         def body(tx: _Tx) -> Optional[dict[str, Any]]:
             self._ensure_user(tx, actor)
             organization_id = self._org_for_device(tx, device_id) or self._org_for_actor(tx, actor)
-            tx.cur.execute(CLAIM_NEXT_TASK, {"namespace": self.namespace, "organization_id": organization_id, "device_id": device_id, "now": tx.now, "lease_expires_at": tx.now + lease})
+            tx.cur.execute(CLAIM_NEXT_TASK, {"namespace": self.namespace, "organization_id": organization_id, "device_id": device_id, "now": tx.now, "lease_expires_at": tx.now + lease, "capabilities": list(capabilities or [])})
             row = tx.cur.fetchone()
             if not row:
                 return None
@@ -1782,8 +1793,11 @@ class MigratedMultiInstancePostgresAppSyncStore:
 
         return self._read(body)
 
-    def update_task_status(self, *, task_id: str, actor: str, status: TaskStatus, result_summary: Optional[str] = None, assigned_runtime_device_id: Optional[str] = None, device_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def update_task_status(self, *, task_id: str, actor: str, status: TaskStatus, result_summary: Optional[str] = None, assigned_runtime_device_id: Optional[str] = None, device_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Apply a status report; ``device_id`` is the device that authenticated the request."""
+        reported = normalize_task_result(result)
+        if reported and status not in {"completed", "failed"}:
+            raise ValueError("a result is reported only with completed or failed")
 
         def body(tx: _Tx) -> dict[str, Any]:
             cached = self._idempotency_lookup(tx, actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload, lock=True)
@@ -1800,6 +1814,8 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 normalize_org=self._normalize_org_id, now=tx.now,
             )
             AppSyncStore._apply_task_status(task, status=status, result_summary=result_summary, now=tx.now)
+            if reported:
+                task.result = reported
             self._update(tx, TASKS, task)
             self._event(tx, "task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.organization_id})
             if status in TERMINAL_TASK_STATUSES:

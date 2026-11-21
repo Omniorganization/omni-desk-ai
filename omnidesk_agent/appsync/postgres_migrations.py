@@ -9,7 +9,7 @@ from typing import Any, Iterable, Protocol, cast
 from omnidesk_agent.appsync.postgres_store import NORMALIZED_SCHEMA_SQL
 
 MIGRATION_TABLE = "omnidesk_appsync_schema_migrations"
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 
 class _Cursor(Protocol):
@@ -183,6 +183,20 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             "CREATE INDEX IF NOT EXISTS omnidesk_device_enrollments_created_idx ON omnidesk_appsync_device_enrollments(namespace, created_at)",
             "CREATE INDEX IF NOT EXISTS omnidesk_sync_conflicts_resolved_idx ON omnidesk_appsync_sync_conflicts(namespace, resolved_at)",
             "CREATE INDEX IF NOT EXISTS omnidesk_chat_requests_updated_idx ON omnidesk_appsync_chat_requests(namespace, updated_at)",
+        ),
+    ),
+    PostgresMigration(
+        7,
+        "executable_desktop_tasks",
+        (
+            # A task's scoped action, the hash its approval binds, and the result
+            # the runtime reported; the approval shows the action it authorizes.
+            "ALTER TABLE omnidesk_appsync_tasks ADD COLUMN IF NOT EXISTS capability TEXT",
+            "ALTER TABLE omnidesk_appsync_tasks ADD COLUMN IF NOT EXISTS action JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE omnidesk_appsync_tasks ADD COLUMN IF NOT EXISTS action_hash TEXT",
+            "ALTER TABLE omnidesk_appsync_tasks ADD COLUMN IF NOT EXISTS result JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE omnidesk_appsync_approvals ADD COLUMN IF NOT EXISTS action_detail JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE omnidesk_appsync_approvals ADD COLUMN IF NOT EXISTS action_hash TEXT",
         ),
     ),
 )

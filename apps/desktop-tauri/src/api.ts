@@ -34,11 +34,11 @@ export interface StreamChatOptions {
   onEvent?: (event: ChatStreamEvent) => void;
 }
 
-const EXECUTABLE_CAPABILITIES = new Set(['chat', 'local-runtime', 'shell_sandbox', 'dry_run']);
+// The gateway hands a device only tasks whose capability it advertises.
+const EXECUTABLE_CAPABILITIES = new Set(['chat', 'local-runtime', 'workspace.read_file', 'workspace.list_directory']);
 
 function normalizeCapabilities(capabilities: string[]): string[] {
-  const normalized = capabilities.map(capability => capability === 'sandbox' ? 'shell_sandbox' : capability);
-  return [...new Set(normalized.filter(capability => EXECUTABLE_CAPABILITIES.has(capability)))];
+  return [...new Set(capabilities.filter(capability => EXECUTABLE_CAPABILITIES.has(capability)))];
 }
 
 function gatewayError(status: number, body: string): Error {
@@ -248,8 +248,11 @@ export class OmniApiClient {
     return this.request<any>('/app/runtime/desktop/claim', { method: 'POST', body: JSON.stringify({ device_id: deviceId, capabilities: normalizeCapabilities(capabilities), lease_seconds: leaseSeconds }) });
   }
 
-  updateTaskStatus(taskId: string, status: TaskStatus, resultSummary?: string, assignedRuntimeDeviceId?: string, idempotencyKey?: string) {
-    return this.request<any>(`/app/tasks/${taskId}/status`, { method: 'POST', body: JSON.stringify({ status, result_summary: resultSummary, assigned_runtime_device_id: assignedRuntimeDeviceId }) }, idempotencyKey || `desktop-task-${taskId}-${status}-${Date.now()}`);
+  /** ``result`` is what the executed action produced; only completed or failed reports carry it. */
+  updateTaskStatus(taskId: string, status: TaskStatus, resultSummary?: string, assignedRuntimeDeviceId?: string, idempotencyKey?: string, result?: Record<string, unknown>) {
+    const body: Record<string, unknown> = { status, result_summary: resultSummary, assigned_runtime_device_id: assignedRuntimeDeviceId };
+    if (result) body.result = result;
+    return this.request<any>(`/app/tasks/${taskId}/status`, { method: 'POST', body: JSON.stringify(body) }, idempotencyKey || `desktop-task-${taskId}-${status}-${Date.now()}`);
   }
 
   registerPushToken(deviceId: string, pushToken: string, platform = 'desktop') {

@@ -305,6 +305,13 @@ class TaskRecord:
     attempt_count: int = 0
     created_at: float = field(default_factory=_now)
     updated_at: float = field(default_factory=_now)
+    # An executable task carries one scoped action (see normalize_task_action);
+    # its approval binds action_hash, and the desktop refuses a mismatch.
+    capability: Optional[str] = None
+    action: dict[str, Any] = field(default_factory=dict)
+    action_hash: Optional[str] = None
+    # What the runtime reported back, bounded; only the task's creator sees it.
+    result: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -323,6 +330,9 @@ class ApprovalRecord:
     created_at: float = field(default_factory=_now)
     decided_at: Optional[float] = None
     expires_at: Optional[float] = None
+    # The exact action an approval authorizes, for executable tasks.
+    action_detail: dict[str, Any] = field(default_factory=dict)
+    action_hash: Optional[str] = None
 
 
 @dataclass
@@ -457,6 +467,93 @@ class SyncConflictRecord:
     remote_payload: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=_now)
     resolved_at: Optional[float] = None
+
+
+# Actions a desktop runtime may execute for an approved task. Each reads inside
+# the desktop's approved workspace (~/OmniDesktopWorkspace) and nothing else;
+# no capability writes, runs commands or reaches the network.
+EXECUTABLE_CAPABILITIES = frozenset({"workspace.read_file", "workspace.list_directory"})
+# Largest result a runtime may report for one task (JSON-encoded).
+TASK_RESULT_MAX_BYTES = 64 * 1024
+
+
+def _scoped_relative_path(value: Any, *, field_name: str, allow_root: bool) -> str:
+    text = str(value if value is not None else "").strip()
+    if allow_root and text in {"", "."}:
+        return "."
+    if not text or len(text) > 1024 or any(ord(ch) < 32 for ch in text) or "\\" in text:
+        raise ValueError(f"{field_name} must be 1-1024 printable characters without backslashes")
+    parts = text.split("/")
+    if text.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"{field_name} must be a relative path inside the workspace, without '.', '..' or empty parts")
+    return text
+
+
+def normalize_task_action(action: Any) -> dict[str, Any]:
+    """Validate an executable action and return its canonical form.
+
+    ``{"capability": "workspace.read_file" | "workspace.list_directory",
+    "scope": {"workspace": "<dir under the desktop workspace, default '.'>",
+    "relative_path": "<path inside it>"}}``. Unknown keys are rejected so an
+    approval can never authorize more than what it displays.
+    """
+    if not isinstance(action, dict):
+        raise ValueError("action must be an object")
+    unknown = set(action) - {"capability", "scope"}
+    if unknown:
+        raise ValueError(f"unknown action fields: {sorted(unknown)}")
+    capability = str(action.get("capability") or "")
+    if capability not in EXECUTABLE_CAPABILITIES:
+        raise ValueError(f"capability must be one of {sorted(EXECUTABLE_CAPABILITIES)}")
+    scope = action.get("scope")
+    if not isinstance(scope, dict):
+        raise ValueError("action scope must be an object")
+    unknown = set(scope) - {"workspace", "relative_path"}
+    if unknown:
+        raise ValueError(f"unknown scope fields: {sorted(unknown)}")
+    return {
+        "capability": capability,
+        "scope": {
+            "workspace": _scoped_relative_path(scope.get("workspace"), field_name="scope.workspace", allow_root=True),
+            "relative_path": _scoped_relative_path(scope.get("relative_path"), field_name="scope.relative_path", allow_root=capability == "workspace.list_directory"),
+        },
+    }
+
+
+def task_action_hash(action: dict[str, Any]) -> str:
+    """SHA-256 of the canonical action (sorted keys, compact): what an approval binds."""
+    canonical = json.dumps(action, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def describe_task_action(action: dict[str, Any]) -> str:
+    """The sentence an approver reads: exactly what will run, and where."""
+    scope = action.get("scope") or {}
+    workspace = str(scope.get("workspace") or ".")
+    where = str(scope.get("relative_path")) if workspace == "." else f"{workspace}/{scope.get('relative_path')}"
+    verb = "Read the file" if action.get("capability") == "workspace.read_file" else "List the directory"
+    return f"{verb} {where} in ~/OmniDesktopWorkspace on the desktop that claims it"[:300]
+
+
+def normalize_task_result(result: Any) -> dict[str, Any]:
+    if result in (None, {}):
+        return {}
+    if not isinstance(result, dict):
+        raise ValueError("result must be an object")
+    encoded = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > TASK_RESULT_MAX_BYTES:
+        raise ValueError(f"result must be at most {TASK_RESULT_MAX_BYTES} bytes as JSON")
+    return json.loads(encoded)
+
+
+def task_view_for_actor(task: dict[str, Any], *, actor: Optional[str], conversation_owner: Optional[str]) -> dict[str, Any]:
+    """Tasks are organization-wide work items; their conversation and their result are not."""
+    hidden: set[str] = set()
+    if actor and conversation_owner != actor:
+        hidden.add("conversation_id")
+    if actor and task.get("actor") != actor:
+        hidden.add("result")
+    return {key: value for key, value in task.items() if key not in hidden} if hidden else task
 
 
 def authorize_task_status_change(
@@ -1362,9 +1459,7 @@ class AppSyncStore:
 
     def _task_for_actor(self, task: dict[str, Any], actor: Optional[str]) -> dict[str, Any]:
         """Tasks are organization-wide work items; the conversation they came from is not."""
-        if actor and self._conversation_owner(str(task.get("conversation_id") or "")) != actor:
-            return {key: value for key, value in task.items() if key != "conversation_id"}
-        return task
+        return task_view_for_actor(task, actor=actor, conversation_owner=self._conversation_owner(str(task.get("conversation_id") or "")))
 
     def add_chat_user_message(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
@@ -1404,7 +1499,12 @@ class AppSyncStore:
             self._persist()
             return self._record(message)
 
-    def add_message_and_task(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None, requires_desktop_runtime: bool = False, risk: str = "medium", idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def add_message_and_task(self, *, actor: str, conversation_id: str, content: str, source_device_id: Optional[str] = None, requires_desktop_runtime: bool = False, risk: str = "medium", idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, action: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """``action`` makes the task executable by a desktop runtime: it is
+        validated, needs an approval, and that approval binds its hash."""
+        executable = normalize_task_action(action) if action is not None else None
+        if executable is not None:
+            requires_desktop_runtime = True
         with self._lock:
             cached = self._idempotency_get(actor=actor, endpoint="messages.create", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
@@ -1422,13 +1522,16 @@ class AppSyncStore:
                 status="queued",
                 requires_desktop_runtime=bool(requires_desktop_runtime),
                 idempotency_key=idempotency_key,
+                capability=executable["capability"] if executable else None,
+                action=executable or {},
+                action_hash=task_action_hash(executable) if executable else None,
             )
             self.messages[mid] = message
             self.tasks[task_id] = task
             self._event("message.created", actor, {"message_id": mid, "conversation_id": conversation_id, "task_id": task_id, "organization_id": conversation.organization_id})
             self._event("task.created", actor, {"task_id": task_id, "conversation_id": conversation_id, "requires_desktop_runtime": requires_desktop_runtime, "organization_id": conversation.organization_id})
             if risk in {"high", "critical"} or requires_desktop_runtime:
-                approval = self.create_approval_locked(task_id=task_id, actor=actor, risk="high" if risk not in {"critical"} else "critical", action=task.title, reason="Desktop/runtime action requires cross-device approval")
+                approval = self.create_approval_locked(task_id=task_id, actor=actor, risk="high" if risk not in {"critical"} else "critical", action=describe_task_action(executable) if executable else task.title, reason="Desktop/runtime action requires cross-device approval", action_detail=executable, action_hash=task.action_hash)
                 task.status = "blocked"
                 task.approval_id = approval["approval_id"]
             result = {"message": self._record(message), "task": self._record(task), "approval": self._record(self.approvals[task.approval_id]) if task.approval_id else None}
@@ -1436,11 +1539,11 @@ class AppSyncStore:
             self._persist()
             return result
 
-    def create_approval_locked(self, *, task_id: str, actor: str, risk: Literal["low", "medium", "high", "critical"], action: str, reason: str) -> dict[str, Any]:
+    def create_approval_locked(self, *, task_id: str, actor: str, risk: Literal["low", "medium", "high", "critical"], action: str, reason: str, action_detail: Optional[dict[str, Any]] = None, action_hash: Optional[str] = None) -> dict[str, Any]:
         task = self.tasks.get(task_id)
         organization_id = self._normalize_org_id(task.organization_id if task else self._organization_for_actor(actor))
         approval_id = _id("appr")
-        approval = ApprovalRecord(approval_id=approval_id, task_id=task_id, risk=risk, action=action, reason=reason, requested_by=actor, organization_id=organization_id, expires_at=_now() + 900)
+        approval = ApprovalRecord(approval_id=approval_id, task_id=task_id, risk=risk, action=action, reason=reason, requested_by=actor, organization_id=organization_id, expires_at=_now() + 900, action_detail=dict(action_detail or {}), action_hash=action_hash)
         self.approvals[approval_id] = approval
         self._event("approval.requested", actor, {"approval_id": approval_id, "task_id": task_id, "risk": risk, "organization_id": organization_id})
         self._notify_locked(audience="mobile", title="Omni approval required", body=action[:180], event_type="approval.requested", actor=actor, related_id=approval_id)
@@ -1513,10 +1616,14 @@ class AppSyncStore:
         with self._lock:
             self.ensure_user(actor)
             organization_id = self._organization_for_device(device_id) if device_id in self.devices else self._organization_for_actor(actor)
+            offered = set(capabilities or [])
             for task in sorted(self.tasks.values(), key=lambda item: item.created_at):
                 if self._normalize_org_id(task.organization_id) != organization_id:
                     continue
                 if not task.requires_desktop_runtime:
+                    continue
+                if task.capability and task.capability not in offered:
+                    # Handed only to a runtime that says it can execute it.
                     continue
                 if task.status not in {"queued", "running"}:
                     continue
@@ -1584,8 +1691,11 @@ class AppSyncStore:
         elif status in TERMINAL_TASK_STATUSES:
             task.lease_expires_at = None
 
-    def update_task_status(self, *, task_id: str, actor: str, status: TaskStatus, result_summary: Optional[str] = None, assigned_runtime_device_id: Optional[str] = None, device_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def update_task_status(self, *, task_id: str, actor: str, status: TaskStatus, result_summary: Optional[str] = None, assigned_runtime_device_id: Optional[str] = None, device_id: Optional[str] = None, idempotency_key: Optional[str] = None, idempotency_payload: dict[str, Any] | None = None, result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Apply a status report; ``device_id`` is the device that authenticated the request."""
+        reported = normalize_task_result(result)
+        if reported and status not in {"completed", "failed"}:
+            raise ValueError("a result is reported only with completed or failed")
         with self._lock:
             cached = self._idempotency_get(actor=actor, endpoint="tasks.status", key=idempotency_key, payload=idempotency_payload)
             if cached is not None:
@@ -1595,6 +1705,8 @@ class AppSyncStore:
                 raise KeyError("task not found")
             self._authorize_task_status_change_locked(task, actor=actor, status=status, device_id=device_id, assigned_runtime_device_id=assigned_runtime_device_id)
             self._apply_task_status(task, status=status, result_summary=result_summary, now=_now())
+            if reported:
+                task.result = reported
             self._event("task.status", actor, {"task_id": task_id, "status": status, "organization_id": task.organization_id})
             if status in TERMINAL_TASK_STATUSES:
                 self._notify_locked(audience="all", title=f"Task {status}", body=task.title[:180], event_type="task.status", actor=actor, related_id=task_id)
