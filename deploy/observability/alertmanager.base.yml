@@ -1,0 +1,30 @@
+# Alertmanager routing for OmniDesk. The receiver is rendered by
+# scripts/render_alertmanager_config.py: a Slack incoming webhook whose URL is
+# only ever a file (secret OMNIDESK_ALERT_SLACK_WEBHOOK_URL), or a plain
+# webhook for CI. Alerts go straight
+# from Alertmanager to the on-call channel, never through the OmniDesk
+# gateway, so an OmniDesk outage cannot suppress its own alerts.
+route:
+  receiver: omnidesk-oncall
+  group_by: [alertname, slo, reason, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+  routes:
+    - receiver: omnidesk-oncall
+      matchers: ['severity="critical"']
+      group_wait: 10s
+      repeat_interval: 1h
+    - receiver: omnidesk-oncall
+      matchers: ['severity="warning"']
+      repeat_interval: 12h
+inhibit_rules:
+  # While the gateway is down every other gateway alert is noise.
+  - source_matchers: ['alertname="OmniDeskGatewayDown"']
+    target_matchers: ['alertname=~"OmniDesk(Availability|Latency).*|OmniDeskTrace.*"']
+  # A fast burn already pages; do not also send the slow-burn ticket.
+  - source_matchers: ['alertname="OmniDeskAvailabilityBudgetFastBurn"']
+    target_matchers: ['alertname="OmniDeskAvailabilityBudgetSlowBurn"']
+  - source_matchers: ['alertname="OmniDeskHostDiskCritical"']
+    target_matchers: ['alertname="OmniDeskHostDiskFillingUp"']
+    equal: [instance, mountpoint]

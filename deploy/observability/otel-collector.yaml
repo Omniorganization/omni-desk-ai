@@ -14,7 +14,7 @@ processors:
     spike_limit_mib: 64
 
 exporters:
-  logging:
+  debug:
     verbosity: basic
   otlp/tempo:
     endpoint: tempo:4317
@@ -26,4 +26,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [logging, otlp/tempo]
+      exporters: [debug, otlp/tempo]

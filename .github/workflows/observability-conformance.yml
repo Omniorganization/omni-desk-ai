@@ -1,0 +1,229 @@
+name: Observability Conformance
+
+# Runs the real Prometheus, Alertmanager and OpenTelemetry Collector binaries
+# against the shipped configs: rule unit tests, config validation, dashboard
+# queries, the runtime's metrics exposition, OTLP acceptance by a collector and
+# an end-to-end alert delivery. Static substring checks cannot catch any of these.
+
+on:
+  pull_request:
+    paths:
+      - deploy/observability/**
+      - omnidesk_agent/observability/**
+      - omnidesk_agent/observability_otel.py
+      - omnidesk_agent/observability_tracing.py
+      - omnidesk_agent/observability_probe.py
+      - scripts/render_alertmanager_config.py
+      - scripts/otlp_collector_conformance.py
+      - scripts/check_metrics_exposition.py
+      - .github/workflows/observability-conformance.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/observability/**
+      - omnidesk_agent/observability/**
+      - omnidesk_agent/observability_otel.py
+      - omnidesk_agent/observability_tracing.py
+      - scripts/render_alertmanager_config.py
+      - scripts/otlp_collector_conformance.py
+      - .github/workflows/observability-conformance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROMETHEUS_IMAGE: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+  ALERTMANAGER_IMAGE: prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
+  OTELCOL_IMAGE: otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+
+jobs:
+  alerting-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - name: promtool check and unit-test the alerting rules
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/deploy/observability:/rules:ro" -w /rules --entrypoint promtool "$PROMETHEUS_IMAGE" check rules prometheus-rules.yml prometheus-rules.host.yml
+          docker run --rm -v "$PWD/deploy/observability:/rules:ro" -w /rules --entrypoint promtool "$PROMETHEUS_IMAGE" test rules prometheus-rules.test.yml
+      - name: promtool check the Prometheus config
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/secrets"
+          printf 'ci-placeholder-viewer-token' > "$RUNNER_TEMP/secrets/omnidesk_metrics_token"
+          docker run --rm \
+            -v "$PWD/deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/deploy/observability/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro" \
+            -v "$RUNNER_TEMP/secrets:/run/secrets:ro" \
+            --entrypoint promtool "$PROMETHEUS_IMAGE" check config /etc/prometheus/prometheus.yml
+      - name: Render and amtool check both Alertmanager receivers
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/am"
+          python scripts/render_alertmanager_config.py --receiver slack --slack-channel '#omnidesk-alerts' --output "$RUNNER_TEMP/am/slack.yml"
+          python scripts/render_alertmanager_config.py --receiver webhook --webhook-url http://receiver:9099/alerts --output "$RUNNER_TEMP/am/webhook.yml"
+          # The Slack webhook URL is a secret: it must only ever be referenced as a file.
+          ! grep -q 'hooks.slack.com' "$RUNNER_TEMP/am/slack.yml"
+          grep -q 'api_url_file: /etc/alertmanager/secrets/slack_webhook_url' "$RUNNER_TEMP/am/slack.yml"
+          # Fail-closed rendering: a relative secret path, a bad channel or a credential-bearing URL must be refused.
+          if python scripts/render_alertmanager_config.py --receiver slack --slack-webhook-url-file relative/url --output "$RUNNER_TEMP/am/bad.yml"; then exit 1; fi
+          if python scripts/render_alertmanager_config.py --receiver slack --slack-channel 'alerts; rm' --output "$RUNNER_TEMP/am/bad.yml"; then exit 1; fi
+          if python scripts/render_alertmanager_config.py --receiver webhook --webhook-url 'https://x.example/hook?token=abc' --output "$RUNNER_TEMP/am/bad.yml"; then exit 1; fi
+          # amtool resolves api_url_file, so give it a placeholder file at that path.
+          mkdir -p "$RUNNER_TEMP/am-secrets"
+          printf 'https://example.invalid/placeholder-not-a-webhook' > "$RUNNER_TEMP/am-secrets/slack_webhook_url"
+          for f in slack webhook; do
+            docker run --rm -v "$RUNNER_TEMP/am:/am:ro" -v "$RUNNER_TEMP/am-secrets:/etc/alertmanager/secrets:ro" --entrypoint amtool "$ALERTMANAGER_IMAGE" check-config "/am/$f.yml"
+          done
+      - name: promtool check the runtime metrics exposition
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python scripts/check_metrics_exposition.py --output "$RUNNER_TEMP/exposition.prom"
+          docker run --rm -i --entrypoint promtool "$PROMETHEUS_IMAGE" check metrics < "$RUNNER_TEMP/exposition.prom" || {
+            # promtool check metrics exits 3 for lint-only findings (naming advice); fail on anything else.
+            status=$?; [ "$status" -eq 3 ] || exit "$status"; }
+
+  dashboard-and-alert-delivery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - name: Start Prometheus with the shipped rules and a scrape target that is down
+        run: |
+          set -euo pipefail
+          docker network create obs
+          mkdir -p "$RUNNER_TEMP/prom" "$RUNNER_TEMP/secrets"
+          printf 'ci-placeholder-viewer-token' > "$RUNNER_TEMP/secrets/omnidesk_metrics_token"
+          # Same scrape job and rules as production, faster evaluation for CI.
+          sed -e 's/scrape_interval: 15s/scrape_interval: 5s/' -e 's/evaluation_interval: 15s/evaluation_interval: 5s/' \
+            deploy/observability/prometheus.yml > "$RUNNER_TEMP/prom/prometheus.yml"
+          cp deploy/observability/prometheus-rules.yml "$RUNNER_TEMP/prom/prometheus-rules.yml"
+          python scripts/render_alertmanager_config.py --receiver webhook --webhook-url http://receiver:9099/alerts --output "$RUNNER_TEMP/prom/alertmanager.yml"
+          docker run -d --name receiver --network obs python:3.11-slim@sha256:174bec68e0451bffabbb08c7d5d21c6b253f772d81d52b9558af97bb3159b761 \
+            python -c "
+          import http.server, json
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = self.rfile.read(int(self.headers['content-length']))
+                  with open('/tmp/alerts.jsonl', 'ab') as f: f.write(body + b'\n')
+                  self.send_response(200); self.end_headers()
+              def do_GET(self):
+                  self.send_response(200); self.end_headers()
+                  try: self.wfile.write(open('/tmp/alerts.jsonl', 'rb').read())
+                  except FileNotFoundError: pass
+          http.server.ThreadingHTTPServer(('0.0.0.0', 9099), H).serve_forever()
+          "
+          docker run -d --name alertmanager --network obs -p 127.0.0.1:9093:9093 -v "$RUNNER_TEMP/prom/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro" "$ALERTMANAGER_IMAGE" --config.file=/etc/alertmanager/alertmanager.yml
+          docker run -d --name prometheus --network obs -p 127.0.0.1:9090:9090 \
+            -v "$RUNNER_TEMP/prom/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$RUNNER_TEMP/prom/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro" \
+            -v "$RUNNER_TEMP/secrets:/run/secrets:ro" \
+            "$PROMETHEUS_IMAGE" --config.file=/etc/prometheus/prometheus.yml
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:9090/-/ready >/dev/null && break; sleep 2; done
+          curl -fsS http://127.0.0.1:9090/-/ready
+      - name: Every dashboard query is valid PromQL
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, sys, urllib.parse, urllib.request
+          dashboard = json.load(open("deploy/observability/grafana-dashboard.json"))
+          bad = []
+          for panel in dashboard["panels"]:
+              for target in panel.get("targets", []):
+                  query = urllib.parse.urlencode({"query": target["expr"]})
+                  try:
+                      with urllib.request.urlopen(f"http://127.0.0.1:9090/api/v1/query?{query}", timeout=10) as response:
+                          status = json.load(response)["status"]
+                  except urllib.error.HTTPError as exc:
+                      status = f"HTTP {exc.code}: {exc.read().decode()[:200]}"
+                  if status != "success":
+                      bad.append((panel["title"], target["expr"], status))
+          for item in bad:
+              print("invalid dashboard query:", item, file=sys.stderr)
+          sys.exit(1 if bad else 0)
+          PY
+      - name: The gateway-down alert is delivered through Alertmanager
+        run: |
+          set -euo pipefail
+          # The scrape target omnidesk:18789 does not exist, so up == 0 and
+          # OmniDeskGatewayDown must fire (for: 2m) and reach the receiver.
+          for _ in $(seq 1 60); do
+            if docker exec receiver python -c "import urllib.request,sys; d=urllib.request.urlopen('http://127.0.0.1:9099/').read(); sys.exit(0 if b'OmniDeskGatewayDown' in d else 1)"; then
+              docker exec receiver python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:9099/').read().decode()[:2000])"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "OmniDeskGatewayDown was not delivered within 5 minutes" >&2
+          curl -fsS http://127.0.0.1:9090/api/v1/alerts || true
+          curl -fsS http://127.0.0.1:9093/api/v2/alerts || true
+          exit 1
+      - name: Container logs
+        if: always()
+        run: |
+          for c in prometheus alertmanager receiver; do echo "== $c"; docker logs "$c" 2>&1 | tail -40; done
+
+  otlp-collector:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - name: Validate the shipped collector config
+        run: docker run --rm -v "$PWD/deploy/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro" "$OTELCOL_IMAGE" validate --config=/etc/otelcol/config.yaml
+      - name: Start a collector that records what it accepts
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/otel"
+          chmod 0777 "$RUNNER_TEMP/otel"
+          cat > "$RUNNER_TEMP/otel/config.yaml" <<'YAML'
+          receivers:
+            otlp:
+              protocols:
+                http:
+                  endpoint: 0.0.0.0:4318
+          exporters:
+            file:
+              path: /out/traces.jsonl
+              flush_interval: 1s
+          service:
+            pipelines:
+              traces:
+                receivers: [otlp]
+                exporters: [file]
+          YAML
+          docker run -d --name otelcol -p 127.0.0.1:4318:4318 -v "$RUNNER_TEMP/otel:/out" -v "$RUNNER_TEMP/otel/config.yaml:/etc/otelcol/config.yaml:ro" "$OTELCOL_IMAGE" --config=/etc/otelcol/config.yaml
+          for _ in $(seq 1 30); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4318/v1/traces || true)"
+            [ "$code" = "200" ] && break; sleep 1
+          done
+      - name: Runtime spans are accepted by the real collector
+        run: PYTHONPATH=. python scripts/otlp_collector_conformance.py --endpoint http://127.0.0.1:4318/v1/traces --collector-output "$RUNNER_TEMP/otel/traces.jsonl" --report "$RUNNER_TEMP/otlp-conformance.json"
+      - name: Collector logs
+        if: always()
+        run: docker logs otelcol 2>&1 | tail -60
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: otlp-conformance
+          path: ${{ runner.temp }}/otlp-conformance.json
+          if-no-files-found: warn

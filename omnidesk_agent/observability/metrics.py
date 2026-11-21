@@ -39,6 +39,7 @@ class MetricsRegistry:
     max_series: int = 2048
     max_samples_per_series: int = 64
     _histogram_totals: dict[str, tuple[int, float, list[int]]] = field(default_factory=dict)
+    _histogram_families: set[str] = field(default_factory=set)
     dropped_series_updates: int = 0
 
     def _admit_key(self, values: Mapping[str, Any], key: str) -> bool:
@@ -86,6 +87,11 @@ class MetricsRegistry:
                 samples.append(value)
                 del samples[:-self.max_samples_per_series]
 
+    def declare_histogram(self, name: str) -> None:
+        """Expose ``name`` as an (empty) histogram family before its first observation."""
+        with self._lock:
+            self._histogram_families.add(name)
+
     def merge(self, values: Mapping[str, float]) -> None:
         for name, value in values.items():
             self.set(name, value)
@@ -123,22 +129,57 @@ class MetricsRegistry:
         return total
 
     def render_prometheus(self) -> str:
-        lines: list[str] = []
+        """Render Prometheus text exposition format 0.0.4.
+
+        Every family gets exactly one ``# TYPE`` line. A name is a histogram if
+        it was declared or observed, otherwise a counter if it was incremented,
+        otherwise a gauge; series of the same family recorded with another type
+        are left out (and counted as dropped) instead of producing an invalid
+        exposition that Prometheus would refuse to ingest.
+        """
         with self._lock:
-            for key, value in sorted(self.counters.items()):
-                lines.append(f"{key} {value}")
-            for key, value in sorted(self.gauges.items()):
-                lines.append(f"{key} {value}")
-            for key, (count, total, buckets) in sorted(self._histogram_totals.items()):
+            histogram_families = set(self._histogram_families)
+            for key in self._histogram_totals:
+                histogram_families.add(self._split_key(key)[0])
+            counter_families: dict[str, list[tuple[str, float]]] = {}
+            gauge_families: dict[str, list[tuple[str, float]]] = {}
+            conflicts = 0
+            for key, value in self.counters.items():
+                family = self._split_key(key)[0]
+                if family in histogram_families:
+                    conflicts += 1 if value else 0
+                    continue
+                counter_families.setdefault(family, []).append((key, value))
+            for key, value in self.gauges.items():
+                family = self._split_key(key)[0]
+                if family in histogram_families or family in counter_families:
+                    conflicts += 1
+                    continue
+                gauge_families.setdefault(family, []).append((key, value))
+            dropped = self.dropped_series_updates
+            histograms: dict[str, list[tuple[dict[str, str], int, float, list[int]]]] = {name: [] for name in histogram_families}
+            for key, (count, total, buckets) in self._histogram_totals.items():
                 name, labels = self._split_key(key)
-                base_labels = dict(labels)
+                histograms[name].append((labels, count, total, list(buckets)))
+        lines: list[str] = []
+        for family in sorted(counter_families):
+            lines.append(f"# TYPE {family} counter")
+            lines.extend(f"{key} {value}" for key, value in sorted(counter_families[family]))
+        for family in sorted(gauge_families):
+            lines.append(f"# TYPE {family} gauge")
+            lines.extend(f"{key} {value}" for key, value in sorted(gauge_families[family]))
+        for family in sorted(histograms):
+            lines.append(f"# TYPE {family} histogram")
+            series = histograms[family] or [({}, 0, 0.0, [0] * len(self.histogram_buckets))]
+            for labels, count, total, buckets in sorted(series, key=lambda item: sorted(item[0].items())):
                 for bucket, bucket_count in zip(self.histogram_buckets, buckets):
-                    label_text = self._labels({**base_labels, "le": bucket})
-                    lines.append(f"{name}_bucket{label_text} {bucket_count}")
-                label_text = self._labels({**base_labels, "le": "+Inf"})
-                lines.append(f"{name}_bucket{label_text} {count}")
-                lines.append(f"{name}_count{self._labels(base_labels)} {count}")
-                lines.append(f"{name}_sum{self._labels(base_labels)} {total}")
+                    lines.append(f"{family}_bucket{self._labels({**labels, 'le': bucket})} {bucket_count}")
+                lines.append(f"{family}_bucket{self._labels({**labels, 'le': '+Inf'})} {count}")
+                lines.append(f"{family}_count{self._labels(labels)} {count}")
+                lines.append(f"{family}_sum{self._labels(labels)} {total}")
+        if "omnidesk_metrics_dropped_series_updates_total" not in counter_families:
+            lines.append("# TYPE omnidesk_metrics_dropped_series_updates_total counter")
+            lines.append(f"omnidesk_metrics_dropped_series_updates_total {float(dropped + conflicts)}")
         return "\n".join(lines) + "\n"
 
     @staticmethod

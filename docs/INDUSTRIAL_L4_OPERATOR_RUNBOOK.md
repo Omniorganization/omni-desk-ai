@@ -27,11 +27,19 @@ Acceptance criteria:
 
 Execute and capture evidence for gateway kill, worker kill, rolling restart, PostgreSQL primary failover, provider 429/500/timeouts, network latency/partition, SSE disconnect/reconnect, backup restore, failed rollout rollback and sandbox-runner isolation.
 
-Targets:
+Targets: only numbers that the code or a drill backs (`docs/SLO.md`, "Recovery
+objectives", has them for each deployment type).
 
-- RPO <= 5 minutes
-- RTO <= 30 minutes
-- rollback <= 15 minutes
+- RPO: this topology's PostgreSQL HA cluster is run by an operator or managed
+  service. It must provide continuous WAL archiving with point-in-time
+  recovery and an RPO of 5 minutes or less, shown in its own drill. That is a
+  requirement on the operator; OmniDesk does not implement it. A single host
+  has an RPO of up to 24 hours (one verified logical dump a day).
+- RTO: the operator must restore the database within 30 minutes. The OmniDesk
+  steps after that (deploy the matching release, re-apply logged erasures,
+  smoke test) have no measured time yet; the backup restore drill records it.
+- Rollback: no target until the rollback drill measures one on the real
+  environment.
 
 ## Signed distribution
 

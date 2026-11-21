@@ -1,0 +1,357 @@
+# promtool test rules deploy/observability/prometheus-rules.test.yml
+#
+# Why: the previous rule set could not page for an outage, an error-budget burn
+# or a latency regression, and three rules watched metrics nothing emits. These
+# cases prove that each SLO alert fires for a real breach, stays silent for
+# healthy traffic, and that telemetry-loss and backup alerts reach Alertmanager
+# with the labels the routing tree depends on.
+rule_files:
+  - prometheus-rules.yml
+  - prometheus-rules.host.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: gateway down pages after two minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="omnidesk-agent",instance="gw:18789"}'
+        values: '1 1 1 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OmniDeskGatewayDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: OmniDeskGatewayDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: omnidesk-agent
+              instance: gw:18789
+            exp_annotations:
+              summary: OmniDesk gateway target gw:18789 is down or refusing the metrics scrape
+              description: Prometheus cannot scrape /admin/metrics. Either the gateway is down, or the scrape token was rejected (403). Check /health, /ready and the metrics viewer token.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskgatewaydown
+
+  - name: a missing scrape target is itself an alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="host:9100"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OmniDeskGatewayAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: omnidesk-agent
+            exp_annotations:
+              summary: No OmniDesk gateway scrape target exists
+              description: Prometheus has no omnidesk-agent target at all, so every other OmniDesk alert is blind. Check the scrape configuration or service discovery.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskgatewayabsent
+
+  - name: ten percent 5xx burns the availability budget fast and slow
+    interval: 1m
+    input_series:
+      - series: 'up{job="omnidesk-agent",instance="gw:18789"}'
+        values: '1x70'
+      - series: 'omnidesk_http_requests_total{method="GET",path="/admin/status",status="200"}'
+        values: '0+90x70'
+      - series: 'omnidesk_http_requests_total{method="GET",path="/admin/status",status="500"}'
+        values: '0+10x70'
+      - series: 'omnidesk_http_errors_total{method="GET",path="/admin/status"}'
+        values: '0x70'
+      # Probe and scrape traffic is excluded: these failures must not count.
+      - series: 'omnidesk_http_requests_total{method="GET",path="/ready",status="503"}'
+        values: '0+1000x70'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: OmniDeskAvailabilityBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: availability
+            exp_annotations:
+              summary: OmniDesk is burning its 99.5% availability error budget fast
+              description: 'API 5xx ratio is 10%; at this rate the 30-day error budget is gone within days. Check recent deploys, Postgres and the sandbox runner.'
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskavailabilitybudgetfastburn
+      - eval_time: 70m
+        alertname: OmniDeskAvailabilityBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              slo: availability
+            exp_annotations:
+              summary: OmniDesk availability error budget is burning faster than it refills
+              description: 'API 5xx ratio is 10% over the long window; the 30-day 99.5% objective will be missed if this continues.'
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskavailabilitybudgetslowburn
+
+  - name: unhandled exceptions count against availability
+    interval: 1m
+    input_series:
+      - series: 'omnidesk_http_requests_total{method="POST",path="/agent/run",status="200"}'
+        values: '0+80x70'
+      - series: 'omnidesk_http_errors_total{method="POST",path="/agent/run"}'
+        values: '0+20x70'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: OmniDeskAvailabilityBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: availability
+            exp_annotations:
+              summary: OmniDesk is burning its 99.5% availability error budget fast
+              description: 'API 5xx ratio is 20%; at this rate the 30-day error budget is gone within days. Check recent deploys, Postgres and the sandbox runner.'
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskavailabilitybudgetfastburn
+
+  - name: healthy traffic and probe failures raise no SLO alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="omnidesk-agent",instance="gw:18789"}'
+        values: '1x70'
+      - series: 'omnidesk_http_requests_total{method="GET",path="/admin/status",status="200"}'
+        values: '0+999x70'
+      - series: 'omnidesk_http_requests_total{method="GET",path="/admin/status",status="500"}'
+        values: '0+1x70'
+      - series: 'omnidesk_http_requests_total{method="GET",path="/health",status="500"}'
+        values: '0+500x70'
+      - series: 'omnidesk_http_request_duration_seconds_bucket{method="GET",path="/admin/status",le="1.0"}'
+        values: '0+999x70'
+      - series: 'omnidesk_http_request_duration_seconds_count{method="GET",path="/admin/status"}'
+        values: '0+1000x70'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: OmniDeskAvailabilityBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: OmniDeskAvailabilityBudgetSlowBurn
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: OmniDeskLatencyBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: OmniDeskGatewayDown
+        exp_alerts: []
+
+  - name: half of control-plane requests over one second burns the latency budget
+    interval: 1m
+    input_series:
+      - series: 'omnidesk_http_request_duration_seconds_bucket{method="GET",path="/admin/status",le="1.0"}'
+        values: '0+50x70'
+      - series: 'omnidesk_http_request_duration_seconds_count{method="GET",path="/admin/status"}'
+        values: '0+100x70'
+      # Model-bound chat latency is not part of the control-plane objective.
+      - series: 'omnidesk_http_request_duration_seconds_bucket{method="POST",path="/api/chat",le="1.0"}'
+        values: '0x70'
+      - series: 'omnidesk_http_request_duration_seconds_count{method="POST",path="/api/chat"}'
+        values: '0+100x70'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: OmniDeskLatencyBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: latency
+            exp_annotations:
+              summary: OmniDesk control-plane API latency objective is burning fast
+              description: '50% of control-plane requests take longer than 1s (objective: at most 1%). Check event-loop stalls, Postgres latency and the rate limiter backend.'
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesklatencybudgetfastburn
+
+  - name: lost traces and dropped series are visible
+    interval: 1m
+    input_series:
+      - series: 'omnidesk_trace_export_failures_total{reason="connection"}'
+        values: '0+3x30'
+      - series: 'omnidesk_trace_export_dropped_total{reason="queue_full"}'
+        values: '0+1x30'
+      - series: 'omnidesk_metrics_dropped_series_updates_total'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: OmniDeskTraceExportFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: connection
+            exp_annotations:
+              summary: 'OmniDesk OTLP trace export failing (connection)'
+              description: Spans are being lost on the way to the collector. http_4xx means the collector rejected the payload; connection/timeout means it is unreachable (check OMNIDESK_OTLP_ENDPOINT, the collector and network policy).
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesktraceexportfailures
+      - eval_time: 30m
+        alertname: OmniDeskTraceSpansDropped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: queue_full
+            exp_annotations:
+              summary: OmniDesk trace export queue is dropping spans
+              description: The in-process OTLP queue overflowed, usually because the collector is slow or unreachable.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesktracespansdropped
+      - eval_time: 30m
+        alertname: OmniDeskMetricSeriesDropped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: OmniDesk metrics registry hit its series cap
+              description: New label combinations are being discarded, so some alerts may stop seeing their signal. Look for an unbounded label value.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskmetricseriesdropped
+
+  - name: verified webhooks that cannot be enqueued page immediately
+    interval: 1m
+    input_series:
+      - series: 'omnidesk_webhook_enqueue_failures_total{channel="telegram"}'
+        values: '0 0 1 2 3 4 5 6'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: OmniDeskWebhookEnqueueFailures
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              channel: telegram
+            exp_annotations:
+              summary: OmniDesk failed to enqueue verified inbound webhooks
+              description: Verified inbound messages could not be persisted to the job queue; customers' messages may be lost. Check Postgres.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskwebhookenqueuefailures
+
+  - name: a stale backup breaks the recovery point objective
+    interval: 1m
+    input_series:
+      # Last verified at t=0, never refreshed: stale after 26h (plus 10m for).
+      - series: 'omnidesk_backup_last_verify_success_timestamp_seconds{job="node",instance="host:9100",kind="postgres"}'
+        values: '0x1600'
+      - series: 'omnidesk_backup_verify_failure_total{job="node",instance="host:9100",kind="postgres"}'
+        values: '0x1600'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: OmniDeskBackupStale
+        exp_alerts: []
+      - eval_time: 26h20m
+        alertname: OmniDeskBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              instance: host:9100
+              kind: postgres
+            exp_annotations:
+              summary: The last verified OmniDesk backup is older than its recovery point objective
+              description: The daily PostgreSQL backup has not passed verification for 26 hours (RPO 24 hours), or the hourly SQLite backup for 2 hours (RPO 1 hour); the kind label says which.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupstale
+      - eval_time: 26h20m
+        alertname: OmniDeskBackupVerifyFailure
+        exp_alerts: []
+
+  - name: a missed hourly SQLite backup pages after 2 hours, not 26
+    interval: 1m
+    input_series:
+      # Last verified at t=0; the hourly timer then stops producing verified sets.
+      - series: 'omnidesk_backup_last_verify_success_timestamp_seconds{job="node",instance="host:9100",kind="sqlite"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 1h50m
+        alertname: OmniDeskBackupStale
+        exp_alerts: []
+      - eval_time: 2h20m
+        alertname: OmniDeskBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              instance: host:9100
+              kind: sqlite
+            exp_annotations:
+              summary: The last verified OmniDesk backup is older than its recovery point objective
+              description: The daily PostgreSQL backup has not passed verification for 26 hours (RPO 24 hours), or the hourly SQLite backup for 2 hours (RPO 1 hour); the kind label says which.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupstale
+
+  - name: a failed backup verification pages
+    interval: 1m
+    input_series:
+      # An earlier run verified a backup at t=0; the next verification fails.
+      # verify_backup.py keeps the older success time and counts the failure.
+      - series: 'omnidesk_backup_last_verify_success_timestamp_seconds{job="node",instance="host:9100",kind="sqlite"}'
+        values: '0x10'
+      - series: 'omnidesk_backup_verify_failure_total{job="node",instance="host:9100",kind="sqlite"}'
+        values: '0 0 1x8'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: OmniDeskBackupVerifyFailure
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              instance: host:9100
+              kind: sqlite
+            exp_annotations:
+              summary: OmniDesk backup verification failed
+              description: verify_backup.py rejected the latest backup set (checksum, decryption, integrity or trial restore); do not rely on it for recovery.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupverifyfailure
+      - eval_time: 4m
+        alertname: OmniDeskBackupMissing
+        exp_alerts: []
+
+  - name: a host that never verified a backup pages as missing
+    interval: 1m
+    input_series:
+      # A first-ever verification that fails creates the counter at 1, which
+      # increase() cannot see; the missing success time pages instead.
+      - series: 'omnidesk_backup_verify_failure_total{job="node",instance="host:9100",kind="postgres"}'
+        values: '1x70'
+      - series: 'up{job="node",instance="host:9100"}'
+        values: '1x70'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: OmniDeskBackupMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: No verified OmniDesk backup has been recorded
+              description: No backup on this host has passed verify_backup.py yet, or it runs without --metrics-file, or node_exporter's textfile directory is not mounted.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskbackupmissing
+      - eval_time: 70m
+        alertname: OmniDeskBackupVerifyFailure
+        exp_alerts: []
+
+  - name: an unsynchronised clock is reported
+    interval: 1m
+    input_series:
+      - series: 'node_timex_sync_status{job="node",instance="host:9100"}'
+        values: '0x30'
+      - series: 'node_timex_offset_seconds{job="node",instance="host:9100"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OmniDeskHostClockNotSynchronised
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+              instance: host:9100
+            exp_annotations:
+              summary: Host clock is not synchronised
+              description: Signed sandbox-runner requests, device signatures, approvals and TLS all depend on the clock. Check NTP egress (UDP 123) and timesyncd.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnideskhostclocknotsynchronised
+
+  - name: slow agent tool calls are reported
+    interval: 1m
+    input_series:
+      # Every tool call lands in the (30s, 60s] bucket: p95 interpolates to 58.5s.
+      - series: 'omnidesk_span_duration_seconds_bucket{span="tool.call",outcome="ok",le="30.0"}'
+        values: '0x40'
+      - series: 'omnidesk_span_duration_seconds_bucket{span="tool.call",outcome="ok",le="60.0"}'
+        values: '0+10x40'
+      - series: 'omnidesk_span_duration_seconds_bucket{span="tool.call",outcome="ok",le="+Inf"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: OmniDeskToolCallLatencyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: 'OmniDesk tool-call p95 latency is 58.5s'
+              description: Agent tool calls are slow (p95 over 30s for 15 minutes). Check the sandbox runner queue, container image pulls and model latency.
+              runbook_url: https://github.com/Omniorganization/omni-desk-ai/blob/main/docs/runbooks/ALERTS.md#omnidesktoolcalllatencyhigh
