@@ -8,11 +8,13 @@ log to watch (``audit_log``), the audit ``event`` that proves containment (for
 example ``recovered`` from the watchdog or ``acted`` from the supervisor), the
 ``component`` it breaks (required for supervisor logs), an optional ``action``,
 and a ``timeout_seconds``. Only a record for that component whose action
-succeeded and was verified counts. The runner records only what
-it observes: command exit codes, the first matching audit record written after
-the injection, and post-recovery health checks. ``status`` is ``passed`` only
-when every injection was contained and health passed afterwards; otherwise it
-is ``failed``. The output follows the external GA evidence schema for
+succeeded and was verified counts. An injection counts only when the baseline
+health check passed (otherwise nothing is injected) and every inject command
+exited 0: a fault that was never injected cannot have been contained. The
+runner records only what it observes: command exit codes, the first matching
+audit record written after the injection, and post-recovery health checks.
+``status`` is ``passed`` only when every injection was injected and contained
+and health passed afterwards; otherwise it is ``failed``. The output follows the external GA evidence schema for
 ``self_healing_failure_injection``; the audit log excerpts are attached with
 their SHA-256.
 """
@@ -65,22 +67,26 @@ def run_drill(
     out_dir.mkdir(parents=True, exist_ok=True)
     injections: list[dict[str, Any]] = []
     artifacts: list[dict[str, Any]] = []
-    baseline = health(health_url)
     for spec in plan["injections"]:
         if str(spec.get("event")) == "acted" and not spec.get("component"):
             raise ValueError("a supervisor-log injection must name the component it breaks")
+        if not spec["inject"] or not all(isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) for argv in spec["inject"]):
+            raise ValueError("each inject step must be a non-empty argv list of strings")
+    baseline = health(health_url)
+    baseline_ok = baseline.get("ok") is True
+    for spec in plan["injections"]:
         started = clock()
         commands = []
-        for argv in spec["inject"]:
-            if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
-                raise ValueError("each inject step must be a non-empty argv list of strings")
-            proc = run(argv)
-            commands.append({"argv": argv, "exit_code": proc.returncode, "stderr_tail": (proc.stderr or "")[-300:]})
+        if baseline_ok:  # never inject into a system that is already unhealthy
+            for argv in spec["inject"]:
+                proc = run(argv)
+                commands.append({"argv": argv, "exit_code": proc.returncode, "stderr_tail": (proc.stderr or "")[-300:]})
+        injected = baseline_ok and all(command["exit_code"] == 0 for command in commands)
         audit_path = Path(spec["audit_log"])
         wanted = str(spec["event"])
         deadline = started + float(spec.get("timeout_seconds", 300))
         match: Optional[dict[str, Any]] = None
-        while clock() < deadline and match is None:
+        while injected and clock() < deadline and match is None:
             match = next((r for r in _audit_records(audit_path) if float(r.get("at", 0)) >= started and _contains(r, spec, wanted)), None)
             if match is None:
                 sleep(2.0)
@@ -95,6 +101,8 @@ def run_drill(
             "description": spec.get("description", ""),
             "injected_at": _iso(started),
             "commands": commands,
+            "injected": injected,
+            "skipped": None if baseline_ok else "baseline health check failed",
             "contained": contained,
             "containment_record": match,
             "seconds_to_containment": round(float(match["at"]) - started, 3) if match else None,

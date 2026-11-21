@@ -7,7 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from omnidesk_agent.self_healing.drill import run_drill
+from omnidesk_agent.self_healing.drill import _contains, run_drill
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,14 +42,14 @@ def test_a_contained_drill_produces_evidence_the_gate_accepts(tmp_path):
 
     def run(argv):  # the injected fault; the watchdog then writes its record
         clock["now"] += 5
-        audit.write_text(json.dumps({"at": clock["now"] + 20, "event": "recovered", "containment_action": "rollback_config_and_restart"}) + "\n")
+        audit.write_text(json.dumps({"at": clock["now"] + 20, "event": "recovered", "containment_action": "restart"}) + "\n")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     report = run_drill(_plan(audit), out_dir=evidence_dir / "drills", run=run, health=lambda url: {"ok": True, "status_code": 200},
                        clock=lambda: clock["now"], sleep=lambda s: clock.__setitem__("now", clock["now"] + s))
 
     assert report["status"] == "passed" and report["recovery_verified"] is True
-    assert report["containment_action"] == "rollback_config_and_restart"
+    assert report["containment_action"] == "restart"
     assert report["failure_injections"][0]["seconds_to_containment"] == 25.0  # from injection start
     assert _evaluate(evidence_dir, report) == []
 
@@ -94,3 +94,42 @@ def test_supervisor_injections_must_name_their_component(tmp_path):
     plan = {"health_url": "https://staging.invalid/health", "injections": [{"name": "x", "inject": [["true"]], "audit_log": str(tmp_path / "a"), "event": "acted"}]}
     with pytest.raises(ValueError, match="must name the component"):
         run_drill(plan, out_dir=tmp_path, run=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""), health=lambda url: {"ok": True})
+
+
+def test_a_fault_that_was_never_injected_cannot_pass_as_contained(tmp_path):
+    # Coordinator review on #232: a failed injection command plus an unrelated
+    # recovery record in the window produced a passing GA evidence report.
+    evidence_dir = tmp_path / "external-evidence"
+    audit = tmp_path / "watchdog.jsonl"
+    clock = {"now": 1_000.0}
+    sleep = lambda s: clock.__setitem__("now", clock["now"] + s)  # noqa: E731
+
+    def denied(argv):
+        audit.write_text(json.dumps({"at": clock["now"] + 1, "event": "recovered", "containment_action": "restart"}) + "\n")
+        return subprocess.CompletedProcess(argv, 1, "", "Access denied")
+
+    report = run_drill(_plan(audit), out_dir=evidence_dir / "drills", run=denied, health=lambda url: {"ok": True},
+                       clock=lambda: clock["now"], sleep=sleep)
+    assert report["status"] == "failed" and report["failure_injections"][0]["injected"] is False
+    assert "recovery_verified must be true" in _evaluate(evidence_dir, report)
+
+    ran = []
+    unhealthy = run_drill(_plan(audit), out_dir=evidence_dir / "drills", run=lambda argv: ran.append(argv),
+                          health=lambda url: {"ok": False, "error_class": "URLError"}, clock=lambda: clock["now"], sleep=sleep)
+    assert unhealthy["status"] == "failed" and ran == []  # nothing is injected into a system that is already down
+
+
+def test_each_containment_rule_is_needed_on_its_own():
+    # One record per rule, each breaking only that rule: none may count as containment,
+    # so removing any single check makes this test fail.
+    spec = {"event": "acted", "component": "worker:webhook", "action": "restart_worker"}
+    good = {"event": "acted", "component": "worker:webhook", "decision": {"action": "restart_worker"}, "verified": True, "result": {"ok": True}}
+    broken = {
+        "event": {**good, "event": "observed"},
+        "component": {**good, "component": "worker:reconnect"},
+        "action": {**good, "decision": {"action": "recover_stale_jobs"}},
+        "verified": {**good, "verified": "progress"},
+        "result": {**good, "result": {"ok": False}},
+    }
+    assert _contains(good, spec, "acted")
+    assert [rule for rule, record in broken.items() if _contains(record, spec, "acted")] == []

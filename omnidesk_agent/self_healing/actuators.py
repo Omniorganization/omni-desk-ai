@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from omnidesk_agent.self_healing.policy import RecoveryDecision, RuntimeSignal
-from omnidesk_agent.self_healing.probes import ConfigSnapshots, WorkerRegistry, is_transient
+from omnidesk_agent.self_healing.probes import RequeueLedger, WorkerRegistry, is_transient
 
 
 @dataclass
@@ -36,9 +36,10 @@ async def _maybe_await(value: Any) -> Any:
 class WorkerRestartActuator:
     actions = frozenset({"restart_worker"})
 
-    def __init__(self, registry: WorkerRegistry, *, settle_seconds: float = 0.05):
+    def __init__(self, registry: WorkerRegistry, *, settle_seconds: float = 0.05, clock: Callable[[], float] = time.time):
         self.registry = registry
         self.settle_seconds = settle_seconds
+        self.clock = clock
 
     async def execute(self, decision: RecoveryDecision, signal: RuntimeSignal) -> ActionResult:
         name = decision.component.split(":", 1)[1] if ":" in decision.component else decision.component
@@ -51,6 +52,8 @@ class WorkerRestartActuator:
             stop_error = type(exc).__name__
         else:
             stop_error = None
+        # Jobs the stopped worker claimed before this moment have no live worker any more.
+        self.registry.mark_restarted(name, self.clock())
         await _maybe_await(handle.start())
         await asyncio.sleep(self.settle_seconds)
         alive = bool(handle.is_alive())
@@ -58,57 +61,75 @@ class WorkerRestartActuator:
 
 
 class StaleJobActuator:
-    """Return jobs whose lease expired to retry (or dead-letter after max retries).
+    """Return orphaned jobs past their lease to retry (or dead-letter after max retries).
 
-    A worker that holds a stale job is stuck, so it is restarted first; the
-    cancelled run cannot then finish the job behind the retry's back.
+    Only jobs claimed before ``orphaned_before()`` (the last restart of the
+    queue's only worker) are touched, one by one after re-reading each, so a
+    healthy run that outlives its lease is never re-run behind its back. No
+    worker is stopped. Without that time (a shared queue) the policy escalates
+    instead and this actuator refuses.
     """
 
     actions = frozenset({"recover_stale_jobs"})
 
-    def __init__(self, queue: Any, *, lease_seconds: int = 300, registry: Optional[WorkerRegistry] = None, worker_name: Optional[str] = None):
+    def __init__(self, queue: Any, *, orphaned_before: Callable[[], Optional[float]], lease_seconds: int = 300, clock: Callable[[], float] = time.time):
         self.queue = queue
+        self.orphaned_before = orphaned_before
         self.lease_seconds = int(lease_seconds)
-        self.registry = registry
-        self.worker_name = worker_name
+        self.clock = clock
 
     async def execute(self, decision: RecoveryDecision, signal: RuntimeSignal) -> ActionResult:
-        restarted = False
-        handle = self.registry.get(self.worker_name) if (self.registry and self.worker_name) else None
-        if handle is not None and handle.is_alive():
-            await _maybe_await(handle.stop())
-            restarted = True
-        try:
-            recovered = await asyncio.to_thread(self.queue.recover_stale_running, lease_seconds=self.lease_seconds)
-        finally:
-            if handle is not None and restarted:
-                # Never leave a worker stopped because recovery failed or timed out.
-                await _maybe_await(handle.start())
-        return ActionResult(True, "recover_stale_jobs", {"recovered": int(recovered), "worker_restarted": restarted})
+        boundary = self.orphaned_before()
+        if boundary is None:
+            return ActionResult(False, "recover_stale_jobs", {"error": "no worker restart is recorded, so no running job is known to be orphaned"})
+        cutoff = min(self.clock() - self.lease_seconds, boundary)
+        running = await asyncio.to_thread(self.queue.list, status="running", limit=200)
+        recovered = []
+        for job in running:
+            locked_at = job.get("locked_at")
+            if locked_at is None or float(locked_at) > cutoff:
+                continue
+            current = await asyncio.to_thread(self.queue.get, str(job["id"]))
+            if not current or current.get("status") != "running" or current.get("locked_at") != locked_at:
+                continue  # it moved on since the listing
+            await asyncio.to_thread(self.queue.fail, str(job["id"]), f"orphaned: claimed before its worker was restarted and held past its {self.lease_seconds}s lease")
+            recovered.append(str(job["id"]))
+        return ActionResult(True, "recover_stale_jobs", {"recovered": recovered, "claimed_before": boundary})
 
 
 class DeadLetterRequeueActuator:
-    """Requeue dead-lettered jobs whose last error was transient, at most N per action."""
+    """Requeue dead-lettered jobs whose last error was transient, at most N per action
+    and at most ``ledger.max_per_job`` times per job; the rest stay for a human."""
 
     actions = frozenset({"requeue_dead_letters"})
 
-    def __init__(self, queue: Any, *, max_per_action: int = 20):
+    def __init__(self, queue: Any, *, ledger: RequeueLedger, max_per_action: int = 20, clock: Callable[[], float] = time.time):
         self.queue = queue
+        self.ledger = ledger
         self.max_per_action = max(1, int(max_per_action))
+        self.clock = clock
 
     async def execute(self, decision: RecoveryDecision, signal: RuntimeSignal) -> ActionResult:
         dead = await asyncio.to_thread(self.queue.list_dead_letters, limit=200)
-        requeued, skipped = [], 0
+        exhausted = self.ledger.exhausted(str(job["id"]) for job in dead)
+        requeued, skipped, capped = [], 0, 0
         for job in dead:
             if len(requeued) >= self.max_per_action:
                 break
             if not is_transient(job.get("last_error")):
                 skipped += 1
                 continue
+            if str(job["id"]) in exhausted:
+                capped += 1
+                continue
+            # Record first: if the requeue then fails, the job has used its allowance (fail closed).
+            self.ledger.record(str(job["id"]), at=self.clock(), last_error=job.get("last_error"))
             await asyncio.to_thread(self.queue.requeue_dead_letter, str(job["id"]))
             requeued.append(str(job["id"]))
         # A bounded batch is progress even when more transient jobs remain.
-        return ActionResult(bool(requeued), "requeue_dead_letters", {"requeued": requeued, "left_for_human": skipped, "progress": bool(requeued)})
+        return ActionResult(bool(requeued), "requeue_dead_letters", {
+            "requeued": requeued, "left_for_human": skipped, "already_requeued": capped, "progress": bool(requeued),
+        })
 
 
 class CircuitActuator:
@@ -128,24 +149,6 @@ class CircuitActuator:
         return ActionResult(True, decision.action, {"profile": profile})
 
 
-class ConfigRollbackActuator:
-    actions = frozenset({"rollback_config"})
-
-    def __init__(self, snapshots: ConfigSnapshots, config_path: Path, *, restart: Optional[Callable[[], Any]] = None):
-        self.snapshots = snapshots
-        self.config_path = Path(config_path).expanduser()
-        self.restart = restart
-
-    async def execute(self, decision: RecoveryDecision, signal: RuntimeSignal) -> ActionResult:
-        if not decision.rollback_ref:
-            return ActionResult(False, "rollback_config", {"error": "no known-good snapshot"})
-        kept = await asyncio.to_thread(self.snapshots.restore, decision.rollback_ref, self.config_path)
-        restarted = None
-        if self.restart is not None:
-            restarted = await _maybe_await(self.restart())
-        return ActionResult(True, "rollback_config", {"snapshot": decision.rollback_ref, "rejected_copy": str(kept), "restart": restarted})
-
-
 class RepairRequestActuator:
     """Turn a repeated failure into one repair request for the self-upgrade pipeline.
 
@@ -155,6 +158,7 @@ class RepairRequestActuator:
     """
 
     actions = frozenset({"create_upgrade_proposal"})
+    requests_human = True  # files a request for review; changes nothing itself
 
     def __init__(self, root: Path, *, file_repair: Optional[Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]] = None, clock: Callable[[], float] = time.time):
         self.root = Path(root).expanduser() / "repair_requests"
@@ -191,6 +195,7 @@ class EscalationActuator:
     """Record decisions a human must take and notify, if a notifier is configured."""
 
     actions = frozenset({"escalate_human_approval", "rollback_release", "disable_capability"})
+    requests_human = True  # records and notifies; changes nothing itself
 
     def __init__(self, root: Path, *, notify: Optional[Callable[[dict[str, Any]], Any]] = None):
         self.path = Path(root).expanduser() / "escalations.jsonl"

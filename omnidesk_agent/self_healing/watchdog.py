@@ -3,13 +3,20 @@
     python -m omnidesk_agent.self_healing.watchdog --health-url URL --config PATH \\
         --state-dir DIR --restart-cmd systemctl --restart-cmd restart --restart-cmd omnidesk-agent
 
-Each check GETs the health URL. After ``--failures`` consecutive failures:
-if the config differs from the last known-good snapshot, restore the snapshot
-(the rejected file is kept) and restart; otherwise just restart. Then wait for
-health. A config that stays healthy for ``--good-after`` seconds becomes the
-new known-good snapshot. Restarts are limited per hour; past the limit the
-watchdog only records an escalation. The restart command is a fixed argv from
-the command line (no shell). Every step is appended to ``<state-dir>/watchdog.jsonl``.
+Each check GETs the health URL. After ``--failures`` consecutive failures the
+watchdog restarts the gateway and waits for health. It never changes the
+config: the config holds security, sandbox and approval settings, so going
+back to an older one is an owner's decision. When the config on disk differs
+from the last known-good snapshot the record says so, and an operator can put
+the snapshot back with ``--restore-known-good``.
+
+A config becomes known-good only after this watchdog restarted the gateway
+with it on disk and the gateway then stayed healthy for ``--good-after``
+seconds. The gateway reads its config only at start, so a file written while
+the old process keeps serving proves nothing. Restarts are limited per hour;
+past the limit the watchdog only records an escalation. The restart command is
+a fixed argv from the command line (no shell). Every step is appended to
+``<state-dir>/watchdog.jsonl``.
 """
 from __future__ import annotations
 
@@ -24,6 +31,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from omnidesk_agent.self_healing.probes import ConfigSnapshots, HttpHealthProbe
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
 
 
 class GatewayWatchdog:
@@ -57,15 +68,17 @@ class GatewayWatchdog:
         self.sleep = sleep
         self.consecutive_failures = 0
         self.healthy_since: Optional[float] = None
-        self.qualifying_digest: Optional[str] = None
+        # The config the running gateway loaded, when known: only a restart by
+        # this watchdog tells. For a process it did not start it stays unknown.
+        self.loaded_digest: Optional[str] = None
         self._restarts: deque[float] = deque()
 
     async def healthy(self) -> bool:
         return bool((await self.health.collect())[0].health_ok)
 
-    def _config_digest(self) -> Optional[str]:
+    def _read_config(self) -> Optional[bytes]:
         try:
-            return hashlib.sha256(self.config_path.read_bytes()).hexdigest()[:16]
+            return self.config_path.read_bytes()
         except FileNotFoundError:
             return None
 
@@ -73,14 +86,17 @@ class GatewayWatchdog:
         now = self.clock()
         if await self.healthy():
             self.consecutive_failures = 0
-            digest = self._config_digest()
-            if self.healthy_since is None or digest != self.qualifying_digest:
-                # The qualification window belongs to one config: a deploy that
-                # rewrites the file while the old process still serves restarts it.
+            if self.healthy_since is None:
                 self.healthy_since = now
-                self.qualifying_digest = digest
-            if digest and digest != self.snapshots.known_good() and now - self.healthy_since >= self.good_after_seconds:
-                self.snapshots.save_known_good(self.config_path)
+            data = self._read_config()
+            digest = _digest(data) if data is not None else None
+            if (
+                data is not None
+                and digest == self.loaded_digest
+                and digest != self.snapshots.known_good()
+                and now - self.healthy_since >= self.good_after_seconds
+            ):
+                self.snapshots.save_known_good(data)  # exactly the bytes that were compared
                 return self._audit({"event": "known_good_saved", "snapshot": digest})
             return {"event": "healthy"}
         self.healthy_since = None
@@ -96,42 +112,66 @@ class GatewayWatchdog:
     async def _recover(self) -> dict[str, Any]:
         started = self.clock()
         known_good = self.snapshots.known_good()
-        digest = self._config_digest()
-        rolled_back = None
+        data = self._read_config()
+        digest = _digest(data) if data is not None else None
+        changed = None
         if known_good and digest != known_good:
-            rejected = self.snapshots.restore(known_good, self.config_path)
-            rolled_back = {"snapshot": known_good, "rejected_config": str(rejected), "rejected_digest": digest}
+            # Reported, never reverted here: restoring is an owner's call (--restore-known-good).
+            changed = {"known_good": known_good, "current": digest}
         self._restarts.append(self.clock())
+        self.loaded_digest = None
         try:
             restart = await self.restart()
         except Exception as exc:  # a failed restart must not stop the watchdog
             return self._audit({
                 "event": "recovery_failed",
-                "containment_action": "rollback_config_and_restart" if rolled_back else "restart",
-                "config_rollback": rolled_back,
+                "containment_action": "restart",
+                "config_differs_from_known_good": changed,
                 "restart": {"error_class": type(exc).__name__, "error": str(exc)[:300]},
             })
+        if (restart or {}).get("exit_code", 0) == 0:
+            self.loaded_digest = digest  # the restarted gateway read the file that is on disk now
         recovered = False
         while self.clock() - started < self.recovery_timeout_seconds:
             await self.sleep(self.poll_seconds)
             if await self.healthy():
                 recovered = True
                 break
-        self.consecutive_failures = 0 if recovered else self.consecutive_failures
+        if recovered:
+            self.consecutive_failures = 0
+            self.healthy_since = self.clock()
         return self._audit({
             "event": "recovered" if recovered else "recovery_failed",
-            "containment_action": "rollback_config_and_restart" if rolled_back else "restart",
-            "config_rollback": rolled_back,
+            "containment_action": "restart",
+            "config_differs_from_known_good": changed,
             "restart": restart,
             "recovery_seconds": round(self.clock() - started, 3),
         })
 
     def _audit(self, record: dict[str, Any]) -> dict[str, Any]:
         record = {"at": self.clock(), **record}
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        with self.audit_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        _append(self.audit_path, record)
         return record
+
+
+def _append(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
+def restore_known_good(config_path: Path, state_dir: Path) -> dict[str, Any]:
+    """Operator action: put the last known-good config back; the current file is kept."""
+    state_dir = Path(state_dir).expanduser()
+    snapshots = ConfigSnapshots(state_dir / "config_snapshots")
+    known_good = snapshots.known_good()
+    if not known_good:
+        record: dict[str, Any] = {"at": time.time(), "event": "restore_refused", "reason": "no known-good snapshot"}
+    else:
+        previous = snapshots.restore(known_good, Path(config_path).expanduser())
+        record = {"at": time.time(), "event": "restored_by_operator", "snapshot": known_good, "previous_config": str(previous)}
+    _append(state_dir / "watchdog.jsonl", record)
+    return record
 
 
 def command_restarter(argv: list[str], *, timeout_seconds: float = 60.0) -> Callable[[], Awaitable[dict[str, Any]]]:
@@ -150,16 +190,24 @@ def command_restarter(argv: list[str], *, timeout_seconds: float = 60.0) -> Call
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m omnidesk_agent.self_healing.watchdog")
-    parser.add_argument("--health-url", required=True)
+    parser.add_argument("--health-url")
     parser.add_argument("--config", required=True)
     parser.add_argument("--state-dir", required=True)
-    parser.add_argument("--restart-cmd", action="append", required=True, help="one argv element per flag")
+    parser.add_argument("--restart-cmd", action="append", help="one argv element per flag")
     parser.add_argument("--failures", type=int, default=3)
     parser.add_argument("--interval", type=float, default=10.0)
     parser.add_argument("--good-after", type=float, default=300.0)
     parser.add_argument("--max-restarts-per-hour", type=int, default=4)
     parser.add_argument("--once", action="store_true", help="run one check and exit")
+    parser.add_argument("--restore-known-good", action="store_true",
+                        help="operator action: put the last known-good config back (the current file is kept) and exit")
     args = parser.parse_args(argv)
+    if args.restore_known_good:
+        record = restore_known_good(Path(args.config), Path(args.state_dir))
+        print(json.dumps(record), flush=True)
+        return 0 if record["event"] == "restored_by_operator" else 1
+    if not args.health_url or not args.restart_cmd:
+        parser.error("--health-url and --restart-cmd are required unless --restore-known-good is given")
     dog = GatewayWatchdog(
         HttpHealthProbe(args.health_url),
         Path(args.config),
