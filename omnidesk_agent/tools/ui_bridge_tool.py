@@ -47,7 +47,7 @@ class UIBridgeTool:
         if action == "type_visible_reply":
             text = str(args["text"])
             expected = str(args.get("expected_result") or f"Type visible reply in {app}")
-            approved: dict[str, Any] = {"app": app, **bound_content("text", text), "expected_result": expected}
+            approved: dict[str, Any] = {"app": app, **bound_content("text", text, ctx), "expected_result": expected}
             ctx.permissions.verify(proposal("ui_bridge", "type_visible_reply", approved, "high", "通过可见 UI Bridge 输入文字", ctx))
             return await self.tools.call("computer", "type_text", {"text": text, "expected_result": expected}, ctx)
         if action == "press_send":

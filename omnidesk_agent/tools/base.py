@@ -66,6 +66,22 @@ def permission_guarded(call: Callable[..., Awaitable[ToolResult]]) -> Callable[.
     return guarded
 
 
+def _digest(data: bytes, ctx: Optional[Any]) -> str:
+    """HMAC-SHA256 under the deployment's digest key when the permission manager provides one, else SHA-256.
+
+    A plain SHA-256 of low-entropy content (a typed password) lets anyone who can
+    read approval records or the audit log, where the content itself is withheld,
+    test guesses offline. ``PermissionManager.digest(data)`` keys it with a key
+    derived from the audit key, stable across restarts and replicas.
+    """
+    keyed = getattr(getattr(ctx, "permissions", None), "digest", None) if ctx is not None else None
+    if callable(keyed):
+        value = keyed(data)
+        if isinstance(value, str) and value:
+            return value
+    return hashlib.sha256(data).hexdigest()
+
+
 def _scope_hash(tool: str, action: str, args: dict[str, Any], ctx: ToolContext) -> str:
     safe_args = {
         k: ("[REDACTED]" if any(s in k.lower() for s in ("token", "secret", "password", "api_key", "authorization")) else v)
@@ -79,19 +95,20 @@ def _scope_hash(tool: str, action: str, args: dict[str, Any], ctx: ToolContext) 
         "action": action,
         "args": safe_args,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8"), ctx)
 
 
-def content_sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+def content_sha256(value: str, ctx: Optional[Any] = None) -> str:
+    """Digest binding `value` into an approval; keyed when `ctx`'s permission manager has a digest key."""
+    return _digest(value.encode("utf-8"), ctx)
 
 
-def json_sha256(value: Any) -> str:
+def json_sha256(value: Any, ctx: Optional[Any] = None) -> str:
     """Digest of a JSON-serialisable value in the canonical form the scope hash uses."""
-    return content_sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str))
+    return content_sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str), ctx)
 
 
-def bound_content(name: str, value: str) -> dict[str, Any]:
+def bound_content(name: str, value: str, ctx: Optional[Any] = None) -> dict[str, Any]:
     """Proposal fields that show the approver, and bind into the scope hash,
     every character of a side effect's content.
 
@@ -99,7 +116,7 @@ def bound_content(name: str, value: str) -> dict[str, Any]:
     would not see the rest, and the scope hash would accept any content with
     the same prefix, so a payload hidden past the cut rides on the approval.
     """
-    return {name: value, f"{name}_sha256": content_sha256(value), f"{name}_length": len(value)}
+    return {name: value, f"{name}_sha256": content_sha256(value, ctx), f"{name}_length": len(value)}
 
 
 def proposal(tool: str, action: str, args: dict[str, Any], risk: RiskLevel, reason: str, ctx: ToolContext) -> ActionProposal:

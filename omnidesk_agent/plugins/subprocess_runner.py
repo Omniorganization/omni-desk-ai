@@ -79,7 +79,7 @@ class SubprocessPluginTool:
         approved = {
             "plugin_action": plugin_action,
             "plugin_args": plugin_args,
-            "plugin_args_sha256": json_sha256(plugin_args),
+            "plugin_args_sha256": json_sha256(plugin_args, ctx),
             "permissions": self.permissions,
             **extra,
         }

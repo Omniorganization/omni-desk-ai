@@ -1,8 +1,7 @@
 from __future__ import annotations
-import hashlib
 from typing import Any
 from omnidesk_agent.core.models import ToolResult
-from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
+from omnidesk_agent.tools.base import ToolContext, content_sha256, proposal, permission_guarded
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec, obj_schema
 
 # Caller-supplied send_text options are forwarded to adapter.send_text(**options),
@@ -48,11 +47,6 @@ def validate_send_text_options(options: Any) -> dict[str, Any]:
                 raise ValueError(f"unsupported channels.send_text option value: {key} must be one of {', '.join(schema['enum'])}")
         clean[key] = value
     return clean
-
-
-def content_sha256(text: str) -> str:
-    """Digest of approved outbound content, re-checked by the dispatcher before sending."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class ChannelSendTool:
@@ -115,7 +109,7 @@ class ChannelSendTool:
             except ValueError as exc:
                 return ToolResult(False, error=str(exc), summary="channels.send_text options rejected")
             expected = str(args.get("expected_result") or f"Send text to {recipient} via {channel}")
-            text_sha256 = content_sha256(text)
+            text_sha256 = content_sha256(text, ctx)
             # The approver sees, and the scope hash binds, every character that
             # will be sent: with only a preview, a payload hidden past the cut
             # (or swapped after approval) would ride on the approval. options
@@ -146,7 +140,7 @@ class ChannelSendTool:
             to = str(args["to"])
             subject = str(args.get("subject", ""))
             body = str(args.get("body", ""))
-            decision = ctx.permissions.verify(proposal("channels", "send_email", {"to": to, "subject": subject, "body": body, "body_sha256": content_sha256(body), "length": len(body)}, "high", "发送邮件前必须确认", ctx))
+            decision = ctx.permissions.verify(proposal("channels", "send_email", {"to": to, "subject": subject, "body": body, "body_sha256": content_sha256(body, ctx), "length": len(body)}, "high", "发送邮件前必须确认", ctx))
             if decision.mode == "dry_run":
                 return ToolResult(False, summary=f"dry-run: email to {to}")
             return ToolResult(True, data=adapter.build_raw_email(to, subject, body), summary=f"built Gmail raw payload for {to}; execute send with configured Gmail client")

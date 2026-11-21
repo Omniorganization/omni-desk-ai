@@ -70,7 +70,7 @@ class FilesTool:
             text = str(args.get("text", ""))
             expected = str(args.get("expected_result") or f"Write {path.name}")
             # The approver sees, and the scope hash binds, the whole file content.
-            approved: dict[str, Any] = {"path": str(path), **bound_content("text", text), "expected_result": expected}
+            approved: dict[str, Any] = {"path": str(path), **bound_content("text", text, ctx), "expected_result": expected}
             ctx.permissions.verify(proposal("files", "write_text", approved, "high", "写入工作区文件", ctx))
             path.parent.mkdir(parents=True, exist_ok=True)
             # Bytes, not write_text: no newline translation, so the file holds
