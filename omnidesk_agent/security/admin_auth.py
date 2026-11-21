@@ -15,6 +15,9 @@ from omnidesk_agent.security.break_glass import has_required_approvals
 
 log = logging.getLogger(__name__)
 
+# The reason of a decision refused because the admin audit log cannot take the entry.
+AUDIT_UNAVAILABLE_REASON = "admin audit log unavailable"
+
 
 @dataclass
 class AdminAuthDecision:
@@ -29,6 +32,9 @@ class AdminAuthDecision:
     # (admin_sessions); the session's organization comes with it.
     session_id: Optional[str] = None
     organization: Optional[str] = None
+    # How the caller authenticated: "token", "legacy_secret", "session" or
+    # "local_development". Only a real credential may open an admin session.
+    auth_method: str = ""
 
 
 class AdminAuth:
@@ -104,14 +110,17 @@ class AdminAuth:
         if self.audit_log:
             self.audit_log.parent.mkdir(parents=True, exist_ok=True)
 
-    def verify_headers(self, headers: Any, client_host: Optional[str] = None, required_role: str = "viewer", path: str = "") -> AdminAuthDecision:
+    def verify_headers(
+        self, headers: Any, client_host: Optional[str] = None, required_role: str = "viewer", path: str = "", *, audit_best_effort: bool = False
+    ) -> AdminAuthDecision:
+        """Authenticate an admin request. ``audit_best_effort`` is only for requests that take access away (session revocation)."""
         try:
-            return self._verify_headers(headers, client_host, required_role, path)
+            return self._verify_headers(headers, client_host, required_role, path, audit_best_effort)
         except AuditIntegrityError as exc:
             # Fail closed: an admin request that cannot be audited is refused.
-            return AdminAuthDecision(False, f"admin audit log unavailable: {exc}", actor="unknown", role="unknown")
+            return AdminAuthDecision(False, f"{AUDIT_UNAVAILABLE_REASON}: {exc}", actor="unknown", role="unknown")
 
-    def _verify_headers(self, headers: Any, client_host: Optional[str], required_role: str, path: str) -> AdminAuthDecision:
+    def _verify_headers(self, headers: Any, client_host: Optional[str], required_role: str, path: str, audit_best_effort: bool = False) -> AdminAuthDecision:
         legacy = os.getenv(self.legacy_secret_env, "") if self.legacy_secret_env else ""
         client_host = client_host or "unknown"
 
@@ -124,12 +133,12 @@ class AdminAuth:
 
         if self.allowed_ips and client_host not in self.allowed_ips:
             decision = AdminAuthDecision(False, "client IP is not allowed", actor="unknown", role="unknown")
-            self._audit(decision, client_host, required_role, path)
+            self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
             return decision
 
         if self.session_store is not None and provided.startswith(SESSION_TOKEN_PREFIX):
             decision = self._session_decision(provided, headers, required_role, path)
-            self._audit(decision, client_host, required_role, path)
+            self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
             return decision
 
         configured_tokens = self._configured_role_tokens()
@@ -138,44 +147,44 @@ class AdminAuth:
             matching_roles = {role for role, _ in matching}
             if len(matching_roles) > 1:
                 decision = AdminAuthDecision(False, "ambiguous admin token configuration", actor="unknown", role="unknown")
-                self._audit(decision, client_host, required_role, path)
+                self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
                 return decision
 
             if matching:
                 role, env_name = matching[0]
-                decision = self._role_decision(True, "admin token accepted", self._actor_for_token(role, env_name), role, required_role)
+                decision = self._role_decision(True, "admin token accepted", self._actor_for_token(role, env_name), role, required_role, method="token")
                 decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
-                self._audit(decision, client_host, required_role, path)
+                self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
                 return decision
 
             if not legacy or not (legacy_provided and self._secret_matches(legacy_provided, legacy)):
                 decision = AdminAuthDecision(False, "missing or invalid admin token", actor="unknown", role="unknown")
-                self._audit(decision, client_host, required_role, path)
+                self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
                 return decision
 
-            decision = self._role_decision(True, "legacy gateway secret accepted", self._actor_for_legacy_secret(), "owner", required_role)
+            decision = self._role_decision(True, "legacy gateway secret accepted", self._actor_for_legacy_secret(), "owner", required_role, method="legacy_secret")
             decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
-            self._audit(decision, client_host, required_role, path)
+            self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
             return decision
 
         if legacy:
             if legacy_provided and self._secret_matches(legacy_provided, legacy):
-                decision = self._role_decision(True, "legacy gateway secret accepted", self._actor_for_legacy_secret(), "owner", required_role)
+                decision = self._role_decision(True, "legacy gateway secret accepted", self._actor_for_legacy_secret(), "owner", required_role, method="legacy_secret")
                 decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
-                self._audit(decision, client_host, required_role, path)
+                self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
                 return decision
             decision = AdminAuthDecision(False, "missing or invalid legacy gateway secret", actor="unknown", role="unknown")
-            self._audit(decision, client_host, required_role, path)
+            self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
             return decision
 
         if self.allow_local_without_token and (client_host in {"127.0.0.1", "::1", "localhost"} or client_host in self.allowed_ips):
-            decision = self._role_decision(True, "local development without admin token", "local-development", "owner", required_role)
+            decision = self._role_decision(True, "local development without admin token", "local-development", "owner", required_role, method="local_development")
             decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
-            self._audit(decision, client_host, required_role, path)
+            self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
             return decision
 
         decision = AdminAuthDecision(False, "admin token is not configured", actor="unknown", role="unknown")
-        self._audit(decision, client_host, required_role, path)
+        self._audit(decision, client_host, required_role, path, best_effort=audit_best_effort)
         return decision
 
     def _session_decision(self, token: str, headers: Any, required_role: str, path: str) -> AdminAuthDecision:
@@ -187,7 +196,7 @@ class AdminAuth:
             return AdminAuthDecision(False, f"admin session store unavailable: {type(exc).__name__}", actor="unknown", role="unknown")
         if session is None:
             return AdminAuthDecision(False, "admin session expired or revoked", actor="unknown", role="unknown")
-        decision = self._role_decision(True, "admin session accepted", session.actor, session.role, required_role)
+        decision = self._role_decision(True, "admin session accepted", session.actor, session.role, required_role, method="session")
         decision = self._maybe_elevate_break_glass(decision, headers, required_role, path)
         return dataclasses.replace(decision, session_id=session.session_id, organization=session.organization)
 
@@ -199,7 +208,7 @@ class AdminAuth:
         if self.audit_chain is not None:
             self.audit_chain.append(event, payload)
 
-    async def verify_request(self, request: Any, required_role: str = "viewer") -> AdminAuthDecision:
+    async def verify_request(self, request: Any, required_role: str = "viewer", *, audit_best_effort: bool = False) -> AdminAuthDecision:
         host = getattr(getattr(request, "client", None), "host", None)
         path = str(getattr(getattr(request, "url", None), "path", ""))
         return await asyncio.to_thread(
@@ -208,6 +217,7 @@ class AdminAuth:
             host,
             required_role,
             path,
+            audit_best_effort=audit_best_effort,
         )
 
     @staticmethod
@@ -251,7 +261,7 @@ class AdminAuth:
             if not has_required_approvals(session):
                 raise PermissionError("break-glass session for another actor lacks a second owner approval")
         except Exception as exc:
-            return AdminAuthDecision(False, f"break-glass denied: {exc}", actor=actor, role=decision.role)
+            return AdminAuthDecision(False, f"break-glass denied: {exc}", actor=actor, role=decision.role, auth_method=decision.auth_method)
         self._audit_break_glass_use(session.session_id, actor, required_role, path)
         return AdminAuthDecision(
             True,
@@ -259,6 +269,7 @@ class AdminAuth:
             actor=actor,
             role=required_role,
             break_glass_session_id=session.session_id,
+            auth_method=decision.auth_method,
         )
 
     def _audit_break_glass_use(self, session_id: str, actor: str, required_role: str, path: str) -> None:
@@ -278,18 +289,27 @@ class AdminAuth:
             tokens.append((legacy_admin_token, "owner", self.admin_token_env))
         return tokens
 
-    def _role_decision(self, ok: bool, reason: str, actor: str, role: str, required_role: str) -> AdminAuthDecision:
+    def _role_decision(self, ok: bool, reason: str, actor: str, role: str, required_role: str, *, method: str = "") -> AdminAuthDecision:
         role = role if role in self.ROLE_LEVEL else "viewer"
         required_role = required_role if required_role in self.ROLE_LEVEL else "viewer"
         if ok and self.ROLE_LEVEL[role] < self.ROLE_LEVEL[required_role]:
-            return AdminAuthDecision(False, f"admin role {role} is below required role {required_role}", actor=actor, role=role)
+            return AdminAuthDecision(False, f"admin role {role} is below required role {required_role}", actor=actor, role=role, auth_method=method)
         if ok and required_role == "auditor" and role not in self.AUDIT_READERS:
-            return AdminAuthDecision(False, f"admin role {role} cannot read the audit logs", actor=actor, role=role)
-        return AdminAuthDecision(ok, reason, actor=actor, role=role)
+            return AdminAuthDecision(False, f"admin role {role} cannot read the audit logs", actor=actor, role=role, auth_method=method)
+        return AdminAuthDecision(ok, reason, actor=actor, role=role, auth_method=method)
 
-    def _audit(self, decision: AdminAuthDecision, client_host: str, required_role: str, path: str) -> None:
+    def _audit(self, decision: AdminAuthDecision, client_host: str, required_role: str, path: str, *, best_effort: bool = False) -> None:
         if self.audit_chain is None:
             return
+        try:
+            self._append_auth_entry(decision, client_host, required_role, path)
+        except AuditIntegrityError:
+            if not best_effort:
+                raise
+            log.warning("admin authentication not audited (audit log unavailable): %s", decision.reason[:80])
+
+    def _append_auth_entry(self, decision: AdminAuthDecision, client_host: str, required_role: str, path: str) -> None:
+        assert self.audit_chain is not None
         self.audit_chain.append(
             "admin_auth",
             {

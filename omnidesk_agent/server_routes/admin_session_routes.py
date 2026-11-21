@@ -25,6 +25,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from omnidesk_agent.security.admin_auth import AUDIT_UNAVAILABLE_REASON
 from omnidesk_agent.security.admin_sessions import MAX_TTL_SECONDS, MIN_TTL_SECONDS, AdminSessionLimit
 from omnidesk_agent.server_routes.agent_routes import AdminVerifier, _authenticated_actor, _reject_break_glass_elevation
 
@@ -57,6 +58,27 @@ def _organization(rt: Any, actor: str) -> str:
     return str(resolve(actor)) if callable(resolve) else "org_default"
 
 
+# Only a real credential opens a session: not a session (no chaining), and not
+# local-development access, which works only from loopback and would otherwise
+# become a token usable from anywhere.
+_SESSION_CREDENTIALS = frozenset({"token", "legacy_secret"})
+
+
+async def _revoker(rt: Any, request: Request, admin: AdminVerifier) -> Any:
+    """The caller of a revocation. If the admin audit log cannot take the entry,
+    the caller is still authenticated (best effort): revoking only takes access
+    away, and an audit outage must not keep a leaked session alive."""
+    try:
+        return await admin(request, "viewer")
+    except HTTPException as exc:
+        if not str(exc.detail).startswith(AUDIT_UNAVAILABLE_REASON):
+            raise
+    decision = await rt.admin_auth.verify_request(request, "viewer", audit_best_effort=True)
+    if not decision.ok:
+        raise HTTPException(403, decision.reason)
+    return decision
+
+
 def _client(request: Request) -> str:
     return str(getattr(getattr(request, "client", None), "host", "") or "unknown")
 
@@ -65,12 +87,12 @@ def register_admin_session_routes(app: FastAPI, cfg: Any, rt: Any, admin: AdminV
     @app.post("/admin/session/login")
     async def login(request: Request, body: Optional[LoginRequest] = None):
         decision = await admin(request, "viewer")
-        if getattr(decision, "session_id", None):
-            raise HTTPException(403, "open an admin session with a role token, not a session token")
+        store = _sessions(rt)
+        if getattr(decision, "auth_method", "") not in _SESSION_CREDENTIALS:
+            raise HTTPException(403, "open an admin session with a role token, not a session token or local-development access")
         _reject_break_glass_elevation(decision, "open an admin session")
         actor = _authenticated_actor(decision)
         role = str(getattr(decision, "role", "") or "")
-        store = _sessions(rt)
         body = body or LoginRequest()
         organization = await asyncio.to_thread(_organization, rt, actor)
         try:
@@ -88,9 +110,9 @@ def register_admin_session_routes(app: FastAPI, cfg: Any, rt: Any, admin: AdminV
 
     @app.post("/admin/session/revoke")
     async def revoke(request: Request, body: Optional[RevokeRequest] = None):
-        decision = await admin(request, "viewer")
-        actor = _authenticated_actor(decision)
         store = _sessions(rt)
+        decision = await _revoker(rt, request, admin)
+        actor = _authenticated_actor(decision)
         body = body or RevokeRequest()
         owner = getattr(decision, "role", "") == "owner" and not getattr(decision, "break_glass_session_id", None)
         if body.all:

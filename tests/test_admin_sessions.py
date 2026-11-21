@@ -235,7 +235,7 @@ def _bare_app(decision: AdminAuthDecision, rt) -> FastAPI:
 def test_a_break_glass_elevation_cannot_open_a_session(tmp_path):
     store = SQLiteAdminSessionStore(tmp_path / "s.sqlite3", raw_key=KEY)
     rt = SimpleNamespace(admin_auth=SimpleNamespace(session_store=store, audit_event=lambda e, p: None))
-    elevated = AdminAuthDecision(True, "break-glass session accepted for viewer", actor="op-a", role="owner", break_glass_session_id="bg-1")
+    elevated = AdminAuthDecision(True, "break-glass session accepted for viewer", actor="op-a", role="owner", break_glass_session_id="bg-1", auth_method="token")
     with TestClient(_bare_app(elevated, rt)) as client:
         assert client.post("/admin/session/login").status_code == 403
 
@@ -244,7 +244,7 @@ def test_a_break_glass_elevation_cannot_open_a_session(tmp_path):
 
 def test_the_routes_answer_501_without_a_session_store():
     rt = SimpleNamespace(admin_auth=SimpleNamespace(session_store=None))
-    owner = AdminAuthDecision(True, "admin token accepted", actor="owner-a", role="owner")
+    owner = AdminAuthDecision(True, "admin token accepted", actor="owner-a", role="owner", auth_method="token")
     with TestClient(_bare_app(owner, rt)) as client:
         assert client.post("/admin/session/login").status_code == 501
         assert client.post("/admin/session/revoke", json={"all": True}).status_code == 501
@@ -274,3 +274,51 @@ def test_postgres_sessions_are_shared_by_every_gateway_instance():
     finally:
         for pool in pools:
             pool.close()
+
+
+def test_local_development_access_cannot_become_a_session(tmp_path, monkeypatch):
+    # Codex review: with allow_local_admin_without_token and no role tokens, a
+    # credential-free loopback request is the "local-development" owner. Login
+    # would have turned that into a token usable from any host.
+    for role in TOKENS:
+        monkeypatch.delenv(f"OMNIDESK_{role.upper()}_TOKEN", raising=False)
+    monkeypatch.delenv("OMNIDESK_ADMIN_TOKEN", raising=False)
+    cfg = AppConfig()
+    cfg.workspace.root = tmp_path / "ws"
+    cfg.workspace.memory_db = tmp_path / "memory.sqlite3"
+    cfg.workspace.skills_dirs = [tmp_path / "skills"]
+    cfg.workspace.plugins_dirs = [tmp_path / "plugins"]
+    cfg.permissions.audit_log = tmp_path / "state" / "audit.log"
+    cfg.learning.growth_plan_file = tmp_path / "growth.json"
+    cfg.channels.gmail.credentials_file = tmp_path / "g" / "c.json"
+    cfg.channels.gmail.token_file = tmp_path / "g" / "t.json"
+    cfg.gateway.admin_allowed_ips = ["testclient"]
+    cfg.gateway.allow_local_admin_without_token = True
+    cfg.plugins.enabled = False
+    cfg.ensure_dirs()
+    from omnidesk_agent.server import create_app
+
+    with TestClient(create_app(cfg)) as client:
+        assert client.get("/admin/session/identity").json()["actor"] == "local-development"  # the bypass itself works
+        refused = client.post("/admin/session/login")
+
+    assert refused.status_code == 403
+
+
+def test_a_leaked_session_can_be_revoked_while_the_audit_log_is_down(app, monkeypatch):
+    # Codex review: authentication failed closed when the admin audit log could
+    # not take its entry, so a revoke was refused exactly when it was needed.
+    rt = app.state.runtime
+    with TestClient(app) as client:
+        token = _login(client).json()["session_token"]
+
+        def broken(*args, **kwargs):
+            raise AuditIntegrityError("admin audit log cannot be written")
+
+        monkeypatch.setattr(rt.admin_auth.audit_chain, "append", broken)
+        assert client.get("/admin/jobs", headers=_bearer(token)).status_code == 403  # everything else fails closed
+        ended = client.post("/admin/session/revoke", headers=_bearer(token), json={})
+
+    assert ended.status_code == 200 and ended.json()["revoked"] == 1
+    assert ended.json()["audit"].startswith("not recorded")
+    assert rt.admin_auth.session_store.resolve(token) is None
