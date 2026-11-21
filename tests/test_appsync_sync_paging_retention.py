@@ -130,6 +130,31 @@ def test_retention_prunes_old_events_and_resets_readers_below_the_watermark() ->
         store.close()
 
 
+def test_pruning_events_numbered_past_the_counter_never_reuses_their_numbers() -> None:
+    """During a rolling upgrade a previous-release replica numbers events without the
+    counter. Once retention prunes them all, their numbers must stay used, and a
+    client that bootstraps afterwards must not land below the watermark (Codex, #237)."""
+    from omnidesk_agent.appsync.retention import run_retention
+
+    store = _pg_store("legacy_head")
+    try:
+        store.create_conversation(actor=OWNER, title="before the upgrade")
+        legacy = store.sync_since(0)["head_seq"] + 95
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO omnidesk_appsync_sync_events(namespace, organization_id, seq, event_type, actor, payload, created_at)"
+                " VALUES (%s, 'org_default', %s, 'legacy.event', 'system', '{}'::jsonb, 0)",
+                (store.namespace, legacy),
+            )
+        _age_events(store, through_seq=legacy, days=30)
+        assert run_retention(store, sync_event_days=14, rules=())["tables"]["sync_events"]["pruned_through"] == legacy
+        head = store.sync_since(0)["head_seq"]
+        assert head == legacy and store.sync_since(head)["reset_required"] is False
+        assert store.record_event("probe.event", OWNER, {"organization_id": "org_default"})["seq"] == legacy + 1
+    finally:
+        store.close()
+
+
 def test_watermark_is_committed_before_any_event_is_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
     """If deletion fails half way, readers below the cut are still told to reset."""
     from omnidesk_agent.appsync import retention

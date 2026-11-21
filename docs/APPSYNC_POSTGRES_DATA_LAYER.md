@@ -107,6 +107,11 @@ waiting on a row lock or the network never stalls other requests, WebSockets or
 SSE streams on the process. A lock timeout, statement timeout or pool timeout
 answers `503` with `Retry-After: 2` and `{"detail": {"code": "database_busy"}}`.
 
+Cancelling an await does not stop a call already running on the pool. When a
+chat stream's client disconnects, the stream waits for the event write in flight
+and records its `stream_interrupted` marker under the next sequence. Once the
+model has answered, the turn is stored and completed even if the client is gone.
+
 ## Retention
 
 `omnidesk_agent/appsync/retention.py` deletes rows past their age in batches of
@@ -137,7 +142,9 @@ and are not pruned by age.
 
 Sync events are pruned by sequence number: the watermark (`pruned_through`) is
 committed before any event is deleted, so a reader below it is reset rather than
-moved silently past the gap.
+moved silently past the gap. The same write raises the event counter to the
+newest number seen, so numbers that a previous-release replica used are never
+handed out again once their events are pruned.
 
 ## Migrations 5 and 6, and rolling upgrades
 

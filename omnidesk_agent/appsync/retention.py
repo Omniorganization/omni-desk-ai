@@ -105,11 +105,16 @@ SELECT GREATEST(
 )
 """
 
-# Committed before any event is deleted (see the module docstring).
+# Committed before any event is deleted (see the module docstring). The counter
+# is raised to the observed head too: a previous-release replica numbered events
+# past it, and once those are pruned the counter is the only record that their
+# numbers were used.
 RAISE_WATERMARK_SQL = """
 INSERT INTO omnidesk_appsync_event_counters AS counter (namespace, seq, pruned_through)
 VALUES (%(namespace)s, %(head)s, %(cut)s)
-ON CONFLICT (namespace) DO UPDATE SET pruned_through = GREATEST(counter.pruned_through, EXCLUDED.pruned_through)
+ON CONFLICT (namespace) DO UPDATE SET
+    seq = GREATEST(counter.seq, EXCLUDED.seq),
+    pruned_through = GREATEST(counter.pruned_through, EXCLUDED.pruned_through)
 """
 
 DELETE_EVENTS_SQL = """
