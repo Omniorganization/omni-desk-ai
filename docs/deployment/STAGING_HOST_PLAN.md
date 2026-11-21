@@ -57,7 +57,7 @@ timedatectl
   owner's approval.
 - **Postgres** runs as a rootless Podman container with its volume in the
   `omnidesk` home. Backups cover only OmniDesk's database and config, and are
-  kept at most 35 days (see "Backups and restores" below).
+  kept 30 days, never more than 35 (see "Backups and restores" below).
 - **Drills touch only OmniDesk:**
   - soak: at most 4 requests/s from one client, the gateway's own per-IP quotas;
   - failure injection and rollback: only OmniDesk units and containers;
@@ -76,7 +76,7 @@ VM. Known fixes before reuse:
 - `systemctl --user` for the runner user needs its bus address
   (`DBUS_SESSION_BUS_ADDRESS`) through sudo.
 - Its backup runs `pg_dump` itself and keeps the newest 7 dumps with no age
-  limit. Replace it with `scripts/backup_postgres.py --retention-days 35`
+  limit. Replace it with `scripts/backup_postgres.py --retention-days 30`
   (`tests/test_backup_retention_policy.py` fails on it until then).
 
 Host-level points that also apply to any dedicated VM:
@@ -112,12 +112,14 @@ Host-level points that also apply to any dedicated VM:
   `OMNIDESK_MEMORY_ENCRYPTION_KEY`, `OMNIDESK_SANDBOX_RUNNER_TOKEN`,
   `OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET`, and the Postgres password.
 - **Backups and restores** (privacy rules in SECURITY.md):
-  - A daily timer runs `scripts/backup_postgres.py --encrypt --sign-manifest
-    --retention-days 35 --metrics-file <node_exporter textfile dir>/omnidesk_backup.prom`.
+  - A daily timer (the PostgreSQL backup unit and timer from #255) runs
+    `scripts/backup_postgres.py --encrypt --sign-manifest --retention-days 30
+    --metrics-file <node_exporter textfile dir>/omnidesk_backup.prom`.
     Erasure does not rewrite backups, so backups holding personal data are kept
-    at most 35 days. The scripts default to `--retention-days 0` (keep
-    everything), so the flag is required; `tests/test_backup_retention_policy.py`
-    fails on a scheduled backup without it or above 35.
+    30 days, the same default as the SQLite unit, and never more than 35. The
+    scripts default to `--retention-days 0` (keep everything), so the flag is
+    required; `tests/test_backup_retention_policy.py` fails on a scheduled
+    backup without it or above 35.
     `web_first_host.py backup` stays a manual one-off: it never deletes old dumps.
   - After every restore, the drill included, the restored gateway serves no
     traffic until each erasure logged since the backup was taken
