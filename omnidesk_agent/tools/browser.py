@@ -360,7 +360,7 @@ class BrowserTool:
             expected = str(args.get("expected_result") or "Evaluate JavaScript in visible Chrome tab")
             meta = await self._browser_context(args.get("target_id"), ctx.actor)
             # The approver sees, and the scope hash binds, the whole script.
-            approved = self._proposal_args(meta, {**bound_content("expression", expression), "expected_result": expected})
+            approved = self._proposal_args(meta, {**bound_content("expression", expression, ctx), "expected_result": expected})
             ctx.permissions.verify(proposal("browser", "evaluate", approved, "critical", "执行高风险 Chrome JavaScript", ctx))
             self._bind_tab_actor(str(meta.get("tab_id") or ""), ctx.actor)
             result = await self._cdp("Runtime.evaluate", {"expression": expression, "returnByValue": True}, args.get("target_id"))
@@ -409,7 +409,7 @@ class BrowserTool:
             text = str(args["text"])
             expected = str(args.get("expected_result") or f"Type into selector {selector}")
             meta = await self._browser_context(args.get("target_id"), ctx.actor)
-            approved = self._proposal_args(meta, {"selector": selector, **bound_content("text", text), "expected_result": expected})
+            approved = self._proposal_args(meta, {"selector": selector, **bound_content("text", text, ctx), "expected_result": expected})
             ctx.permissions.verify(proposal("browser", "type_selector", approved, self._risk("high", meta), "向网页选择器输入文本", ctx))
             self._bind_tab_actor(str(meta.get("tab_id") or ""), ctx.actor)
             try:

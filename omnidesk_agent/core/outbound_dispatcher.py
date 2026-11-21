@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from omnidesk_agent.core.outbound_messages import OutboundMessageStore
 from omnidesk_agent.channels.provider_errors import classify_channel_error
 from omnidesk_agent.channels.idempotency import capability_for
-from omnidesk_agent.tools.channel_send import content_sha256, validate_send_text_options
+from omnidesk_agent.tools.channel_send import validate_send_text_options
 
 
 class OutboundDispatcher:
@@ -26,8 +27,12 @@ class OutboundDispatcher:
         *,
         poll_interval_seconds: float = 0.25,
         lease_seconds: int = 300,
+        keyed_digest: Optional[Callable[[bytes], str]] = None,
     ):
         self.store = store
+        # The permission manager's keyed content digest (PermissionManager.keyed_digest), the one
+        # channels.send_text used when it queued the row.
+        self.keyed_digest = keyed_digest
         self.adapters = adapters
         self.poll_interval_seconds = poll_interval_seconds
         self.lease_seconds = lease_seconds
@@ -101,6 +106,16 @@ class OutboundDispatcher:
                     inc("omnidesk_outbound_retry_total", channel=channel, category=info.category)
         return True
 
+    def _digest_matches(self, approved: str, text: str) -> bool:
+        data = text.encode("utf-8")
+        # Keyed when the permission manager has a key; a plain SHA-256 is still accepted
+        # for rows queued before it did, since this check is consistency, not a defence.
+        candidates = [hashlib.sha256(data).hexdigest()]
+        keyed = self.keyed_digest(data) if self.keyed_digest is not None else None
+        if isinstance(keyed, str) and keyed:
+            candidates.insert(0, keyed)
+        return any(hmac.compare_digest(approved, candidate) for candidate in candidates)
+
     async def _deliver(self, message: dict[str, Any]) -> None:
         channel = str(message["channel"])
         recipient = str(message["recipient"])
@@ -123,7 +138,7 @@ class OutboundDispatcher:
         # defence against someone who can write the outbound table. Rows queued
         # before the digest was recorded carry none and are delivered as before.
         approved_digest = payload.get("text_sha256")
-        if approved_digest is not None and not hmac.compare_digest(str(approved_digest), content_sha256(text)):
+        if approved_digest is not None and not self._digest_matches(str(approved_digest), text):
             raise ValueError("unsupported outbound payload: text does not match the approved content digest")
         idempotency_key = str(message.get("idempotency_key") or message["id"])
         options["idempotency_key"] = idempotency_key

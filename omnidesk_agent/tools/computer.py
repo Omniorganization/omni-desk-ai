@@ -169,7 +169,7 @@ class ComputerTool:
     async def type_text(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         expected = self._require_expected_result(args, "type_text")
         text = str(args.get("text", ""))
-        approved: dict[str, Any] = {**bound_content("text", text), "expected_result": expected}
+        approved: dict[str, Any] = {**bound_content("text", text, ctx), "expected_result": expected}
         decision = ctx.permissions.verify(proposal("computer", "type_text", approved, "high", "即将向当前焦点窗口输入文本", ctx))
         if decision.mode == "dry_run":
             return ToolResult(False, summary=f"dry-run: type {len(text)} chars")

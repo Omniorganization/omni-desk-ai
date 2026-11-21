@@ -81,7 +81,7 @@ class GmailTool:
             to = str(args["to"])
             subject = str(args.get("subject", ""))
             body = str(args.get("body", ""))
-            approved: dict[str, Any] = {"to": to, "subject": subject, **bound_content("body", body)}
+            approved: dict[str, Any] = {"to": to, "subject": subject, **bound_content("body", body, ctx)}
             ctx.permissions.verify(proposal("gmail", "build_raw_email", approved, "medium", "生成 Gmail API raw email 载荷", ctx))
             return ToolResult(True, data=self.adapter.build_raw_email(to, subject, body), summary=f"built raw email to {to}")
 
@@ -91,7 +91,7 @@ class GmailTool:
             subject = str(args.get("subject", ""))
             body = str(args.get("body", ""))
             # The approver sees, and the scope hash binds, the whole body.
-            approved: dict[str, Any] = {"to": to, "subject": subject, **bound_content("body", body)}
+            approved: dict[str, Any] = {"to": to, "subject": subject, **bound_content("body", body, ctx)}
             ctx.permissions.verify(proposal("gmail", "send_email", approved, "high", "通过 Gmail API 发送邮件", ctx))
             result = await self.adapter.send_email(to, subject, body)
             return ToolResult(True, data=result, summary=f"sent gmail email to {to}")

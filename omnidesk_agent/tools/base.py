@@ -31,14 +31,27 @@ class _DryRun(Exception):
     pass
 
 
+# What the execution wrapper answers itself; everything else is the wrapped manager's.
+_WRAPPER_OWN_ATTRIBUTES = frozenset({"verify", "_delegate", "__class__", "__dict__"})
+
+
 class _ExecutionPermissions(PermissionManager):
-    """Call-local adapter: a returned denial must stop the protected operation."""
+    """Call-local adapter: a returned denial must stop the protected operation.
+
+    It subclasses PermissionManager for its type only. Every attribute except
+    verify, methods included, is the wrapped manager's: an inherited method
+    run with this throwaway object as self would write its state here (an
+    audit-integrity failure flag, a derived key) instead of on the manager,
+    which then would keep accepting decisions.
+    """
 
     def __init__(self, delegate: PermissionManager):
         self._delegate = delegate
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._delegate, name)
+    def __getattribute__(self, name: str) -> Any:
+        if name in _WRAPPER_OWN_ATTRIBUTES:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_delegate"), name)
 
     def verify(self, action_proposal: Any) -> PermissionDecision:
         decision = self._delegate.verify(action_proposal)
@@ -66,6 +79,23 @@ def permission_guarded(call: Callable[..., Awaitable[ToolResult]]) -> Callable[.
     return guarded
 
 
+def _digest(data: bytes, ctx: Optional[Any]) -> str:
+    """HMAC-SHA256 under the deployment's digest key when the permission manager provides one, else SHA-256.
+
+    A plain SHA-256 of low-entropy content (a typed password) lets anyone who can
+    read approval records or the audit log, where the content itself is withheld,
+    test guesses offline. ``PermissionManager.keyed_digest(data)`` keys it with a key
+    derived from the audit key, stable across restarts and replicas.
+    """
+    # Through the execution wrapper this is the manager's own bound method (see _ExecutionPermissions).
+    keyed = getattr(getattr(ctx, "permissions", None), "keyed_digest", None) if ctx is not None else None
+    if callable(keyed):
+        value = keyed(data)
+        if isinstance(value, str) and value:
+            return value
+    return hashlib.sha256(data).hexdigest()
+
+
 def _scope_hash(tool: str, action: str, args: dict[str, Any], ctx: ToolContext) -> str:
     safe_args = {
         k: ("[REDACTED]" if any(s in k.lower() for s in ("token", "secret", "password", "api_key", "authorization")) else v)
@@ -79,19 +109,20 @@ def _scope_hash(tool: str, action: str, args: dict[str, Any], ctx: ToolContext) 
         "action": action,
         "args": safe_args,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8"), ctx)
 
 
-def content_sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+def content_sha256(value: str, ctx: Optional[Any] = None) -> str:
+    """Digest binding `value` into an approval; keyed when `ctx`'s permission manager has a digest key."""
+    return _digest(value.encode("utf-8"), ctx)
 
 
-def json_sha256(value: Any) -> str:
+def json_sha256(value: Any, ctx: Optional[Any] = None) -> str:
     """Digest of a JSON-serialisable value in the canonical form the scope hash uses."""
-    return content_sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str))
+    return content_sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str), ctx)
 
 
-def bound_content(name: str, value: str) -> dict[str, Any]:
+def bound_content(name: str, value: str, ctx: Optional[Any] = None) -> dict[str, Any]:
     """Proposal fields that show the approver, and bind into the scope hash,
     every character of a side effect's content.
 
@@ -99,7 +130,7 @@ def bound_content(name: str, value: str) -> dict[str, Any]:
     would not see the rest, and the scope hash would accept any content with
     the same prefix, so a payload hidden past the cut rides on the approval.
     """
-    return {name: value, f"{name}_sha256": content_sha256(value), f"{name}_length": len(value)}
+    return {name: value, f"{name}_sha256": content_sha256(value, ctx), f"{name}_length": len(value)}
 
 
 def proposal(tool: str, action: str, args: dict[str, Any], risk: RiskLevel, reason: str, ctx: ToolContext) -> ActionProposal:

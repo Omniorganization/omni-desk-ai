@@ -33,7 +33,7 @@ class PullRequestTool:
             return ToolResult(False, error="AI-created PR head branch must start with ai/")
 
         # The approver sees, and the scope hash binds, the whole PR body.
-        approved: dict[str, Any] = {"title": title, "base": base, "head": head, "draft": draft, **bound_content("body", body)}
+        approved: dict[str, Any] = {"title": title, "base": base, "head": head, "draft": draft, **bound_content("body", body, ctx)}
         ctx.permissions.verify(proposal("pull_request", "create", approved, "high", "创建 PR，但不自动合并", ctx))
 
         cmd = ["pr", "create", "--title", title, "--body", body, "--base", base, "--head", head]

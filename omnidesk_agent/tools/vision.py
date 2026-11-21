@@ -116,7 +116,7 @@ class VisionGroundingTool:
 
         # The image and the whole instruction go to the model provider: the
         # approval binds both.
-        approved: dict[str, Any] = {"image_path": str(image_path), "image_sha256": image_sha256, **bound_content("instruction", instruction)}
+        approved: dict[str, Any] = {"image_path": str(image_path), "image_sha256": image_sha256, **bound_content("instruction", instruction, ctx)}
         ctx.permissions.verify(proposal("vision", "ground", approved, "medium", "使用视觉模型分析截图并定位 UI 元素", ctx))
         # The approval can take a while: the path and file must still be what
         # was approved.
