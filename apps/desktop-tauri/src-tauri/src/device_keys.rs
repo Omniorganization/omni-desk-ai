@@ -91,6 +91,51 @@ pub fn request_message(
     ))
 }
 
+/// Accepts only the gateway's enrollment challenge,
+/// `omnidesk-device-challenge:v2:chal_<16 hex>:hmac-sha256:device_challenge_nonce:<64 hex>`,
+/// so the device key signs nothing else through this path.
+pub fn challenge_message(signing_message: &str) -> Result<String, String> {
+    let invalid = || "invalid device challenge signing input".to_string();
+    let rest = signing_message
+        .strip_prefix("omnidesk-device-challenge:v2:")
+        .ok_or_else(invalid)?;
+    let (challenge_id, nonce_hash) = rest.split_once(':').ok_or_else(invalid)?;
+    let id_ok = challenge_id
+        .strip_prefix("chal_")
+        .is_some_and(|hex| is_hex(hex, 16));
+    let hash_ok = nonce_hash
+        .strip_prefix("hmac-sha256:device_challenge_nonce:")
+        .is_some_and(|hex| is_hex(hex, 64));
+    if !id_ok || !hash_ok {
+        return Err(invalid());
+    }
+    Ok(format!(
+        "omnidesk-device-challenge:v2:{challenge_id}:{nonce_hash}"
+    ))
+}
+
+/// One JSON line for the device-signing audit log: when, which challenge, and
+/// the outcome. It never carries key material, the signature, the challenge
+/// nonce or any other input: a refused input is not echoed back.
+pub fn signing_audit_line(timestamp_ms: u64, signing_message: &str, outcome: &str) -> String {
+    let challenge_id = signing_message
+        .strip_prefix("omnidesk-device-challenge:v2:")
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(challenge_id, _)| challenge_id)
+        .filter(|challenge_id| {
+            challenge_id
+                .strip_prefix("chal_")
+                .is_some_and(|hex| is_hex(hex, 16))
+        });
+    serde_json::json!({
+        "ts_ms": timestamp_ms,
+        "command": "device_sign_challenge",
+        "challenge_id": challenge_id,
+        "outcome": outcome,
+    })
+    .to_string()
+}
+
 #[derive(serde::Deserialize)]
 struct PrivateJwk {
     kty: String,
@@ -178,6 +223,57 @@ mod tests {
         let message =
             request_message("GET", "/app/bootstrap", BODY, "1700000000000", NONCE).unwrap();
         assert!(verify(pem, &message, &sign(jwk, &message).unwrap()));
+    }
+
+    const CHALLENGE: &str = "omnidesk-device-challenge:v2:chal_0123456789abcdef:hmac-sha256:device_challenge_nonce:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn signs_a_verifiable_enrollment_challenge() {
+        let identity = generate_identity().unwrap();
+        let message = challenge_message(CHALLENGE).unwrap();
+        assert_eq!(message, CHALLENGE);
+        let signature = sign(&identity.private_jwk, &message).unwrap();
+        assert!(verify(&identity.public_key_pem, CHALLENGE, &signature));
+    }
+
+    #[test]
+    fn challenge_signing_refuses_anything_else() {
+        for input in [
+            "",
+            "omnidesk-device-request:v1:POST:/a:x:1:n",
+            "omnidesk-device-challenge:v2:chal_0123:hmac-sha256:device_challenge_nonce:e3b0",
+            "omnidesk-device-challenge:v2:chal_0123456789abcdeg:hmac-sha256:device_challenge_nonce:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "omnidesk-device-challenge:v2:chal_0123456789abcdef:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "omnidesk-device-challenge:v2:chal_0123456789abcdef:hmac-sha256:device_challenge_nonce:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:extra",
+        ] {
+            assert!(challenge_message(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn signing_audit_lines_carry_no_key_material() {
+        let line = signing_audit_line(1_795_000_000_000, CHALLENGE, "signing");
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let object = value.as_object().unwrap();
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["challenge_id", "command", "outcome", "ts_ms"]);
+        assert_eq!(value["challenge_id"], "chal_0123456789abcdef");
+        assert_eq!(value["outcome"], "signing");
+        // The nonce hash and anything key-like stay out of the log.
+        assert!(!line.contains("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+        let identity = generate_identity().unwrap();
+        assert!(!line.contains(&identity.private_jwk));
+    }
+
+    #[test]
+    fn refused_inputs_are_not_echoed_into_the_audit_log() {
+        let input = "omnidesk-device-request:v1:POST:/app/approvals/x/decide:secret-ish:1:n";
+        let line = signing_audit_line(1, input, "refused");
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(value["challenge_id"].is_null());
+        assert_eq!(value["outcome"], "refused");
+        assert!(!line.contains("decide") && !line.contains("secret-ish"));
     }
 
     #[test]

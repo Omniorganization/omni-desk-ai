@@ -121,6 +121,60 @@ fn device_sign_request(
     device_keys::sign(&private_jwk, &message)
 }
 
+/// Signs the gateway's enrollment challenge with the device key, so a fresh
+/// install can become challenge-verified. Only the challenge format is signed.
+/// Every attempt is recorded in device-signing-audit.jsonl in the app's local
+/// data directory, and nothing is signed unless that record was written.
+#[tauri::command]
+fn device_sign_challenge(app: tauri::AppHandle, signing_message: String) -> Result<String, String> {
+    let audit_path = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("device-signing-audit.jsonl");
+    let message = match device_keys::challenge_message(&signing_message) {
+        Ok(message) => message,
+        Err(error) => {
+            // A refused input is recorded without being echoed; nothing was signed.
+            let _ = append_audit_line(
+                &audit_path,
+                &device_keys::signing_audit_line(now_ms(), &signing_message, "refused"),
+            );
+            return Err(error);
+        }
+    };
+    append_audit_line(
+        &audit_path,
+        &device_keys::signing_audit_line(now_ms(), &message, "signing"),
+    )
+    .map_err(|error| format!("device signing audit not written, refusing to sign: {error}"))?;
+    let private_jwk = keychain_read(DEVICE_PRIVATE_KEY_KEY)?;
+    if private_jwk.is_empty() {
+        return Err("desktop device private key is not initialized".to_string());
+    }
+    device_keys::sign(&private_jwk, &message)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+fn append_audit_line(path: &Path, line: &str) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    writeln!(file, "{line}").map_err(|error| error.to_string())
+}
+
 struct IdentityStoreLock(fs::File);
 
 impl Drop for IdentityStoreLock {
@@ -348,6 +402,7 @@ fn main() {
             secure_set,
             device_identity,
             device_sign_request,
+            device_sign_challenge,
             read_workspace_file,
             list_workspace_directory
         ])
@@ -361,11 +416,26 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        load_or_create_identity, readable_keychain_key, validate_relative_path, workspace_under,
-        writable_keychain_key, DEVICE_ID_KEY, DEVICE_PRIVATE_KEY_KEY, DEVICE_PUBLIC_KEY_KEY,
+        append_audit_line, load_or_create_identity, now_ms, readable_keychain_key,
+        validate_relative_path, workspace_under, writable_keychain_key, DEVICE_ID_KEY,
+        DEVICE_PRIVATE_KEY_KEY, DEVICE_PUBLIC_KEY_KEY,
     };
     use std::cell::RefCell;
     use std::collections::HashMap;
+
+    #[test]
+    fn signing_audit_lines_are_appended_never_rewritten() {
+        let directory = std::env::temp_dir().join(format!("omnidesk-audit-{}", now_ms()));
+        let path = directory.join("device-signing-audit.jsonl");
+        append_audit_line(&path, r#"{"outcome":"refused"}"#).unwrap();
+        append_audit_line(&path, r#"{"outcome":"signing"}"#).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            written.lines().collect::<Vec<_>>(),
+            [r#"{"outcome":"refused"}"#, r#"{"outcome":"signing"}"#]
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn accepts_bounded_relative_paths() {

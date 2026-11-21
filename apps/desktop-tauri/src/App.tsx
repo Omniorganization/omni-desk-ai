@@ -4,7 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { OmniApiClient } from './api';
 import { buildControlHubPanels } from './controlHub';
 import { advertisedRuntimeCapabilities, executeRuntimeTask } from './executor';
-import { createDesktopDeviceRequestSigner, loadOrCreateDesktopIdentity, DesktopDeviceIdentity } from './deviceIdentity';
+import { createDesktopDeviceRequestSigner, loadOrCreateDesktopIdentity, signEnrollmentChallenge, DesktopDeviceIdentity } from './deviceIdentity';
+import { enrollDesktop, needsEnrollment } from './enrollment';
 import { GatewayTarget, gatewayDraftState, startGatewayBackgroundLoop } from './gatewayConnection';
 
 const DEFAULT_GATEWAY = 'http://127.0.0.1:18789';
@@ -165,6 +166,10 @@ function App() {
   const [newProjectName, setNewProjectName] = useState('');
   const [projectError, setProjectError] = useState('');
   const [showAccountSettings, setShowAccountSettings] = useState(true);
+  // The gateway refuses this device's signed calls until it is challenge-verified.
+  const [enrollmentRequired, setEnrollmentRequired] = useState(false);
+  const [enrollmentId, setEnrollmentId] = useState('');
+  const [pairingCode, setPairingCode] = useState('');
   // Requests only ever go to the confirmed gateway; the form fields above are a draft until "connect" succeeds.
   const [confirmedGateway, setConfirmedGateway] = useState<GatewayTarget | null>(null);
   // Read by async work to drop results that arrive after the operator switched gateways.
@@ -233,8 +238,17 @@ function App() {
       const signedClient = gatewayClient(target, identity);
       // Every confirm registers this device with the gateway, so a changed address goes through device verification again.
       await signedClient.registerDesktop(identity.deviceId, navigator.platform, CAPABILITIES, identity.publicKeyPem);
-      await signedClient.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, switching ? undefined : claimedTask?.task_id);
+      let unverified = false;
+      try {
+        await signedClient.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES, switching ? undefined : claimedTask?.task_id);
+      } catch (e) {
+        // A production gateway accepts signed calls only from a challenge-verified
+        // device: connect anyway, and ask for the owner's enrollment code.
+        if (!needsEnrollment(e)) throw e;
+        unverified = true;
+      }
       if (attempt !== connectAttempt.current) return;
+      setEnrollmentRequired(unverified);
       if (switching) {
         // Nothing from the previous gateway carries over, and the auto worker has to be turned on again for the new one.
         setAutoWorkerEnabled(false);
@@ -257,6 +271,24 @@ function App() {
       await refreshProjects(signedClient, isCurrent);
     } catch (e: any) {
       if (attempt === connectAttempt.current) setError(e.message || String(e));
+    }
+  }
+
+  /** Becomes challenge-verified with the enrollment an owner started for this desktop. */
+  async function enrollThisDesktop() {
+    setError('');
+    try {
+      const identity = deviceIdentity || await loadOrCreateDesktopIdentity();
+      setDeviceIdentity(identity);
+      const client = confirmedClient(identity);
+      const outcome = await enrollDesktop({ client, identity, enrollmentId, pairingCode, signChallenge: signEnrollmentChallenge });
+      setEnrollmentRequired(false);
+      setPairingCode('');
+      setWorkerLog(items => [`${new Date().toISOString()} enrolled ${outcome.deviceId}: ${outcome.trustLevel}`, ...items].slice(0, 20));
+      await client.heartbeat(identity.deviceId, 'online', VERSION, CAPABILITIES);
+      setSnapshot(await client.bootstrap());
+    } catch (e: any) {
+      setError(e.message || String(e));
     }
   }
 
@@ -376,6 +408,8 @@ function App() {
     draft: () => ({ gatewayUrl, token, actor }),
     intervalMs: autoWorkerEnabled ? 5000 : 15000,
     tick: async gateway => {
+      // Signed calls would only be refused until the device is enrolled.
+      if (enrollmentRequired) return;
       if (autoWorkerEnabled) {
         await runSafeWorkerCycle(gateway);
         return;
@@ -388,7 +422,7 @@ function App() {
       if (confirmedRef.current === gateway) setSnapshot(latest);
     },
     onError: (e: any) => setError(e?.message || String(e)),
-  }), [confirmedGateway, gatewayUrl, token, actor, claimedTask, autoWorkerEnabled, deviceIdentity]);
+  }), [confirmedGateway, gatewayUrl, token, actor, claimedTask, autoWorkerEnabled, deviceIdentity, enrollmentRequired]);
 
   const activeProject = projects.find(project => project.id === activeProjectId) || null;
   const activeProjectName = activeProject?.name || '未选择项目';
@@ -462,6 +496,7 @@ function App() {
     <aside className="desktop-rightbar">
       {showAccountSettings && <section className="panel account-panel"><div className="panel-title"><h2>账户设置</h2><span>Codex-style</span></div>{ACCOUNT_SETTINGS.map(setting => <button className="setting-row" key={setting.title} type="button"><span><strong>{setting.title}</strong><small>{setting.detail}</small></span><em>{setting.action}</em></button>)}</section>}
       <section className="panel"><div className="panel-title"><h2>当前项目</h2><span>{activeProject ? (activeProject.archived ? 'archived' : 'ready') : '待创建'}</span></div><p>{activeProject ? `${activeProject.name} 已从 Gateway 同步到 Desktop Runtime。` : '请先连接 Gateway 并创建或选择项目。'}</p>{activeProject && <p><button type="button" onClick={() => void mutateProject('rename')}>重命名</button>{' '}<button type="button" onClick={() => void mutateProject('archive')}>{activeProject.archived ? '恢复' : '归档'}</button>{' '}<button type="button" onClick={() => void mutateProject('delete')}>删除</button></p>}<p>Device: {deviceIdentity?.deviceId || 'not enrolled'}</p></section>
+      {enrollmentRequired && <section className="panel"><div className="panel-title"><h2>设备注册</h2><span>需要所有者授权</span></div><p>该网关只接受经挑战验证的设备。请所有者为此桌面发起设备注册（POST /app/devices/enrollment/start，device_type 为 desktop），并把注册 ID 与配对码交给你。</p><p><input aria-label="注册 ID" placeholder="enroll_…" value={enrollmentId} onChange={event => setEnrollmentId(event.target.value)} />{' '}<input aria-label="配对码" type="password" placeholder="配对码" value={pairingCode} onChange={event => setPairingCode(event.target.value)} />{' '}<button type="button" onClick={() => void enrollThisDesktop()}>完成设备注册</button></p></section>}
       <section className="panel"><h2>连接配置</h2><p className={`connection-status ${draftState}`}>{confirmedGateway ? `已确认：${confirmedGateway.baseUrl}${draftState === 'pending' ? '（有未确认的修改，后台已暂停）' : ''}` : '未连接：确认网关前不发送心跳，也不领取任务。'}</p><label>Gateway URL<input value={gatewayUrl} onChange={e => setGatewayUrl(e.target.value)} /></label><label>Operator Token<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" /></label><label>Actor<input value={actor} onChange={e => setActor(e.target.value)} /></label></section>
       <section className="panel"><h2>审批状态</h2><p>待审批：{pendingApprovals.length}</p><pre>{JSON.stringify(pendingApprovals.slice(0, 3), null, 2)}</pre></section>
       <section className="panel"><h2>通知</h2><p>{notifications.length} 条</p><pre>{JSON.stringify(notifications.slice(0, 5), null, 2)}</pre></section>

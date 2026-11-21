@@ -37,6 +37,8 @@ const DESKTOP_TYPED_CLIENT_CONTRACT_CASES: readonly TypedContractCase[] = [
   { surface: 'desktop', method: 'GET', contractPath: '/app/sync', clientPath: '/app/sync', invoke: (client) => client.sync(42) },
   { surface: 'desktop', method: 'POST', contractPath: '/app/devices/{device_id}/push-token', clientPath: '/app/devices/desktop-1/push-token', signedInProduction: true, invoke: (client) => client.registerPushToken('desktop-1', 'push-token') },
   { surface: 'desktop', method: 'POST', contractPath: '/app/devices/enrollment/{enrollment_id}/complete', clientPath: '/app/devices/enrollment/enroll-1/complete', invoke: (client) => client.completeEnrollment('enroll-1', 'pair-123', 'desktop-1', 'public-key') },
+  { surface: 'desktop', method: 'POST', contractPath: '/app/devices/enrollment/{enrollment_id}/challenge', clientPath: '/app/devices/enrollment/enroll-1/challenge', invoke: (client) => client.enrollmentChallenge('enroll-1', 'desktop-1') },
+  { surface: 'desktop', method: 'POST', contractPath: '/app/devices/enrollment/{enrollment_id}/verify', clientPath: '/app/devices/enrollment/enroll-1/verify', invoke: (client) => client.verifyEnrollment('enroll-1', 'chal_1', 'desktop-1', 'base64:sig') },
 ];
 
 function loadSharedContractIndex(): Map<string, SharedContractEntry> {
