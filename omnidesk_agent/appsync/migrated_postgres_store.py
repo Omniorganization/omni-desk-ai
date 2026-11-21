@@ -2415,10 +2415,14 @@ class MigratedMultiInstancePostgresAppSyncStore:
             payload_hash = _fingerprint(payload)
             matched: list[LocalOutboxRecord] = []
             if key:
+                # Locked, so a replica that recorded a conflict on the same operation
+                # first is waited for, and the operation is then no longer matched
+                # (READ COMMITTED re-checks the row): it is never marked synced
+                # while its conflict is open.
                 matched = self._select(
                     tx, LOCAL_OUTBOX,
                     "idempotency_key = %(key)s AND status IN ('pending', 'failed', 'syncing') AND actor = %(actor)s AND organization_id = %(organization_id)s",
-                    {"key": key, "actor": actor, "organization_id": organization_id}, order="created_at",
+                    {"key": key, "actor": actor, "organization_id": organization_id}, order="created_at", for_update=True,
                 )
             inbox = LocalInboxRecord(remote_event_id=inbox_key, event_type=str(event.get("event_type") or "event"), payload=payload, actor=actor, organization_id=organization_id, source_device_id=device_id, idempotency_key=key or None, payload_hash=payload_hash, status="applied", received_at=tx.now)
             if matched and any(item.payload_hash != payload_hash for item in matched):
