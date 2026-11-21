@@ -27,6 +27,7 @@ from omnidesk_agent.tools.files import FilesTool
 from omnidesk_agent.tools.gmail_tool import GmailTool
 from omnidesk_agent.tools.pr_tool import PullRequestTool
 from omnidesk_agent.tools.shell import ShellTool
+from omnidesk_agent.tools.foreground import ForegroundWindow
 from omnidesk_agent.tools.ui_bridge_tool import UIBridgeTool
 from omnidesk_agent.tools.vision import VisionGroundingTool
 from omnidesk_agent.tools.registry import ToolRegistry
@@ -253,8 +254,8 @@ async def test_direct_tools_do_not_execute_false_decisions(kind, mode, tmp_path)
         tool._run = Mock(side_effect=AssertionError("unexpected process"))
         action, args = "create", {"title": "bad", "head": "ai/test"}
     elif kind == "ui":
-        tool = UIBridgeTool(UIBridgeConfig(enabled=True), SimpleNamespace(call=tripwire))
-        action, args = "click", {"x": 1, "y": 2}
+        tool = UIBridgeTool(UIBridgeConfig(enabled=True), SimpleNamespace(call=tripwire), foreground_probe=lambda: ForegroundWindow(app="WhatsApp"))
+        action, args = "click", {"app": "WhatsApp", "x": 1, "y": 2}
     else:
         image = tmp_path / "image.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\ntest")
