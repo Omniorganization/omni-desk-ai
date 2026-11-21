@@ -322,3 +322,24 @@ def test_a_leaked_session_can_be_revoked_while_the_audit_log_is_down(app, monkey
     assert ended.status_code == 200 and ended.json()["revoked"] == 1
     assert ended.json()["audit"].startswith("not recorded")
     assert rt.admin_auth.session_store.resolve(token) is None
+
+
+
+def test_device_signed_requests_are_audited_without_secrets(tmp_path, monkeypatch):
+    # gateway-clients' #231 replaced the sync-feed event with this hook: refused
+    # signatures and verified state changes go to the chained admin audit log.
+    from omnidesk_agent.security.admin_auth import AdminAuth
+    from omnidesk_agent.security.audit_chain import read_audit_events, verify_audit_log
+
+    monkeypatch.setenv("OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY", KEY.decode())
+    log = tmp_path / "admin_auth_audit.jsonl"
+    auth = AdminAuth(audit_log=log)
+    auth.record_device_request(verified=False, device_id="dev-1", actor="alice@x", method="post", path="/app/tasks/t1/claim?sig=abc", reason="invalid device signature", device_type="desktop", client_host="10.0.0.5")
+    auth.record_device_request(verified=True, device_id="dev-1", actor="alice@x", method="POST", path="/app/approvals/a1/decide", device_type="mobile")
+
+    rejected, verified = [e for e in read_audit_events(log) if str(e.get("event", "")).startswith("device_request.")]
+    assert rejected["event"] == "device_request.rejected" and rejected["reason"] == "invalid device signature"
+    assert rejected["path"] == "/app/tasks/t1/claim" and rejected["method"] == "POST"  # no query string
+    assert verified["event"] == "device_request.verified" and "reason" not in verified
+    assert "sig=abc" not in log.read_text(encoding="utf-8")
+    assert verify_audit_log(log, KEY).ok  # on the same tamper-evident chain

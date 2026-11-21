@@ -68,6 +68,7 @@ Web Admin and other admin clients should not keep the long-lived role token. The
   - Revocation takes effect on the next request. It works even while the admin audit log cannot take entries: the revoker is authenticated with best-effort auditing, because revoking only takes access away. Every other admin request still fails closed.
 - **Limits.** At most 10 logins a minute and 20 live sessions per actor (429 with `Retry-After`). They are counted in the shared store.
 - **Audit.** `admin_session.login` and `admin_session.revoke` go to the chained admin audit log with the session id, never the token. Every request made with a session records its session id. A login that cannot be audited is revoked again (503). A revoke is never undone because its audit entry failed.
+- **Device-signed requests.** AppSync records each refused device signature, and each verified request that changes state (task claims and reports, approval decisions, key and registration operations), through `AdminAuth.record_device_request` in the same chained admin audit log. Heartbeats and reads are not recorded; counters and `last_seen_at` cover them. An entry names the device, actor, method and path, plus the reason for a refusal; never the signature or the body. If it cannot be written, a verified state change is refused.
 - **Known limit.** Revocation is a column, not sealed history. Someone who can write the table and kept a copy of a row from before its revocation could restore it until its original expiry.
 
 ## Reading the Audit Logs
