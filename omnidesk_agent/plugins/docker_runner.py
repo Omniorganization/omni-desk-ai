@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -8,6 +7,7 @@ from typing import Any, Callable, Optional
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.plugins.subprocess_runner import SubprocessPluginTool, validate_plugin_permissions
+from omnidesk_agent.sandbox.container import run_container
 from omnidesk_agent.sandbox.isolation import bind_mount_source
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.tools.base import permission_guarded
@@ -64,27 +64,18 @@ class DockerPluginTool(SubprocessPluginTool):
             raise ValueError("docker plugin tool only supports action=call")
         payload = json.dumps(self._approve_call(args, ctx, "调用 Docker 隔离插件", sandbox="docker")).encode("utf-8")
         async with self._verified_entrypoint() as entrypoint:
-            proc = await asyncio.create_subprocess_exec(
-                *self.docker_argv(entrypoint),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
             self._metric(ctx, "omnidesk_plugin_call_total", plugin=self.name, status="started")
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(payload), timeout=self.timeout_seconds)
-            except asyncio.TimeoutError:
-                proc.kill()
-                try:
-                    await proc.wait()
-                except Exception:
-                    pass
+            # A timeout kills the container by name before the verified copy it
+            # mounts is deleted, so plugin code cannot outlive its time budget.
+            result = await run_container(self.docker_argv(entrypoint), timeout=self.timeout_seconds, stdin=payload)
+            if result.timed_out:
                 self._metric(ctx, "omnidesk_plugin_call_total", plugin=self.name, status="timeout")
                 return ToolResult(False, error=f"plugin timed out after {self.timeout_seconds}s", summary=f"plugin {self.name} timeout")
+        stdout, stderr = result.stdout, result.stderr
         if len(stdout) > self.max_output_bytes or len(stderr) > self.max_output_bytes:
             self._metric(ctx, "omnidesk_plugin_call_total", plugin=self.name, status="output_limit")
             return ToolResult(False, error="plugin output exceeded limit", summary=f"plugin {self.name} output limit exceeded")
-        if proc.returncode != 0:
+        if result.returncode != 0:
             self._metric(ctx, "omnidesk_plugin_call_total", plugin=self.name, status="error")
             return ToolResult(False, error=stderr.decode("utf-8", errors="replace")[:4000], summary=f"plugin {self.name} failed")
         try:

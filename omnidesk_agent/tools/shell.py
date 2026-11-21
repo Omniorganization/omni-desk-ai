@@ -10,7 +10,8 @@ from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE, PermissionConfig, Sandb
 from omnidesk_agent.core.models import ToolResult
 from omnidesk_agent.tools.base import ToolContext, proposal, permission_guarded
 from omnidesk_agent.tools.spec import ActionSpec, ToolSpec
-from omnidesk_agent.sandbox.isolation import bind_mount_source, minimal_host_env
+from omnidesk_agent.sandbox.container import run_container
+from omnidesk_agent.sandbox.isolation import bind_mount_source, minimal_host_env, runtime_state_masks
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.security.command_policy import (
     SAFE_CI_ALLOWED_PREFIXES,
@@ -105,6 +106,8 @@ class ShellTool:
         mount_mode = "ro" if self._is_readonly_command(argv) else "rw"
         docker_args.extend([
             "--mount", f"type=bind,src={bind_mount_source(self.cwd)},dst=/workspace,{'readonly' if mount_mode == 'ro' else 'rw'}",
+            # OmniDesk's own state in the workspace (approvals, runs, audit) stays hidden.
+            *runtime_state_masks(self.cwd),
             "-w", "/workspace",
             str(image),
             *harden_exec_argv(argv),
@@ -130,7 +133,9 @@ class ShellTool:
             "critical", "执行 allowlisted shell 命令", ctx,
         ))
 
-        timeout = int(args.get("timeout", getattr(self.sandbox_cfg, "timeout_seconds", getattr(self.cfg, "max_shell_seconds", 30))))
+        # The approved proposal does not cover a timeout, so the plan may only lower it.
+        max_timeout = int(getattr(self.sandbox_cfg, "timeout_seconds", getattr(self.cfg, "max_shell_seconds", 30)))
+        timeout = max(1, min(int(args.get("timeout", max_timeout)), max_timeout))
         if self.backend == "remote_docker":
             if self.sandbox_cfg is None or not self.sandbox_cfg.runner_url:
                 return ToolResult(False, error="remote sandbox runner_url is not configured", summary="shell remote sandbox not configured")
@@ -167,32 +172,39 @@ class ShellTool:
         # The allowlist and approval above saw the plain argv; only the spawned
         # process gets the git config-hardening flags.
         exec_argv = self._docker_argv(argv) if self.backend == 'docker' else harden_exec_argv(argv)
+        if self.backend == "docker":
+            # A timeout kills the container itself, not just the docker client.
+            result = await run_container(exec_argv, timeout=timeout)
+            if result.timed_out:
+                return ToolResult(False, error=f"Command timed out after {timeout}s", summary="shell timeout")
+            return self._result(argv, exec_argv, result.returncode, result.stdout, result.stderr)
         proc = await asyncio.create_subprocess_exec(
             *exec_argv,
             cwd=str(self.cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # On the host, workspace code runs without the gateway's secrets.
-            # The docker CLI keeps its environment; the container gets none of it.
-            env=None if self.backend == "docker" else minimal_host_env(argv),
+            env=minimal_host_env(argv),
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
             return ToolResult(False, error=f"Command timed out after {timeout}s", summary="shell timeout")
+        return self._result(argv, exec_argv, proc.returncode, stdout_b, stderr_b)
 
+    def _result(self, argv: list[str], exec_argv: list[str], returncode: Optional[int], stdout_b: bytes, stderr_b: bytes) -> ToolResult:
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
         data = {
             "argv": argv,
             "exec_argv": exec_argv,
             "backend": self.backend,
-            "exit_code": proc.returncode,
+            "exit_code": returncode,
             "stdout": stdout[:8000],
             "stderr": stderr[:8000],
             "stdout_truncated": len(stdout) > 8000,
             "stderr_truncated": len(stderr) > 8000,
         }
-        ok = proc.returncode == 0
-        return ToolResult(ok, data=data, summary=f"shell exit {proc.returncode}", error=None if ok else stderr[:2000])
+        ok = returncode == 0
+        return ToolResult(ok, data=data, summary=f"shell exit {returncode}", error=None if ok else stderr[:2000])

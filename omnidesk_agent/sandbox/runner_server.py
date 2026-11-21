@@ -22,6 +22,7 @@ from typing import Any
 from omnidesk_agent.config import DEFAULT_SANDBOX_IMAGE
 from omnidesk_agent.storage.sqlite import connect_sqlite
 from omnidesk_agent.security.command_policy import SAFE_CI_ALLOWED_PREFIXES, argv_allowed
+from omnidesk_agent.sandbox.container import run_container_sync
 from omnidesk_agent.sandbox.isolation import bind_mount_source
 from omnidesk_agent.sandbox.limits import DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_MAX_ARCHIVE_FILE_BYTES, DEFAULT_MAX_ARCHIVE_FILES
 
@@ -48,7 +49,8 @@ class RunnerConfig:
     container_runtime: str = os.getenv("OMNIDESK_CONTAINER_RUNTIME", "docker")
     allowed_workspace_root: Path = Path(os.getenv("OMNIDESK_SANDBOX_ALLOWED_WORKSPACE_ROOT", "/srv/omnidesk-sandbox-workspaces")).resolve()
     allow_workspace_paths: bool = os.getenv("OMNIDESK_SANDBOX_ALLOW_WORKSPACE_PATHS", "0").lower() in {"1", "true", "yes"}
-    require_hmac: bool = os.getenv("OMNIDESK_SANDBOX_REQUIRE_HMAC", "1" if os.getenv("OMNIDESK_ENV") == "production" else "0").lower() in {"1", "true", "yes"}
+    # On by default; only a non-production runner may turn it off (see _hmac_required).
+    require_hmac: bool = os.getenv("OMNIDESK_SANDBOX_REQUIRE_HMAC", "1").lower() in {"1", "true", "yes"}
     max_archive_files: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILES", str(DEFAULT_MAX_ARCHIVE_FILES)))
     max_archive_file_bytes: int = int(os.getenv("OMNIDESK_SANDBOX_MAX_ARCHIVE_FILE_BYTES", str(DEFAULT_MAX_ARCHIVE_FILE_BYTES)))
     default_image: str = os.getenv("OMNIDESK_SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE)
@@ -133,10 +135,18 @@ def _forget_nonce(nonce: str, cfg: RunnerConfig) -> None:
         _NONCES.pop(nonce, None)
 
 
+def _production_runner() -> bool:
+    return os.getenv("OMNIDESK_ENV", "").strip().lower() in {"prod", "production"}
+
+
+def _hmac_required(cfg: RunnerConfig) -> bool:
+    return cfg.require_hmac or _production_runner()
+
+
 def _verify_signature(headers: dict[str, str], body: bytes, cfg: RunnerConfig) -> tuple[bool, str]:
     secret = os.getenv(cfg.hmac_secret_env, "")
     if not secret:
-        return (False, "hmac is required") if cfg.require_hmac else (True, "hmac not configured")
+        return (False, "hmac is required") if _hmac_required(cfg) else (True, "hmac not configured")
     ts = headers.get("x-omnidesk-sandbox-timestamp", "")
     nonce = headers.get("x-omnidesk-sandbox-nonce", "")
     sig = headers.get("x-omnidesk-sandbox-signature", "")
@@ -276,9 +286,11 @@ def _runtime_ready(cfg: RunnerConfig) -> tuple[bool, str]:
         with tempfile.TemporaryDirectory(prefix="omnidesk-ready-") as tmp:
             payload = {"argv": ["python", "-m", "compileall", "."], "image": image, "readonly": True}
             try:
-                subprocess.run(_build_docker_command(payload, Path(tmp).resolve(), cfg), text=True, capture_output=True, timeout=30, check=True)
+                smoke = run_container_sync(_build_docker_command(payload, Path(tmp).resolve(), cfg), timeout=30)
             except Exception as exc:
                 return False, f"sandbox smoke command failed: {exc}"
+            if smoke.returncode != 0:
+                return False, f"sandbox smoke command failed: exit {smoke.returncode}"
     return True, "ready"
 
 
@@ -343,15 +355,18 @@ class SandboxRunnerHandler(BaseHTTPRequestHandler):
                     stdin_raw = base64.b64decode(str(payload.get("stdin_base64")).encode(), validate=True)
                     if len(stdin_raw) > cfg.max_body_bytes:
                         raise ValueError("stdin payload exceeds maximum size")
-                result = subprocess.run(cmd, input=stdin_raw.decode("utf-8", errors="replace") if stdin_raw else None, text=True, capture_output=True, timeout=timeout, check=False)
-                stdout = result.stdout[-cfg.max_output_chars :]
-                stderr = result.stderr[-cfg.max_output_chars :]
-                self._json(200, {"ok": result.returncode == 0, "exit_code": result.returncode, "stdout": stdout, "stderr": stderr, "request_id": payload.get("request_id")})
+                # A timeout kills the container itself (by name), and only then is
+                # its temporary workspace removed below.
+                result = run_container_sync(cmd, timeout=timeout, stdin=stdin_raw or None)
+                stdout = result.stdout.decode("utf-8", errors="replace")[-cfg.max_output_chars :]
+                stderr = result.stderr.decode("utf-8", errors="replace")[-cfg.max_output_chars :]
+                if result.timed_out:
+                    self._json(200, {"ok": False, "exit_code": 124, "stdout": stdout, "stderr": "sandbox timed out", "request_id": payload.get("request_id")})
+                else:
+                    self._json(200, {"ok": result.returncode == 0, "exit_code": result.returncode, "stdout": stdout, "stderr": stderr, "request_id": payload.get("request_id")})
             finally:
                 if tmp is not None:
                     tmp.cleanup()
-        except subprocess.TimeoutExpired as exc:
-            self._json(200, {"ok": False, "exit_code": 124, "stdout": exc.stdout or "", "stderr": "sandbox timed out"})
         except ValueError as exc:  # includes JSONDecodeError and base64 binascii.Error
             # Request validation errors carry messages written by this module
             # (size limits, workspace root checks) and are safe to return.
@@ -384,13 +399,24 @@ def runtime_is_rootless(cfg: RunnerConfig) -> bool:
 
 
 def require_rootless_runtime(cfg: RunnerConfig) -> None:
-    if os.getenv(ALLOW_ROOTFUL_RUNTIME_ENV, "0").lower() in {"1", "true", "yes"}:
+    override = os.getenv(ALLOW_ROOTFUL_RUNTIME_ENV, "0").lower() in {"1", "true", "yes"}
+    if override and _production_runner():
+        raise SystemExit(f"{ALLOW_ROOTFUL_RUNTIME_ENV} is refused when OMNIDESK_ENV=production; use a rootless Podman/Docker socket")
+    if override:
         LOGGER.warning("sandbox runner allowing a rootful container runtime (%s=1)", ALLOW_ROOTFUL_RUNTIME_ENV)
         return
     if not runtime_is_rootless(cfg):
         raise SystemExit(
             f"sandbox runner refuses a rootful container runtime ({cfg.container_runtime}); "
             f"use a rootless Podman/Docker socket or set {ALLOW_ROOTFUL_RUNTIME_ENV}=1 on a dedicated runner host"
+        )
+
+
+def require_request_signing(cfg: RunnerConfig) -> None:
+    if _hmac_required(cfg) and not os.getenv(cfg.hmac_secret_env, "").strip():
+        raise SystemExit(
+            f"sandbox runner refuses to start without {cfg.hmac_secret_env}; request signing is required "
+            "(set OMNIDESK_SANDBOX_REQUIRE_HMAC=0 only on a non-production runner)"
         )
 
 
@@ -405,6 +431,7 @@ def require_runner_token(cfg: RunnerConfig) -> None:
 def run_server(host: str = "0.0.0.0", port: int = 18890, cfg: RunnerConfig | None = None) -> None:  # nosec B104
     cfg = cfg or RunnerConfig()
     require_runner_token(cfg)
+    require_request_signing(cfg)
     require_rootless_runtime(cfg)
     server = ThreadingHTTPServer((host, port), SandboxRunnerHandler)
     server.runner_config = cfg  # type: ignore[attr-defined]

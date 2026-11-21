@@ -28,15 +28,14 @@ def test_docker_backend_executes_docker_command(tmp_path, monkeypatch):
     class Proc:
         returncode = 0
 
-        async def communicate(self):
-            return b"ok", None
+        async def communicate(self, input=None):
+            return b"ok", b""
 
         def kill(self):
             captured["killed"] = True
 
     async def fake_exec(*argv, **kwargs):
         captured["argv"] = list(argv)
-        captured["cwd"] = kwargs["cwd"]
         return Proc()
 
     async def run_case():
@@ -45,8 +44,10 @@ def test_docker_backend_executes_docker_command(tmp_path, monkeypatch):
         result = await runner.run(["python", "-m", "compileall", "."])
         assert result.ok is True
         assert result.command.startswith("docker run --rm")
-        assert captured["argv"][:5] == ["docker", "run", "--rm", "--network", "none"]
+        # The launcher names the container so a timeout can kill it.
+        assert captured["argv"][:3] == ["docker", "run", "--name"] and captured["argv"][3].startswith("omnidesk-sbx-")
+        assert captured["argv"][4:7] == ["--rm", "--network", "none"]
         assert "--read-only" in captured["argv"]
-        assert captured["cwd"] == str(tmp_path.resolve())
+        assert any(str(tmp_path.resolve()) in part and "dst=/workspace" in part for part in captured["argv"])
 
     asyncio.run(run_case())

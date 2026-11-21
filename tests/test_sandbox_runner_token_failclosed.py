@@ -128,6 +128,7 @@ def test_run_server_refuses_to_start_without_token(monkeypatch, configured):
 
 def test_run_server_starts_with_token(monkeypatch):
     monkeypatch.setenv(TOKEN_ENV, "s3cret-token")
+    monkeypatch.setenv("OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET", "h" * 40)
     started: list[tuple[str, int]] = []
 
     class FakeServer:
@@ -161,3 +162,29 @@ def test_every_shipped_runner_deployment_injects_a_required_token():
     # Kubernetes: the gateway (the runner's client) gets the token from the external secret.
     external = yaml.safe_load(Path("deploy/kubernetes/external-secret.yaml").read_text(encoding="utf-8"))
     assert TOKEN_ENV in {item["secretKey"] for item in external["spec"]["data"]}
+
+
+def test_run_server_refuses_to_start_without_request_signing(monkeypatch):
+    """Signed requests are the default; only a non-production runner may opt out."""
+    monkeypatch.setenv(TOKEN_ENV, "s3cret-token")
+    monkeypatch.delenv("OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET", raising=False)
+    monkeypatch.setattr(runner_server, "require_rootless_runtime", lambda cfg: None)
+    with pytest.raises(SystemExit, match="request signing is required"):
+        runner_server.run_server(host="127.0.0.1", port=0, cfg=RunnerConfig())
+    monkeypatch.setenv("OMNIDESK_ENV", "production")
+    with pytest.raises(SystemExit, match="request signing is required"):
+        runner_server.run_server(host="127.0.0.1", port=0, cfg=RunnerConfig(require_hmac=False))
+
+
+def test_production_runner_requires_hmac_even_if_config_disables_it(monkeypatch):
+    monkeypatch.setenv("OMNIDESK_ENV", "production")
+    monkeypatch.delenv("OMNIDESK_SANDBOX_RUNNER_HMAC_SECRET", raising=False)
+    ok, reason = runner_server._verify_signature({}, b"{}", RunnerConfig(require_hmac=False))
+    assert (ok, reason) == (False, "hmac is required")
+
+
+def test_production_runner_refuses_the_rootful_runtime_override(monkeypatch):
+    monkeypatch.setenv("OMNIDESK_ENV", "production")
+    monkeypatch.setenv(runner_server.ALLOW_ROOTFUL_RUNTIME_ENV, "1")
+    with pytest.raises(SystemExit, match="refused when OMNIDESK_ENV=production"):
+        runner_server.require_rootless_runtime(RunnerConfig(container_runtime="docker"))

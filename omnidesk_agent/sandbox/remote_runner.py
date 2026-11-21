@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from omnidesk_agent.sandbox.isolation import is_runtime_state
 from omnidesk_agent.sandbox.limits import SandboxArchiveLimits
 
 
@@ -147,7 +148,8 @@ class RemoteSandboxClient:
         return entries
 
     def _is_excluded(self, rel: Path) -> bool:
-        return any(part in self.DEFAULT_EXCLUDE_DIRS for part in rel.parts)
+        # OmniDesk's own state (approvals, runs, audit records) never leaves the gateway.
+        return any(part in self.DEFAULT_EXCLUDE_DIRS for part in rel.parts) or is_runtime_state(rel)
 
     def _post_run(self, payload: dict[str, Any], timeout_seconds: int) -> RemoteSandboxResult:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

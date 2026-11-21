@@ -268,16 +268,31 @@ def _safe_git_pull_args(argv: Sequence[str], workspace_root: Path | None = None)
     return len(positionals) == 1 or _safe_git_ref_name(positionals[1])
 
 
+# Agent branches are plain names under ai/ (AGENTS.md: ai/<topic>-<yyyymmdd>): no
+# refspec syntax (':' '+'), no ref paths, no option-looking or relative names.
+_AGENT_BRANCH_RE = re.compile(r"ai/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*")
+_AGENT_PUSH_PREFIX = "HEAD:refs/heads/"
+
+
+def valid_agent_branch(branch: str) -> bool:
+    """True for a plain agent branch name such as ``ai/fix-audit-20261121``."""
+    return (
+        bool(_AGENT_BRANCH_RE.fullmatch(branch))
+        and ".." not in branch
+        and not branch.endswith((".lock", "."))
+        and len(branch) <= 200
+    )
+
+
 def _safe_git_push_args(argv: Sequence[str], workspace_root: Path | None = None) -> bool:
+    # Exactly `git push origin HEAD:refs/heads/ai/<name>`: the destination is
+    # explicit and fully qualified, so no force push (+), no other branch or
+    # ref type, and never main.
     if len(argv) != 4 or _remote_name_shadowed(workspace_root):
         return False
     remote = str(argv[2])
     refspec = str(argv[3])
-    return remote == "origin" and (
-        refspec.startswith("HEAD:codex/")
-        or refspec.startswith("HEAD:repair/")
-        or refspec.startswith("HEAD:self-upgrade/")
-    )
+    return remote == "origin" and refspec.startswith(_AGENT_PUSH_PREFIX) and valid_agent_branch(refspec[len(_AGENT_PUSH_PREFIX):])
 
 
 def _safe_editable_install_args(argv: Sequence[str], prefix: Sequence[str], workspace_root: Path | None = None) -> bool:

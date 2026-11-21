@@ -8,6 +8,7 @@ from pathlib import Path
 
 from omnidesk_agent.config import AppConfig, DEFAULT_SANDBOX_IMAGE, SandboxConfig
 from omnidesk_agent.validation.production import is_production_mode
+from omnidesk_agent.sandbox.container import run_container
 from omnidesk_agent.sandbox.isolation import bind_mount_source, minimal_host_env
 from omnidesk_agent.sandbox.remote_runner import RemoteSandboxClient
 from omnidesk_agent.security.command_policy import argv_allowed, harden_exec_argv
@@ -84,13 +85,20 @@ class SandboxRunner:
             exec_argv = self._docker_command(argv) if self.backend == "docker" else harden_exec_argv(argv)
         except ValueError as exc:  # repo path unusable as a --mount source
             return TestResult(False, " ".join(argv), str(exc), 126)
+        if self.backend == "docker":
+            # A timeout kills the container itself, not only the docker client.
+            result = await run_container(exec_argv, timeout=timeout)
+            if result.timed_out:
+                return TestResult(False, " ".join(exec_argv), f"Timed out after {timeout}s", 124)
+            text = (result.stdout + result.stderr).decode(errors="replace")[-12000:]
+            return TestResult(result.returncode == 0, " ".join(exec_argv), text, int(result.returncode or 0))
         proc = await asyncio.create_subprocess_exec(
             *exec_argv,
             cwd=str(self.repo_root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             # On the host, workspace code runs without the gateway's secrets.
-            env=None if self.backend == "docker" else minimal_host_env(argv),
+            env=minimal_host_env(argv),
         )
         try:
             output, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
