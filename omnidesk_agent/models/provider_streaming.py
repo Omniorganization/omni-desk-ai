@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from omnidesk_agent.models.base import ModelDelta, ModelRequest
-from omnidesk_agent.models.providers import _image_part_from_path, env, msgs
+from omnidesk_agent.models.providers import _image_part_from_path, anthropic_messages, chat_messages, env, ollama_messages, openai_responses_input
 from omnidesk_agent.models.provider_errors import ChatGPTPlanError
 
 
@@ -59,7 +59,7 @@ async def _openai_compatible_stream(provider: Any, request: ModelRequest) -> Asy
     base = (settings.base_url or "https://api.openai.com/v1").rstrip("/")
     body: dict[str, Any] = {
         "model": provider.model,
-        "messages": msgs(request.system, request.user),
+        "messages": chat_messages(request),
         "temperature": settings.temperature,
         "max_tokens": settings.max_output_tokens,
         "stream": True,
@@ -129,10 +129,7 @@ async def _openai_responses_stream(provider: Any, request: ModelRequest) -> Asyn
     base = (settings.base_url or "https://api.openai.com/v1").rstrip("/")
     body: dict[str, Any] = {
         "model": provider.model,
-        "input": [
-            {"role": "system", "content": request.system},
-            {"role": "user", "content": request.user},
-        ],
+        "input": openai_responses_input(request),
         "max_output_tokens": settings.max_output_tokens,
         "stream": True,
     }
@@ -205,7 +202,7 @@ async def _azure_stream(provider: Any, request: ModelRequest) -> AsyncIterator[M
         raise RuntimeError("Azure OpenAI base_url is required")
     version = settings.api_version or "2024-10-21"
     body: dict[str, Any] = {
-        "messages": msgs(request.system, request.user),
+        "messages": chat_messages(request),
         "temperature": settings.temperature,
         "max_tokens": settings.max_output_tokens,
         "stream": True,
@@ -253,7 +250,7 @@ async def _anthropic_stream(provider: Any, request: ModelRequest) -> AsyncIterat
         "max_tokens": settings.max_output_tokens,
         "temperature": settings.temperature,
         "system": request.system,
-        "messages": [{"role": "user", "content": request.user}],
+        "messages": anthropic_messages(request),
         "stream": True,
     }
     headers = {
@@ -359,7 +356,7 @@ async def _ollama_stream(provider: Any, request: ModelRequest) -> AsyncIterator[
     body = {
         "model": provider.model,
         "stream": True,
-        "messages": msgs(request.system, request.user),
+        "messages": ollama_messages(request),
         "options": {
             "temperature": settings.temperature,
             "num_predict": settings.max_output_tokens,

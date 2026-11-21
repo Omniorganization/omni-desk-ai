@@ -54,3 +54,34 @@ class StructuredPlan(BaseModel):
         if not value:
             raise ValueError("plan must contain at least one step")
         return value
+
+
+TurnStatus = Literal["continue", "done", "give_up"]
+
+
+class PlannerTurnSchema(BaseModel):
+    """One planner turn of the agent loop.
+
+    `continue` lists the next steps to run (at least one); `done` and `give_up`
+    end the run and carry the answer for the requester. A plain StructuredPlan
+    (no status) parses as a `continue` turn.
+    """
+
+    status: TurnStatus = "continue"
+    goal: str = ""
+    task_type: TaskType = "unknown"
+    risk: RiskLevel = "medium"
+    steps: list[PlanStepSchema] = Field(default_factory=list)
+    success_criteria: str = ""
+    final_answer: str = ""
+    rollback_plan: Optional[str] = None
+
+    def as_structured_plan(self) -> StructuredPlan:
+        return StructuredPlan(
+            goal=self.goal or "(goal not stated)",
+            task_type=self.task_type,
+            risk=self.risk,
+            steps=self.steps,
+            success_criteria=self.success_criteria or "(not stated)",
+            rollback_plan=self.rollback_plan,
+        )

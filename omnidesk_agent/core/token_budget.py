@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Sequence
 
 import hashlib
 import json
@@ -27,6 +27,11 @@ class TokenBudgetConfig:
     # Hard stop for runaway model loops. Verified-required calls may override the
     # token warning threshold, but they must still respect this per-task call cap.
     per_task_max_llm_calls: Optional[int] = 16
+
+    # Count only the calls of the last N seconds against the cap, so a task id that
+    # is reused over time (a live check, a long-lived conversation) is throttled
+    # instead of locked out for good. None counts every call ever recorded.
+    per_task_window_seconds: Optional[int] = None
 
 
 @dataclass
@@ -97,12 +102,12 @@ class TokenBudgetManager:
     def _hash(value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    def make_cache_key(self, model: str, system: str, user: str) -> str:
-        payload = json.dumps(
-            {"model": model, "system": self._hash(system), "user": self._hash(user)},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+    def make_cache_key(self, model: str, system: str, user: str, image_digests: Sequence[str] = ()) -> str:
+        key: dict[str, object] = {"model": model, "system": self._hash(system), "user": self._hash(user)}
+        if image_digests:
+            # The answer is about these images: a new screenshot is a new question.
+            key["images"] = list(image_digests)
+        payload = json.dumps(key, ensure_ascii=False, sort_keys=True)
         return self._hash(payload)
 
     @staticmethod
@@ -138,7 +143,10 @@ class TokenBudgetManager:
         task_id: str = "default",
         expected_output_tokens: Optional[int] = None,
         verified_required: bool = False,
+        image_digests: Optional[Sequence[str]] = (),
     ) -> TokenDecision:
+        """`image_digests` are the sha256 of the request's images; None means a request
+        with images of unknown content, which is never served from or stored in the cache."""
         cfg = self.config
         expected_output_tokens = expected_output_tokens or cfg.max_output_tokens
 
@@ -155,10 +163,10 @@ class TokenBudgetManager:
 
         estimated_input = self.estimate_tokens(truncated_system + truncated_user)
         total_estimated = estimated_input + expected_output_tokens
-        cache_key = self.make_cache_key(model, truncated_system, truncated_user)
+        cache_key = None if image_digests is None else self.make_cache_key(model, truncated_system, truncated_user, image_digests)
 
         if cfg.per_task_max_llm_calls is not None:
-            used_calls = self.count_calls(task_id)
+            used_calls = self.count_calls_for_cap(task_id)
             if used_calls >= int(cfg.per_task_max_llm_calls):
                 return TokenDecision(
                     allowed=False,
@@ -215,10 +223,27 @@ class TokenBudgetManager:
             verified_required=verified_required,
         )
 
-    def count_calls(self, task_id: str) -> int:
+    def count_calls(self, task_id: str, *, since: Optional[float] = None) -> int:
         with connect_sqlite(self.db_path) as con:
-            row = con.execute("SELECT COUNT(*) FROM llm_usage WHERE task_id = ?", (task_id,)).fetchone()
+            if since is None:
+                row = con.execute("SELECT COUNT(*) FROM llm_usage WHERE task_id = ?", (task_id,)).fetchone()
+            else:
+                row = con.execute(
+                    "SELECT COUNT(*) FROM llm_usage WHERE task_id = ? AND created_at >= ?",
+                    (task_id, float(since)),
+                ).fetchone()
         return int(row[0]) if row else 0
+
+    def count_calls_for_cap(self, task_id: str) -> int:
+        """Calls that count against the per-task cap.
+
+        A storage subclass that overrides count_calls without a time filter keeps
+        counting every call: stricter than the window, never looser.
+        """
+        window = self.config.per_task_window_seconds
+        if not window or type(self).count_calls is not TokenBudgetManager.count_calls:
+            return self.count_calls(task_id)
+        return self.count_calls(task_id, since=time.time() - int(window))
 
     def get_cached(self, cache_key: str) -> Optional[str]:
         if not self.config.enable_cache:

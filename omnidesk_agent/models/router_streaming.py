@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 from omnidesk_agent.models.base import ModelDelta, ModelRequest, ModelResponse
 from omnidesk_agent.models.provider_errors import ChatGPTPlanError, SUBSCRIPTION_PROVIDERS, classify_provider_error, safe_error_text
 from omnidesk_agent.models.provider_streaming import stream_provider
-from omnidesk_agent.models.router import ModelRouter
+from omnidesk_agent.models.router import LOCAL_MODEL_REFUSALS, ModelCallBlocked, ModelRouter, request_image_digests
 
 
 class GovernedStreamingRouter:
@@ -69,6 +69,9 @@ class GovernedStreamingRouter:
                         yield delta
                     return
                 except asyncio.CancelledError:
+                    raise
+                except LOCAL_MODEL_REFUSALS:
+                    # Not a provider failure: no circuit-breaker count, no fallback.
                     raise
                 except Exception as exc:
                     last_error = exc
@@ -139,9 +142,10 @@ class GovernedStreamingRouter:
                 self.router.cfg.max_output_tokens,
             ),
             verified_required=request.verified_required,
+            image_digests=request_image_digests(request),
         )
         if not decision.allowed:
-            raise RuntimeError(
+            raise ModelCallBlocked(
                 f"Model call blocked by token guardrail: {decision.reason}"
             )
 
