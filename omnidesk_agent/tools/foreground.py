@@ -8,6 +8,14 @@ must then refuse to act (fail closed).
 - macOS: `lsappinfo` (front application name and bundle id; no window title).
 - Windows: the foreground window title (user32).
 - Linux/X11: `xdotool` (active window title and class), when installed.
+
+Matching is strict. When the OS names the application (the macOS name and
+bundle id, the X11 window class), that identity decides: the bundle id must be
+one known for the app, or the name must be the app's name or one of its
+localized names. The window title counts only when the OS names no application
+(Windows) or names a web browser, which may show the app's web version. A title
+matches when one of its separator-delimited parts is the app's name, so
+"WhatsApp Business" is not WhatsApp and "系统信息" is not Messages.
 """
 from __future__ import annotations
 
@@ -21,31 +29,53 @@ from typing import Optional
 
 _TIMEOUT_SECONDS = 2
 
-# Names an app shows under, beyond its allowlist name (localized names, short names).
+# Other names the same app shows under: localized names, and the long form of a short name.
 APP_ALIASES: dict[str, tuple[str, ...]] = {
     "google chrome": ("chrome",),
     "chrome": ("google chrome",),
-    "wechat": ("微信", "weixin", "xinwechat"),
-    "feishu": ("飞书", "lark"),
-    "lark": ("飞书", "feishu"),
+    "edge": ("microsoft edge",),
+    "wechat": ("微信", "weixin"),
+    "feishu": ("飞书",),
     "dingtalk": ("钉钉",),
-    "microsoft teams": ("teams", "msteams"),
-    "messages": ("信息", "imessage", "mobilesms"),
+    "messages": ("信息",),
     "xiaohongshu": ("小红书", "rednote"),
-    "whatsapp business": ("whatsappbusiness",),
 }
 
-# Window titles of sign-in, QR-login and verification screens.
+# macOS bundle ids, compared whole and ignoring case. Each was read from the app's
+# Info.plist on macOS 27.2.1; an app missing here is matched by its name only.
+BUNDLE_IDS: dict[str, tuple[str, ...]] = {
+    "wechat": ("com.tencent.xinWeChat",),
+    "whatsapp": ("net.whatsapp.WhatsApp",),
+    "telegram": ("ru.keepcoder.Telegram",),
+    "dingtalk": ("5ZSL2CJU2T.com.dingtalk.mac",),
+    "messages": ("com.apple.MobileSMS",),
+    "google chrome": ("com.google.Chrome",),
+    "chrome": ("com.google.Chrome",),
+    "safari": ("com.apple.Safari",),
+}
+
+# Applications that show other apps' web versions (normalized names and X11 classes).
+_BROWSERS = frozenset({"googlechrome", "chrome", "chromium", "microsoftedge", "firefox", "safari", "bravebrowser"})
+
+# Window titles of sign-in, QR-login, verification and password screens.
 _SIGN_IN_RE = re.compile(
-    r"\b(log ?in|sign ?in|signin|sign up|verify (your|it's)|two[- ]factor|2fa)\b|登录|登入|扫码|扫一扫|ログイン|로그인",
+    r"\b(log ?in|sign ?in|signin|sign up|verify (your|it's)|verification|two[- ]factor|2fa|passcode|password)\b"
+    r"|登录|登入|扫码|扫一扫|验证|认证|密码|ログイン|로그인",
     re.IGNORECASE,
 )
+# Title parts: "Chat | Microsoft Teams", "Home / X - Google Chrome", "Telegram (12)".
+_TITLE_SEPARATOR_RE = re.compile(r"\s+[-–—/|·]\s+|\s*\|\s*")
+_UNREAD_COUNT_RE = re.compile(r"^\(\d+\+?\)\s*|\s*\(\d+\+?\)$")
+# `lsappinfo info -only name -only bundleid ASN` prints a header line with the
+# (localized) name, then `bundleID="..."`; `-long` prints quoted key/value pairs.
+_LSAPPINFO_NAME_RE = re.compile(r'^"(.*)" ASN:', re.MULTILINE)
+_LSAPPINFO_BUNDLE_RE = re.compile(r'^\s*bundleID="([^"]*)"', re.MULTILINE)
 _KEY_VALUE_RE = re.compile(r'"([^"]+)"\s*=\s*"([^"]*)"')
 
 
 @dataclass(frozen=True)
 class ForegroundWindow:
-    app: str = ""  # application name as the OS reports it
+    app: str = ""  # application name (macOS) or window class (X11), as the OS reports it
     title: str = ""  # window title, when the OS reports it
     bundle_id: str = ""  # macOS bundle identifier
 
@@ -58,32 +88,28 @@ def _norm(value: str) -> str:
 
 
 def _names(app: str) -> set[str]:
-    return {_norm(app)} | {_norm(alias) for alias in APP_ALIASES.get(app.strip().casefold(), ())}
+    key = app.strip().casefold()
+    return {name for name in (_norm(app), *(_norm(alias) for alias in APP_ALIASES.get(key, ()))) if name}
+
+
+def _title_parts(title: str) -> set[str]:
+    return {_norm(_UNREAD_COUNT_RE.sub("", part.strip())) for part in _TITLE_SEPARATOR_RE.split(title)} - {""}
 
 
 def window_matches_app(window: ForegroundWindow, app: str) -> bool:
-    """Whether the foreground window belongs to `app` (its name, an alias, its bundle id or its title)."""
-    names = {name for name in _names(app) if name}
+    """Whether the foreground window belongs to `app`; see the module docstring for the rules."""
+    names = _names(app)
     if not names:
         return False
-    if window.app and _norm(window.app) in names:
+    bundles = {bundle.casefold() for bundle in BUNDLE_IDS.get(app.strip().casefold(), ())}
+    if window.bundle_id and window.bundle_id.casefold() in bundles:
         return True
-    bundle = _norm(window.bundle_id)
-    if bundle and any(len(name) >= 3 and name in bundle for name in names):
+    identity = _norm(window.app)
+    if identity in names:
         return True
-    if window.title:
-        for candidate in (app, *APP_ALIASES.get(app.strip().casefold(), ())):
-            if not candidate:
-                continue
-            if not candidate.isascii():
-                if candidate in window.title:
-                    return True
-            elif len(_norm(candidate)) >= 3:
-                if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", window.title, re.IGNORECASE):
-                    return True
-            elif window.title.strip().casefold() == candidate.casefold() or re.search(rf"[-|–] {re.escape(candidate)}$", window.title, re.IGNORECASE):
-                return True  # one- or two-letter names ('X') only as the whole title or its suffix
-    return False
+    if window.bundle_id or (identity and identity not in _BROWSERS):
+        return False  # the OS names another application; its window title does not count
+    return bool(window.title) and not names.isdisjoint(_title_parts(window.title))
 
 
 def looks_like_sign_in(window: ForegroundWindow) -> bool:
@@ -91,17 +117,23 @@ def looks_like_sign_in(window: ForegroundWindow) -> bool:
 
 
 def _run(argv: list[str]) -> str:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS, check=True).stdout  # nosec B603
+    return subprocess.run(argv, capture_output=True, encoding="utf-8", errors="replace", timeout=_TIMEOUT_SECONDS, check=True).stdout  # nosec B603
+
+
+def parse_lsappinfo_info(output: str) -> Optional[ForegroundWindow]:
+    name = _LSAPPINFO_NAME_RE.search(output)
+    bundle = _LSAPPINFO_BUNDLE_RE.search(output)
+    pairs = dict(_KEY_VALUE_RE.findall(output))
+    app = name.group(1) if name else pairs.get("LSDisplayName", "")
+    bundle_id = bundle.group(1) if bundle else pairs.get("CFBundleIdentifier", "")
+    return ForegroundWindow(app=app, bundle_id=bundle_id) if app or bundle_id else None
 
 
 def _macos() -> Optional[ForegroundWindow]:
     front = _run(["lsappinfo", "front"]).strip()
     if not front:
         return None
-    pairs = dict(_KEY_VALUE_RE.findall(_run(["lsappinfo", "info", "-only", "name", "-only", "bundleid", front])))
-    name = pairs.get("LSDisplayName") or pairs.get("name") or ""
-    bundle = pairs.get("CFBundleIdentifier") or pairs.get("bundleid") or pairs.get("bundleID") or ""
-    return ForegroundWindow(app=name, bundle_id=bundle) if name or bundle else None
+    return parse_lsappinfo_info(_run(["lsappinfo", "info", "-only", "name", "-only", "bundleid", front]))
 
 
 def _windows() -> Optional[ForegroundWindow]:
