@@ -156,8 +156,10 @@ async def _idempotent_side_effect(
 
 
 # What a caller who neither requested nor decides an approval may see of it:
-# what is asked and its digests, never the content (typed text, file bodies,
-# messages, scripts).
+# what is asked, never the content (typed text, file bodies, messages, scripts)
+# and never its digests or lengths: an unsalted digest of a short typed secret
+# (a PIN, a one-time code) can be brute-forced. requires_fresh_approval is set
+# by verify() for tainted proposals (security #239).
 _APPROVAL_SUMMARY_KEYS = frozenset({
     "tool", "action", "risk", "reason", "source", "actor", "created_by", "proposer",
     "run_id", "plan_id", "step_index", "scope_hash", "requires_dual_approval", "requires_fresh_approval",
@@ -166,11 +168,11 @@ _APPROVAL_ROW_KEYS = ("id", "status", "created_at", "expires_at", "decided_at", 
 
 
 def _actor_organization(rt, actor: str) -> str:
+    """The organization the gateway assigns to ``actor``. A failing lookup raises: tenant scoping fails closed."""
     resolve = getattr(getattr(rt, "app_sync", None), "_organization_for_actor", None)
-    try:
-        return str(resolve(actor)) if callable(resolve) and actor else "org_default"
-    except Exception:
+    if not callable(resolve) or not actor:
         return "org_default"
+    return str(resolve(actor))
 
 
 def _approval_requester(proposal: dict[str, Any]) -> str:
@@ -180,9 +182,8 @@ def _approval_requester(proposal: dict[str, Any]) -> str:
 def _summarize_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
     summary = {k: v for k, v in proposal.items() if k in _APPROVAL_SUMMARY_KEYS}
     args = proposal.get("args")
-    if isinstance(args, dict):
-        summary["args"] = {k: v for k, v in args.items() if k.endswith(("_sha256", "_length")) or k == "length"}
-        summary["args_withheld"] = len(summary["args"]) != len(args)
+    if isinstance(args, dict) and args:
+        summary["args_withheld"] = True
     return summary
 
 
@@ -196,7 +197,11 @@ def _visible_approvals(rt, rows: list[Any], *, actor: str, role: str) -> list[An
         nested = isinstance(row.get("proposal"), dict)
         proposal = row["proposal"] if nested else row
         requester = _approval_requester(proposal)
-        if _actor_organization(rt, requester) != organization:
+        try:
+            requester_organization = _actor_organization(rt, requester)
+        except Exception:
+            continue  # it cannot be placed in an organization, so nobody may see it
+        if requester_organization != organization:
             continue
         if role == "owner" or (actor and requester == actor):
             visible.append(row)
@@ -358,6 +363,16 @@ def register_agent_routes(app: FastAPI, cfg, rt, approvals, admin: AdminVerifier
         decision = await admin(request, "viewer")
         actor = str(getattr(decision, "actor", "") or "")
         role = str(getattr(decision, "role", "viewer") or "viewer")
+        if role != "owner" and request.headers.get("x-omnidesk-break-glass-session"):
+            # A break-glass session raises its holder to owner, so they can decide
+            # approvals; they must see what they decide. A session that does not
+            # verify leaves them with the summary.
+            try:
+                elevated = await admin(request, "owner")
+            except HTTPException:
+                elevated = None
+            if str(getattr(elevated, "role", "") or "") == "owner":
+                role = "owner"
         return {"ok": True, "approvals": _visible_approvals(rt, approvals.list(status), actor=actor, role=role)}
 
     @app.get("/approvals/{approval_id}/dual-status")
