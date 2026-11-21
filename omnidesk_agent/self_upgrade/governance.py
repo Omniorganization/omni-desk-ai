@@ -130,7 +130,11 @@ class GovernedSelfImprovement:
             "reason": "not eligible",
         }
         checks_ok = bool(regression.get("ok")) and bool(security.get("ok"))
-        if allow_canary and checks_ok and shadow_result is None:
+        human_rejected = proposal.status == "rejected" or (proposal.metadata.get("human_review") or {}).get("decision") == "rejected"
+        if allow_canary and human_rejected:
+            # An owner evaluation must not override a human rejection.
+            canary_result["reason"] = "canary_refused_after_human_rejection"
+        elif allow_canary and checks_ok and shadow_result is None:
             # The state history must not claim a shadow run that never happened,
             # and the canonical path reaches CANARY only through SHADOW_MODE.
             canary_result["reason"] = "canary_requires_shadow_evidence"
