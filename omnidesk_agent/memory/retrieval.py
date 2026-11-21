@@ -78,14 +78,23 @@ def tokenize(text: str) -> list[str]:
 
 
 def memory_document(row: dict[str, Any]) -> str:
-    """The text a memory is matched on. The goal counts twice: it says what the task was."""
+    """The text a memory is matched on: its goal (counted twice, it says what the task
+    was), its failure reason and its own tags.
+
+    Fields that every runtime memory shares are left out: the channel tag, the task
+    type, the tool names and the fixed next-action advice ("reuse successful plan").
+    Matched on, they would make every memory relevant to any task that names the
+    channel or a tool, and the planner would get unrelated memories.
+    """
     def text(value: Any) -> str:
         if isinstance(value, (list, tuple)):
             return " ".join(str(item) for item in value)
         return str(value or "")
 
     goal = text(row.get("goal"))
-    return " ".join([goal, goal, text(row.get("task_type")), text(row.get("solution_attempted")), text(row.get("recommended_next_action")), text(row.get("failure_reason")), text(row.get("tags"))])
+    tags = row.get("tags")
+    own_tags = [tag for tag in (tags if isinstance(tags, (list, tuple)) else [tags]) if tag and tag != row.get("channel")]
+    return " ".join([goal, goal, text(row.get("failure_reason")), text(own_tags)])
 
 
 def bm25_scores(documents: list[list[str]], query: list[str], *, k1: float = 1.5, b: float = 0.75) -> list[float]:

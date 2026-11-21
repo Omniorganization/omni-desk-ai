@@ -165,7 +165,7 @@ class OmniDeskRuntime:
         if settings.embeddings_enabled:
             from omnidesk_agent.memory.embeddings import SentenceTransformerEmbedder
 
-            embedder = SentenceTransformerEmbedder(settings.embedding_model)
+            embedder = SentenceTransformerEmbedder(settings.embedding_model, revision=settings.embedding_revision)
         configure(settings, embedder=embedder)
 
     def _build_channel_adapters(self) -> dict:

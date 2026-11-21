@@ -444,7 +444,7 @@ class ExperienceStore:
                 if current is None or not planner_memory_visible(dict(current), channel=channel, actor=actor, now=time.time()):
                     continue
                 con.execute("UPDATE structured_experiences SET last_used_at=? WHERE id=?", (now, row["id"]))
-                rows.append(row)
+                rows.append(self._decode_structured(dict(current)))  # the locked row, not the ranked snapshot
         return rows
 
     def _fts_candidates(self, con: sqlite3.Connection, task: str, channel: str, actor: str) -> list[sqlite3.Row]:
