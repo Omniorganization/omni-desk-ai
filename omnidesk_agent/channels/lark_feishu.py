@@ -148,6 +148,13 @@ class _BaseLarkFeishuChannel:
         supplied = self._event_token(decoded)
         if not token or not isinstance(supplied, str) or not hmac.compare_digest(supplied, token):
             raise PermissionError(f"invalid {self.name} verification token")
+        if self.encrypt_key:
+            # X-Lark-Signature already covers the body. Lark never sends the
+            # OmniDesk bridge header, so demanding it here (production sets
+            # every *_env, the bridge secret included) would refuse real traffic.
+            return
+        # Plaintext mode: the static verification token is the platform's only
+        # check; a deployment with a body-signing relay requires its HMAC too.
         secret = os.getenv(getattr(self.cfg, "webhook_secret_env", ""), "")
         bridge_signature = header(headers, "x-omnidesk-webhook-signature-256")
         if secret or bridge_signature:
