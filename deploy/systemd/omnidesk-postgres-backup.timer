@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the OmniDesk PostgreSQL backup daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target
