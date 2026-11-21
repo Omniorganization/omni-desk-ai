@@ -134,6 +134,12 @@ class DualApprovalStore:
             )
         return self.status(approval_id)
 
+    def approvals_by(self, actor: str) -> list[str]:
+        """Ids of the dual approvals in which ``actor`` is the first or second approver."""
+        with connect_sqlite(self.db_path) as con:
+            rows = con.execute("SELECT approval_id FROM dual_approvals WHERE first_approver = ? OR second_approver = ?", (actor, actor)).fetchall()
+        return [str(row[0]) for row in rows]
+
     def erase_subject(self, actor: str) -> int:
         """Data-subject erasure: withdraw the actor's lone first approval, anonymize them elsewhere.
 

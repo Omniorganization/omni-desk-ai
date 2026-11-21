@@ -20,7 +20,16 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 # Payload fields of an audit entry that name the person it concerns.
-_SUBJECT_FIELDS = ("actor", "created_by", "proposer", "requester", "requested_by", "approved_by", "approver", "sender_id", "revoked_by")
+_SUBJECT_FIELDS = (
+    "actor", "subject", "created_by", "proposer", "requester", "requested_by", "requesters",
+    "approved_by", "approver", "approvers", "decided_by", "denied_by", "sender_id", "revoked_by",
+)
+
+
+def _names(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value or "")]
 
 
 class IncompleteSubjectRequest(Exception):
@@ -50,7 +59,7 @@ class AuditLogSubjectSource:
                 if not isinstance(entry, dict):
                     continue
                 payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else entry
-                if any(str(payload.get(field) or "") == actor for field in _SUBJECT_FIELDS):
+                if any(actor in _names(payload.get(field)) for field in _SUBJECT_FIELDS):
                     records.append({"event": entry.get("event"), "ts": entry.get("ts"), "payload": payload})
         return records
 

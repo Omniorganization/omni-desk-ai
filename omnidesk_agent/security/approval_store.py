@@ -194,12 +194,15 @@ class ApprovalStore:
     def export_subject(self, actor: str) -> list[dict[str, Any]]:
         """The approvals the actor requested, in full, and the actor's decisions on others' requests."""
         out: list[dict[str, Any]] = []
+        dual: Any = getattr(self, "dual_approval_store", None)
+        dual_approved = set(dual.approvals_by(actor)) if dual is not None and hasattr(dual, "approvals_by") else set()
         for row in self.list():
             result = row.get("result") or {}
             if actor in proposal_requesters(row.get("proposal") or {}):
                 out.append(row)
-            elif actor in _deciders(result):
-                out.append({"id": row["id"], "role": "decider", "status": row.get("status"), "decided_at": row.get("decided_at"), "result": result})
+            elif actor in _deciders(result) or row["id"] in dual_approved:
+                role = "decider" if actor in _deciders(result) else "dual_approver"
+                out.append({"id": row["id"], "role": role, "status": row.get("status"), "decided_at": row.get("decided_at"), "result": result})
         return out
 
     def erase_subject(self, actor: str) -> int:

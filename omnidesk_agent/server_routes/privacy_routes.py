@@ -60,6 +60,20 @@ def _service(cfg: Any, rt: Any) -> DataSubjectService:
     return DataSubjectService(sources, retained=retained, audit=rt.permissions._audit)
 
 
+def _require_dual_controlled(approvals: Any, approval_id: str) -> None:
+    approval = approvals.get(approval_id) if callable(getattr(approvals, "get", None)) else None
+    proposal = (approval or {}).get("proposal") or {}
+    if proposal.get("requires_dual_approval") is not True or proposal.get("risk") != "critical":
+        raise HTTPException(403, "an erasure needs a dual-approved critical erase request")
+    dual: Any = getattr(approvals, "dual_approval_store", None)
+    try:
+        ready = bool(dual is not None and dual.status(approval_id).ready)
+    except KeyError:
+        ready = False
+    if not ready:
+        raise HTTPException(403, "an erasure needs two approvers other than the requester")
+
+
 def register_privacy_routes(app: FastAPI, cfg: Any, rt: Any, approvals: Any, admin: AdminVerifier) -> None:
     @app.get("/admin/privacy/subjects/{actor}/export")
     async def export_subject(actor: str, request: Request):
@@ -100,6 +114,11 @@ def register_privacy_routes(app: FastAPI, cfg: Any, rt: Any, approvals: Any, adm
 
         async def call():
             expected = {"tool": "privacy", "action": "erase_subject", "scope_hash": erase_scope_hash(actor)}
+            # Whatever route created the approval, an erasure needs the four eyes the
+            # erase-request route asks for: a critical, dual-controlled proposal whose
+            # dual approval is complete. An owner cannot create a single-approver
+            # privacy approval through /approvals and approve it alone.
+            await asyncio.to_thread(_require_dual_controlled, approvals, approval_id)
             try:
                 await asyncio.to_thread(approvals.consume_approved, approval_id, expected)
             except PermissionError as exc:

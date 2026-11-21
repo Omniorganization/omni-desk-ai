@@ -261,6 +261,9 @@ class _CappedState:
     def delete(self, namespace, key):
         return self.rows.pop(key, None) is not None
 
+    def put(self, namespace, key, value):
+        self.rows[key] = value
+
 
 def test_a_store_that_cannot_reach_every_row_reports_incomplete_not_success():
     # gateway-clients: listing stopped at the newest 1000 rows, so older rows
@@ -275,3 +278,66 @@ def test_a_store_that_cannot_reach_every_row_reports_incomplete_not_success():
     assert result["complete"] is False and result["incomplete"] == ["agent_run_idempotency"]
 
     assert full.erase_subject("alice") == 1 and full.export_subject("alice") == []
+    assert full.state.rows["k1500"]["response"] == {"ok": True, "erased": True}  # a tombstone, so a replay never re-runs
+
+
+def test_an_erasure_approved_by_one_owner_alone_is_refused(app):
+    # Codex review: an owner could create a privacy approval through
+    # /approvals without dual approval, approve it alone and run the erasure.
+    rt = app.state.runtime
+    from omnidesk_agent.server_routes.privacy_routes import erase_scope_hash
+
+    sneaky = rt.approval_store.create({
+        "tool": "privacy", "action": "erase_subject", "risk": "critical", "args": {"actor": "alice"},
+        "scope_hash": erase_scope_hash("alice"), "requires_dual_approval": False, "actor": "owner-a", "created_by": "owner-a",
+    })
+    rt.approval_store.decide(sneaky, "approved", {"decided_by": "owner-a"})
+    with TestClient(app) as client:
+        refused = client.post(f"/admin/privacy/subjects/alice/erase/{sneaky}", headers=_h("owner", "exec-1"))
+
+    assert refused.status_code == 403
+    assert len(rt.approval_store.export_subject("alice")) == 2  # nothing erased
+    assert rt.approval_store.get(sneaky)["consumed_at"] is None  # and the approval is not used up
+
+
+def test_the_audit_export_finds_every_entry_naming_the_subject(tmp_path):
+    log = tmp_path / "audit.log"
+    entries = [
+        {"event": "privacy.subject_exported", "payload": {"subject": "alice", "requested_by": "owner-a"}},
+        {"event": "approval.decided", "payload": {"approval_id": "a1", "decided_by": "owner-a", "requesters": ["bob", "alice"]}},
+        {"event": "approval.dual_approved", "payload": {"approval_id": "a2", "approver": "carol", "approvers": ["alice", "carol"]}},
+        {"event": "agent_step_finished", "payload": {"actor": "bob"}},
+    ]
+    log.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+
+    events = [r["event"] for r in AuditLogSubjectSource(log).export_subject("alice")]
+
+    assert events == ["privacy.subject_exported", "approval.decided", "approval.dual_approved"]
+
+
+def test_dual_approvers_are_in_the_approval_export(tmp_path):
+    store, dual = _approval_and_dual_stores(tmp_path)
+    critical = store.create(_request("bob", "critical"))
+    dual.approve(critical, "alice")
+
+    exported = store.export_subject("alice")
+
+    assert [(r["id"], r["role"]) for r in exported] == [(critical, "dual_approver")]
+
+
+def test_cached_answers_about_the_subject_become_tombstones_that_never_re_execute(tmp_path):
+    # Codex review: owner B's cached approve response held A's proposal, so
+    # replaying B's request served A's erased data for up to 30 minutes.
+    from omnidesk_agent.security.idempotency import SQLiteSideEffectIdempotencyStore
+
+    cache = SQLiteSideEffectIdempotencyStore(tmp_path / "effects.sqlite3")
+    route, payload = "/approvals/{approval_id}/approve", {"approval_id": "a1"}
+    cache.begin(route=route, actor="owner-b", key="k1", payload=payload, resource_id="a1")
+    cache.complete(route=route, actor="owner-b", key="k1", resource_id="a1", response={"approval": {"proposal": {"created_by": "alice", "args": {"text": "alice's letter"}}}})
+
+    assert len(cache.export_subject("alice")) == 1
+    assert cache.erase_subject("alice") == 1
+
+    replay = cache.begin(route=route, actor="owner-b", key="k1", payload=payload, resource_id="a1")
+    assert replay == {"ok": True, "erased": True}  # the stored answer is gone, and nothing runs again
+    assert cache.export_subject("alice") == []
