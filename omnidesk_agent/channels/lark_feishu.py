@@ -14,7 +14,7 @@ from omnidesk_agent.config import LarkConfig, FeishuConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
 from omnidesk_agent.channels.idempotency import provider_retry_key
-from omnidesk_agent.channels.provider_errors import ensure_provider_success
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success, token_step_failed
 
 # Lark answers an invalid or expired tenant_access_token with these codes; the
 # message was not sent, so it may be repeated once with a fresh token.
@@ -132,22 +132,41 @@ class _BaseLarkFeishuChannel:
         encrypted = isinstance(payload, dict) and isinstance(payload.get("encrypt"), str)
         if self.encrypt_key and not encrypted:
             raise PermissionError(f"{self.name} Encrypt Key is configured but the event is not encrypted")
-        decoded = self._decoded(payload)
-        if not isinstance(decoded, dict):
-            raise PermissionError(f"invalid {self.name} event body")
         if self.encrypt_key:
             signature = header(headers, "x-lark-signature")
-            timestamp = header(headers, "x-lark-request-timestamp")
-            nonce = header(headers, "x-lark-request-nonce")
-            if signature or decoded.get("type") != "url_verification":
-                # Event pushes are signed; only the URL-verification challenge is not.
-                if not signature or not timestamp or not nonce:
-                    raise PermissionError(f"missing {self.name} X-Lark-Signature headers")
-                if not hmac.compare_digest(signature.lower(), lark_signature(timestamp, nonce, self.encrypt_key, body)):
+            if signature:
+                # The signature covers the raw (encrypted) body, so it is checked
+                # before anything is decrypted: unauthenticated ciphertext never
+                # reaches the AES-CBC decryptor.
+                timestamp = header(headers, "x-lark-request-timestamp")
+                nonce = header(headers, "x-lark-request-nonce")
+                if not timestamp or not nonce or not hmac.compare_digest(signature.lower(), lark_signature(timestamp, nonce, self.encrypt_key, body)):
                     raise PermissionError(f"invalid {self.name} X-Lark-Signature")
+                decoded = self._decoded(payload)
+            else:
+                # Only the URL-verification challenge is unsigned. Every failure
+                # here gives the same answer, so a padding or format error is not
+                # distinguishable from a missing signature (no decryption oracle).
+                try:
+                    decoded = self._decoded(payload)
+                except PermissionError:
+                    decoded = None
+                if not isinstance(decoded, dict) or decoded.get("type") != "url_verification":
+                    raise PermissionError(f"missing or invalid {self.name} X-Lark-Signature")
+        else:
+            decoded = payload
+        if not isinstance(decoded, dict):
+            raise PermissionError(f"invalid {self.name} event body")
         supplied = self._event_token(decoded)
         if not token or not isinstance(supplied, str) or not hmac.compare_digest(supplied, token):
             raise PermissionError(f"invalid {self.name} verification token")
+        if self.encrypt_key:
+            # X-Lark-Signature already covers the body. Lark never sends the
+            # OmniDesk bridge header, so demanding it here (production sets
+            # every *_env, the bridge secret included) would refuse real traffic.
+            return
+        # Plaintext mode: the static verification token is the platform's only
+        # check; a deployment with a body-signing relay requires its HMAC too.
         secret = os.getenv(getattr(self.cfg, "webhook_secret_env", ""), "")
         bridge_signature = header(headers, "x-omnidesk-webhook-signature-256")
         if secret or bridge_signature:
@@ -212,14 +231,17 @@ class _BaseLarkFeishuChannel:
         if not refresh and self._tenant_token and self._tenant_token[1] > time.time() + 60:
             return self._tenant_token[0]
         if not self.app_id or not self.app_secret:
-            raise RuntimeError(f"{self.name} app id/secret missing")
-        result = await self.http.post(
-            f"{self.api_base}/auth/v3/tenant_access_token/internal",
-            json={"app_id": self.app_id, "app_secret": self.app_secret},
-            channel=self.name,
-            idempotent=True,
-        )
-        ensure_provider_success(self.name, result)
+            raise before_send(RuntimeError(f"{self.name} app id/secret missing"), "config_error")
+        try:
+            result = await self.http.post(
+                f"{self.api_base}/auth/v3/tenant_access_token/internal",
+                json={"app_id": self.app_id, "app_secret": self.app_secret},
+                channel=self.name,
+                idempotent=True,
+            )
+            ensure_provider_success(self.name, result)
+        except ChannelHttpError as exc:
+            raise token_step_failed(self.name, exc) from exc
         data = result.data if isinstance(result.data, dict) else {}
         token = data.get("tenant_access_token")
         if not isinstance(token, str) or not token:

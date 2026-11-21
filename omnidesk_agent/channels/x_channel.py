@@ -12,6 +12,7 @@ from omnidesk_agent.config import XConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.channels.channel_auth import secret_equals
 from omnidesk_agent.channels.http_client import ChannelHttpClient
+from omnidesk_agent.channels.provider_errors import before_send
 
 X_API_BASE = "https://api.x.com"
 # X sends a short random base64-style challenge. The CRC responder is
@@ -71,6 +72,9 @@ def oauth1_authorization(
     normalized = "&".join(f"{k}={v}" for k, v in sorted((_pct(k), _pct(v)) for k, v in pairs))
     base_string = "&".join([method.upper(), _pct(base_url), _pct(normalized)])
     signing_key = f"{_pct(consumer_secret)}&{_pct(token_secret)}"
+    # HMAC-SHA1 is the signature method OAuth 1.0a defines (RFC 5849 §3.4.2) and
+    # the only one X accepts for user-context requests. The secrets are an HMAC
+    # key for signing this request, not a password being hashed for storage.
     signature = base64.b64encode(hmac.new(signing_key.encode("utf-8"), base_string.encode("utf-8"), hashlib.sha1).digest()).decode("ascii")
     oauth_params["oauth_signature"] = signature
     return "OAuth " + ", ".join(f'{_pct(k)}="{_pct(v)}"' for k, v in sorted(oauth_params.items()))
@@ -157,7 +161,7 @@ class XChannel:
             # Only an OAuth 2.0 *user-context* access token can post; an
             # app-only bearer token is refused by X. Nothing refreshes it.
             return f"Bearer {self.bearer_token}"
-        raise RuntimeError("X user-context credentials are missing (X_API_KEY/X_API_SECRET/X_ACCESS_TOKEN/X_ACCESS_SECRET)")
+        raise before_send(RuntimeError("X user-context credentials are missing (X_API_KEY/X_API_SECRET/X_ACCESS_TOKEN/X_ACCESS_SECRET)"), "config_error")
 
     async def _post(self, url: str, body: dict[str, Any], idempotency_key: Any) -> Any:
         return await self.http.post(url, headers={"Authorization": self._authorization("POST", url)}, json=body, idempotency_key=idempotency_key, channel=self.name)
@@ -169,7 +173,7 @@ class XChannel:
 
     async def send_dm(self, participant_id: str, text: str, **kwargs) -> dict[str, Any]:
         if not _X_USER_ID_RE.fullmatch(participant_id):
-            raise ValueError("unsupported X DM recipient: expected a numeric user id")
+            raise before_send(ValueError("unsupported X DM recipient: expected a numeric user id"), "bad_request")
         result = await self._post(f"{X_API_BASE}/2/dm_conversations/with/{participant_id}/messages", {"text": text}, kwargs.get("idempotency_key"))
         data = result.data.get("data") if isinstance(result.data, dict) and isinstance(result.data.get("data"), dict) else {}
         return {"message_id": data.get("dm_event_id"), "request_id": result.request_id}
@@ -180,4 +184,4 @@ class XChannel:
             return await self.post_text(text, idempotency_key=kwargs.get("idempotency_key"))
         if target.startswith("dm:"):
             return await self.send_dm(target[3:], text, idempotency_key=kwargs.get("idempotency_key"))
-        raise NotImplementedError("X send_text recipient must be 'public' (post) or 'dm:<user id>' (direct message)")
+        raise before_send(NotImplementedError("X send_text recipient must be 'public' (post) or 'dm:<user id>' (direct message)"), "bad_request")

@@ -10,7 +10,7 @@ from typing import Any, Optional
 from omnidesk_agent.config import DingTalkConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
-from omnidesk_agent.channels.provider_errors import ensure_provider_success
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success, token_step_failed
 
 DINGTALK_API_BASE = "https://api.dingtalk.com"
 # DingTalk itself allows one hour of skew; the callback is not retried, so a
@@ -86,12 +86,28 @@ class DingTalkChannel:
         if not hmac.compare_digest(sign.encode("utf-8", "surrogatepass"), dingtalk_sign(timestamp, secret).encode("ascii")):
             raise PermissionError("invalid DingTalk webhook signature")
         # The signature covers only the timestamp, not the body, so each one is
-        # accepted once (per process) within the window.
+        # accepted once within the window: here per process as a first line,
+        # and across replicas and restarts through signed_request_nonce, which
+        # the gateway consumes in the shared webhook store.
         window = 2 * DINGTALK_SIGNATURE_MAX_AGE_SECONDS
         self._seen_signatures = {key: seen for key, seen in self._seen_signatures.items() if now - seen <= window}
         if sign in self._seen_signatures:
             raise PermissionError("replayed DingTalk webhook signature")
         self._seen_signatures[sign] = now
+
+    def signed_request_nonce(self, query_params: dict[str, str], headers: Optional[dict[str, str]] = None):
+        """The verified DingTalk ``sign`` as a one-time value for the shared store.
+
+        Only meaningful after verify_request accepted it. A bridge-signed
+        request (no DingTalk headers) covers its body, so it needs no nonce.
+        """
+        from omnidesk_agent.channels.base import SignedRequestNonce
+        from omnidesk_agent.channels.verify import header
+
+        sign = header(headers or {}, "sign")
+        if not sign or not header(headers or {}, "timestamp"):
+            return None
+        return SignedRequestNonce(f"sign:{sign}", ttl_seconds=2 * DINGTALK_SIGNATURE_MAX_AGE_SECONDS)
 
     def parse_webhook(self, payload: dict[str, Any]) -> Optional[ChannelMessage]:
         conversation_id = str(payload.get("conversationId") or payload.get("conversation_id") or "")
@@ -109,7 +125,7 @@ class DingTalkChannel:
 
     def _signed_webhook_url(self) -> str:
         if not self.robot_token:
-            raise RuntimeError("DingTalk robot token is missing")
+            raise before_send(RuntimeError("DingTalk robot token is missing"), "config_error")
         url = f"https://oapi.dingtalk.com/robot/send?access_token={self.robot_token}"
         if self.robot_secret:
             timestamp = str(round(time.time() * 1000))
@@ -120,8 +136,11 @@ class DingTalkChannel:
         if self._access_token and self._access_token[1] > time.time() + 60:
             return self._access_token[0]
         if not self.app_key or not self.app_secret:
-            raise RuntimeError("DingTalk app key/secret missing")
-        result = await self.http.post(f"{DINGTALK_API_BASE}/v1.0/oauth2/accessToken", json={"appKey": self.app_key, "appSecret": self.app_secret}, channel=self.name, idempotent=True)
+            raise before_send(RuntimeError("DingTalk app key/secret missing"), "config_error")
+        try:
+            result = await self.http.post(f"{DINGTALK_API_BASE}/v1.0/oauth2/accessToken", json={"appKey": self.app_key, "appSecret": self.app_secret}, channel=self.name, idempotent=True)
+        except ChannelHttpError as exc:
+            raise token_step_failed(self.name, exc) from exc
         data = result.data if isinstance(result.data, dict) else {}
         token = data.get("accessToken")
         if not isinstance(token, str) or not token:
@@ -144,9 +163,9 @@ class DingTalkChannel:
         if not target and recipient.startswith("cid"):
             kind, target = "group", recipient
         if kind not in {"group", "user"} or not target:
-            raise PermissionError("DingTalk recipient must be group:<openConversationId>, user:<userId>, or 'robot' for the custom group robot")
+            raise before_send(PermissionError("DingTalk recipient must be group:<openConversationId>, user:<userId>, or 'robot' for the custom group robot"), "bad_request")
         if not self.robot_code:
-            raise RuntimeError("DingTalk robot code is missing (set the app key or robot code)")
+            raise before_send(RuntimeError("DingTalk robot code is missing (set the app key or robot code)"), "config_error")
         msg_param = json.dumps({"content": text}, ensure_ascii=False)
         headers = {"x-acs-dingtalk-access-token": await self._api_access_token()}
         if kind == "group":

@@ -171,10 +171,26 @@ def test_qq_seed_repeats_the_secret_to_32_bytes():
 def test_qq_op13_validation_is_answered_with_an_ed25519_signature(monkeypatch):
     channel = _qq(monkeypatch, QQ_BOT_SECRET=QQ_SECRET)
     payload = {"op": 13, "d": {"plain_token": "Arq0D5A61EgUu4OxUvOp", "event_ts": "1725442341"}}
-    channel.verify_request({"User-Agent": "QQBot-Callback"}, json.dumps(payload).encode(), {}, payload)
+    body = json.dumps(payload).encode()
+    signed = {"User-Agent": "QQBot-Callback", "X-Signature-Timestamp": "1725442341", "X-Signature-Ed25519": qq_signing_key(QQ_SECRET).sign(b"1725442341" + body).hex()}
+    channel.verify_request(signed, body, {}, payload)
+    # The handshake itself must be signed by QQ.
+    with pytest.raises(PermissionError):
+        channel.verify_request({"User-Agent": "QQBot-Callback"}, body, {}, payload)
     answer = channel.webhook_response(channel.parse_webhook(payload), payload)
     assert answer["plain_token"] == "Arq0D5A61EgUu4OxUvOp"
     qq_signing_key(QQ_SECRET).public_key().verify(bytes.fromhex(answer["signature"]), b"1725442341Arq0D5A61EgUu4OxUvOp")
+
+
+def test_qq_response_is_rebuilt_from_a_verified_payload_without_a_parse_result(monkeypatch):
+    # A verified duplicate may skip parsing; QQ still needs the op 13 answer
+    # (it re-sends validation after a timeout) and the op 12 ACK for pushes.
+    channel = _qq(monkeypatch, QQ_BOT_SECRET=QQ_SECRET)
+    op13 = {"op": 13, "d": {"plain_token": "Arq0D5A61EgUu4OxUvOp", "event_ts": "1725442341"}}
+    answer = channel.webhook_response(None, op13)
+    qq_signing_key(QQ_SECRET).public_key().verify(bytes.fromhex(answer["signature"]), b"1725442341Arq0D5A61EgUu4OxUvOp")
+    assert channel.webhook_response(None, {"op": 0, "t": "C2C_MESSAGE_CREATE", "d": {}}) == {"op": 12, "d": 0}
+    assert _qq(monkeypatch).webhook_response(None, op13) is None  # no secret: no signing
 
 
 def test_qq_op13_refuses_values_that_could_forge_an_event_signature(monkeypatch):
@@ -262,3 +278,30 @@ def test_discord_command_gets_an_interaction_response(monkeypatch):
     assert response["type"] == 4 and response["data"]["flags"] == 64
     assert channel.webhook_response(None, {"type": 3}) == {"type": 6}
     assert channel.webhook_response({"type": 1}, {"type": 1}) is None  # PING keeps the route's {"type": 1}
+
+
+def test_teams_and_qq_failures_before_sending_get_a_plain_outcome(monkeypatch):
+    # Same rule as the other adapters: a failed token call is not_sent (not
+    # ambiguous), a refused recipient is bad_request, missing setup config_error.
+    from omnidesk_agent.channels.provider_errors import classify_channel_error
+
+    teams = _teams(monkeypatch, {}, MICROSOFT_TEAMS_APP_PASSWORD="pw")
+
+    async def timed_out(url, **kwargs):
+        raise ChannelHttpError("channel provider network error after the request was sent: timed out", channel="microsoft_teams", request_sent=True, category="timeout")
+
+    teams.http.post = timed_out
+    with pytest.raises(ChannelHttpError) as exc:
+        asyncio.run(teams.send_text("a:conv", "hi"))
+    assert classify_channel_error(exc.value).category == "not_sent"
+    with pytest.raises(PermissionError) as refused:
+        asyncio.run(teams.send_text("a:conv/x", "hi"))
+    assert classify_channel_error(refused.value).category == "bad_request"
+
+    qq = _qq(monkeypatch, QQ_BOT_SECRET=QQ_SECRET)
+    with pytest.raises(PermissionError) as refused:
+        asyncio.run(qq.send_text("dms:G1", "hi"))
+    assert classify_channel_error(refused.value).category == "bad_request"
+    with pytest.raises(RuntimeError) as missing:
+        asyncio.run(qq.send_text("group:G1", "hi"))  # no QQ_BOT_APP_ID
+    assert classify_channel_error(missing.value).category == "config_error"

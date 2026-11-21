@@ -117,7 +117,7 @@ GitHub `main` 必须保持为源码主干；package-only zip 只能作为 Releas
 - WeChat：微信公众号 / 服务号消息服务器（仅明文模式；安全模式/兼容模式的 AES 加密未实现）。
 - Facebook / Instagram：Meta Graph API，适合 Page、Professional/Business 相关能力；个人账号私信自动化不在官方稳定 API 范围内，使用 UI Bridge 时每步都需要批准。
 - UI Bridge：对 WhatsApp Web、Telegram Desktop、WeChat Desktop、浏览器中的 Meta 页面等已登录软件做屏幕级操作，不保存密码、不绕过 MFA；输入发往当前获得焦点的窗口。
-- 其他渠道适配器：LINE、Slack、Lark/飞书、钉钉、X、Google Chat、Matrix、Discord（Ed25519）、Microsoft Teams（配置 App ID 后校验 Bot Framework JWT）、QQ（配置 AppSecret 后校验 Ed25519 并应答 op 13）在入站时校验提供方自己的签名或令牌。Signal 和 iMessage 没有提供方签名，只接受经 OmniDesk HMAC（`x-omnidesk-webhook-signature-256`）重签的流量，需要自建中继，仓库里不带。
+- 其他渠道适配器：LINE、Slack、Lark/飞书、钉钉、X、Google Chat、Matrix、Discord（Ed25519）、Microsoft Teams（配置 App ID 后校验 Bot Framework JWT；未配置时只接受静态 bearer token 或 OmniDesk HMAC）、QQ（配置 AppSecret 后校验 Ed25519 并应答 op 13）在入站时校验提供方自己的签名或令牌。Signal 和 iMessage 没有提供方签名，只接受经 OmniDesk HMAC（`x-omnidesk-webhook-signature-256`）重签的流量，需要自建中继，仓库里不带。
 - 投递语义：对没有原生去重的提供方，超时或 5xx 后不会自动重发，而是记为 `ambiguous` 等待对账；HTTP 200 里的错误码（微信 errcode、钉钉、飞书 code、Slack `ok:false`）按失败处理。详见 [docs/NATIVE_CHANNELS.md](docs/NATIVE_CHANNELS.md#delivery-semantics)。
 - 目前没有任何渠道在仓库里提交过真实提供方的联调记录；解析、签名和错误处理是用提供方文档里的样例和录制的报文测试的。实网契约工作流（`Channel Live Contract`：Slack（Socket Mode）与飞书/Lark（长连接）收发，WhatsApp 先只发送；Telegram 没有测试账号，没有实网运行）见 [docs/NATIVE_CHANNELS.md](docs/NATIVE_CHANNELS.md#live-contract-runs)。
 - OpenClaw 参考生态：Mattermost、Zalo、IRC、Nextcloud Talk、Nostr、Synology Chat、Twitch、WebChat、Voice Wake、Live Canvas 等被记录为 `ecosystem_reference`，可用于规划和 UI Bridge 目标推荐，但不是 OmniDesk 已实现的通道。
@@ -168,6 +168,8 @@ omnidesk experience-search "browser captcha login" --limit 5
 
 The system prefers low-risk skill/workflow improvements before core runtime changes. Core planner, permission, shell, security and self-upgrade changes require human approval.
 
+Learned artefacts (skills, knowledge, prompt guidance, workflow rules) go through a versioned registry: candidate -> evaluation -> stored human approval -> apply -> rollback. See [docs/LEARNED_ARTIFACT_LIFECYCLE.md](docs/LEARNED_ARTIFACT_LIFECYCLE.md). The planner does not read the applied policy yet; that needs the planner hook.
+
 
 ---
 
@@ -178,6 +180,8 @@ Omni-deskAi now includes a governed self-upgrade pipeline:
 ```text
 Upgrade Proposal -> Scoring -> Risk Classification -> Permission Diff -> Sandbox / Regression Tests -> Shadow Mode -> Canary Release -> Human Approval -> Stable Release -> Upgrade Memory
 ```
+
+What each stage does today: proposals and their artefacts are review notes, not code changes; regression and security suites run on the unchanged checkout; "shadow mode" compares two plans the caller supplies, and a canary flag is only set after such a comparison was recorded; the canary flag is not read by the runtime; there is no stable-release step; a canary is recorded as `canary_enabled`, never as `effective`, because no before/after measurement exists. Approving a proposal that failed its checks is refused.
 
 New commands:
 

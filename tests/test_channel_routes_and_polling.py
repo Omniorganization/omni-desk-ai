@@ -54,7 +54,16 @@ def test_qq_route_answers_op13_and_acks_pushes(monkeypatch):
     cfg.channels.qq.enabled = True
     client, queue = _client(cfg, qq=QQChannel(cfg.channels.qq))
 
-    validation = client.post("/webhooks/qq", content=json.dumps({"op": 13, "d": {"plain_token": "tok123", "event_ts": "1725442341"}}))
+    handshake = json.dumps({"op": 13, "d": {"plain_token": "tok123", "event_ts": "1725442341"}}).encode()
+    # Unsigned or forged handshakes get 403 and no plain_token/signature echo.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    forged_sig = Ed25519PrivateKey.generate().sign(b"1725442341" + handshake).hex()
+    for headers in ({}, {"X-Signature-Timestamp": "1725442341"}, {"X-Signature-Ed25519": forged_sig, "X-Signature-Timestamp": "1725442341"}):
+        refused = client.post("/webhooks/qq", content=handshake, headers=headers)
+        assert refused.status_code == 403 and "plain_token" not in refused.text and "signature" not in refused.json()
+
+    validation = client.post("/webhooks/qq", content=handshake, headers={"X-Signature-Ed25519": qq_signing_key(QQ_SECRET).sign(b"1725442341" + handshake).hex(), "X-Signature-Timestamp": "1725442341"})
     assert validation.status_code == 200
     answer = validation.json()
     assert set(answer) == {"plain_token", "signature"}
@@ -70,6 +79,24 @@ def test_qq_route_answers_op13_and_acks_pushes(monkeypatch):
     unsigned = client.post("/webhooks/qq", content=json.dumps({**push, "d": {**push["d"], "id": "m2"}}))
     assert unsigned.status_code == 403
     assert len(queue.messages) == 1
+
+
+def test_forged_or_unsigned_discord_ping_gets_no_pong(monkeypatch):
+    # A PING answer is the endpoint proving itself to Discord; an unverified
+    # request must get 403 and no {"type": 1}.
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    monkeypatch.setenv("DISCORD_PUBLIC_KEY", key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex())
+    cfg = AppConfig()
+    cfg.channels.discord.enabled = True
+    client, queue = _client(cfg, discord=DiscordChannel(cfg.channels.discord))
+    body = b'{"type":1,"id":"ping"}'
+    for headers in ({}, {"X-Signature-Timestamp": "1700000000"}, {"X-Signature-Ed25519": other.sign(b"1700000000" + body).hex(), "X-Signature-Timestamp": "1700000000"}):
+        response = client.post("/webhooks/discord", content=body, headers=headers)
+        assert response.status_code == 403 and "type" not in response.json()
+    assert queue.messages == []
 
 
 def test_discord_route_answers_commands_within_the_interaction_contract(monkeypatch):
@@ -193,11 +220,14 @@ def test_daemon_runs_the_poller_only_in_polling_mode(monkeypatch, tmp_path):
     from omnidesk_agent.daemon import OmniDeskRuntime
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:" + "b" * 35)
-    started = []
+    started, finished = [], []
 
     async def fake_run_forever(self, stop):
         started.append(self)
-        await stop.wait()
+        try:
+            await stop.wait()
+        finally:
+            finished.append(self)
 
     monkeypatch.setattr(TelegramPoller, "run_forever", fake_run_forever)
 
@@ -221,7 +251,51 @@ def test_daemon_runs_the_poller_only_in_polling_mode(monkeypatch, tmp_path):
             rt = runtime(mode)
             await rt.start()
             await asyncio.sleep(0)
+            running = rt._telegram_poll_task
+            assert (running is not None) == (mode == "polling")
             await rt.aclose()
+            # aclose stops the poller and waits for it before closing stores.
+            assert rt._telegram_poll_task is None
+            if running is not None:
+                assert running.done()
 
     asyncio.run(run_case())
-    assert len(started) == 1
+    assert len(started) == 1 and finished == started
+
+
+def test_whatsapp_status_callbacks_get_their_own_rate_bucket_and_event_ids():
+    # Status callbacks have no "from"; they all landed in the "unknown" bucket
+    # (60/min across every customer) and could be throttled with 403.
+    from omnidesk_agent.channels.whatsapp_cloud import WhatsAppCloudChannel
+    from omnidesk_agent.config import WhatsAppCloudConfig
+
+    channel = WhatsAppCloudChannel(WhatsAppCloudConfig())
+
+    def status(state):
+        return {"entry": [{"changes": [{"value": {"metadata": {"phone_number_id": "10950"}, "statuses": [{"id": "wamid.1", "status": state, "timestamp": "1700000000", "recipient_id": "1555"}]}}]}]}
+
+    sent, delivered = channel.extract_envelope(status("sent")), channel.extract_envelope(status("delivered"))
+    assert sent.source_key == "1555" and sent.message_id == "status:wamid.1:sent"
+    assert delivered.message_id != sent.message_id
+    assert channel.parse_webhook(status("read")) == []  # statuses are not tasks
+
+
+
+def test_google_chat_and_wechat_replies_are_what_the_provider_expects(monkeypatch):
+    # Google Chat posts a synchronous body as a reply message ({} = no reply);
+    # WeChat shows users an error for anything but "success" or a passive XML reply.
+    from omnidesk_agent.channels.native_messaging import GoogleChatChannel
+    from omnidesk_agent.channels.wechat_official import WeChatOfficialChannel
+    from omnidesk_agent.config import WeChatOfficialConfig
+
+    monkeypatch.setenv("GOOGLE_CHAT_CHANNEL_TOKEN", "chat-token")
+    cfg = AppConfig()
+    cfg.channels.google_chat.enabled = True
+    client, queue = _client(cfg, google_chat=GoogleChatChannel(cfg.channels.google_chat))
+    event = {"type": "MESSAGE", "eventTime": "2026-11-21T00:00:00Z", "space": {"name": "spaces/AAA"}, "user": {"name": "users/1"}, "message": {"name": "spaces/AAA/messages/m1", "text": "hello", "sender": {"name": "users/1"}}}
+    response = client.post("/webhooks/google-chat", json=event, headers={"x-goog-channel-token": "chat-token"})
+    assert response.status_code == 200 and response.json() == {}
+    assert len(queue.messages) == 1
+
+    reply = WeChatOfficialChannel(WeChatOfficialConfig()).webhook_response(None, b"<xml/>")
+    assert reply.status_code == 200 and reply.body == b"success" and reply.media_type == "text/plain"

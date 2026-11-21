@@ -14,7 +14,7 @@ from omnidesk_agent.channels.channel_auth import CertFetcher, GoogleChatJwtVerif
 from omnidesk_agent.channels.bot_framework import BOT_FRAMEWORK_SCOPE, BotFrameworkJwtVerifier, token_endpoint as bot_framework_token_endpoint
 from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
 from omnidesk_agent.channels.idempotency import provider_retry_key
-from omnidesk_agent.channels.provider_errors import ensure_provider_success
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success, token_step_failed
 from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
 from omnidesk_agent.config import (
     DiscordConfig,
@@ -313,6 +313,14 @@ class GoogleChatChannel:
             return None
         return ChannelMessage(channel=self.name, sender_id=sender or "unknown", thread_id=space or sender, message_id=str(msg.get("name") or ""), text=text, raw=payload)
 
+    def webhook_response(self, parsed: Any, payload: Any) -> dict[str, Any]:
+        """Google Chat posts a synchronous response body as a reply message; ``{}`` means no reply.
+
+        The message is queued and any reply goes out later through the
+        approval-gated send, so the HTTP response must not be our job JSON.
+        """
+        return {}
+
     async def send_text(self, recipient: str, text: str, **kwargs) -> dict[str, Any] | None:
         # Never post to a caller-chosen URL (kwargs or an LLM-chosen recipient):
         # use the operator-configured webhook, or a recipient that is itself a
@@ -325,14 +333,14 @@ class GoogleChatChannel:
             configured_space = google_chat_webhook_space(self.incoming_webhook_url)
             named = recipient if recipient.startswith("spaces/") else (google_chat_webhook_space(recipient) if recipient.startswith("https://") else "")
             if named != configured_space:
-                raise PermissionError(f"Google Chat recipient must be {configured_space}, the space of GOOGLE_CHAT_WEBHOOK_URL")
+                raise before_send(PermissionError(f"Google Chat recipient must be {configured_space}, the space of GOOGLE_CHAT_WEBHOOK_URL"), "bad_request")
             url = self.incoming_webhook_url
         else:
             url = recipient
             if not url.startswith("https://"):
-                raise RuntimeError("Google Chat incoming webhook URL is missing")
+                raise before_send(RuntimeError("Google Chat incoming webhook URL is missing"), "config_error")
             if google_chat_webhook_space(url) not in self.allowed_outbound_spaces:
-                raise PermissionError("Google Chat space is not in channels.google_chat.allowed_outbound_spaces")
+                raise before_send(PermissionError("Google Chat space is not in channels.google_chat.allowed_outbound_spaces"), "bad_request")
         result = await self.http.post(str(url), json={"text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
         data = result.data if isinstance(result.data, dict) else {}
         return {"message_id": data.get("name"), "request_id": result.request_id}
@@ -499,12 +507,15 @@ class MicrosoftTeamsChannel:
             return self.bot_token or _require_env(self.cfg.bot_token_env, channel=self.name)
         if not refresh and self._access_token and self._access_token[1] > time.time() + 60:
             return self._access_token[0]
-        result = await self.http.post(
-            bot_framework_token_endpoint(self.tenant_id),
-            data={"grant_type": "client_credentials", "client_id": self.app_id, "client_secret": self.app_password, "scope": BOT_FRAMEWORK_SCOPE},
-            channel=self.name,
-            idempotent=True,
-        )
+        try:
+            result = await self.http.post(
+                bot_framework_token_endpoint(self.tenant_id),
+                data={"grant_type": "client_credentials", "client_id": self.app_id, "client_secret": self.app_password, "scope": BOT_FRAMEWORK_SCOPE},
+                channel=self.name,
+                idempotent=True,
+            )
+        except ChannelHttpError as exc:
+            raise token_step_failed(self.name, exc) from exc
         data = result.data if isinstance(result.data, dict) else {}
         token = data.get("access_token")
         if not isinstance(token, str) or not token:
@@ -521,10 +532,10 @@ class MicrosoftTeamsChannel:
         # configured value; a caller-supplied service_url kwarg is ignored.
         service_url = self.cfg.service_url
         if not service_url:
-            raise RuntimeError("Teams service_url is missing")
+            raise before_send(RuntimeError("Teams service_url is missing"), "config_error")
         recipient = str(recipient or "")
         if not recipient or any(ch in recipient for ch in "/?#") or any(ch.isspace() for ch in recipient):
-            raise PermissionError("Teams recipient must be a Bot Framework conversation id")
+            raise before_send(PermissionError("Teams recipient must be a Bot Framework conversation id"), "bad_request")
         url = f"{str(service_url).rstrip('/')}/v3/conversations/{recipient}/activities"
         body = {"type": "message", "text": text}
         for attempt in range(2):
@@ -611,9 +622,10 @@ class MatrixChannel:
 
 
 QQ_ACCESS_TOKEN_URL = "https://api.bot.qq.com/app/getAppAccessToken"
-# op 13 values the callback validation will sign. Event signatures cover
-# timestamp + a JSON object body, so a signed "event_ts + plain_token" made of
-# these characters can never double as an event signature.
+# op 13 values the callback validation will sign. The handshake is itself
+# signature-checked; restricting what we sign also guarantees that a signed
+# "event_ts + plain_token" can never double as an event signature (those
+# cover timestamp + a JSON object body).
 _QQ_PLAIN_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _QQ_EVENT_TS_RE = re.compile(r"[0-9]{1,20}")
 _QQ_MESSAGE_EVENTS = {"GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}
@@ -666,12 +678,13 @@ class QQChannel:
         if self.bot_secret:
             if not isinstance(payload, dict):
                 raise PermissionError("QQ callback body must be a JSON object")
-            signature = header(headers, "x-signature-ed25519")
-            if signature or payload.get("op") != 13:
-                timestamp = header(headers, "x-signature-timestamp")
-                if not (timestamp.isascii() and timestamp.isdigit()):
-                    raise PermissionError("missing or invalid QQ X-Signature-Timestamp")
-                verify_ed25519(self._public_key_hex(), timestamp.encode("utf-8") + body, signature, channel="QQ")
+            # Every callback, the op 13 URL validation included, carries QQ's
+            # signature: Tencent's own SDK (botgo interaction/webhook) verifies
+            # it before answering op 13, so an unsigned handshake gets no echo.
+            timestamp = header(headers, "x-signature-timestamp")
+            if not (timestamp.isascii() and timestamp.isdigit()):
+                raise PermissionError("missing or invalid QQ X-Signature-Timestamp")
+            verify_ed25519(self._public_key_hex(), timestamp.encode("utf-8") + body, header(headers, "x-signature-ed25519"), channel="QQ")
             return
         verify_hmac_sha256(body, self.webhook_secret or env_secret(self.cfg.webhook_secret_env, channel=self.name), header(headers, "x-omnidesk-webhook-signature-256"), prefix="sha256=")
 
@@ -729,10 +742,19 @@ class QQChannel:
         return ChannelMessage(channel=self.name, sender_id=sender or "unknown", thread_id=thread or source or sender, message_id=mid, text=text, raw=payload)
 
     def webhook_response(self, parsed: Any, payload: Any) -> Optional[dict[str, Any]]:
-        """Body QQ expects back: the op 13 answer as is, otherwise the op 12 HTTP callback ACK."""
+        """Body QQ expects back: the op 13 answer, otherwise the op 12 HTTP callback ACK.
+
+        Only called for a verified request. The op 13 answer is a pure function
+        of that signed request, so it is rebuilt from ``payload`` when no parse
+        result is passed (for example for a verified duplicate delivery).
+        """
         if isinstance(parsed, dict) and "plain_token" in parsed:
             return parsed
-        if self.bot_secret and isinstance(payload, dict) and payload.get("op") == 0:
+        if not self.bot_secret or not isinstance(payload, dict):
+            return None
+        if payload.get("op") == 13:
+            return self.callback_validation(payload)
+        if payload.get("op") == 0:
             return {"op": 12, "d": 0}
         return None
 
@@ -741,8 +763,11 @@ class QQChannel:
         if self.bot_secret:
             if refresh or not self._access_token or self._access_token[1] <= time.time() + 60:
                 if not app_id:
-                    raise RuntimeError(f"qq required environment variable is missing: {self.cfg.bot_app_id_env}")
-                result = await self.http.post(QQ_ACCESS_TOKEN_URL, json={"appId": app_id, "clientSecret": self.bot_secret}, channel=self.name, idempotent=True)
+                    raise before_send(RuntimeError(f"qq required environment variable is missing: {self.cfg.bot_app_id_env}"), "config_error")
+                try:
+                    result = await self.http.post(QQ_ACCESS_TOKEN_URL, json={"appId": app_id, "clientSecret": self.bot_secret}, channel=self.name, idempotent=True)
+                except ChannelHttpError as exc:
+                    raise token_step_failed(self.name, exc) from exc
                 data = result.data if isinstance(result.data, dict) else {}
                 token = data.get("access_token")
                 if not isinstance(token, str) or not token:
@@ -762,7 +787,7 @@ class QQChannel:
         if not target:
             target_type, target = "group", recipient
         if not target or any(ch in target for ch in "/?#") or any(ch.isspace() for ch in target):
-            raise PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>")
+            raise before_send(PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>"), "bad_request")
         if target_type == "channel":
             path = f"/channels/{target}/messages"
             body: dict[str, Any] = {"content": text}
@@ -773,7 +798,7 @@ class QQChannel:
             path = f"/v2/groups/{target}/messages"
             body = {"content": text, "msg_type": 0}
         else:
-            raise PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>")
+            raise before_send(PermissionError("QQ recipient must be group:<openid>, channel:<id> or c2c:<openid>"), "bad_request")
         app_id = self.bot_app_id or os.getenv(self.cfg.bot_app_id_env, "")
         for attempt in range(2):
             headers = {"Authorization": await self._auth_header(refresh=attempt > 0), **_JSON_HEADERS}
