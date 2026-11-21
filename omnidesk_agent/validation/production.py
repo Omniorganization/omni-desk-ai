@@ -361,6 +361,14 @@ def _validate_ui_bridge_policy(cfg: AppConfig, issues: list[str]) -> None:
 
 
 def _validate_high_risk_approval_policy(cfg: AppConfig, issues: list[str]) -> None:
+    if cfg.permissions.approval_mode != "remote_approval":
+        # Only remote approvals are recorded with an authenticated approver, can
+        # be dual for critical risk, and work without a console on the server.
+        issues.append("permissions.approval_mode must be remote_approval in production")
+    if cfg.permissions.default_mode == "allow":
+        # Checked whatever approval_mode is set, so switching the mode later
+        # cannot silently turn on unapproved high-risk execution.
+        issues.append("permissions.default_mode must not be allow in production; it runs high-risk actions without approval")
     high_risk_tools = {"computer", "shell", "channels", "files", "ui_bridge", "browser", "gmail"}
     enabled_high_risk = {
         name
