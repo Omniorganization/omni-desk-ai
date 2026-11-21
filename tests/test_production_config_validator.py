@@ -11,6 +11,10 @@ from omnidesk_agent.validation.production import (
 
 
 def _enable_postgres_production_state(cfg: AppConfig) -> None:
+    # Production configs approve remotely, as the shipped templates do; a test
+    # that sets another mode on purpose keeps it.
+    if cfg.permissions.approval_mode == "interactive_cli":
+        cfg.permissions.approval_mode = "remote_approval"
     cfg.storage.backend = "postgres"
     cfg.app_sync.backend = "postgres"
     cfg.api_resource_guard.backend = "postgres"

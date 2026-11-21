@@ -168,6 +168,8 @@ omnidesk experience-search "browser captcha login" --limit 5
 
 The system prefers low-risk skill/workflow improvements before core runtime changes. Core planner, permission, shell, security and self-upgrade changes require human approval.
 
+Learned artefacts (skills, knowledge, prompt guidance, workflow rules) go through a versioned registry: candidate -> evaluation -> stored human approval -> apply -> rollback. See [docs/LEARNED_ARTIFACT_LIFECYCLE.md](docs/LEARNED_ARTIFACT_LIFECYCLE.md). The planner does not read the applied policy yet; that needs the planner hook.
+
 
 ---
 
@@ -178,6 +180,8 @@ Omni-deskAi now includes a governed self-upgrade pipeline:
 ```text
 Upgrade Proposal -> Scoring -> Risk Classification -> Permission Diff -> Sandbox / Regression Tests -> Shadow Mode -> Canary Release -> Human Approval -> Stable Release -> Upgrade Memory
 ```
+
+What each stage does today: proposals and their artefacts are review notes, not code changes; regression and security suites run on the unchanged checkout; "shadow mode" compares two plans the caller supplies, and a canary flag is only set after such a comparison was recorded; the canary flag is not read by the runtime; there is no stable-release step; a canary is recorded as `canary_enabled`, never as `effective`, because no before/after measurement exists. Approving a proposal that failed its checks is refused.
 
 New commands:
 
