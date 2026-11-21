@@ -1,0 +1,44 @@
+[Unit]
+Description=OmniDesk out-of-process watchdog (restores the last known-good config and restarts the gateway)
+Documentation=file:/opt/omnidesk/docs/SELF_HEALING.md
+After=omnidesk-agent.service
+Wants=omnidesk-agent.service
+
+[Service]
+Type=simple
+# Root only because it rewrites /etc/omnidesk/config.yaml from its known-good
+# snapshot and restarts the gateway unit; the restart is a fixed argv (no shell).
+#
+# Operators, once this unit is installed:
+# - Stop this unit before stopping the gateway on purpose, or it restarts it.
+# - /health answers that are not 2xx (429 throttling included), timeouts and
+#   refused connections count as failures. Three in a row, 10 s apart, trigger a
+#   restart, after restoring the known-good config if the live one differs.
+#   There is no startup grace after a restart.
+# - After 4 restarts in an hour it only records "escalated" for a human.
+# - Every check is printed to the journal; every non-healthy step is appended to
+#   /var/lib/omnidesk-watchdog/watchdog.jsonl.
+ExecStart=/opt/omnidesk/venv/bin/python -m omnidesk_agent.self_healing.watchdog \
+  --health-url http://127.0.0.1:18789/health \
+  --config /etc/omnidesk/config.yaml \
+  --state-dir /var/lib/omnidesk-watchdog \
+  --restart-cmd /usr/bin/systemctl --restart-cmd restart --restart-cmd omnidesk-agent.service \
+  --failures 3 --interval 10 --good-after 300 --max-restarts-per-hour 4
+Restart=always
+RestartSec=10
+StateDirectory=omnidesk-watchdog
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/omnidesk /var/lib/omnidesk-watchdog
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
