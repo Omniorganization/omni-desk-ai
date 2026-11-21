@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import re
 import sys
+import threading
 import time
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from omnidesk_agent.config import PermissionConfig
 from omnidesk_agent.security.approval_required import ApprovalRequired
-from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain, AuditIntegrityError
+from omnidesk_agent.security.audit_chain import DEFAULT_KEY_ENV, AuditChain, AuditIntegrityError, dev_key_file_for, load_audit_key
 from omnidesk_agent.security.dual_approval import stamp_requester
 
 
@@ -29,6 +32,11 @@ class PermissionDecision:
         self.reason = reason
 
 
+# Sub-key label for keyed content digests and scope hashes. It differs from the
+# chain's and the checkpoints' keys, so no digest can stand in for a chain MAC.
+SCOPE_HASH_KEY_LABEL = b"omnidesk/scope-hash/v1"
+
+
 class PermissionManager:
     def __init__(self, cfg: PermissionConfig, approval_store=None):
         self.cfg = cfg
@@ -42,10 +50,34 @@ class PermissionManager:
         self.audit_log = cfg.audit_log.expanduser()
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
         # Keyed hash chain; the key comes from the secret store (see audit_chain).
-        self.audit_chain = AuditChain(self.audit_log, key_env=str(getattr(cfg, "audit_checkpoint_hmac_key_env", "") or DEFAULT_KEY_ENV))
+        self._audit_key_env = str(getattr(cfg, "audit_checkpoint_hmac_key_env", "") or DEFAULT_KEY_ENV)
+        self.audit_chain = AuditChain(self.audit_log, key_env=self._audit_key_env)
+        # Derived on first use; the raw audit key is never kept here.
+        self._digest_key: bytes | None = None
+        self._digest_lock = threading.Lock()
         # Set when an audit log fails verification. Every later decision is
         # refused until an operator seals the log (audit_chain rotate).
         self.audit_integrity_failure: str | None = None
+
+    def keyed_digest(self, data: bytes) -> str:
+        """HMAC-SHA256 hex digest of ``data``, for content digests and scope hashes.
+
+        Unkeyed SHA-256 of approved content lets anyone who can read the audit
+        log or the approval records test guesses at low-entropy content, such as
+        a password the agent types. The key is derived from the audit key in the
+        secret store under SCOPE_HASH_KEY_LABEL, so it is the same across
+        restarts and replicas, and only this object holds it. Raises
+        AuditIntegrityError when the audit key is unavailable (production
+        without the secret): nothing could be audited then either.
+        """
+        key = self._digest_key
+        if key is None:
+            with self._digest_lock:
+                if self._digest_key is None:
+                    raw = load_audit_key(self._audit_key_env, dev_key_file=dev_key_file_for(self.audit_log))
+                    self._digest_key = hmac.new(raw, SCOPE_HASH_KEY_LABEL, hashlib.sha256).digest()
+                key = self._digest_key
+        return hmac.new(key, bytes(data), hashlib.sha256).hexdigest()
 
     def session_key(self, proposal_dict: dict[str, Any]) -> str:
         source = str(proposal_dict.get("source", "unknown"))

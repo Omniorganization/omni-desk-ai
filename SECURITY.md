@@ -47,6 +47,7 @@ What the code enforces today (`omnidesk_agent/security/audit_chain.py`, `audit_w
   - Anyone holding the key can rebuild the chain.
   - Without off-host anchor copies, deleting the newest entries is only caught by anchors that were not deleted with them.
   - A chain detects edits; it does not prevent them. Logs written before this change, at `workspace.root/admin_auth_audit.jsonl`, are left where they are.
+- **Keyed digests.** `PermissionManager.keyed_digest(data)` is HMAC-SHA256 under a sub-key derived from the audit key (label `omnidesk/scope-hash/v1`). Agent-core's tools use it for content digests (`x_sha256`) and scope hashes, so a low-entropy value such as a typed password cannot be guessed offline from an audit entry or approval record. The key is the same across restarts and replicas. Without the audit key in production, no digest can be computed, which fails closed. Digests written before the switch stay plain SHA-256.
 
 ## Reporting
 

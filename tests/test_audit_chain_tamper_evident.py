@@ -9,6 +9,7 @@ the way the audit describes and must fail if the weakness comes back.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import multiprocessing
 import os
@@ -533,3 +534,37 @@ def test_a_failed_revoke_never_hides_the_audit_failure():
         audit_transition(BrokenChain(), "break_glass.open", {"session_id": "bg-1"}, revoke=revoke_missing_row)  # type: ignore[arg-type]
 
     assert revoked == ["bg-1"]  # the revoke was still attempted
+
+
+def _digest_manager(tmp_path, name="audit.log"):
+    cfg = PermissionConfig()
+    cfg.audit_log = tmp_path / name
+    return PermissionManager(cfg)
+
+
+def test_keyed_digests_resist_offline_guessing_and_stay_stable(tmp_path, monkeypatch):
+    # CodeQL (py/weak-sensitive-data-hashing): an unkeyed SHA-256 of a typed
+    # password in an audit entry or approval record can be guessed offline.
+    # agent-core's tools.base uses PermissionManager.keyed_digest instead.
+    from omnidesk_agent.security.audit_chain import derive_chain_key
+
+    monkeypatch.setenv("OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY", "k" * 40)
+    first, second = _digest_manager(tmp_path), _digest_manager(tmp_path, "other.log")
+    typed = b"correct horse battery staple"
+
+    assert first.keyed_digest(typed) == second.keyed_digest(typed)  # every instance and replica agrees
+    assert first.keyed_digest(typed) != hashlib.sha256(typed).hexdigest()  # not guessable without the key
+    assert first.keyed_digest(typed) != hmac.new(derive_chain_key(b"k" * 40), typed, hashlib.sha256).hexdigest()  # domain separated
+    assert len(first.keyed_digest(typed)) == 64  # same shape as the hex SHA-256 fields it replaces
+
+    monkeypatch.setenv("OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY", "z" * 40)
+    assert _digest_manager(tmp_path, "third.log").keyed_digest(typed) != first.keyed_digest(typed)
+
+
+def test_keyed_digest_fails_closed_without_the_key_in_production(tmp_path, monkeypatch):
+    from omnidesk_agent.security.audit_errors import AuditIntegrityError
+
+    monkeypatch.delenv("OMNIDESK_AUDIT_CHECKPOINT_HMAC_KEY", raising=False)
+    monkeypatch.setenv("OMNIDESK_ENV", "production")
+    with pytest.raises(AuditIntegrityError):
+        _digest_manager(tmp_path).keyed_digest(b"x")
