@@ -81,6 +81,13 @@
       "client_surfaces": ["desktop", "mobile", "web_admin"]
     },
     {
+      "method": "DELETE",
+      "path": "/app/conversations/{conversation_id}",
+      "role": "operator",
+      "description": "Erase one of the caller's conversations, its messages, chat replays, notifications, pushes, idempotency responses and offline-sync payloads; sync events lose the title. Tasks and approvals stay as the organization's record.",
+      "client_surfaces": []
+    },
+    {
       "method": "POST",
       "path": "/app/conversations/{conversation_id}/messages",
       "role": "operator",

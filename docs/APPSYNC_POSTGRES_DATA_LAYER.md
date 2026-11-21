@@ -133,7 +133,29 @@ python -m omnidesk_agent.appsync.retention --namespace <namespace> --dry-run
 | finished chat requests (and their stream events) | 30 | `..._CHAT_REQUESTS_DAYS` | completed, failed or interrupted |
 
 Every override must be at least 1 day. Conversations and messages are user data
-and are not pruned by age.
+and are not pruned by age; they are deleted on request (below).
+
+The same elected pass prunes the core runtime state when it is on PostgreSQL
+(`omnidesk_agent/repositories/retention.py`): expired structured memories go
+through the memory store's audited purge, oldest first (it used to see only the
+newest 1000 rows); expired side-effect idempotency rows are deleted; the model
+response cache (`OMNIDESK_CORE_RETENTION_LLM_CACHE_DAYS`, default 7) and model
+usage records (`OMNIDESK_CORE_RETENTION_LLM_USAGE_DAYS`, default 90, which covers
+the monthly budget window) are pruned by age. The per-call budget count now uses
+an expression index on `value_json->>'task_id'`, and lookups by
+`value_json->>'id'` have one too.
+
+## Deleting a conversation
+
+`DELETE /app/conversations/{conversation_id}` (operator; only the conversation's
+own actor, 404 otherwise) erases it in one transaction: its messages, chat
+requests and their stream events, notifications and pushes about it, the actor's
+idempotency responses that contain it, and the actor's offline-sync inbox,
+outbox and conflict rows that carry it. Sync events keep their numbers, so
+readers' cursors stay valid, but lose the conversation title, and a
+`conversation.deleted` event tells the owner's devices to drop their copy.
+Tasks and approvals created from the conversation stay: they are the
+organization's record of requested and approved actions.
 
 Sync events are pruned by sequence number: the watermark (`pruned_through`) is
 committed before any event is deleted, so a reader below it is reset rather than

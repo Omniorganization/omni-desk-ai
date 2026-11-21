@@ -86,6 +86,22 @@ class MemoryJsonState:
     def count_by_field(self, namespace: str, field: str, value: str) -> int:
         return sum(row.get(field) == value for row in self.rows.get(namespace, {}).values())
 
+    def list_expired(self, namespace: str, *, before: float, limit: int = 1000, channel: Optional[str] = None, actor: Optional[str] = None) -> list[dict[str, Any]]:
+        rows = [
+            dict(row) for row in self.rows.get(namespace, {}).values()
+            if isinstance(row.get("expires_at"), (int, float)) and float(row["expires_at"]) <= before
+            and (channel is None or row.get("channel") == channel) and (actor is None or row.get("actor") == actor)
+        ]
+        rows.sort(key=lambda row: float(row.get("created_at") or 0))
+        return rows[:limit]
+
+    def delete_expired(self, namespace: str, *, before: float, limit: int = 1000) -> int:
+        bucket = self.rows.get(namespace, {})
+        doomed = [key for key, row in bucket.items() if isinstance(row.get("expires_at"), (int, float)) and float(row["expires_at"]) <= before][:limit]
+        for key in doomed:
+            del bucket[key]
+        return len(doomed)
+
     def list_planner_memories(self, namespace: str, *, channel: str, actor: str, limit: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.rows.get(namespace, {}).values()
                 if row.get("channel") == channel and row.get("actor") == actor][:limit]

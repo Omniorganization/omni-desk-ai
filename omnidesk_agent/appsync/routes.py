@@ -570,6 +570,18 @@ def register_appsync_routes(
         metrics.inc("omnidesk_app_task_created_total") if metrics else None
         return {"ok": True, **result}
 
+    @app.delete("/app/conversations/{conversation_id}")
+    async def app_delete_conversation(conversation_id: str, request: Request):
+        decision = await admin(request, "operator")
+        try:
+            result = await run_blocking(store.delete_conversation, actor=_actor(decision), conversation_id=conversation_id)
+        except KeyError as exc:
+            raise HTTPException(404, "conversation not found") from exc
+        except PermissionError as exc:
+            raise HTTPException(404, "conversation not found") from exc
+        metrics.inc("omnidesk_app_conversation_deleted_total") if metrics else None
+        return {"ok": True, **result}
+
     @app.get("/app/conversations/{conversation_id}/messages")
     async def app_list_messages(conversation_id: str, request: Request):
         decision = await admin(request, "viewer")
