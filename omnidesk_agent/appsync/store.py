@@ -1651,7 +1651,6 @@ class AppSyncStore:
                 drop(self.messages, lambda _k, item: item.actor == actor or item.conversation_id in scope["conversations"]),
                 drop(self.conversations, lambda key, _v: key in scope["conversations"]),
                 drop(self.tasks, lambda key, _v: key in scope["tasks"]),
-                drop(self.approvals, lambda key, _v: key in scope["approvals"]),
                 drop(self.notifications, lambda _k, item: item.related_id in related),
                 drop(self.push_outbox, lambda _k, item: item.device_id in devices or item.related_id in related),
                 drop(self.runtimes, lambda key, _v: key in devices),
@@ -1677,7 +1676,12 @@ class AppSyncStore:
                 if enrollment.requested_by == actor:
                     subject.erase_enrollment(enrollment)
                     count += 1
-            count += sum(1 for approval in self.approvals.values() if subject.erase_decision(approval, actor=actor))
+            # Approvals stay, without the person; what they left pending is withdrawn.
+            for approval in self.approvals.values():
+                requested = approval.approval_id in scope["approvals"]
+                if requested:
+                    subject.erase_request(approval, actor=actor, now=now)
+                count += int(subject.erase_decision(approval, actor=actor) or requested)
             for event in self.events:
                 raw = event.get("payload")
                 payload: dict[str, Any] = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}

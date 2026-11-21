@@ -363,7 +363,6 @@ SUBJECT_ERASURE_SQL: tuple[tuple[str, str], ...] = (
     ("conversations", "DELETE FROM omnidesk_appsync_conversations WHERE namespace = %(namespace)s AND conversation_id = ANY(%(conversation_ids)s)"),
     ("task_leases", "DELETE FROM omnidesk_appsync_task_leases WHERE namespace = %(namespace)s AND task_id = ANY(%(task_ids)s)"),
     ("tasks", "DELETE FROM omnidesk_appsync_tasks WHERE namespace = %(namespace)s AND task_id = ANY(%(task_ids)s)"),
-    ("approvals", "DELETE FROM omnidesk_appsync_approvals WHERE namespace = %(namespace)s AND approval_id = ANY(%(approval_ids)s)"),
     ("notifications", "DELETE FROM omnidesk_appsync_notifications WHERE namespace = %(namespace)s AND related_id = ANY(%(related_ids)s)"),
     # Notifications the actor caused on someone else's records stay with those records.
     ("notifications_anonymised", "UPDATE omnidesk_appsync_notifications SET actor = %(erased)s WHERE namespace = %(namespace)s AND actor = %(actor)s"),
@@ -1784,8 +1783,13 @@ class MigratedMultiInstancePostgresAppSyncStore:
                 subject.erase_enrollment(enrollment)
                 self._update(tx, ENROLLMENTS, enrollment)
                 count += 1
-            for approval in self._select(tx, APPROVALS, "(decided_by = %(actor)s OR approved_by ? %(actor)s)", params, for_update=True):
-                if subject.erase_decision(approval, actor=actor):
+            # Approvals stay, without the person; what they left pending is withdrawn.
+            requested_ids = set(params["approval_ids"])
+            for approval in self._select(tx, APPROVALS, "(approval_id = ANY(%(approval_ids)s) OR decided_by = %(actor)s OR approved_by ? %(actor)s)", params, for_update=True):
+                requested = approval.approval_id in requested_ids
+                if requested:
+                    subject.erase_request(approval, actor=actor, now=tx.now)
+                if subject.erase_decision(approval, actor=actor) or requested:
                     self._update(tx, APPROVALS, approval)
                     count += 1
             tx.cur.execute(SUBJECT_EVENTS_SQL, {**params, "actor_json": json.dumps(actor, ensure_ascii=False)})

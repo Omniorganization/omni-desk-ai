@@ -10,15 +10,20 @@ Erasure deletes:
 - the person's user profile, conversations, messages and chat requests;
 - their tasks. A desktop that still holds one gets "task not found" when it
   reports back, so nothing is written back;
-- approvals they requested, or that gate their tasks;
-- notifications about any of these records; pushes to their devices or about
-  these records; their devices' runtime status;
+- notifications about these records or about approvals they requested; pushes
+  to their devices or about those records; their devices' runtime status;
 - their offline-sync records (outbox, inbox, cursors, conflicts, and the
   operation-log entries of their operations), and anyone's offline-sync record
-  that names one of the erased records by id, so no change to them leaves for
-  the remote gateway; their idempotency replays.
+  that names one of those records by id, so no change to them leaves for the
+  remote gateway; their idempotency replays.
 
-It keeps these rows, without the person:
+It keeps these rows, without the person (for approvals this is security's one
+rule for every store, SECURITY.md in #270):
+- Approvals they requested, or that gate their tasks: the requester becomes
+  ``[erased]`` and content is withheld. An agent step's proposal keeps only
+  ``*_sha256``/``*_length`` arguments, as the ledger's does; a desktop task's
+  action keeps only its capability. A pending one is withdrawn (rejected,
+  "requester erased").
 - Devices stay revoked, so an erased device can never verify, register or get
   a push again. Name and push token are removed; the actor becomes
   ``[erased]``.
@@ -36,8 +41,9 @@ It keeps these rows, without the person:
   becomes ``[erased]``. Events by the person or about an erased record keep
   only identifiers and states.
 
-Not covered here: security's audit logs (kept by design, see
-``privacy.data_subject``); the approval ledger, which erases its own rows.
+Not covered here: security's audit logs, kept by design (see
+``privacy.data_subject``); the approval ledger, which applies the same approval
+rule to its own rows (#270).
 """
 
 from __future__ import annotations
@@ -114,6 +120,46 @@ def erase_enrollment(enrollment: DeviceEnrollmentRecord) -> None:
     enrollment.requested_by = ERASED_ACTOR
     if enrollment.status in ("pending", "paired"):
         enrollment.status = "revoked"
+
+
+_REQUEST_KEYS = ("created_by", "proposer", "actor", "requested_by")
+
+
+def anonymized_proposal(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
+    """The ledger's rule for a request by an erased subject (security.dual_approval.anonymized_request,
+    #270): requester fields become [erased], argument content is withheld."""
+    out = dict(proposal)
+    for key in _REQUEST_KEYS:
+        if out.get(key) == actor:
+            out[key] = ERASED_ACTOR
+    args = out.get("args")
+    if isinstance(args, dict):
+        kept = {k: v for k, v in cast(dict[str, Any], args).items() if str(k).endswith(("_sha256", "_length"))}
+        out["args"] = kept
+        out["args_withheld"] = len(kept) != len(cast(dict[str, Any], args))
+    return out
+
+
+def erase_request(approval: ApprovalRecord, *, actor: str, now: float) -> None:
+    """An approval the erased person requested stays as the record of a requested action, without them."""
+    approval.requested_by = ERASED_ACTOR
+    detail = dict(approval.action_detail or {})
+    if detail.get("kind") == "agent":
+        detail["proposal"] = anonymized_proposal(cast(dict[str, Any], detail.get("proposal") or {}), actor)
+        approval.reason = "An agent step waits for approval."  # the proposal's reason was about their task
+    else:
+        # A desktop task's action, and the text describing it, name what it touched.
+        kept = {key: value for key, value in detail.items() if key == "capability" or str(key).endswith(("_sha256", "_length"))}
+        if kept != detail:
+            kept["args_withheld"] = True
+        detail = kept
+        approval.action = f"{kept.get('capability') or 'desktop task'} (details withheld)"
+    approval.action_detail = detail
+    if approval.status == "pending":
+        approval.status = "rejected"
+        approval.decided_by = ERASED_ACTOR
+        approval.decision_reason = "requester erased"
+        approval.decided_at = now
 
 
 def erase_decision(approval: ApprovalRecord, *, actor: str) -> bool:

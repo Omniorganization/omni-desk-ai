@@ -11,7 +11,9 @@ pushes, offline-sync state. These tests hold both backends to the rules in
   everyone else's records stay;
 - an erased device stays revoked and gets no pushes;
 - an erased approver never counts toward four eyes, and a pairing code the
-  person issued can no longer enrol a device.
+  person issued can no longer enrol a device;
+- approvals follow security's one rule for every store (#270): kept without
+  the person, content withheld, and withdrawn when still pending.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
+from omnidesk_agent.appsync.agent_approvals import AppSyncApprovalListener
 from omnidesk_agent.appsync.projects import GatewayProjectStore
 from omnidesk_agent.appsync.strict_json_store import StrictJsonAppSyncStore
 from omnidesk_agent.appsync.subject_data import ERASED_ACTOR
@@ -186,6 +189,10 @@ def test_after_an_erasure_the_subject_is_nowhere_and_everyone_else_stays(store: 
     [project] = [item for item in projects.list_projects(actor=OTHER) if item["project_id"] == world["project_id"]]
     assert project["owner_actor"] == ERASED_ACTOR and project["description"] == "forms and letters"
     assert projects.update_project(actor=OTHER, project_id=world["project_id"], patch={"archived": True})["archived"] is True
+    # Their request stays as the record of a requested action, without them, and is withdrawn.
+    withdrawn = store.get_approval(world["approval_id"], actor=OTHER)
+    assert (withdrawn["status"], withdrawn["requested_by"], withdrawn["decided_by"], withdrawn["decision_reason"]) == ("rejected", ERASED_ACTOR, ERASED_ACTOR, "requester erased")
+    assert withdrawn["action"] == "desktop task (details withheld)"
     # The subject's task is gone: a desktop still holding it cannot write a result back.
     with pytest.raises(KeyError):
         store.update_task_status(task_id=world["task_id"], actor=SUBJECT, status="completed", result_summary="done")
@@ -250,3 +257,32 @@ def test_changes_others_queued_about_the_subjects_records_do_not_leave_for_the_r
     assert queued_about(world["approval_id"], world["task_id"], world["conversation_id"]) == []
     # Changes about everyone else's records still leave.
     assert queued_about(world["other"]["approval"]["approval_id"])
+
+
+def test_an_agent_step_the_subject_asked_for_is_withdrawn_and_keeps_no_content(store: Any) -> None:
+    for actor, role in ((SUBJECT, "operator"), (OWNER, "owner")):
+        store.ensure_user(actor, role=role)
+    proposal = {"tool": "files", "action": "write_text", "risk": "high", "created_by": SUBJECT, "actor": SUBJECT, "reason": "Sam asked for the clinic letter",
+                "args": {"text": "Dear Dr. Rivera", "text_sha256": "ab" * 32}}
+    AppSyncApprovalListener(store).on_approval_wait({
+        "run_id": "run_1", "approval_id": "ledger-1", "proposal": proposal, "requester": SUBJECT, "channel": "telegram",
+        "risk": "high", "requires_dual_approval": False, "organization": "org_default", "created_at": 1.0, "expires_at": None,
+    })
+
+    store.erase_subject(SUBJECT)
+
+    approval = store.get_approval("agt_ledger-1", actor=OWNER)
+    assert (approval["status"], approval["requested_by"], approval["decided_by"], approval["decision_reason"]) == ("rejected", ERASED_ACTOR, ERASED_ACTOR, "requester erased")
+    # The same rule as the ledger's copy of this request: no requester, no argument content.
+    stored = approval["action_detail"]["proposal"]
+    assert stored["created_by"] == stored["actor"] == ERASED_ACTOR
+    assert stored["args"] == {"text_sha256": "ab" * 32} and stored["args_withheld"] is True
+    assert _mentions(store, SUBJECT) == [] and _mentions(store, "Dear Dr. Rivera") == []
+    # The shared rule withholds arguments, not the proposal's own free text: like
+    # the ledger, the stored proposal keeps its "reason" (an open question with
+    # security). AppSync's own reason column no longer repeats it.
+    assert stored["reason"] == proposal["reason"]
+    assert approval["reason"] == "An agent step waits for approval."
+    # Withdrawn means nobody can approve it any more.
+    with pytest.raises(ValueError):
+        store.decide_approval(approval_id="agt_ledger-1", actor=OWNER, decision="approved")
