@@ -36,6 +36,10 @@ jobs:
         if: ${{ inputs.readiness_channel == 'candidate' }}
         run: |
           python scripts/check_external_ga_evidence.py . --audit-only --write-report dist/evidence/external-ga-evidence-audit.json
+      # Real mode is blocked in code until HttpBigSellerClient is implemented
+      # against BigSeller's private partner API contract (see
+      # docs/integrations/bigseller.md, "Status"); until then this step fails
+      # closed and writes no evidence.
       - name: Real BigSeller live smoke
         if: ${{ inputs.readiness_channel == 'real-ga' }}
         env:

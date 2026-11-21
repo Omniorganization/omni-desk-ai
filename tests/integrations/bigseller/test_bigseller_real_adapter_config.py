@@ -7,6 +7,7 @@ import httpx
 
 from omnidesk_agent.integrations.bigseller.client import HttpBigSellerClient
 from omnidesk_agent.integrations.bigseller.config import BigSellerConfig
+from omnidesk_agent.integrations.bigseller import config as bigseller_config
 
 
 ALL_ENDPOINTS = {
@@ -86,6 +87,9 @@ def test_real_mode_rejects_base_url_host_outside_allowlist() -> None:
 
 
 def test_real_adapter_maps_order_list_response(monkeypatch) -> None:
+    # Exercises the unverified scaffold's request plumbing with invented field
+    # names; real mode itself is blocked until BigSeller's contract is known.
+    monkeypatch.setattr(bigseller_config, "BIGSELLER_VENDOR_CONTRACT_VERIFIED", True)
     captured: dict[str, Any] = {}
 
     class Response:
@@ -126,6 +130,9 @@ def test_real_adapter_maps_order_list_response(monkeypatch) -> None:
 
 
 def test_real_adapter_adds_configured_signature_headers(monkeypatch) -> None:
+    # Exercises the unverified scaffold's request plumbing with invented field
+    # names; real mode itself is blocked until BigSeller's contract is known.
+    monkeypatch.setattr(bigseller_config, "BIGSELLER_VENDOR_CONTRACT_VERIFIED", True)
     captured: dict[str, Any] = {}
 
     class Response:

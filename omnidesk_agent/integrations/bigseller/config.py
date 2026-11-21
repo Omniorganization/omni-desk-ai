@@ -90,6 +90,19 @@ def _datetime_env(name: str) -> Optional[datetime]:
     return parsed
 
 
+# BigSeller's API documentation is private (a paid partner integration), and
+# HttpBigSellerClient was written without it: endpoint paths, request signing,
+# field names, pagination and error envelopes are operator-supplied guesses.
+# Real mode stays blocked until the client is implemented and tested against
+# the vendor's documented contract and this flag is flipped in a reviewed PR.
+BIGSELLER_VENDOR_CONTRACT_VERIFIED = False
+BIGSELLER_UNVERIFIED_CONTRACT_ISSUE = (
+    "BigSeller real mode is blocked: HttpBigSellerClient is not verified against BigSeller's private API contract "
+    "(endpoint paths, request signing, pagination, error envelopes, field names). Needed: BigSeller partner API "
+    "documentation, a test tenant with credentials, and a reviewed client implementation with contract fixtures"
+)
+
+
 class BigSellerConfig(BaseModel):
     """Runtime configuration for the BigSeller connector.
 
@@ -359,6 +372,8 @@ class BigSellerConfig(BaseModel):
         if self.use_mock or not self.enabled:
             return []
         issues: list[str] = []
+        if not BIGSELLER_VENDOR_CONTRACT_VERIFIED:
+            issues.append(BIGSELLER_UNVERIFIED_CONTRACT_ISSUE)
         for name, value in (
             ("BIGSELLER_BASE_URL", self.base_url),
             ("BIGSELLER_APP_ID", self.app_id),
