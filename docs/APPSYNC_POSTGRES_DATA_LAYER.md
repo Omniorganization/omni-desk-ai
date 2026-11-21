@@ -124,7 +124,8 @@ python -m omnidesk_agent.appsync.retention --namespace <namespace> --dry-run
 | sync events | 14 | `OMNIDESK_APPSYNC_RETENTION_SYNC_EVENTS_DAYS` | by sequence; watermark first |
 | device request nonces | until expiry | — | `expires_at` passed |
 | idempotency keys | 7 | `..._IDEMPOTENCY_KEYS_DAYS` | |
-| push outbox | 30 | `..._PUSH_OUTBOX_DAYS` | sent or failed only |
+| push outbox | 30 | `..._PUSH_OUTBOX_DAYS` | sent, dry run or failed |
+| undelivered pushes | 7 | `..._PUSH_OUTBOX_UNDELIVERED_DAYS` | pending or sending: queued while no push provider was configured |
 | notifications | 90 | `..._NOTIFICATIONS_DAYS` | |
 | device challenges | 30 | `..._DEVICE_CHALLENGES_DAYS` | |
 | device enrollments | 30 | `..._DEVICE_ENROLLMENTS_DAYS` | pending, expired or revoked; completed ones are kept as the record of each device's key binding |
@@ -160,6 +161,42 @@ organization's record of requested and approved actions.
 Sync events are pruned by sequence number: the watermark (`pruned_through`) is
 committed before any event is deleted, so a reader below it is reset rather than
 moved silently past the gap.
+
+## Push outbox and dispatch
+
+A notification queues one push per challenge-verified, unrevoked device it is
+for: approval requests go to the organization's mobile devices, and chat replies
+only to the conversation's owner. With `OMNIDESK_PUSH_PROVIDER=firebase` (and
+`FIREBASE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`), every
+replica runs a dispatcher thread that sends due pushes every
+`OMNIDESK_PUSH_DISPATCH_INTERVAL_SECONDS` (5; `0` turns it off).
+`POST /app/push/dispatch` (owner) sends due pushes at once through the same
+path. With the default dry-run provider nothing is dispatched automatically.
+
+- **Leases.** A dispatcher claims due pushes with `FOR UPDATE SKIP LOCKED`, marks
+  them `sending` under its id with a lease covering the whole batch, and only the
+  lease holder can record the outcome. Replicas therefore send disjoint pushes. If
+  a dispatcher dies, its lease expires and another one sends the push again, so
+  delivery is at least once.
+- **Target.** Each push goes to the device's current push target, read when it is
+  claimed, so a target FCM rotated after the push was queued is used.
+- **Retries.** A retryable failure (HTTP 429/5xx, `UNAVAILABLE`, `QUOTA_EXCEEDED`,
+  `INTERNAL`, `THIRD_PARTY_AUTH_ERROR`, network errors) is retried after 10 s,
+  20 s, 40 s and so on, at most 15 minutes apart. After `OMNIDESK_PUSH_MAX_ATTEMPTS`
+  (5) sends, or once the push is older than `OMNIDESK_PUSH_MAX_AGE_SECONDS`
+  (86400), it is given up as `failed` (`max_attempts`, `expired`). A push whose
+  device was revoked or lost verification fails as `device_not_eligible`.
+- **Dead targets.** `UNREGISTERED` or `SENDER_ID_MISMATCH` fails the push and
+  clears the device's push target, unless the app has registered a new one
+  meanwhile. The device gets no pushes until the app registers again, and the
+  sync feed carries `device.push_token_invalidated`.
+- **Honest outcomes.** A push the dry-run provider handled is recorded as
+  `dry_run`, never `sent`. `provider` and `provider_message_id` record who
+  delivered it.
+
+Metrics: `omnidesk_push_deliveries_total{provider,outcome}` and
+`omnidesk_push_dispatch_failures_total`. Migration 8 (`push_dispatch_leases`)
+adds the lease, retry and provider columns and an index on due pushes.
 
 ## Migrations 5 and 6, and rolling upgrades
 

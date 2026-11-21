@@ -22,11 +22,12 @@ def test_desktop_rust_has_no_undeclared_dirs_dependency() -> None:
     assert "dirs =" not in cargo_toml
 
 
-def test_mobile_push_service_uses_named_platform_argument() -> None:
-    push_service = Path("apps/mobile-flutter/lib/push_service.dart").read_text(encoding="utf-8")
-    assert "platform: 'mobile'" in push_service
-    assert "registerPushToken(deviceId, token, 'mobile')" not in push_service
-    assert "registerPushToken(deviceId, newToken, 'mobile')" not in push_service
+def test_mobile_push_registration_uses_named_platform_argument() -> None:
+    # Push targets are registered in main.dart; push_service.dart handles incoming pushes.
+    main_dart = Path("apps/mobile-flutter/lib/main.dart").read_text(encoding="utf-8")
+    assert "platform: _pushPlatform" in main_dart
+    assert "registerPushToken(deviceId, token, 'mobile')" not in main_dart
+    assert "registerPushToken(deviceId, newToken, 'mobile')" not in main_dart
 
 
 def test_ios_registrant_matches_app_delegate_shape() -> None:

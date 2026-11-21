@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import logging
+import weakref
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -84,6 +85,18 @@ def register_appsync_routes(
     _remove_shadowed_chat_routes(app)
     register_project_routes(app, cfg, rt, metrics, admin)
     _start_retention(getattr(rt, "app_sync", None), metrics, getattr(rt, "repository_factory", None))
+    _start_push_dispatch(app, getattr(rt, "app_sync", None), metrics)
+
+
+def _start_push_dispatch(app: FastAPI, store: Any, metrics: Any) -> None:
+    """Pushes queued for approvals, decisions and task updates are sent in the
+    background when a real push provider is configured (see appsync.push)."""
+    from omnidesk_agent.appsync.push import start_push_dispatcher
+
+    dispatcher = start_push_dispatcher(store, metrics) if store is not None else None
+    app.state.push_dispatcher = dispatcher
+    if dispatcher is not None:
+        weakref.finalize(app, dispatcher.stop)
 
 
 def _start_retention(store: Any, metrics: Any, repositories: Any = None) -> None:

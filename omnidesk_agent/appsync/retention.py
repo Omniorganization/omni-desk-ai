@@ -71,7 +71,9 @@ def default_rules() -> tuple[RetentionRule, ...]:
     are the record of which enrollment bound a device's key."""
     return (
         RetentionRule("idempotency_keys", "omnidesk_appsync_idempotency_keys", "created_at", _days("idempotency_keys", 7)),
-        RetentionRule("push_outbox", "omnidesk_appsync_push_outbox", "updated_at", _days("push_outbox", 30), "status IN ('sent', 'failed')"),
+        RetentionRule("push_outbox", "omnidesk_appsync_push_outbox", "updated_at", _days("push_outbox", 30), "status IN ('sent', 'dry_run', 'failed')"),
+        # Queued while no push provider was configured: never sent, no longer relevant.
+        RetentionRule("push_outbox_undelivered", "omnidesk_appsync_push_outbox", "created_at", _days("push_outbox_undelivered", 7), "status IN ('pending', 'sending')"),
         RetentionRule("notifications", "omnidesk_appsync_notifications", "created_at", _days("notifications", 90)),
         RetentionRule("device_challenges", "omnidesk_appsync_device_challenges", "created_at", _days("device_challenges", 30)),
         RetentionRule("device_enrollments", "omnidesk_appsync_device_enrollments", "created_at", _days("device_enrollments", 30), "status IN ('pending', 'expired', 'revoked')"),

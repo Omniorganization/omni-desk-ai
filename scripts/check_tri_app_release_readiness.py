@@ -115,10 +115,15 @@ def main(argv: list[str] | None = None) -> int:
     mobile_pubspec = (apps/"mobile-flutter"/"pubspec.yaml").read_text(encoding="utf-8")
     _check("flutter_secure_storage" in mobile_pubspec and "local_auth" in mobile_pubspec, "Mobile secure storage and biometric/PIN dependencies are declared", failures, ok)
     _check("firebase_messaging" in mobile_pubspec, "Mobile push dependency is declared", failures, ok)
+    # Push targets are registered by main.dart (via MobileSecurityService);
+    # push_service.dart handles the pushes the gateway sends.
     mobile_push = _read(apps/"mobile-flutter"/"lib"/"push_service.dart")
-    _check("platform: 'mobile'" in mobile_push, "Mobile push token registration passes platform as a named argument", failures, ok)
-    _check("registerPushToken(deviceId, token, 'mobile')" not in mobile_push and "registerPushToken(deviceId, newToken, 'mobile')" not in mobile_push, "Mobile push service has no stale positional platform calls", failures, ok)
-    _check("catch (_)" in mobile_push and "return null" in mobile_push, "Mobile push service degrades when platform Firebase config is unavailable", failures, ok)
+    mobile_main = _read(apps/"mobile-flutter"/"lib"/"main.dart")
+    _check("platform: _pushPlatform" in mobile_main, "Mobile push token registration passes platform as a named argument", failures, ok)
+    _check("registerPushToken(deviceId, token, 'mobile')" not in mobile_main and "registerPushToken(deviceId, newToken, 'mobile')" not in mobile_main, "Mobile push registration has no stale positional platform calls", failures, ok)
+    _check("firebaseReady = true" in mobile_main and "catch (_)" in mobile_main, "Mobile push degrades when platform Firebase config is unavailable", failures, ok)
+    _check("FirebaseMessaging.onMessage" in mobile_push and "onMessageOpenedApp" in mobile_push and "getInitialMessage" in mobile_push, "Mobile handles gateway pushes in the foreground and when opened", failures, ok)
+    _check("onBackgroundMessage(omniPushBackgroundHandler)" in mobile_main, "Mobile registers a background push handler", failures, ok)
     mobile_gradle = _read(apps/"mobile-flutter"/"android/app/build.gradle")
     mobile_settings = _read(apps/"mobile-flutter"/"android/settings.gradle")
     _check("compileSdk 37" in mobile_gradle or "compileSdk = 37" in mobile_gradle, "Android release build compiles against SDK 37", failures, ok)

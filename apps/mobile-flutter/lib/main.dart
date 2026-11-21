@@ -1,17 +1,25 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'omni_api.dart';
 import 'device_identity.dart';
 import 'app_models.dart';
 import 'mobile_security_service.dart';
 import 'approval_key_store.dart';
+import 'push_service.dart';
+
+/// False in builds without platform Firebase config: no push handling then.
+bool firebaseReady = false;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(omniPushBackgroundHandler);
+    firebaseReady = true;
   } catch (_) {
     // Enterprise-staging builds can run without platform Firebase config.
   }
@@ -60,6 +68,12 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   final approvalKeys = ApprovalKeyStore();
   OmniDeviceIdentity? deviceIdentity;
   StreamSubscription<String>? _pushTargetChanges;
+  final messengerKey = GlobalKey<ScaffoldMessengerState>();
+  final OmniPushMessages? pushMessages = firebaseReady
+      ? OmniPushMessages()
+      : null;
+  // The approval the last opened push was about, shown highlighted.
+  String? pushedApprovalId;
 
   DeviceIdentityStore get identityStore => DeviceIdentityStore(
     securityService.storage,
@@ -76,11 +90,16 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
   void initState() {
     super.initState();
     _restoreSession();
+    final messages = pushMessages;
+    if (messages != null) {
+      unawaited(messages.listen(onForeground: _onPush, onOpened: _onPushOpened));
+    }
   }
 
   @override
   void dispose() {
     _pushTargetChanges?.cancel();
+    pushMessages?.dispose();
     gatewayController.dispose();
     tokenController.dispose();
     actorController.dispose();
@@ -186,6 +205,34 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
     } catch (_) {
       return null;
     }
+  }
+
+  String get _pushPlatform => Platform.isIOS ? 'ios' : 'android';
+
+  /// A push arrived while the app is open: say so and refresh what it is about.
+  void _onPush(PushRoute route) {
+    final text = <String?>[route.title, route.body].whereType<String>().join(': ');
+    messengerKey.currentState?.showSnackBar(
+      SnackBar(content: Text(text.isEmpty ? 'Omni: ${route.eventType}' : text)),
+    );
+    unawaited(_refreshFromPush(route));
+  }
+
+  /// The user opened a push: refresh and highlight the approval it is about.
+  void _onPushOpened(PushRoute route) => unawaited(_refreshFromPush(route));
+
+  Future<void> _refreshFromPush(PushRoute route) async {
+    if (route.isApprovalRequest) pushedApprovalId = route.relatedId;
+    // Before the session is restored or connected there is nothing to refresh;
+    // the highlight shows once the user connects.
+    if (tokenController.text.isNotEmpty) {
+      try {
+        snapshot = await client.bootstrap();
+      } catch (e) {
+        error = e.toString();
+      }
+    }
+    if (mounted) setState(() {});
   }
 
   ProjectItem? get activeProject {
@@ -356,16 +403,33 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
           device is Map && device['credential_status'] == 'verified';
       deviceVerified = verified || await _verifyDevice(identity);
       approvalKeyReady = deviceVerified && await _ensureApprovalKey(identity);
-      if (token != null) {
-        await client.registerPushToken(identity.deviceId, token);
+      // The gateway accepts a push target only from a challenge-verified
+      // device, and a refusal must not abort the connection.
+      var pushRegistered = false;
+      if (token != null && deviceVerified) {
+        try {
+          await client.registerPushToken(
+            identity.deviceId,
+            token,
+            platform: _pushPlatform,
+          );
+          pushRegistered = true;
+        } catch (_) {
+          pushRegistered = false;
+        }
       }
       // FCM may rotate the FID; keep the gateway's push target current.
       await _pushTargetChanges?.cancel();
-      _pushTargetChanges = securityService.pushTargetChanges().listen((fid) {
-        client.registerPushToken(identity.deviceId, fid).catchError((_) {
-          return <String, dynamic>{};
-        });
-      }, onError: (_) {});
+      _pushTargetChanges = null;
+      if (deviceVerified) {
+        _pushTargetChanges = securityService.pushTargetChanges().listen((fid) {
+          client
+              .registerPushToken(identity.deviceId, fid, platform: _pushPlatform)
+              .catchError((_) {
+                return <String, dynamic>{};
+              });
+        }, onError: (_) {});
+      }
       snapshot = await client.bootstrap();
       await syncProjects();
       if (!mounted) return;
@@ -375,7 +439,13 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
             : 'session saved; device not verified (approvals need an owner token to verify this device)';
         pushState = token == null
             ? 'push provider unavailable in this build'
-            : 'FCM/APNS token registered';
+            : !deviceVerified
+            ? 'push needs a verified device (owner token)'
+            : !pushRegistered
+            ? 'push target refused by the gateway'
+            : Platform.isIOS
+            ? 'FCM target registered; iOS delivery needs APNs (not configured)'
+            : 'FCM push registered';
       });
     } catch (e) {
       if (mounted) setState(() => error = e.toString());
@@ -470,6 +540,7 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
         snapshot?['notifications'] as List<dynamic>? ?? <dynamic>[];
     return MaterialApp(
       title: 'Omni Mobile',
+      scaffoldMessengerKey: messengerKey,
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
@@ -940,6 +1011,9 @@ class _OmniMobileAppState extends State<OmniMobileApp> {
             else
               for (final approval in approvals)
                 Card(
+                  color: approval['approval_id'] == pushedApprovalId
+                      ? Theme.of(context).colorScheme.primaryContainer
+                      : null,
                   child: ListTile(
                     title: Text(approval['action']?.toString() ?? 'Approval'),
                     subtitle: Text(
