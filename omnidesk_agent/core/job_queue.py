@@ -236,26 +236,30 @@ class JobQueue:
         the last page. Pages are stable while new dead letters arrive.
         """
         limit = max(1, min(int(limit), 500))
-        clauses, params = ["status='dead_letter'"], []
-        if error_class:
-            clauses.append("error_class=?")
-            params.append(str(error_class))
+        created_at: Optional[float] = None
+        job_id = ""
         if cursor:
             created, _, job_id = str(cursor).partition("|")
             try:
                 created_at = float(created)
             except ValueError as exc:
                 raise ValueError(f"invalid dead-letter cursor: {cursor!r}") from exc
-            clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
-            params.extend([created_at, created_at, job_id])
-        sql = (
-            "SELECT id, dedupe_key, channel, message_id, source_key, payload_json, status, retry_count, max_retries, "
-            "next_retry_at, locked_at, created_at, updated_at, last_error, result_json, error_class FROM jobs WHERE "
-            + " AND ".join(clauses)  # fixed fragments; every value is a bound parameter
-            + " ORDER BY created_at DESC, id DESC LIMIT ?"
-        )
+        wanted_class = str(error_class) if error_class else None
+        # One static statement: an absent filter or cursor is a NULL parameter.
         with connect_sqlite(self.db_path) as con:
-            rows = con.execute(sql, (*params, limit + 1)).fetchall()  # nosec B608
+            rows = con.execute(
+                """
+                SELECT id, dedupe_key, channel, message_id, source_key, payload_json, status, retry_count, max_retries,
+                       next_retry_at, locked_at, created_at, updated_at, last_error, result_json, error_class
+                FROM jobs
+                WHERE status='dead_letter'
+                  AND (? IS NULL OR error_class = ?)
+                  AND (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (wanted_class, wanted_class, created_at, created_at, created_at, job_id, limit + 1),
+            ).fetchall()
         items = [{**self._row(row[:15]), "error_class": row[15]} for row in rows[:limit]]
         next_cursor = f"{items[-1]['created_at']!r}|{items[-1]['id']}" if len(rows) > limit else None
         return {"items": items, "next_cursor": next_cursor}
