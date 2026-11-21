@@ -74,7 +74,12 @@ def _digest(data: bytes, ctx: Optional[Any]) -> str:
     test guesses offline. ``PermissionManager.keyed_digest(data)`` keys it with a key
     derived from the audit key, stable across restarts and replicas.
     """
-    keyed = getattr(getattr(ctx, "permissions", None), "keyed_digest", None) if ctx is not None else None
+    manager = getattr(ctx, "permissions", None) if ctx is not None else None
+    # The execution wrapper inherits PermissionManager's methods, so look the method up on
+    # the manager itself: it then runs on its own state (cached sub-key, lock), not the wrapper's.
+    while isinstance(manager, _ExecutionPermissions):
+        manager = manager._delegate
+    keyed = getattr(manager, "keyed_digest", None)
     if callable(keyed):
         value = keyed(data)
         if isinstance(value, str) and value:

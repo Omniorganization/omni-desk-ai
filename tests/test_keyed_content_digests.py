@@ -71,6 +71,34 @@ def test_a_typed_password_cannot_be_guessed_from_its_approval_digest(tmp_path):
     assert args["text_sha256"] != plain(PASSWORD)
 
 
+def test_a_managers_own_keyed_digest_runs_on_the_manager_not_the_call_wrapper(tmp_path, monkeypatch):
+    # Security's PermissionManager defines keyed_digest on the class and keeps its derived
+    # sub-key on the instance. The per-call execution wrapper subclasses PermissionManager,
+    # so it inherits the method: looked up on the wrapper it would run with the wrapper as self.
+    from omnidesk_agent.config import PermissionConfig
+    from omnidesk_agent.security.approval_store import ApprovalStore
+    from omnidesk_agent.security.permissions import PermissionManager
+
+    ran_on: list[str] = []
+
+    def keyed_digest(self, data: bytes) -> str:
+        ran_on.append(type(self).__name__)
+        return keyed(data)
+
+    monkeypatch.setattr(PermissionManager, "keyed_digest", keyed_digest, raising=False)
+
+    class Manager(PermissionManager):
+        def verify(self, proposal):
+            self.seen = proposal
+            return ApprovalDecision(True, "allow", "test")
+
+    manager = Manager(PermissionConfig(audit_log=tmp_path / "audit.jsonl"), ApprovalStore(tmp_path / "approvals.sqlite3"))
+    result = asyncio.run(FilesTool(tmp_path / "ws", allow_write=True).call("write_text", {"path": "pw.txt", "text": PASSWORD}, ToolContext(permissions=manager)))
+
+    assert result.ok and manager.seen.args["text_sha256"] == keyed(PASSWORD.encode("utf-8"))
+    assert ran_on and set(ran_on) == {"Manager"}
+
+
 def test_the_scope_hash_is_keyed_and_unchanged_without_a_key():
     canonical = json.dumps({"run_id": "r1", "plan_id": "p1", "step_index": 2, "tool": "files", "action": "write_text", "args": {"text": PASSWORD}}, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
     with_key = proposal("files", "write_text", {"text": PASSWORD}, "high", "test", ToolContext(permissions=KeyedAllow(), run_id="r1", plan_id="p1", step_index=2))
