@@ -9,7 +9,7 @@ from typing import Any, Iterable, Protocol, cast
 from omnidesk_agent.appsync.postgres_store import NORMALIZED_SCHEMA_SQL
 
 MIGRATION_TABLE = "omnidesk_appsync_schema_migrations"
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 
 class _Cursor(Protocol):
@@ -88,6 +88,29 @@ CREATE TABLE IF NOT EXISTS omnidesk_appsync_chat_stream_events (
 )
 """
 
+PROJECTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS omnidesk_appsync_projects (
+    namespace TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    owner_actor TEXT NOT NULL,
+    source_device_id TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    archived BOOLEAN NOT NULL DEFAULT false,
+    created_at DOUBLE PRECISION NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL,
+    deleted_at DOUBLE PRECISION,
+    PRIMARY KEY(namespace, project_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS omnidesk_appsync_projects_active_name_idx
+    ON omnidesk_appsync_projects(namespace, organization_id, lower(name))
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS omnidesk_appsync_projects_org_updated_idx
+    ON omnidesk_appsync_projects(namespace, organization_id, updated_at DESC);
+"""
+
 MIGRATIONS: tuple[PostgresMigration, ...] = (
     PostgresMigration(1, "normalized_appsync_baseline", _split_sql(NORMALIZED_SCHEMA_SQL)),
     PostgresMigration(
@@ -115,6 +138,32 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
         (
             "CREATE TABLE IF NOT EXISTS omnidesk_appsync_device_request_nonces (namespace TEXT NOT NULL, nonce_key TEXT NOT NULL, expires_at DOUBLE PRECISION NOT NULL, PRIMARY KEY(namespace, nonce_key))",
             "CREATE INDEX IF NOT EXISTS omnidesk_device_request_nonces_expiry_idx ON omnidesk_appsync_device_request_nonces(namespace, expires_at)",
+        ),
+    ),
+    PostgresMigration(
+        5,
+        "per_entity_transactions",
+        (
+            # Sync event sequence numbers come from one counter row per namespace.
+            # The row lock is held until commit, so sequence order is commit order
+            # and a reader that sees seq N has seen every seq below it.
+            "CREATE TABLE IF NOT EXISTS omnidesk_appsync_event_counters (namespace TEXT PRIMARY KEY, seq BIGINT NOT NULL)",
+            "INSERT INTO omnidesk_appsync_event_counters(namespace, seq) SELECT namespace, MAX(seq) FROM omnidesk_appsync_sync_events GROUP BY namespace ON CONFLICT (namespace) DO UPDATE SET seq = GREATEST(omnidesk_appsync_event_counters.seq, EXCLUDED.seq)",
+            # Operation-log entries get their own ids; reusing the event sequence
+            # made consecutive entries collide on (namespace, seq, event).
+            "CREATE SEQUENCE IF NOT EXISTS omnidesk_appsync_operation_log_entry_seq START WITH 1000000000000",
+            "CREATE INDEX IF NOT EXISTS omnidesk_devices_org_idx ON omnidesk_appsync_devices(namespace, organization_id, device_type)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_runtime_status_org_idx ON omnidesk_appsync_runtime_status(namespace, organization_id)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_approvals_org_created_idx ON omnidesk_appsync_approvals(namespace, organization_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_approvals_task_idx ON omnidesk_appsync_approvals(namespace, task_id)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_notifications_org_created_idx ON omnidesk_appsync_notifications(namespace, organization_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_push_outbox_device_idx ON omnidesk_appsync_push_outbox(namespace, device_id, status)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_device_challenges_enrollment_idx ON omnidesk_appsync_device_challenges(namespace, enrollment_id, status)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_sync_events_org_seq_idx ON omnidesk_appsync_sync_events(namespace, organization_id, seq)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_local_outbox_idempotency_idx ON omnidesk_appsync_local_outbox(namespace, actor, idempotency_key)",
+            "CREATE INDEX IF NOT EXISTS omnidesk_tasks_org_claim_idx ON omnidesk_appsync_tasks(namespace, organization_id, requires_desktop_runtime, status, created_at)",
+            # Projects were created by DDL on every project operation.
+            *_split_sql(PROJECTS_SCHEMA_SQL),
         ),
     ),
 )

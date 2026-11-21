@@ -127,40 +127,6 @@ def test_scoped_inbox_survives_a_json_reload(tmp_path: Path) -> None:
     assert reloaded.record_remote_events(actor="mallory", events=[event])["duplicates"] == 1
 
 
-def test_postgres_mirror_keeps_each_callers_inbox_row(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The Postgres inbox key is (namespace, remote_event_id): scoped ids keep two
-    organizations' rows for the same remote event apart."""
-    from omnidesk_agent.appsync.postgres_offline_sync import DurablePostgresAppSyncStore
-    from omnidesk_agent.appsync.postgres_store import PostgresAppSyncStore
-
-    source = _offline_store(tmp_path)
-    event = {"seq": 1, "event_id": "evt-1", "payload": {}}
-    source.record_remote_events(actor="victim", events=[event])
-    source.record_remote_events(actor="mallory", events=[event])
-
-    mirror = DurablePostgresAppSyncStore.__new__(DurablePostgresAppSyncStore)
-    mirror.__dict__.update({name: getattr(source, name) for name in ("local_outbox", "local_inbox", "sync_cursors", "sync_conflicts", "operation_log")})
-    mirror.namespace = "test"
-    monkeypatch.setattr(PostgresAppSyncStore, "_mirror_normalized", lambda self, cur, Jsonb: None)
-    executed: list[tuple[str, Any]] = []
-
-    class _Cursor:
-        def execute(self, sql: str, params: Any = None) -> None:
-            executed.append((sql, params))
-
-    mirror._mirror_normalized(_Cursor(), lambda value: value)
-    inbox_rows = [params for sql, params in executed if "INSERT INTO omnidesk_appsync_local_inbox" in sql]
-    assert sorted((row[1], row[5]) for row in inbox_rows) == [("org_a", "victim"), ("org_b", "mallory")]
-    assert len({row[2] for row in inbox_rows}) == 2
-
-
-def test_postgres_store_inherits_the_scoped_matching() -> None:
-    from omnidesk_agent.appsync.migrated_postgres_store import MigratedMultiInstancePostgresAppSyncStore
-
-    for name in ("record_remote_events", "receive_outbox_operations", "bootstrap"):
-        assert getattr(MigratedMultiInstancePostgresAppSyncStore, name).__qualname__.startswith(("AppSyncStore.", "ApplyingAppSyncMixin."))
-
-
 # --- L4: device lists follow the authenticated role and carry no credentials ---
 
 

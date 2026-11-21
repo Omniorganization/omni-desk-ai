@@ -454,6 +454,82 @@ class SyncConflictRecord:
     resolved_at: Optional[float] = None
 
 
+def authorize_task_status_change(
+    task: TaskRecord,
+    *,
+    actor: str,
+    actor_organization_id: str,
+    status: str,
+    device_id: Optional[str],
+    assigned_runtime_device_id: Optional[str],
+    reporting_device: Optional[DeviceRecord],
+    normalize_org: Callable[[Optional[str]], str],
+    now: float,
+) -> None:
+    """Only the device holding a task's lease reports on it, and finished tasks stay finished.
+
+    Shared by every AppSync backend so the rules cannot drift between them.
+    ``reporting_device`` is the record of ``device_id or assigned_runtime_device_id``.
+    """
+    if actor_organization_id != normalize_org(task.organization_id):
+        raise PermissionError("organization scope mismatch")
+    if task.status in TERMINAL_TASK_STATUSES:
+        raise ValueError(f"task is already {task.status}")
+    if device_id and assigned_runtime_device_id and device_id != assigned_runtime_device_id:
+        raise PermissionError("assigned_runtime_device_id must match the reporting device")
+    reporting_device_id = device_id or assigned_runtime_device_id
+    if task.status != "running":
+        # Nothing holds an unclaimed task; its creator may still withdraw it.
+        if status != "cancelled" or task.actor != actor:
+            raise PermissionError("an unclaimed task can only be cancelled by its creator")
+        return
+    if not reporting_device_id or reporting_device_id != task.claimed_by_device_id:
+        lease_expired = not task.lease_expires_at or task.lease_expires_at <= now
+        if status == "cancelled" and task.actor == actor and lease_expired:
+            # A run abandoned by its device can be withdrawn by the task's creator.
+            return
+        raise PermissionError("only the device holding the task lease can update it")
+    device = reporting_device
+    if device and (device.actor != actor or normalize_org(device.organization_id) != normalize_org(task.organization_id)):
+        raise PermissionError("the lease-holding device belongs to a different actor or organization")
+    if status == "blocked":
+        raise ValueError("tasks are blocked only by the approval flow")
+    if status == "queued" and task.approval_id:
+        raise PermissionError("an approved task cannot be re-queued; request a new approval")
+
+
+def runtime_status_changed(previous: Optional[RuntimeStatusRecord], current: RuntimeStatusRecord) -> bool:
+    """Whether a heartbeat changed what the runtime reports, not just its liveness."""
+    if previous is None:
+        return True
+    return (
+        previous.status != current.status
+        or previous.active_task_id != current.active_task_id
+        or previous.version != current.version
+        or previous.hostname != current.hostname
+        or sorted(previous.capabilities or []) != sorted(current.capabilities or [])
+        or previous.organization_id != current.organization_id
+    )
+
+
+def check_enrollment_device(
+    enrollment: DeviceEnrollmentRecord,
+    device: DeviceRecord,
+    *,
+    actor: str,
+    normalize_org: Callable[[Optional[str]], str],
+) -> None:
+    """A device may complete an enrollment only for its own actor, organization and type."""
+    if normalize_org(device.organization_id) != normalize_org(enrollment.organization_id):
+        raise PermissionError("device belongs to a different organization")
+    if device.actor != actor:
+        raise PermissionError("device belongs to a different actor")
+    if device.revoked_at or device.credential_status == "revoked":
+        raise PermissionError("device is revoked; enroll a new device")
+    if device.device_type != enrollment.device_type:
+        raise PermissionError("device type does not match the enrollment")
+
+
 class IdempotencyConflict(ValueError):
     """Raised when the same idempotency key is replayed with different input."""
 
@@ -709,8 +785,11 @@ class AppSyncStore:
         if state not in allowed:
             raise ValueError("invalid network state")
         with self._lock:
+            changed = self.network_state.get("state") != state or self.network_state.get("reason") != reason
             self.network_state = {"state": state, "reason": reason, "updated_at": _now()}
-            self._event("network.state", "system", self.network_state)
+            if changed:
+                # The reconnect loop reports its state every minute; only changes are events.
+                self._event("network.state", "system", self.network_state)
             self._persist()
             return dict(self.network_state)
 
@@ -1227,12 +1306,16 @@ class AppSyncStore:
             if active_task_id and active_task_id in self.tasks and self._normalize_org_id(self.tasks[active_task_id].organization_id) != organization_id:
                 raise PermissionError("runtime cannot attach to a task from another organization")
             record = RuntimeStatusRecord(device_id=device_id, status=status, organization_id=organization_id, version=version, hostname=hostname, active_task_id=active_task_id, capabilities=list(capabilities or []))
+            previous = self.runtimes.get(device_id)
             self.runtimes[device_id] = record
             if device_id in self.devices:
                 self.devices[device_id].online = status == "online"
                 self.devices[device_id].last_seen_at = record.last_heartbeat_at
                 self.devices[device_id].updated_at = record.last_heartbeat_at
-            self._event("runtime.heartbeat", actor, {"device_id": device_id, "status": status, "active_task_id": active_task_id, "organization_id": organization_id})
+            if runtime_status_changed(previous, record):
+                # Liveness alone is not a sync event: a desktop beats every few
+                # seconds, and the feed must not grow with uptime.
+                self._event("runtime.status_changed", actor, {"device_id": device_id, "status": status, "active_task_id": active_task_id, "organization_id": organization_id})
             self._persist()
             return self._record(record)
 
@@ -1294,30 +1377,18 @@ class AppSyncStore:
 
     def _authorize_task_status_change_locked(self, task: TaskRecord, *, actor: str, status: str, device_id: Optional[str], assigned_runtime_device_id: Optional[str]) -> None:
         """Only the device holding a task's lease reports on it, and finished tasks stay finished."""
-        self._require_actor_org(actor, task.organization_id)
-        if task.status in TERMINAL_TASK_STATUSES:
-            raise ValueError(f"task is already {task.status}")
-        if device_id and assigned_runtime_device_id and device_id != assigned_runtime_device_id:
-            raise PermissionError("assigned_runtime_device_id must match the reporting device")
         reporting_device_id = device_id or assigned_runtime_device_id
-        if task.status != "running":
-            # Nothing holds an unclaimed task; its creator may still withdraw it.
-            if status != "cancelled" or task.actor != actor:
-                raise PermissionError("an unclaimed task can only be cancelled by its creator")
-            return
-        if not reporting_device_id or reporting_device_id != task.claimed_by_device_id:
-            lease_expired = not task.lease_expires_at or task.lease_expires_at <= _now()
-            if status == "cancelled" and task.actor == actor and lease_expired:
-                # A run abandoned by its device can be withdrawn by the task's creator.
-                return
-            raise PermissionError("only the device holding the task lease can update it")
-        device = self.devices.get(reporting_device_id)
-        if device and (device.actor != actor or self._normalize_org_id(device.organization_id) != self._normalize_org_id(task.organization_id)):
-            raise PermissionError("the lease-holding device belongs to a different actor or organization")
-        if status == "blocked":
-            raise ValueError("tasks are blocked only by the approval flow")
-        if status == "queued" and task.approval_id:
-            raise PermissionError("an approved task cannot be re-queued; request a new approval")
+        authorize_task_status_change(
+            task,
+            actor=actor,
+            actor_organization_id=self._organization_for_actor(actor),
+            status=status,
+            device_id=device_id,
+            assigned_runtime_device_id=assigned_runtime_device_id,
+            reporting_device=self.devices.get(reporting_device_id) if reporting_device_id else None,
+            normalize_org=self._normalize_org_id,
+            now=_now(),
+        )
 
     @staticmethod
     def _apply_task_status(task: TaskRecord, *, status: str, result_summary: Optional[str], now: float) -> None:
@@ -1460,14 +1531,7 @@ class AppSyncStore:
             return result
 
     def _check_enrollment_device(self, enrollment: DeviceEnrollmentRecord, device: DeviceRecord, *, actor: str) -> None:
-        if self._normalize_org_id(device.organization_id) != self._normalize_org_id(enrollment.organization_id):
-            raise PermissionError("device belongs to a different organization")
-        if device.actor != actor:
-            raise PermissionError("device belongs to a different actor")
-        if device.revoked_at or device.credential_status == "revoked":
-            raise PermissionError("device is revoked; enroll a new device")
-        if device.device_type != enrollment.device_type:
-            raise PermissionError("device type does not match the enrollment")
+        check_enrollment_device(enrollment, device, actor=actor, normalize_org=self._normalize_org_id)
 
     def _require_paired_enrollment_locked(self, enrollment: DeviceEnrollmentRecord, *, device_id: str) -> None:
         if enrollment.status == "paired" and enrollment.expires_at < _now():
@@ -1793,7 +1857,8 @@ class AppSyncStore:
             self.device_request_nonces[nonce_key] = now + max(60, int(nonce_ttl_seconds or 600))
             device.last_seen_at = now
             device.updated_at = now
-            self._event("device.request_signature_verified", device.actor, {"device_id": device_id, "method": method.upper(), "path": path})
+            # No sync event: one per signed request would make the feed grow with
+            # traffic. Routes count verified and rejected signatures in metrics.
             self._persist()
             return True, "ok"
 

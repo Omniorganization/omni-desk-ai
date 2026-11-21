@@ -224,3 +224,171 @@ def _apply_task_created(store: AppSyncStore, actor: str, payload: dict[str, Any]
         updated_at=float(payload.get("updated_at") or _now()),
     )
     return True
+
+
+# --- PostgreSQL ------------------------------------------------------------
+# The same operations and rules as above, as statements in the caller's
+# transaction. Each operation runs under its own savepoint, so one rejected or
+# malformed operation is skipped without aborting the others. A database error
+# that is not about the data (a lock or statement timeout, a deadlock) is not a
+# skip: it aborts the whole upload, so the caller's transaction is retried or the
+# client gets an error and uploads again, instead of losing the operation.
+
+
+def apply_uploaded_operations_sql(
+    store: Any,
+    tx: Any,
+    *,
+    actor: str,
+    operations: list[dict[str, Any]],
+    remote: str = "default",
+    device_id: str | None = None,
+) -> dict[str, Any]:
+    from psycopg import OperationalError  # type: ignore
+
+    handlers: dict[str, Callable[[Any, Any, str, dict[str, Any], str | None], bool]] = {
+        "conversation.created": _sql_conversation_created,
+        "message.created": _sql_message_created,
+        "chat.message.created": _sql_message_created,
+        "task.created": _sql_task_created,
+    }
+    applied = 0
+    skipped = 0
+    for operation in operations:
+        if not isinstance(operation, dict):
+            skipped += 1
+            continue
+        event_type, payload = _operation_payload(operation)
+        handler = handlers.get(event_type)
+        if handler is None:
+            skipped += 1
+            continue
+        tx.cur.execute("SAVEPOINT omnidesk_apply_operation")
+        try:
+            changed = handler(store, tx, actor, payload, device_id)
+        except OperationalError:
+            raise  # a lock or statement timeout, a deadlock, a lost connection: not the operation's fault
+        except Exception:
+            # A malformed or rejected operation: skipped, so it cannot block the rest.
+            tx.cur.execute("ROLLBACK TO SAVEPOINT omnidesk_apply_operation")
+            skipped += 1
+            continue
+        tx.cur.execute("RELEASE SAVEPOINT omnidesk_apply_operation")
+        if not changed:
+            skipped += 1
+            continue
+        applied += 1
+        organization_id = store._org_for_actor(tx, actor)
+        event_payload = {**payload, "organization_id": organization_id}
+        event_payload.setdefault("remote", remote)
+        # Like the JSON path: an applied upload is not queued back into this node's own outbox.
+        store._event(tx, event_type, actor or "unknown", event_payload, queue_locally=False)
+    return {"applied_state_mutations": applied, "skipped_state_mutations": skipped}
+
+
+def _sql_exists(store: Any, tx: Any, table: Any, key: str) -> bool:
+    tx.cur.execute(table.exists_by_key(), (store.namespace, key))
+    return tx.cur.fetchone() is not None
+
+
+def _sql_conversation_created(store: Any, tx: Any, actor: str, payload: dict[str, Any], device_id: str | None) -> bool:
+    from omnidesk_agent.appsync.migrated_postgres_store import CONVERSATIONS
+
+    conversation_id = str(payload.get("conversation_id") or payload.get("id") or "").strip() or _id("conv")
+    record = ConversationRecord(
+        conversation_id=conversation_id,
+        title=str(payload.get("title") or "Offline conversation"),
+        actor=actor or "unknown",
+        organization_id=store._org_for_actor(tx, actor),
+        source_device_id=str(payload.get("source_device_id") or device_id or "") or None,
+        created_at=float(payload.get("created_at") or _now()),
+        updated_at=float(payload.get("updated_at") or _now()),
+    )
+    return bool(store._insert(tx, CONVERSATIONS, record, if_absent=True))
+
+
+def _sql_message_created(store: Any, tx: Any, actor: str, payload: dict[str, Any], device_id: str | None) -> bool:
+    from omnidesk_agent.appsync.migrated_postgres_store import CONVERSATIONS, MESSAGES
+
+    message_id = str(payload.get("message_id") or payload.get("id") or "").strip() or _id("msg")
+    if _sql_exists(store, tx, MESSAGES, message_id):
+        return False
+    conversation_id = str(payload.get("conversation_id") or "").strip()
+    if not conversation_id:
+        return False
+    if not _sql_exists(store, tx, CONVERSATIONS, conversation_id):
+        _sql_conversation_created(
+            store,
+            tx,
+            actor,
+            {
+                "conversation_id": conversation_id,
+                "title": payload.get("conversation_title") or "Offline conversation",
+                "source_device_id": payload.get("source_device_id") or device_id,
+            },
+            device_id,
+        )
+    conversation = store._get(tx, CONVERSATIONS, conversation_id, for_update=True)
+    if conversation is None or conversation.actor != actor:
+        # Never let one actor append to another actor's conversation (and LLM context).
+        return False
+    role = str(payload.get("role") or "user")
+    if role not in {"user", "assistant"}:
+        # System prompts are server-authored; uploaded ones are treated as user text.
+        role = "user"
+    message = MessageRecord(
+        message_id=message_id,
+        conversation_id=conversation_id,
+        role=role,  # type: ignore[arg-type]
+        content=str(payload.get("content") or ""),
+        actor=actor or "unknown",
+        organization_id=store._normalize_org_id(conversation.organization_id),
+        source_device_id=str(payload.get("source_device_id") or device_id or "") or None,
+        task_id=payload.get("task_id"),
+        model_provider=payload.get("model_provider"),
+        model_name=payload.get("model_name"),
+        model_profile=payload.get("model_profile"),
+        usage=payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
+        trace_id=payload.get("trace_id"),
+        created_at=float(payload.get("created_at") or _now()),
+    )
+    if not store._insert(tx, MESSAGES, message, if_absent=True):
+        return False
+    conversation.updated_at = _now()
+    store._update(tx, CONVERSATIONS, conversation)
+    return True
+
+
+def _sql_task_created(store: Any, tx: Any, actor: str, payload: dict[str, Any], device_id: str | None) -> bool:
+    from omnidesk_agent.appsync.migrated_postgres_store import CONVERSATIONS, TASKS
+
+    task_id = str(payload.get("task_id") or payload.get("id") or "").strip() or _id("task")
+    if _sql_exists(store, tx, TASKS, task_id):
+        return False
+    if payload.get("requires_desktop_runtime") or payload.get("approval_id") or payload.get("assigned_runtime_device_id"):
+        # Desktop-runtime work must go through the approval flow, never offline upload.
+        return False
+    conversation_id = str(payload.get("conversation_id") or "").strip()
+    if not conversation_id:
+        conversation_id = _id("conv")
+        _sql_conversation_created(store, tx, actor, {"conversation_id": conversation_id, "title": payload.get("title") or "Offline task"}, device_id)
+    else:
+        conversation = store._get(tx, CONVERSATIONS, conversation_id)
+        if conversation is not None and conversation.actor != actor:
+            return False
+    task = TaskRecord(
+        task_id=task_id,
+        conversation_id=conversation_id,
+        title=str(payload.get("title") or "Offline task"),
+        actor=actor or "unknown",
+        organization_id=store._org_for_actor(tx, actor),
+        status="queued",
+        assigned_runtime_device_id=None,
+        requires_desktop_runtime=False,
+        approval_id=None,
+        result_summary=payload.get("result_summary"),
+        idempotency_key=payload.get("idempotency_key") or _fingerprint(payload),
+        created_at=float(payload.get("created_at") or _now()),
+        updated_at=float(payload.get("updated_at") or _now()),
+    )
+    return bool(store._insert(tx, TASKS, task, if_absent=True))

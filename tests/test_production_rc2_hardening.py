@@ -52,7 +52,7 @@ def test_web_admin_business_api_uses_server_proxy_only() -> None:
 
 
 def test_postgres_store_declares_transactional_claim_and_lease() -> None:
-    text = (ROOT / "omnidesk_agent/appsync/postgres_store.py").read_text(encoding="utf-8")
+    text = (ROOT / "omnidesk_agent/appsync/migrated_postgres_store.py").read_text(encoding="utf-8")
     # Lock only the task rows: FOR UPDATE cannot apply to the outer-joined approvals.
     assert "FOR UPDATE OF t SKIP LOCKED" in text
     assert "def claim_next_task" in text and "CLAIM_NEXT_TASK_SQL" in text

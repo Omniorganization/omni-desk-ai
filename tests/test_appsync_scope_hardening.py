@@ -15,7 +15,6 @@ import hashlib
 import hmac
 import json
 import os
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -457,13 +456,7 @@ def _scripted_postgres_store(script: list[list[tuple]]):
     store.namespace = "test"
     store.organization = Organization()
     store.actor_organizations = {}
-    store._operation_state = threading.local()
     store._connection_pool = _ScriptedPool(script)
-
-    def no_reload() -> None:
-        raise AssertionError("sync_since must not reload the whole namespace")
-
-    store._refresh_state = no_reload
     return store
 
 
@@ -486,10 +479,8 @@ def test_postgres_sync_feed_is_a_direct_scoped_read() -> None:
 
     idle = _scripted_postgres_store([[("org_default",)], [(head, None, None, None, None, None, None)]])
     assert idle.sync_since(head, actor=OPERATOR) == {"sync_seq": head, "events": []}
-
-    from omnidesk_agent.appsync import migrated_postgres_store
-
-    assert "sync_since" not in migrated_postgres_store.MigratedMultiInstancePostgresAppSyncStore._SERIALIZED_METHODS
+    # Exactly the scoped statements above: no lock, no reload of other tables.
+    assert len(store._connection_pool.executed) == 3
 
 
 # --- PostgreSQL parity (runs where OMNIDESK_TEST_POSTGRES_DSN is set) --------
@@ -541,10 +532,6 @@ def test_postgres_sync_feed_reads_without_the_advisory_lock(monkeypatch: pytest.
         conv = first.create_conversation(actor=OWNER, title="private")
         created = first.add_message_and_task(actor=OWNER, conversation_id=conv["conversation_id"], content="desktop action", requires_desktop_runtime=True)
 
-        def no_reload() -> None:
-            raise AssertionError("sync_since must not reload the whole namespace")
-
-        second._refresh_state = no_reload
         feed = second.sync_since(0, actor=OPERATOR)
         assert conv["conversation_id"] not in json.dumps(feed)
         task_events = [e for e in feed["events"] if e["event_type"] == "task.created"]
@@ -597,9 +584,13 @@ def test_postgres_configured_organization_does_not_become_the_namespace_default(
             conversation_id=None, title="t", source_device_id=None, content="hi", last_event_id=0,
         )
         assert reservation.organization_id == mapped_org
-        second.bootstrap("alice")  # serialized call: reloads shared state
-        assert second.organization.organization_id != mapped_org
-        assert second.ensure_user("bob")["organization_id"] != mapped_org
+        assert second.bootstrap("alice")["organization"]["organization_id"] == mapped_org
+        restarted = type(second)(dsn=second.dsn, namespace=second.namespace, pool_size=2)
+        try:
+            assert restarted.organization.organization_id != mapped_org
+            assert restarted.ensure_user("bob")["organization_id"] != mapped_org
+        finally:
+            restarted.close()
     finally:
         first.close()
         second.close()
