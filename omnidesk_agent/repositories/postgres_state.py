@@ -96,6 +96,43 @@ def _json_object(value: Any) -> dict[str, Any]:
     return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else {}
 
 
+# Approvals follow security's one rule for every store (SECURITY.md, #270): the
+# subject is anonymized, and what they left pending is withdrawn. Until #270 is
+# on main these copy its helpers (security.dual_approval.anonymized_request,
+# security.approval_store._deciders and _anonymized_decision).
+_APPROVAL_REQUESTER_KEYS = ("created_by", "proposer", "actor", "requested_by")
+
+
+def _anonymized_request(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
+    """A request by an erased subject: requester fields become [erased], argument content is withheld."""
+    out = dict(proposal)
+    for key in _APPROVAL_REQUESTER_KEYS:
+        if out.get(key) == actor:
+            out[key] = ERASED_ACTOR
+    args = out.get("args")
+    if isinstance(args, dict):
+        kept = {k: v for k, v in cast(dict[str, Any], args).items() if str(k).endswith(("_sha256", "_length"))}
+        out["args"] = kept
+        out["args_withheld"] = len(kept) != len(cast(dict[str, Any], args))
+    return out
+
+
+def _approval_deciders(result: dict[str, Any]) -> set[str]:
+    names = {str(result.get(key) or "") for key in ("decided_by", "denied_by")}
+    approved = result.get("approved_by")
+    names |= {str(name) for name in cast(list[Any], approved)} if isinstance(approved, list) else {str(approved or "")}
+    return names - {""}
+
+
+def _anonymized_decision(result: dict[str, Any], actor: str) -> dict[str, Any]:
+    out = {key: (ERASED_ACTOR if value == actor else value) for key, value in result.items() if key != "reason"}
+    if isinstance(out.get("approved_by"), list):
+        out["approved_by"] = [ERASED_ACTOR if name == actor else name for name in cast(list[Any], out["approved_by"])]
+    if "reason" in result and result.get("decided_by") != actor and result.get("denied_by") != actor:
+        out["reason"] = result["reason"]  # another person's words stay
+    return out
+
+
 def _governance_event_names(event: dict[str, Any], actor: str) -> bool:
     """Does a memory governance audit event name ``actor`` (its actor, or the actor part of channel:actor)?"""
     namespace = str(event.get("namespace") or "")
@@ -422,14 +459,6 @@ class _PostgresJsonState:
                     matched.append(value)
         return matched
 
-    def delete_keys(self, namespace: str, keys: list[str]) -> int:
-        if not keys:
-            return 0
-        with self._connect() as con:
-            with con.cursor() as cur:
-                cur.execute("DELETE FROM omnidesk_core_state WHERE namespace=%s AND key = ANY(%s)", (namespace, list(keys)))
-                return int(cur.rowcount or 0)
-
     def claim_ready_by_status(
         self,
         namespace: str,
@@ -566,9 +595,34 @@ class PostgresDualApprovalStore:
             bool(first and second), approval_id, first, second, "ready" if first and second else "waiting_for_second_approver"
         )
 
-    def erase_approvals(self, approval_ids: list[str]) -> int:
-        """Delete the dual-approval rows of erased approval records (data-subject erasure)."""
-        return self.state.delete_keys(self.namespace, [str(approval_id) for approval_id in approval_ids])
+    def erase_subject(self, actor: str) -> int:
+        """Data-subject erasure: withdraw the actor's lone first approval, anonymize them elsewhere.
+
+        A pending dual approval whose only approver is the actor loses that
+        approval, so it needs two fresh approvers and nobody can count twice. In
+        a ready one the actor becomes ``[erased]``, and so do requester fields
+        and argument content of a request they made. Returns the rows changed
+        (as security.dual_approval.DualApprovalStore).
+        """
+        from omnidesk_agent.security.dual_approval import proposal_requesters
+
+        def concerns(row: dict[str, Any]) -> bool:
+            return actor in (row.get("first_approver"), row.get("second_approver")) or actor in proposal_requesters(row.get("proposal") or {})
+
+        def anonymized(row: dict[str, Any]) -> dict[str, Any]:
+            first, second = row.get("first_approver"), row.get("second_approver")
+            if first == actor and not second:
+                row["first_approver"] = row["second_approver"] = None
+            else:
+                row["first_approver"] = ERASED_ACTOR if first == actor else first
+                row["second_approver"] = ERASED_ACTOR if second == actor else second
+            proposal = row.get("proposal") or {}
+            if actor in proposal_requesters(proposal):
+                row["proposal"] = _anonymized_request(proposal, actor)
+            row["updated_at"] = time.time()
+            return row
+
+        return len(self.state.erase_where(self.namespace, concerns, replacement=anonymized))
 
 
 class PostgresApprovalStore:
@@ -612,20 +666,54 @@ class PostgresApprovalStore:
         return self.state.list(self.namespace, status=status, limit=1000)
 
     def export_subject(self, actor: str) -> list[dict[str, Any]]:
-        """Approval records the actor requested (as security.approval_store.ApprovalStore)."""
+        """The approvals the actor requested, in full, and the actor's decisions on others' requests."""
         from omnidesk_agent.security.dual_approval import proposal_requesters
 
-        return [row for row in self.state.values(self.namespace) if actor in proposal_requesters(row.get("proposal") or {})]
+        out: list[dict[str, Any]] = []
+        for row in self.state.values(self.namespace):
+            result = row.get("result") or {}
+            if actor in proposal_requesters(row.get("proposal") or {}):
+                out.append(row)
+            elif actor in _approval_deciders(result):
+                out.append({"id": row["id"], "role": "decider", "status": row.get("status"), "decided_at": row.get("decided_at"), "result": result})
+        return out
 
     def erase_subject(self, actor: str) -> int:
-        """Delete the approval records the actor requested, and their dual-approval rows."""
+        """Data-subject erasure: anonymize the actor in every approval, withdraw what they left pending.
+
+        As security.approval_store.ApprovalStore (#270):
+        - A request by the actor: requester fields become [erased] and argument
+          content is withheld; a pending one is withdrawn (denied).
+        - A decision by the actor on someone else's request: the decider becomes
+          [erased] and the reason they wrote is cleared. A pending dual approval
+          loses the actor's lone first approval (PostgresDualApprovalStore.erase_subject).
+        The security audit chain keeps the real identities. Returns the records changed.
+        """
         from omnidesk_agent.security.dual_approval import proposal_requesters
 
-        erased = self.state.erase_where(self.namespace, lambda row: actor in proposal_requesters(row.get("proposal") or {}))
-        erase_dual = getattr(self.dual_approval_store, "erase_approvals", None)
-        if erased and callable(erase_dual):
-            erase_dual([str(row.get("id")) for row in erased])
-        return len(erased)
+        now = time.time()
+
+        def concerns(row: dict[str, Any]) -> bool:
+            return actor in proposal_requesters(row.get("proposal") or {}) or actor in _approval_deciders(row.get("result") or {})
+
+        def anonymized(row: dict[str, Any]) -> dict[str, Any]:
+            proposal = row.get("proposal") or {}
+            result = dict(row.get("result") or {})
+            if actor in proposal_requesters(proposal):
+                row["proposal"] = _anonymized_request(proposal, actor)
+                if row.get("status") == "pending":
+                    row["status"], result = "denied", {**result, "withdrawn": "requester erased"}
+            if actor in _approval_deciders(result):
+                result = _anonymized_decision(result, actor)
+            row["result"] = result
+            row["decided_at"] = row.get("decided_at") or now
+            return row
+
+        changed = len(self.state.erase_where(self.namespace, concerns, replacement=anonymized))
+        erase_dual = getattr(self.dual_approval_store, "erase_subject", None)
+        if callable(erase_dual):
+            changed += int(cast(Any, erase_dual(actor)))
+        return changed
 
     def decide(self, approval_id: str, status: str, result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         if status not in {"approved", "denied"}:
@@ -832,7 +920,11 @@ class PostgresRunStore:
         self.state.update_locked(self.namespace, run_id, update)
 
     def get(self, run_id: str) -> Optional[dict[str, Any]]:
-        return self.state.get(self.namespace, run_id)
+        run = self.state.get(self.namespace, run_id)
+        if run is not None:
+            # A tombstone of a data-subject erasure: whoever still holds the run must not write about it.
+            run["erased"] = bool(run.get("erased_at"))
+        return run
 
     def get_by_approval(self, approval_id: str) -> Optional[dict[str, Any]]:
         return self.state.find_by_field(self.namespace, "waiting_approval_id", approval_id)

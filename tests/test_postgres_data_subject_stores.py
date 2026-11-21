@@ -5,7 +5,9 @@ holds. On PostgreSQL deployments those are the stores in
 ``repositories/postgres_state.py``. Without ``export_subject`` and
 ``erase_subject``, each one is reported as unsupported and the erasure is
 incomplete. These tests hold them to the SQLite stores' rules (#270, #275):
-- approvals the person requested go, with their dual-approval rows;
+- approvals follow security's one rule (#270): the person is anonymized as
+  requester and as decider, what they left pending is withdrawn, and their
+  lone first approval of a dual approval no longer counts;
 - a finished run goes; a run in flight becomes a cancelled tombstone that cannot
   be resumed or written back; an export never carries a resume token;
 - jobs the person sent go, and so do messages to them or queued for them;
@@ -64,25 +66,44 @@ def _mentions(pg: Any, needle: str) -> list[tuple[str, str]]:
     return [(str(row[0]), str(row[1])) for row in rows]
 
 
-def test_approvals_the_subject_requested_go_with_their_dual_approval_rows(pg: Any) -> None:
+def _request(actor: str, risk: str = "high") -> dict[str, Any]:
+    return {"tool": "files", "action": "write_text", "risk": risk, "actor": actor, "created_by": actor, "requires_dual_approval": risk == "critical", "args": {"text": f"{actor} wrote this", "text_sha256": "ab" * 32}}
+
+
+def test_erasure_withdraws_what_the_subject_left_pending_and_anonymizes_the_rest(pg: Any) -> None:
+    # The cases of security's SQLite test of the same name (#270): one rule for
+    # approvals in every store. The audit chain, not these rows, keeps who
+    # requested and approved what.
     dual = pg.factory.dual_approval_store()
-    approvals = pg.factory.approval_store(ttl_seconds=600, dual_approval_store=dual)
-    critical = approvals.create({"tool": "files", "action": "delete", "created_by": SUBJECT, "requires_dual_approval": True, "args": {"path": "sam/clinic.pdf"}})
-    plain = approvals.create({"tool": "files", "action": "read", "created_by": SUBJECT})
-    theirs = approvals.create({"tool": "files", "action": "read", "created_by": OTHER, "requires_dual_approval": True})
-    dual.approve(theirs, SUBJECT)
+    store = pg.factory.approval_store(ttl_seconds=600, dual_approval_store=dual)
+    own_pending = store.create(_request("alice"))
+    own_decided = store.create(_request("alice"))
+    store.decide(own_decided, "approved", {"decided_by": "owner-a"})
+    judged = store.create(_request("bob"))
+    store.decide(judged, "denied", {"decided_by": "alice", "reason": "alice's words"})
+    partial = store.create(_request("bob", "critical"))
+    dual.approve(partial, "alice")
+    ready = store.create(_request("carol", "critical"))
+    dual.approve(ready, "alice")
+    dual.approve(ready, "dave")
 
-    assert {row["id"] for row in approvals.export_subject(SUBJECT)} == {critical, plain}
-    assert approvals.erase_subject(SUBJECT) == 2
+    assert {row["id"] for row in store.export_subject("alice")} == {own_pending, own_decided, judged}
+    assert store.erase_subject("alice") >= 5
 
-    assert approvals.get(critical) is None and approvals.get(plain) is None
-    with pytest.raises(KeyError):
-        dual.status(critical)
-    # As in security's SQLite store, someone else's request keeps the record of
-    # who approved it; that is the only row still naming the subject.
-    assert approvals.get(theirs) is not None and dual.status(theirs).first_approver == SUBJECT
-    assert _mentions(pg, SUBJECT) == [("dual_approvals", theirs)]
-    assert approvals.erase_subject(SUBJECT) == 0
+    withdrawn = store.get(own_pending)
+    assert withdrawn["status"] == "denied" and withdrawn["result"]["withdrawn"] == "requester erased"
+    assert withdrawn["proposal"]["created_by"] == "[erased]" and withdrawn["proposal"]["args"] == {"text_sha256": "ab" * 32}
+    assert store.get(own_decided)["status"] == "approved" and store.get(own_decided)["proposal"]["actor"] == "[erased]"
+    assert store.get(judged)["result"] == {"decided_by": "[erased]"}  # alice's reason is cleared
+    # Alice's lone first approval is withdrawn: two fresh approvers are needed again.
+    assert dual.status(partial).first_approver is None and not dual.status(partial).ready
+    # A ready approval stays ready, without her name.
+    assert dual.status(ready).ready and dual.status(ready).first_approver == "[erased]"
+    assert store.export_subject("alice") == []
+    assert store.get(judged)["proposal"]["created_by"] == "bob"  # other people's records keep them
+    # Nothing in the runtime state names her or holds her words any more.
+    assert _mentions(pg, "alice") == []
+    assert store.erase_subject("alice") == 0
 
 
 def test_a_finished_run_goes_and_one_in_flight_becomes_a_tombstone_nobody_can_write_back(pg: Any) -> None:
@@ -100,7 +121,9 @@ def test_a_finished_run_goes_and_one_in_flight_becomes_a_tombstone_nobody_can_wr
 
     assert runs.get(finished) is None
     tombstone = runs.get(waiting)
-    assert tombstone is not None
+    assert tombstone is not None and tombstone["erased"] is True
+    # The orchestrator reads this flag before writing memory about a run (agent-core #288).
+    assert runs.get(other)["erased"] is False
     assert tombstone["status"] == "cancelled" and tombstone["original_message"] == {"erased": True}
     assert tombstone["plan_json"] is None and tombstone["results"] == [] and tombstone["approval_proposal"] is None
     assert tombstone["resume_token"] is None and tombstone["waiting_approval_id"] is None and tombstone["erased_at"]
