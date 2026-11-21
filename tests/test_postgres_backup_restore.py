@@ -108,7 +108,7 @@ def test_backup_restores_into_an_empty_database_and_proves_it(databases: dict[st
     )
     entry = manifest["databases"][0]
     assert entry["encrypted"] and entry["archive"].endswith(".enc") and entry["toc_entries"] > 10
-    assert entry["schema_versions"] == {"production": 8}
+    assert entry["schema_versions"] == {"production": 9}
     assert entry["row_counts"]["public.omnidesk_appsync_messages"] == 5
     assert not (manifest_path.parent / "appsync.dump").exists(), "the plaintext archive must not be left behind"
     assert pb.verify_backup_set(manifest_path, encryption_secret=SECRET, signing_secret=SIGNING, require_signature=True)["ok"]

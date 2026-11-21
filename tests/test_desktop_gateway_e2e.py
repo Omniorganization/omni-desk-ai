@@ -123,8 +123,9 @@ def test_fresh_desktop_enrolls_then_runs_an_approved_action(gateway: TestClient,
     _post(gateway, "/app/devices/register", OWNER, {"device_id": console.device_id, "device_type": "web_admin", "name": "console", "platform": "browser", "public_key": console.public_pem})
     _enroll(gateway, console, device_type="web_admin", owner=OWNER, actor=OWNER)
 
-    conversation = _post(gateway, "/app/conversations", OWNER, {"title": "reports"}).json()["conversation"]
-    created = _post(gateway, f"/app/conversations/{conversation['conversation_id']}/messages", OWNER, {"content": "send me the Q3 report", "action": READ}).json()
+    # The operator asks; the owner approves (a requester never approves their own request).
+    conversation = _post(gateway, "/app/conversations", OPERATOR, {"title": "reports"}).json()["conversation"]
+    created = _post(gateway, f"/app/conversations/{conversation['conversation_id']}/messages", OPERATOR, {"content": "send me the Q3 report", "action": READ}).json()
     approval = created["approval"]
     assert approval["action_hash"] == task_action_hash(READ) and "reports/q3.md" in approval["action"]
     decided = _post(gateway, f"/app/approvals/{approval['approval_id']}/decide", OWNER, {"decision": "approved", "source_device_id": console.device_id}, device=console)
@@ -145,10 +146,11 @@ def test_fresh_desktop_enrolls_then_runs_an_approved_action(gateway: TestClient,
     reported = _post(gateway, status_path, OPERATOR, report, device=desktop)
     assert reported.status_code == 200, reported.text
 
+    # Only the task's creator (here the operator) sees the result.
+    seen_by_creator = gateway.get(f"/app/tasks/{task['task_id']}", headers=OPERATOR).json()["task"]
+    assert seen_by_creator["status"] == "completed" and seen_by_creator["result"]["content"] == "Q3 revenue: 42"
     seen_by_owner = gateway.get(f"/app/tasks/{task['task_id']}", headers=OWNER).json()["task"]
-    assert seen_by_owner["status"] == "completed" and seen_by_owner["result"]["content"] == "Q3 revenue: 42"
-    seen_by_operator = gateway.get(f"/app/tasks/{task['task_id']}", headers=OPERATOR).json()["task"]
-    assert "result" not in seen_by_operator
+    assert seen_by_owner["status"] == "completed" and "result" not in seen_by_owner
 
 
 def test_signed_calls_from_another_or_replayed_device_are_refused(gateway: TestClient) -> None:

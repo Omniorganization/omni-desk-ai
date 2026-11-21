@@ -24,6 +24,7 @@ from omnidesk_agent.config import AppConfig
 from omnidesk_agent.server import create_app
 
 OWNER = "olivia-owner"
+APPROVER = "andrea-approver"  # approvals need someone other than the requester
 OPERATOR = "oscar-operator"
 READ = {"capability": "workspace.read_file", "scope": {"workspace": "reports", "relative_path": "q3.md"}}
 
@@ -95,7 +96,7 @@ def test_the_approval_shows_and_binds_the_exact_action(store: Any) -> None:
 
 def test_only_a_runtime_that_advertises_the_capability_claims_it(store: Any) -> None:
     created = _executable_task(store)
-    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=OWNER, decision="approved")
+    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=APPROVER, decision="approved")
     store.register_device(actor=OWNER, device_id="dev_desk", device_type="desktop", name="desk", platform="mac")
     assert store.claim_next_task(actor=OWNER, device_id="dev_desk", capabilities=["chat", "local-runtime"]) is None
     claimed = store.claim_next_task(actor=OWNER, device_id="dev_desk", capabilities=["workspace.read_file"])
@@ -105,7 +106,7 @@ def test_only_a_runtime_that_advertises_the_capability_claims_it(store: Any) -> 
 
 def test_the_result_is_reported_by_the_lease_holder_and_seen_by_the_creator_only(store: Any) -> None:
     created = _executable_task(store)
-    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=OWNER, decision="approved")
+    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=APPROVER, decision="approved")
     store.register_device(actor=OWNER, device_id="dev_desk", device_type="desktop", name="desk", platform="mac")
     task_id = store.claim_next_task(actor=OWNER, device_id="dev_desk", capabilities=["workspace.read_file"])["task_id"]
     with pytest.raises(ValueError, match="at most"):
@@ -124,7 +125,7 @@ def test_free_text_desktop_tasks_stay_claimable_but_are_not_actions(store: Any) 
     conversation = store.create_conversation(actor=OWNER, title="ops")
     created = store.add_message_and_task(actor=OWNER, conversation_id=conversation["conversation_id"], content="fix the build", requires_desktop_runtime=True)
     assert created["task"]["capability"] is None and created["task"]["action"] == {}
-    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=OWNER, decision="approved")
+    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=APPROVER, decision="approved")
     store.register_device(actor=OWNER, device_id="dev_desk", device_type="desktop", name="desk", platform="mac")
     claimed = store.claim_next_task(actor=OWNER, device_id="dev_desk", capabilities=["workspace.read_file"])
     # The desktop executor reports such a task as failed: nothing it could run was approved.
@@ -150,21 +151,26 @@ def _cfg(tmp_path: Path) -> AppConfig:
 
 def test_routes_validate_actions_and_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OMNIDESK_OWNER_TOKEN", "owner-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_TOKEN", "operator-token")
+    monkeypatch.setenv("OMNIDESK_OPERATOR_ACTOR", OPERATOR)
     owner = {"authorization": "Bearer owner-token", "x-omnidesk-actor": OWNER}
+    # The operator requests and runs the action; the owner approves it (a
+    # requester never approves their own request).
+    operator = {"authorization": "Bearer operator-token", "x-omnidesk-actor": OPERATOR}
     with TestClient(create_app(_cfg(tmp_path))) as client:
-        conversation = client.post("/app/conversations", headers={**owner, "idempotency-key": "c1"}, json={"title": "ops"}).json()["conversation"]
+        conversation = client.post("/app/conversations", headers={**operator, "idempotency-key": "c1"}, json={"title": "ops"}).json()["conversation"]
         path = f"/app/conversations/{conversation['conversation_id']}/messages"
-        bad = client.post(path, headers={**owner, "idempotency-key": "m0"}, json={"content": "x", "action": {"capability": "shell.run", "scope": {"relative_path": "x"}}})
+        bad = client.post(path, headers={**operator, "idempotency-key": "m0"}, json={"content": "x", "action": {"capability": "shell.run", "scope": {"relative_path": "x"}}})
         assert bad.status_code == 422
-        created = client.post(path, headers={**owner, "idempotency-key": "m1"}, json={"content": "send the report", "action": READ}).json()
+        created = client.post(path, headers={**operator, "idempotency-key": "m1"}, json={"content": "send the report", "action": READ}).json()
         assert created["approval"]["action_detail"] == READ
         decided = client.post(f"/app/approvals/{created['approval']['approval_id']}/decide", headers={**owner, "idempotency-key": "d1"}, json={"decision": "approved"})
         assert decided.status_code == 200, decided.text
-        client.post("/app/devices/register", headers={**owner, "idempotency-key": "r1"}, json={"device_id": "dev_desk_route", "device_type": "desktop", "name": "desk", "platform": "mac"})
-        claimed = client.post("/app/runtime/desktop/claim", headers=owner, json={"device_id": "dev_desk_route", "capabilities": ["workspace.read_file"]}).json()["task"]
+        client.post("/app/devices/register", headers={**operator, "idempotency-key": "r1"}, json={"device_id": "dev_desk_route", "device_type": "desktop", "name": "desk", "platform": "mac"})
+        claimed = client.post("/app/runtime/desktop/claim", headers=operator, json={"device_id": "dev_desk_route", "capabilities": ["workspace.read_file"]}).json()["task"]
         assert claimed["action"] == READ
         status_path = f"/app/tasks/{claimed['task_id']}/status"
-        too_big = client.post(status_path, headers={**owner, "idempotency-key": "s0"}, json={"status": "completed", "assigned_runtime_device_id": "dev_desk_route", "result": {"content": "x" * TASK_RESULT_MAX_BYTES}})
+        too_big = client.post(status_path, headers={**operator, "idempotency-key": "s0"}, json={"status": "completed", "assigned_runtime_device_id": "dev_desk_route", "result": {"content": "x" * TASK_RESULT_MAX_BYTES}})
         assert too_big.status_code == 422
-        done = client.post(status_path, headers={**owner, "idempotency-key": "s1"}, json={"status": "completed", "result_summary": "workspace file read", "assigned_runtime_device_id": "dev_desk_route", "result": {"content": "numbers"}})
+        done = client.post(status_path, headers={**operator, "idempotency-key": "s1"}, json={"status": "completed", "result_summary": "workspace file read", "assigned_runtime_device_id": "dev_desk_route", "result": {"content": "numbers"}})
         assert done.status_code == 200 and done.json()["task"]["result"] == {"content": "numbers"}

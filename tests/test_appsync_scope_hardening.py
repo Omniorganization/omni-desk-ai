@@ -31,6 +31,7 @@ from omnidesk_agent.config import AppConfig
 from omnidesk_agent.server import create_app
 
 OWNER = "token:OMNIDESK_OWNER_TOKEN"
+APPROVER = "andrea-approver"  # approvals need someone other than the requester
 OPERATOR = "token:OMNIDESK_OPERATOR_TOKEN"
 
 
@@ -106,7 +107,7 @@ def test_task_records_do_not_reveal_the_foreign_conversation(store: AppSyncStore
     task_id = created["task"]["task_id"]
     assert "conversation_id" not in store.get_task(task_id, actor=OPERATOR)
     assert store.get_task(task_id, actor=OWNER)["conversation_id"] == conv["conversation_id"]
-    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=OWNER, decision="approved")
+    store.decide_approval(approval_id=created["approval"]["approval_id"], actor=APPROVER, decision="approved")
     claimed = store.claim_next_task(actor=OPERATOR, device_id="dev_operator_desk")
     assert claimed and claimed["task_id"] == task_id and "conversation_id" not in claimed
     done = store.update_task_status(task_id=task_id, actor=OPERATOR, status="completed", device_id="dev_operator_desk")

@@ -9,7 +9,7 @@ from typing import Any, Iterable, Protocol, cast
 from omnidesk_agent.appsync.postgres_store import NORMALIZED_SCHEMA_SQL
 
 MIGRATION_TABLE = "omnidesk_appsync_schema_migrations"
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 
 class _Cursor(Protocol):
@@ -212,6 +212,16 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS provider TEXT",
             "ALTER TABLE omnidesk_appsync_push_outbox ADD COLUMN IF NOT EXISTS provider_message_id TEXT",
             "CREATE INDEX IF NOT EXISTS omnidesk_push_outbox_due_idx ON omnidesk_appsync_push_outbox(namespace, status, next_attempt_at)",
+        ),
+    ),
+    PostgresMigration(
+        9,
+        "approval_four_eyes",
+        (
+            # Who has approved so far, and how many distinct approvers (never
+            # the requester) an action needs: two for critical ones.
+            "ALTER TABLE omnidesk_appsync_approvals ADD COLUMN IF NOT EXISTS required_approvals INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE omnidesk_appsync_approvals ADD COLUMN IF NOT EXISTS approved_by JSONB NOT NULL DEFAULT '[]'::jsonb",
         ),
     ),
 )

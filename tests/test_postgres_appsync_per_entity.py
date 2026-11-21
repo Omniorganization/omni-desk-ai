@@ -32,6 +32,7 @@ import pytest
 from omnidesk_agent.appsync.strict_json_store import StrictJsonAppSyncStore
 
 OWNER = "olivia-owner"
+APPROVER = "andrea-approver"  # approvals need someone other than the requester
 OPERATOR = "oscar-operator"
 
 
@@ -97,7 +98,7 @@ def _approved_desktop_tasks(store: Any, count: int) -> list[str]:
     task_ids = []
     for index in range(count):
         created = store.add_message_and_task(actor=OWNER, conversation_id=conversation["conversation_id"], content=f"run job {index}", requires_desktop_runtime=True)
-        store.decide_approval(approval_id=created["approval"]["approval_id"], actor=OWNER, decision="approved")
+        store.decide_approval(approval_id=created["approval"]["approval_id"], actor=APPROVER, decision="approved")
         task_ids.append(created["task"]["task_id"])
     return task_ids
 
@@ -192,9 +193,9 @@ def _scenario(store: Any) -> list[Any]:
     trace.append(("task", created["task"]["status"], created["approval"]["status"], created["approval"]["risk"]))
     trace.append(("pushes", sorted(item["device_id"] for item in store.pending_push_outbox())))
     approval_id = created["approval"]["approval_id"]
-    trace.append(("decide", store.decide_approval(approval_id=approval_id, actor=OWNER, decision="approved")["status"]))
+    trace.append(("decide", store.decide_approval(approval_id=approval_id, actor=APPROVER, decision="approved")["status"]))
     with pytest.raises(ValueError) as decided:
-        store.decide_approval(approval_id=approval_id, actor=OWNER, decision="rejected")
+        store.decide_approval(approval_id=approval_id, actor=APPROVER, decision="rejected")
     trace.append(("decide twice", str(decided.value)))
     claimed = store.claim_next_task(actor=OWNER, device_id="dev_desk", capabilities=["dry_run"])
     trace.append(("claim", claimed["status"], claimed["attempt_count"], store.claim_next_task(actor=OWNER, device_id="dev_desk")))
@@ -302,7 +303,7 @@ def test_one_decision_wins_and_idempotent_writes_run_once_across_replicas() -> N
         def decide(index: int) -> Any:
             start.wait(timeout=30)
             try:
-                return stores[index % 2].decide_approval(approval_id=approval_id, actor=OWNER, decision="approved" if index % 2 else "rejected")["status"]
+                return stores[index % 2].decide_approval(approval_id=approval_id, actor=APPROVER, decision="approved" if index % 2 else "rejected")["status"]
             except ValueError as exc:
                 return str(exc)
 

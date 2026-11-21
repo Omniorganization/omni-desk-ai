@@ -835,6 +835,8 @@ def register_appsync_routes(
                 reason=payload.get("reason"),
                 idempotency_key=_require_idempotency(cfg, request, payload),
                 idempotency_payload=payload,
+                # An operator raised by break-glass is never one of the four eyes.
+                break_glass=bool(getattr(decision, "break_glass_session_id", None)),
             )
         except IdempotencyConflict as exc:
             raise HTTPException(409, str(exc)) from exc
