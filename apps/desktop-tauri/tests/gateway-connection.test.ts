@@ -20,7 +20,8 @@ function recordFetch(): string[] {
   const urls: string[] = [];
   globalThis.fetch = async (input) => {
     urls.push(input.toString());
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    // Heartbeat and bootstrap answers that meet the contract.
+    return new Response(JSON.stringify({ ok: true, pending_approvals: [], notifications: [], runtime_status: [], devices: [] }), { status: 200 });
   };
   return urls;
 }

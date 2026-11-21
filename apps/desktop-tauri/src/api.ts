@@ -1,3 +1,5 @@
+import { CONTRACT_HEADER, CONTRACT_VERSION, assertCompatibleGateway, assertContractResponse } from './generated/contract';
+
 export type DeviceType = 'desktop' | 'mobile' | 'web_admin';
 export type TaskStatus = 'queued' | 'running' | 'blocked' | 'completed' | 'failed' | 'cancelled';
 
@@ -119,6 +121,7 @@ export class OmniApiClient {
       'content-type': 'application/json',
       authorization: `Bearer ${this.options.token}`,
       'x-omnidesk-actor': this.options.actor,
+      [CONTRACT_HEADER]: CONTRACT_VERSION,
       ...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
       ...signedHeaders,
     };
@@ -135,8 +138,12 @@ export class OmniApiClient {
         ...(init.headers || {})
       }
     });
+    // Before anything else: an incompatible gateway is reported as such, not as a broken request.
+    assertCompatibleGateway(response.headers.get(CONTRACT_HEADER));
     if (!response.ok) throw gatewayError(response.status, await response.text());
-    return response.json() as Promise<T>;
+    const payload: unknown = await response.json();
+    assertContractResponse(method, path, payload);
+    return payload as T;
   }
 
   bootstrap() { return this.request<any>('/app/bootstrap'); }
@@ -183,6 +190,7 @@ export class OmniApiClient {
         ...(options.lastEventId ? { 'last-event-id': String(options.lastEventId) } : {}),
       },
     });
+    assertCompatibleGateway(response.headers.get(CONTRACT_HEADER));
     if (!response.ok) throw gatewayError(response.status, await response.text());
     if (!response.body) throw new Error('stream_body_unavailable');
 

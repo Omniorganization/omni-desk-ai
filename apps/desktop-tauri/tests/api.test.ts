@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { OmniApiClient, normalizeGatewayBaseUrl } from '../src/api';
+import { CONTRACT_HEADER, CONTRACT_VERSION, REQUEST_REQUIREMENTS, contractProblems } from '../src/generated/contract';
+import { exampleBody } from './contractExample';
 
 const originalFetch = globalThis.fetch;
 
@@ -68,9 +70,11 @@ test('desktop typed client contract cases match shared contract and emitted requ
 
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const signedCalls: Array<{ method: string; path: string; body: string }> = [];
+    const route = `${contractCase.method} ${contractCase.contractPath}`;
     globalThis.fetch = async (input, init) => {
       calls.push({ url: input.toString(), init });
-      return new Response(JSON.stringify({ ok: true, device: { device_id: 'desktop-1' }, assistant_message: { content: 'ok' } }), { status: 200 });
+      // A gateway answer that meets the contract, and nothing more.
+      return new Response(JSON.stringify(exampleBody(route)), { status: 200, headers: { [CONTRACT_HEADER]: CONTRACT_VERSION } });
     };
 
     const client = new OmniApiClient({
@@ -95,6 +99,11 @@ test('desktop typed client contract cases match shared contract and emitted requ
     assert.equal(String(calls[0].init?.method ?? 'GET').toUpperCase(), contractCase.method);
     assert.equal((calls[0].init?.headers as Record<string, string>).authorization, 'Bearer operator-token');
     assert.equal((calls[0].init?.headers as Record<string, string>)['x-omnidesk-actor'], 'desktop-operator');
+    assert.equal((calls[0].init?.headers as Record<string, string>)[CONTRACT_HEADER], CONTRACT_VERSION);
+    // What the desktop sends meets the contract's request schema.
+    if (REQUEST_REQUIREMENTS[route]) {
+      assert.deepEqual(contractProblems(REQUEST_REQUIREMENTS[route], JSON.parse(String(calls[0].init?.body))), [], route);
+    }
     if (contractCase.signedInProduction) {
       assert.deepEqual(signedCalls.map(({ method, path }) => ({ method, path })), [
         { method: contractCase.method, path: contractCase.clientPath },
@@ -109,7 +118,7 @@ test('desktop registration trims the gateway URL and sends operator identity', a
   globalThis.fetch = async (input, init) => {
     requestUrl = input.toString();
     requestInit = init;
-    return new Response(JSON.stringify({ ok: true, device: { device_id: 'desktop-1' } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, device: { device_id: 'desktop-1', credential_status: 'enrolled' } }), { status: 200 });
   };
 
   const client = new OmniApiClient({ baseUrl: 'https://gateway.example.test/', token: 'operator-token', actor: 'desktop-operator' });
@@ -134,7 +143,7 @@ test('createProject uses the shared /app/projects contract', async () => {
   globalThis.fetch = async (input, init) => {
     requestUrl = input.toString();
     requestInit = init;
-    return new Response(JSON.stringify({ ok: true, project: { project_id: 'proj_1234567890abcdef', name: 'Desktop Launch' } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, project: { project_id: 'proj_1234567890abcdef', name: 'Desktop Launch', archived: false } }), { status: 200 });
   };
 
   const client = new OmniApiClient({ baseUrl: 'https://gateway.example.test/', token: 'operator-token', actor: 'desktop-operator' });
@@ -175,7 +184,7 @@ test('askConversation uses the shared audited chat endpoint', async () => {
   globalThis.fetch = async (input, init) => {
     requestUrl = input.toString();
     requestInit = init;
-    return new Response(JSON.stringify({ ok: true, assistant_message: { content: 'answer' } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, assistant_message: { role: 'assistant', content: 'answer' } }), { status: 200 });
   };
 
   const client = new OmniApiClient({ baseUrl: 'https://gateway.example.test/', token: 'operator-token', actor: 'desktop-operator' });

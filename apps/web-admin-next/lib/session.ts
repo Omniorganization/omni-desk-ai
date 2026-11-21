@@ -1,5 +1,6 @@
 import { cookies, headers } from 'next/headers';
 import { resolveGatewayBaseUrl } from './gateway';
+import { CONTRACT_HEADER, CONTRACT_VERSION, ContractMismatchError, assertCompatibleGateway, assertContractResponse } from './generated/contract';
 import { CLIENT_IP_HEADER, clientAddress } from './rate-limit';
 import { verifySessionSeal } from './session-seal';
 
@@ -62,10 +63,28 @@ export function gatewayRequestHeaders(
   forwarded.set('authorization', `Bearer ${token}`);
   forwarded.set('x-omnidesk-actor', actor);
   forwarded.set('x-omnidesk-client-role', role);
+  forwarded.set(CONTRACT_HEADER, CONTRACT_VERSION);
   // Always this server's view of the browser address, never a caller-supplied value.
   if (clientIp) forwarded.set(CLIENT_IP_HEADER, clientIp);
   else forwarded.delete(CLIENT_IP_HEADER);
   return forwarded;
+}
+
+/**
+ * Why a gateway answer breaks the API contract this Web Admin was built for:
+ * another major version, or a successful JSON answer without a field the UI
+ * reads. Null when it meets the contract.
+ */
+export function gatewayContractFailure(method: string, path: string, response: Response, bodyText: string | null): string | null {
+  try {
+    assertCompatibleGateway(response.headers.get(CONTRACT_HEADER));
+    if (response.ok && bodyText !== null) assertContractResponse(method, path, JSON.parse(bodyText));
+    return null;
+  } catch (error) {
+    if (error instanceof ContractMismatchError) return error.message.slice(0, 160);
+    if (error instanceof SyntaxError) return 'gateway answer is not JSON';
+    throw error;
+  }
 }
 
 export async function omniProxy(path: string, init: RequestInit = {}) {
@@ -86,7 +105,10 @@ export async function omniProxy(path: string, init: RequestInit = {}) {
     cache: 'no-store'
   });
   const contentType = response.headers.get('content-type') || 'application/json';
+  const method = (init.method || 'GET').toString().toUpperCase();
   if (contentType.includes('text/event-stream')) {
+    const failure = gatewayContractFailure(method, path, response, null);
+    if (failure) return Response.json({ ok: false, error: 'gateway_contract_mismatch', detail: failure }, { status: 502 });
     const responseHeaders = new Headers({
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': response.headers.get('cache-control') || 'no-cache, no-transform',
@@ -99,6 +121,8 @@ export async function omniProxy(path: string, init: RequestInit = {}) {
     });
   }
   const body = await response.text();
+  const failure = gatewayContractFailure(method, path, response, contentType.includes('json') ? body : null);
+  if (failure) return Response.json({ ok: false, error: 'gateway_contract_mismatch', detail: failure }, { status: 502 });
   return new Response(body, {
     status: response.status,
     headers: { 'content-type': contentType },

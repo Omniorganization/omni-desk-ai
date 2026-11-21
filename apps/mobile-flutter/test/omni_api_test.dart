@@ -3,7 +3,10 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:omnidesk_mobile/generated/contract.dart';
 import 'package:omnidesk_mobile/omni_api.dart';
+
+import 'contract_example.dart';
 
 class TypedClientContractCase {
   const TypedClientContractCase({
@@ -213,6 +216,7 @@ void main() {
         );
       }
 
+      final route = '${contractCase.method} ${contractCase.contractPath}';
       final calls = <http.Request>[];
       final client = OmniApiClient(
         baseUrl: 'https://gateway.example.test',
@@ -220,12 +224,27 @@ void main() {
         actor: 'mobile-operator',
         httpClient: MockClient((http.Request request) async {
           calls.add(request);
-          return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+          // A gateway answer that meets the contract, and nothing more.
+          return http.Response(
+            jsonEncode(exampleBody(route)),
+            200,
+            headers: <String, String>{contractHeader: contractVersion},
+          );
         }),
       );
 
       await contractCase.invoke(client);
       expect(calls, hasLength(1));
+      expect(calls.single.headers[contractHeader], contractVersion);
+      // What the app sends meets the contract's request schema.
+      final requestRules = requestRequirements[route];
+      if (requestRules != null) {
+        expect(
+          contractProblems(requestRules, jsonDecode(calls.single.body)),
+          isEmpty,
+          reason: route,
+        );
+      }
       expect(calls.single.method, contractCase.method);
       expect(calls.single.url.path, contractCase.clientPath);
       expect(calls.single.headers['authorization'], 'Bearer operator-token');
@@ -252,7 +271,10 @@ void main() {
           'approval',
           'notification',
         ]);
-        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+        return http.Response(
+          jsonEncode(exampleBody('POST /app/devices/register')),
+          200,
+        );
       }),
     );
 
@@ -271,7 +293,7 @@ void main() {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body['name'], 'Mobile Launch');
         expect(body['source_device_id'], 'mobile-1');
-        return http.Response(jsonEncode(<String, dynamic>{'ok': true}), 200);
+        return http.Response(jsonEncode(exampleBody('POST /app/projects')), 200);
       }),
     );
 

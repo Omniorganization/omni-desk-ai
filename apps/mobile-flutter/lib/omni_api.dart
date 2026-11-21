@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'device_identity.dart';
+import 'generated/contract.dart';
 
 class ChatStreamEvent {
   const ChatStreamEvent({
@@ -51,6 +52,7 @@ class OmniApiClient {
       'content-type': 'application/json',
       'authorization': 'Bearer $token',
       'x-omnidesk-actor': actor,
+      contractHeader: contractVersion,
       if (idempotencyKey != null && idempotencyKey.isNotEmpty)
         'idempotency-key': idempotencyKey,
       ...signedHeaders,
@@ -86,10 +88,14 @@ class OmniApiClient {
         body: requestBody,
       );
     }
+    // An incompatible gateway is reported as such, not as a broken request.
+    assertCompatibleGateway(response.headers[contractHeader]);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(_safeApiError(response));
     }
-    return jsonDecode(response.body) as Map<String, dynamic>;
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    assertContractResponse(method, path, payload);
+    return payload;
   }
 
   Future<Map<String, dynamic>> bootstrap() =>
@@ -243,6 +249,7 @@ class OmniApiClient {
     }
 
     final response = await _httpClient.send(request);
+    assertCompatibleGateway(response.headers[contractHeader]);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final responseBody = await response.stream.bytesToString();
       throw Exception(

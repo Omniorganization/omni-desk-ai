@@ -43,6 +43,17 @@ STREAM_TEST_FILES = {
         "test_markers": ("streamChat", "last-event-id", "chat.completed"),
     },
 }
+# Routes a client's server calls directly rather than through its typed API
+# layer: Web Admin's login binds the session to the gateway's identity answer.
+SERVER_CALLS = {
+    ("GET", "/admin/session/identity"): {
+        "surface": "web_admin",
+        "source": "apps/web-admin-next/lib/session-login.ts",
+        "source_markers": ("/admin/session/identity", "assertContractResponse("),
+        "test": "apps/web-admin-next/tests/contract.test.ts",
+        "test_markers": ("verifyGatewayIdentity", "role: missing"),
+    },
+}
 SUCCESS_MESSAGE = "typed client contract tests verified from contract client_surfaces"
 FIELD_RE = re.compile(
     r"\b(?P<field>method|contractPath|signedInProduction)\s*:\s*"
@@ -241,6 +252,13 @@ def _check_contract_coverage(root: Path) -> list[str]:
             )
         if key == STREAM_CONTRACT_KEY:
             stream_surfaces = set(client_surfaces)
+            continue
+        if key in SERVER_CALLS:
+            spec = SERVER_CALLS[key]
+            if client_surfaces != [spec["surface"]]:
+                issues.append(f"typed client contract: {key[0]} {key[1]} must declare exactly ['{spec['surface']}']")
+            issues.extend(_marker_issues(root, path=spec["source"], markers=spec["source_markers"], label=f"{spec['surface']} server call source"))
+            issues.extend(_marker_issues(root, path=spec["test"], markers=spec["test_markers"], label=f"{spec['surface']} server call test"))
             continue
         for surface in client_surfaces:
             if surface in required:

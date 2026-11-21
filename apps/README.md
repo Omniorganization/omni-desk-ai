@@ -39,3 +39,32 @@ make tri-app-quality PYTHON=.venv/bin/python
 ```
 
 See `apps/RELEASE_CHECKLIST.md` for the signed build, push notification, device login, and installer checklist.
+
+## API contract
+
+`apps/shared/omni-app-api.contract.json` is the contract between the gateway
+and the three clients:
+
+- **Versioned.** `contract_version` is `MAJOR.MINOR`. Every client sends
+  `X-OmniDesk-Contract`, and the gateway answers every contract route with its
+  own version. A client of another major is refused with `426
+  contract_version_unsupported`. A client refuses a gateway of another major,
+  and says to update. Minor versions only add routes or optional fields.
+- **Payload schemas.** Each route a client calls has a request and a response
+  schema, listing what the clients send and read; shared records are in
+  `schemas`. `tests/test_contract_payload_schemas.py` drives every client route
+  on a real gateway and validates both bodies.
+- **Checked by the clients.** `scripts/generate_contract_clients.py` writes
+  `desktop-tauri/src/generated/contract.ts`, `web-admin-next/lib/generated/contract.ts`
+  and `mobile-flutter/lib/generated/contract.dart`. These contain the version and,
+  per route, the field paths and types the client relies on. Each client checks
+  every gateway answer against them (Web Admin in its server-side proxy), and
+  each client's tests check the request bodies it sends. Regenerate after editing
+  the contract.
+- **Gates** (CI job `backend-and-contract`):
+  - `check_contract_bidirectional_diff.py` fails on any drift between the
+    contract, the gateway's routing table and the paths the clients call.
+  - `generate_contract_clients.py --check` fails on a stale generated module.
+  - The schema and negotiation tests.
+- **Not done:** response types are checked at run time, not compile time. The
+  clients' API methods still return `any` / `Map`.
