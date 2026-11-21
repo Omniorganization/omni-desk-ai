@@ -57,7 +57,8 @@ class UpgradeIssue:
         """Only issues a maintainer labelled for the pipeline are accepted.
 
         Scope and failing tests come from fenced ``scope:`` / ``tests:`` lines in
-        the body, e.g. ``scope: omnidesk_agent/self_learning/world_model/``.
+        the body, e.g. ``scope: omnidesk_agent/tools/web/``; ``scope:`` is required
+        (``diff_policy.scoped_policy``).
         """
         labels = tuple(str(label.get("name") if isinstance(label, dict) else label) for label in payload.get("labels") or [])
         if required_label not in labels:

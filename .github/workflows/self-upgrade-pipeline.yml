@@ -39,6 +39,9 @@ jobs:
       issues: read
     outputs:
       base_sha: ${{ steps.base.outputs.sha }}
+      # verify runs model-written code and could swap the artifact; publish
+      # checks the files it gets against this digest, which verify cannot change.
+      proposal_digest: ${{ steps.digest.outputs.value }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -66,6 +69,10 @@ jobs:
         run: |
           echo "::error::self-upgrade credentials are not wired yet; see docs/SELF_UPGRADE_PIPELINE.md"
           exit 1
+      - id: digest
+        run: >-
+          echo "value=$(python -m omnidesk_agent.self_upgrade.pipeline digest
+          --issue work/issue.json --diff work/proposal.diff --proposal work/proposal.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: self-upgrade-proposal-${{ github.run_id }}
@@ -128,7 +135,10 @@ jobs:
       # this repository with contents + pull-requests write) and runs
       # `pipeline publish`. Until then this job only re-checks the evidence.
       - name: Re-check the verified patch (no credential)
+        env:
+          PROPOSAL_DIGEST: ${{ needs.propose.outputs.proposal_digest }}
         run: >-
           python -m omnidesk_agent.self_upgrade.pipeline publish
           --issue work/issue.json --diff work/proposal.diff --evidence work/evidence.json
           --proposal work/proposal.json --repo "$GITHUB_REPOSITORY" --dry-run
+          --expect-proposal-digest "$PROPOSAL_DIGEST"

@@ -59,7 +59,7 @@ ISSUE = UpgradeIssue(
 
 
 def test_diff_policy_refuses_restricted_destructive_and_oversized_changes():
-    policy = DiffPolicy()
+    policy = DiffPolicy(allowed_prefixes=("omnidesk_agent/", "tests/"))
 
     def header(path, extra=""):
         return f"diff --git a/{path} b/{path}\n{extra}--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b\n"
@@ -144,7 +144,7 @@ def test_verify_refuses_untested_unreproduced_or_failing_changes(repo):
     _git(repo, "commit", "-q", "-am", "unrelated test")
     assert "no test covers the change; the diff must add or touch a test" in verify(repo, FIX_DIFF, no_test_issue, run_full_suite=False).reasons
 
-    passing_already = UpgradeIssue(title="x", body="b", source="manual", failing_tests=("tests/test_calc.py::test_unrelated",))
+    passing_already = UpgradeIssue(title="x", body="b", source="manual", scope_paths=("omnidesk_agent/demo/",), failing_tests=("tests/test_calc.py::test_unrelated",))
     reasons = verify(repo, FIX_DIFF, passing_already, run_full_suite=False).reasons
     assert "the named failing tests pass before the change; the issue is not reproduced" in reasons
 
@@ -153,11 +153,11 @@ def test_verify_refuses_untested_unreproduced_or_failing_changes(repo):
         "diff --git a/tests/test_new.py b/tests/test_new.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/test_new.py\n@@ -0,0 +1,4 @@\n"
         "+from omnidesk_agent.demo.calc import clamp\n+\n+def test_clamp():\n+    assert clamp(1, 0, 2) == 1\n"
     )
-    bundle = verify(repo, breaking_test, UpgradeIssue(title="x", body="b", source="manual"), run_full_suite=False)
+    bundle = verify(repo, breaking_test, UpgradeIssue(title="x", body="b", source="manual", scope_paths=("omnidesk_agent/demo/",)), run_full_suite=False)
     assert "targeted tests fail" in bundle.reasons and not bundle.ok
 
     restricted = "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n--- a/.github/workflows/ci.yml\n+++ b/.github/workflows/ci.yml\n@@ -1 +1 @@\n-a\n+b\n"
-    bundle = verify(repo, restricted, UpgradeIssue(title="x", body="b", source="manual"), run_full_suite=False)
+    bundle = verify(repo, restricted, UpgradeIssue(title="x", body="b", source="manual", scope_paths=("omnidesk_agent/demo/",)), run_full_suite=False)
     assert bundle.steps == [] and not bundle.ok  # refused before anything runs
 
 
@@ -169,7 +169,7 @@ def test_code_under_test_cannot_see_the_pipeline_credentials(repo, monkeypatch):
         "+import os\n+from omnidesk_agent.demo.calc import clamp\n+\n+def test_no_credentials():\n"
         "+    assert not any(k.startswith('OMNIDESK_UPGRADE') for k in os.environ)\n+    assert clamp(1, 0, 2) == 1\n"
     )
-    bundle = verify(repo, probe, UpgradeIssue(title="env probe", body="b", source="manual"), run_full_suite=False)
+    bundle = verify(repo, probe, UpgradeIssue(title="env probe", body="b", source="manual", scope_paths=("omnidesk_agent/demo/",)), run_full_suite=False)
     assert bundle.ok, bundle.reasons
 
 
@@ -181,7 +181,8 @@ def test_publish_step_refuses_evidence_for_another_patch(repo, tmp_path, monkeyp
     evidence = tmp_path / "evidence.json"
     evidence.write_text(json.dumps({"ok": True, "patch_sha256": "0" * 64, "base_sha": "f" * 40}))
     code = cli.main(["--repo-root", str(repo), "publish", "--issue", str(issue_file), "--diff", str(diff_file),
-                     "--evidence", str(evidence), "--repo", "o/r", "--dry-run"])
+                     "--evidence", str(evidence), "--repo", "o/r", "--dry-run",
+                     "--expect-proposal-digest", cli.proposal_digest(issue_file, diff_file, None)])
     assert code == 5
 
 
@@ -197,9 +198,9 @@ SMUGGLED = """diff --git a/omnidesk_agent/demo/calc.py b/omnidesk_agent/demo/cal
 
 
 def test_path_headers_must_agree_with_the_git_header(repo):
-    report = DiffPolicy().check(SMUGGLED)
+    report = DiffPolicy(allowed_prefixes=("omnidesk_agent/",)).check(SMUGGLED)
     assert not report.ok and any("does not match diff --git header" in v for v in report.violations)
-    bundle = verify(repo, SMUGGLED, UpgradeIssue(title="x", body="b", source="manual"), run_full_suite=False)
+    bundle = verify(repo, SMUGGLED, UpgradeIssue(title="x", body="b", source="manual", scope_paths=("omnidesk_agent/demo/",)), run_full_suite=False)
     assert bundle.steps == []  # refused before anything is applied or run
 
 
@@ -213,7 +214,7 @@ def test_publish_requires_a_passing_full_suite_in_the_evidence(repo, tmp_path):
     evidence = tmp_path / "evidence.json"
     evidence.write_text(json.dumps(partial.to_dict()))
     args = ["--repo-root", str(repo), "publish", "--issue", str(issue_file), "--diff", str(diff_file),
-            "--evidence", str(evidence), "--repo", "o/r", "--dry-run"]
+            "--evidence", str(evidence), "--repo", "o/r", "--dry-run", "--expect-proposal-digest", cli.proposal_digest(issue_file, diff_file, None)]
     assert cli.main(args) == 5
     full = verify(repo, FIX_DIFF, ISSUE)
     evidence.write_text(json.dumps(full.to_dict()))
@@ -258,3 +259,103 @@ def test_the_repair_workflow_gates_its_rechecks_on_the_exact_branch_format():
     rechecks = [step for step in steps if "RESTRICTED_PATTERNS" in step.get("run", "") or "self-upgrade-targeted-tests" in step.get("run", "")]
     assert len(rechecks) == 2
     assert all(step.get("if") == "steps.origin.outputs.pipeline == 'true'" for step in rechecks)
+
+
+# ------------------------------------------------ coordinator review of #240
+
+def _header(path):
+    return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b\n"
+
+
+def test_nested_manifests_and_security_code_are_restricted_at_any_depth():
+    # The patterns used to match manifests only at the repository root.
+    policy = DiffPolicy(allowed_prefixes=("",))
+    for path in ("apps/desktop-tauri/package.json", "apps/web-admin-next/package-lock.json", "apps/desktop-tauri/src-tauri/Cargo.toml",
+                 "apps/mobile-flutter/pubspec.yaml", "packages/approval-core/pyproject.toml", "apps/mobile-flutter/ios/Podfile",
+                 "omnidesk_agent/channels/channel_auth.py", "omnidesk_agent/validation/webhook_signatures.py",
+                 "omnidesk_agent/self_learning/approval.py", "omnidesk_agent/oauth/state_store.py", "omnidesk_agent/core/planner_policy.py"):
+        assert any("restricted path" in v for v in policy.check(_header(path)).violations), path
+
+
+def test_an_issue_must_name_a_scope_inside_the_backend_or_docs():
+    # Without a scope line the whole repository minus the restricted list was writable,
+    # including the desktop CSP in apps/ that no restricted pattern names.
+    from omnidesk_agent.self_upgrade.pipeline.diff_policy import scoped_policy
+
+    for scope in ((), ("omnidesk_agent/",), ("apps/desktop-tauri/src-tauri/",), ("docs",)):
+        with pytest.raises(ValueError):
+            scoped_policy(UpgradeIssue(title="x", body="b", source="manual", scope_paths=scope))
+    policy = scoped_policy(ISSUE)
+    assert policy.check(FIX_DIFF).ok
+    assert not policy.check(_header("omnidesk_agent/demonstration/x.py")).ok  # a prefix of the name is not the directory
+    assert not DiffPolicy().check(FIX_DIFF).ok  # an empty scope allows nothing
+    refused = verify(Path("."), FIX_DIFF, UpgradeIssue(title="x", body="b", source="manual"), run_full_suite=False)
+    assert not refused.ok and refused.steps == [] and "names no scope" in refused.reasons[0]
+
+
+def test_a_named_test_that_does_not_run_reproduces_nothing(repo):
+    # pytest exits 4 for a test that does not exist and 5 when nothing is collected;
+    # only exit 1 means the named tests ran and failed.
+    (repo / "tests" / "test_empty.py").write_text("# no tests here\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "empty test module")
+    for failing in ("tests/test_calc.py::test_does_not_exist", "tests/test_empty.py"):
+        issue = UpgradeIssue(title="x", body="b", source="manual", scope_paths=("omnidesk_agent/demo/",), failing_tests=(failing,))
+        bundle = verify(repo, FIX_DIFF, issue, run_full_suite=False)
+        assert not bundle.ok and bundle.steps[0]["exit_code"] in (4, 5), failing
+        assert any("did not run before the change" in reason for reason in bundle.reasons), failing
+
+
+def _passing_evidence(tmp_path, repo):
+    evidence = verify(repo, FIX_DIFF, ISSUE).to_dict()
+    assert evidence["ok"] and evidence["full_suite_passed"]
+    return evidence
+
+
+def test_publish_refuses_evidence_for_another_patch_when_everything_else_passes(repo, tmp_path):
+    # The old test's evidence also lacked a full-suite run, so it would pass with the hash check deleted.
+    issue_file, diff_file, evidence_file = tmp_path / "issue.json", tmp_path / "proposal.diff", tmp_path / "evidence.json"
+    issue_file.write_text(json.dumps(ISSUE.to_dict()))
+    diff_file.write_text(FIX_DIFF)
+    evidence = _passing_evidence(tmp_path, repo)
+    args = ["--repo-root", str(repo), "publish", "--issue", str(issue_file), "--diff", str(diff_file), "--evidence", str(evidence_file),
+            "--repo", "o/r", "--dry-run", "--expect-proposal-digest", cli.proposal_digest(issue_file, diff_file, None)]
+    evidence_file.write_text(json.dumps(evidence))
+    assert cli.main(args) == 0
+    evidence_file.write_text(json.dumps({**evidence, "patch_sha256": "0" * 64}))
+    assert cli.main(args) == 5
+
+
+def test_publish_refuses_files_that_differ_from_what_propose_produced(repo, tmp_path):
+    # verify runs model-written code and could swap the artifact handed to publish:
+    # a different diff with matching forged evidence, or an issue with a wider scope.
+    issue_file, diff_file, evidence_file = tmp_path / "issue.json", tmp_path / "proposal.diff", tmp_path / "evidence.json"
+    issue_file.write_text(json.dumps(ISSUE.to_dict()))
+    diff_file.write_text(FIX_DIFF)
+    expected = cli.proposal_digest(issue_file, diff_file, None)
+    evidence_file.write_text(json.dumps(_passing_evidence(tmp_path, repo)))
+    args = ["--repo-root", str(repo), "publish", "--issue", str(issue_file), "--diff", str(diff_file), "--evidence", str(evidence_file),
+            "--repo", "o/r", "--dry-run", "--expect-proposal-digest", expected]
+    assert cli.main(args) == 0
+    issue_file.write_text(json.dumps({**ISSUE.to_dict(), "scope_paths": ["omnidesk_agent/"]}))
+    assert cli.main(args) == 5
+    with pytest.raises(SystemExit):
+        cli.main(args[:-2])  # the digest is required
+
+
+def test_the_workflows_bind_publish_to_propose_and_recheck_with_the_base_policy():
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    pipeline = yaml.safe_load((root / "self-upgrade-pipeline.yml").read_text(encoding="utf-8"))
+    assert pipeline["jobs"]["propose"]["outputs"]["proposal_digest"] == "${{ steps.digest.outputs.value }}"
+    publish = [s for s in pipeline["jobs"]["publish"]["steps"] if "pipeline publish" in s.get("run", "")]
+    assert publish and all("--expect-proposal-digest" in s["run"] and s["env"]["PROPOSAL_DIGEST"] == "${{ needs.propose.outputs.proposal_digest }}"
+                           for s in publish)
+    repair = yaml.safe_load((root / "agent-repair-pr.yml").read_text(encoding="utf-8"))
+    triggers = repair.get("on", repair.get(True))
+    assert "paths" not in triggers["pull_request"]  # a tests-only self-upgrade PR is re-checked too
+    steps = repair["jobs"]["repair-policy"]["steps"]
+    loader = next(s for s in steps if s.get("id") == "policy")
+    assert 'git show "$BASE_SHA:omnidesk_agent/self_upgrade/pipeline/diff_policy.py"' in loader["run"]
+    for step in steps:
+        if "RESTRICTED_PATTERNS" in step.get("run", "") or "is_pipeline_branch" in step.get("run", ""):
+            assert "python -I -" in step["run"] and "from omnidesk_agent" not in step["run"]

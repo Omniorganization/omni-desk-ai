@@ -7,11 +7,12 @@ Code: `omnidesk_agent/self_upgrade/pipeline/`; workflow:
 
 ```text
 issue labelled self-upgrade (a maintainer applies the label)
-  -> propose   model writes a unified diff            [model key; patch never runs]
+  -> propose   model writes a unified diff;           [model key; patch never runs]
+               reports the digest of what it hands on
   -> verify    isolated worktree: reproduce, apply,    [no secrets; read-only token]
                targeted tests, gates, full suite
-  -> publish   re-check, apply (no run), create        [short-lived App token]
-               ai/* branch + signed commit + draft PR
+  -> publish   check the digest, re-check, apply      [short-lived App token]
+               (no run), ai/* branch + signed commit + draft PR
   -> review    CI (all required checks, plus the agent-repair-pr re-checks), code-owner approval, merge queue
 ```
 
@@ -21,20 +22,28 @@ issue labelled self-upgrade (a maintainer applies the label)
 issue's `scope:` paths (60 000 characters at most) and must answer with one
 diff between `BEGIN_DIFF` and `END_DIFF`. The answer is data. It is not run.
 
-**diff policy** (`diff_policy.py`), checked in all three jobs: plain text edits
-only (no deletions, renames, mode changes, binaries, path traversal; the
-`---`/`+++` names must be the file the `diff --git` header names), at most
-10 files and 400 changed lines, inside the issue's scope plus `tests/`, and
-never in `.github/`, `scripts/`, `deploy/`, `infra/`, `release/`, `packaging/`,
-`omnidesk_agent/security|sandbox|plugins|api|self_upgrade|self_healing/`,
-`server.py`, `server_routes/`, `config.py`, `AGENTS.md`, `CODEOWNERS`,
-dependency manifests and lock files, Dockerfiles. Those hold the policy,
-approval, CI, signing and dependency surfaces AGENTS.md forbids AI changes to;
-a change there needs a human. The pipeline cannot change itself.
+**diff policy** (`diff_policy.py`, `scoped_policy(issue)`), the same check in
+all three jobs: plain text edits only (no deletions, renames, mode changes,
+binaries, path traversal; the `---`/`+++` names must be the file the
+`diff --git` header names), at most 10 files and 400 changed lines, inside the
+issue's scope plus `tests/`. Every issue must name its scope, a subdirectory
+or file of `omnidesk_agent/` or `docs/`; an issue without one is refused, so
+`apps/` and `packages/` (desktop CSP, signing, app permissions, manifests) are
+never writable. Never in `.github/`, `scripts/`, `deploy/`, `infra/`,
+`release/`, `packaging/`,
+`omnidesk_agent/security|sandbox|plugins|oauth|validation|api|self_upgrade|self_healing|self_learning/`,
+`server.py`, `server_routes/`, `config.py`, any file whose path names
+approval, auth, signature, signing, permission, RBAC, policy, secret,
+credential or CSP, `AGENTS.md`, `CODEOWNERS`, and dependency manifests, lock
+files and Dockerfiles at any depth. Those hold the policy, approval, CI,
+signing and dependency surfaces AGENTS.md forbids AI changes to; a change
+there needs a human. The pipeline cannot change itself.
 
 **verify** (`workspace.py`, `verifier.py`): a fresh `git worktree` of the
 base commit; commands get only `PATH`, `HOME`, locale and `PYTHONPATH`. It
-passes only if the issue's named failing tests fail before the change, the
+passes only if the issue's named failing tests fail before the change (pytest
+exit 1; a named test that does not exist or collects nothing, exit 4 or 5,
+reproduces nothing), the
 diff applies and changes exactly its declared files (otherwise it stops before running anything), at least one test covers
 the change and the targeted tests pass with `-W error`, `git diff --check`,
 ruff, bandit (medium and up) and compileall pass on the changed files, and
@@ -42,8 +51,11 @@ the full suite passes. The result is `evidence.json`
 (`omnidesk-self-upgrade-evidence/v1`) with every command, exit code and
 duration, and the patch SHA-256.
 
-**publish** (`publisher.py`): refuses unless the evidence passed, includes a
-passing full-suite run, and its patch hash matches. It applies the patch in a fresh worktree without running
+**publish** (`publisher.py`): refuses unless the issue, diff and proposal it
+received have the digest `propose` reported as a job output (`verify` runs
+model-written code on the runner and could swap the artifact, but it cannot
+change another job's outputs), the evidence passed, includes a passing
+full-suite run, and its patch hash matches. It applies the patch in a fresh worktree without running
 anything, then: create `ai/self-upgrade-<issue>-<slug>-<yyyymmdd>-<run id>` (unique per attempt) at the base commit,
 add one commit through GraphQL `createCommitOnBranch` (signed by GitHub,
 attributed to the App), open a **draft** PR into `main` with the evidence
@@ -56,8 +68,12 @@ branch that is not a plain `ai/...` name (`ai/x:main`, `refs/heads/...`,
 branch has the pipeline's exact name format (`is_pipeline_branch`; a human
 branch named `ai/<topic>-<yyyymmdd>` is not one, and the pipeline refuses to
 publish a name the check would not recognise): the changed files against the
-same restricted paths, and the targeted tests listed in the PR body. All required checks, a
-code-owner approval and the merge queue still apply.
+restricted paths, and the targeted tests listed in the PR body. The branch
+check and the restricted list come from the base commit, never from the PR
+under review, and run in isolated Python (`-I`). The workflow has no path
+filter, and in the merge queue it reports skipped. `repair-policy` is not a
+required check yet: making it one is a ruleset change for the owner. All
+required checks, a code-owner approval and the merge queue still apply.
 
 ## Credential design (needs owner approval before any token is wired)
 
@@ -112,7 +128,11 @@ can never read a secret.
   a bad diff, which the diff policy, the tests and human review stop.
 - Model code runs only in `verify`, which has no secret and a read-only token
   on a public repository. It could tamper with its own `evidence.json`; that
-  only changes what the draft PR claims, and CI re-runs everything.
+  only changes what the draft PR claims, and CI re-runs everything. It could
+  also reach the runner's artifact and cache token: it cannot change what is
+  published (the digest check), but until its commands run in a network-less
+  container it could write cache entries in `main`'s scope. That isolation is
+  open and must land before the credential design is approved.
 - Self-healing repair requests (`<workspace>/repair_requests/*.json`) become
   issues through a maintainer, not automatically.
 

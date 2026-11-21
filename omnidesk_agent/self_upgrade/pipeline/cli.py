@@ -8,12 +8,19 @@ The three steps run as separate CI jobs: ``propose`` holds the model key but
 never runs the patch, ``verify`` runs the patch but holds no secrets, and
 ``publish`` holds the GitHub App token but only re-checks, applies (without
 running) and publishes a patch whose evidence passed. Nothing merges.
+
+``verify`` runs model-written code on a CI runner, so it could swap the files
+handed on between jobs. ``publish`` therefore refuses unless the issue, diff
+and proposal it got have the digest ``propose`` reported as a job output
+(``digest``), which ``verify`` cannot change.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import datetime as dt
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -22,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from omnidesk_agent.self_upgrade.pipeline.diff_policy import DiffPolicy
+from omnidesk_agent.self_upgrade.pipeline.diff_policy import scoped_policy
 from omnidesk_agent.self_upgrade.pipeline.issue import load_issue
 from omnidesk_agent.self_upgrade.pipeline.proposer import ProviderModelClient, propose
 from omnidesk_agent.self_upgrade.pipeline.publisher import GitHubPublisher, is_pipeline_branch
@@ -56,13 +63,22 @@ Base `{evidence.get('base_sha')}`, patch sha256 `{evidence.get('patch_sha256')}`
 {steps}
 
 ### Risk
-Model-written code. It passed the diff policy (no CI, scripts, deploy, release, security, sandbox, plugin, self-upgrade or dependency files; size limits), the targeted and full test suites and ruff/bandit/compileall. Review the diff as you would any external contribution.
+Model-written code. It passed the diff policy (only the issue's scope and tests; no CI, scripts, release, deploy, security, approval, auth, signature, sandbox, autonomy or dependency files; size limits), the targeted and full test suites and ruff/bandit/compileall. Review the diff as you would any external contribution.
 
 ### Rollback
 Close this PR, or revert its squash commit after merge. The pipeline never merges and never pushes to `main`.
 
 self-upgrade-targeted-tests: {json.dumps(evidence.get('targeted_tests', []))}
 """
+
+
+def proposal_digest(issue: Path, diff: Path, proposal: Optional[Path]) -> str:
+    """SHA-256 over what ``propose`` hands on: the issue, the diff and the proposal record."""
+    digest = hashlib.sha256()
+    for name, path in (("issue", issue), ("diff", diff), ("proposal", proposal)):
+        data = Path(path).read_bytes() if path is not None else b""
+        digest.update(name.encode() + b"\0" + hashlib.sha256(data).digest())
+    return digest.hexdigest()
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -81,17 +97,35 @@ def main(argv: Optional[list[str]] = None) -> int:
     v.add_argument("--out", required=True)
     v.add_argument("--base-ref", default="HEAD")
     v.add_argument("--no-full-suite", action="store_true")
+    dg = sub.add_parser("digest")
+    dg.add_argument("--issue", required=True)
+    dg.add_argument("--diff", required=True)
+    dg.add_argument("--proposal", default=None)
     pub = sub.add_parser("publish")
     pub.add_argument("--issue", required=True)
     pub.add_argument("--diff", required=True)
     pub.add_argument("--evidence", required=True)
     pub.add_argument("--proposal", default=None)
+    pub.add_argument("--expect-proposal-digest", required=True, help="the digest propose reported, from a source verify cannot change")
     pub.add_argument("--repo", required=True)
     pub.add_argument("--token-env", default="OMNIDESK_UPGRADE_GITHUB_TOKEN")
     pub.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     root = Path(args.repo_root).resolve()
+    if args.cmd == "digest":
+        print(proposal_digest(Path(args.issue), Path(args.diff), Path(args.proposal) if args.proposal else None))
+        return 0
+    if args.cmd == "publish":
+        got = proposal_digest(Path(args.issue), Path(args.diff), Path(args.proposal) if args.proposal else None)
+        if not hmac.compare_digest(got, str(args.expect_proposal_digest)):
+            print(json.dumps({"published": False, "reason": "issue, diff or proposal differ from what propose produced"}))
+            return 5
     issue = load_issue(Path(args.issue))
+    try:
+        policy = scoped_policy(issue)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "reason": str(exc)}))
+        return 3
 
     if args.cmd == "propose":
         client = ProviderModelClient(args.provider, args.model, api_key_env=args.api_key_env)
@@ -100,7 +134,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         out.mkdir(parents=True, exist_ok=True)
         (out / "proposal.diff").write_text(proposal.diff, encoding="utf-8")
         (out / "proposal.json").write_text(json.dumps(proposal.to_dict() | {"diff": None}, indent=2), encoding="utf-8")
-        report = DiffPolicy().check(proposal.diff)
+        report = policy.check(proposal.diff)
         print(json.dumps({"diff_policy_ok": report.ok, "violations": report.violations, "files": report.files}))
         return 0 if report.ok else 3
 
@@ -120,7 +154,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not any(step.get("name") == "full_suite" and step.get("exit_code") == 0 for step in evidence.get("steps", [])):
         print(json.dumps({"published": False, "reason": "evidence has no passing full-suite run (verify ran with --no-full-suite?)"}))
         return 5
-    report = DiffPolicy().check(diff)
+    report = policy.check(diff)
     if not report.ok:
         print(json.dumps({"published": False, "reason": "diff policy", "violations": report.violations}))
         return 5
