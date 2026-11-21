@@ -20,10 +20,11 @@ Erasure deletes:
 It keeps these rows, without the person (for approvals this is security's one
 rule for every store, SECURITY.md in #270):
 - Approvals they requested, or that gate their tasks: the requester becomes
-  ``[erased]`` and content is withheld. An agent step's proposal keeps only
-  ``*_sha256``/``*_length`` arguments, as the ledger's does; a desktop task's
-  action keeps only its capability. A pending one is withdrawn (rejected,
-  "requester erased").
+  ``[erased]`` and content is withheld. An agent step's proposal keeps only its
+  structural fields and ``*_sha256``/``*_length`` arguments, as the ledger's
+  does (any free text, such as a planner's reason, is dropped and named in
+  ``fields_withheld``); a desktop task's action keeps only its capability. A
+  pending one is withdrawn (rejected, "requester erased").
 - Devices stay revoked, so an erased device can never verify, register or get
   a push again. Name and push token are removed; the actor becomes
   ``[erased]``.
@@ -123,12 +124,25 @@ def erase_enrollment(enrollment: DeviceEnrollmentRecord) -> None:
 
 
 _REQUEST_KEYS = ("created_by", "proposer", "actor", "requested_by")
+# What an erased subject's request keeps: structure, never free text. A
+# planner's "reason" or "summary" can describe the person's task. Copied from
+# security.dual_approval.STRUCTURAL_REQUEST_KEYS (#270) until it is on main.
+STRUCTURAL_REQUEST_KEYS = frozenset({
+    *_REQUEST_KEYS,
+    "tool", "action", "risk", "source", "channel", "run_id", "plan_id", "step_id",
+    "approval_id", "scope_hash", "requires_dual_approval", "provenance", "args",
+})
 
 
 def anonymized_proposal(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
     """The ledger's rule for a request by an erased subject (security.dual_approval.anonymized_request,
-    #270): requester fields become [erased], argument content is withheld."""
-    out = dict(proposal)
+    #270): requester fields become [erased]; only structure stays.
+
+    Argument values are withheld (their digests and lengths stay), and every
+    field outside STRUCTURAL_REQUEST_KEYS is dropped; ``fields_withheld`` names them.
+    """
+    out = {key: value for key, value in proposal.items() if key in STRUCTURAL_REQUEST_KEYS}
+    dropped = sorted(key for key in proposal if key not in STRUCTURAL_REQUEST_KEYS and key not in {"args_withheld", "fields_withheld"})
     for key in _REQUEST_KEYS:
         if out.get(key) == actor:
             out[key] = ERASED_ACTOR
@@ -137,6 +151,8 @@ def anonymized_proposal(proposal: dict[str, Any], actor: str) -> dict[str, Any]:
         kept = {k: v for k, v in cast(dict[str, Any], args).items() if str(k).endswith(("_sha256", "_length"))}
         out["args"] = kept
         out["args_withheld"] = len(kept) != len(cast(dict[str, Any], args))
+    if dropped:
+        out["fields_withheld"] = dropped
     return out
 
 

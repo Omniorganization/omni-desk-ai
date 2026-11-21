@@ -154,7 +154,7 @@ hash or pairing code hash.
 |---|---|
 | User profile, conversations, messages, chat requests and their stream events | Deleted |
 | The person's tasks | Deleted. A desktop still holding one gets "task not found" when it reports, so nothing is written back |
-| Approvals they requested, or that gate their tasks | Kept without the person, by security's one rule for approvals in every store (`SECURITY.md`): requester `[erased]`, content withheld (an agent step's proposal keeps only `*_sha256`/`*_length` arguments, as the ledger's does; a desktop task's action keeps only its capability). A pending one is withdrawn: rejected, "requester erased". The ledger applies the same rule to its own rows |
+| Approvals they requested, or that gate their tasks | Kept without the person, by security's one rule for approvals in every store (`SECURITY.md`): requester `[erased]`, content withheld (an agent step's proposal keeps only its structural fields and `*_sha256`/`*_length` arguments, as the ledger's does, and any free text such as a planner's reason is dropped and named in `fields_withheld`; a desktop task's action keeps only its capability). A pending one is withdrawn: rejected, "requester erased". The ledger applies the same rule to its own rows |
 | Notifications and pushes about these records and those approvals; pushes and runtime status of their devices | Deleted |
 | Offline-sync outbox, inbox, cursors, conflicts, their operation-log entries; idempotency replays | Deleted |
 | Their devices | Kept, revoked for good: no verification, registration or push again. Name and push token removed, actor `[erased]` |

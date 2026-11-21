@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from omnidesk_agent.appsync.agent_approvals import AppSyncApprovalListener
 from omnidesk_agent.appsync.projects import GatewayProjectStore
 from omnidesk_agent.appsync.strict_json_store import StrictJsonAppSyncStore
-from omnidesk_agent.appsync.subject_data import ERASED_ACTOR
+from omnidesk_agent.appsync.subject_data import ERASED_ACTOR, anonymized_proposal
 
 SUBJECT = "sam-subject"
 OTHER = "oscar-operator"
@@ -277,12 +277,24 @@ def test_an_agent_step_the_subject_asked_for_is_withdrawn_and_keeps_no_content(s
     stored = approval["action_detail"]["proposal"]
     assert stored["created_by"] == stored["actor"] == ERASED_ACTOR
     assert stored["args"] == {"text_sha256": "ab" * 32} and stored["args_withheld"] is True
-    assert _mentions(store, SUBJECT) == [] and _mentions(store, "Dear Dr. Rivera") == []
-    # The shared rule withholds arguments, not the proposal's own free text: like
-    # the ledger, the stored proposal keeps its "reason" (an open question with
-    # security). AppSync's own reason column no longer repeats it.
-    assert stored["reason"] == proposal["reason"]
+    # Only structure stays, as in the ledger: the planner's reason is dropped and named.
+    assert "reason" not in stored and stored["fields_withheld"] == ["reason"]
     assert approval["reason"] == "An agent step waits for approval."
+    assert _mentions(store, SUBJECT) == [] and _mentions(store, "Dear Dr. Rivera") == [] and _mentions(store, "clinic") == []
     # Withdrawn means nobody can approve it any more.
     with pytest.raises(ValueError):
         store.decide_approval(approval_id="agt_ledger-1", actor=OWNER, decision="approved")
+
+
+def test_an_erased_request_keeps_structure_and_no_free_text() -> None:
+    # Security's case of the same name (#270): the mirror applies the ledger's rule.
+    kept = anonymized_proposal(
+        {"tool": "files", "action": "write_text", "risk": "high", "created_by": "sam", "scope_hash": "s" * 64,
+         "reason": "Sam asked for the clinic letter", "summary": "letter to Dr. X", "args": {"text": "...", "text_length": 3}},
+        "sam",
+    )
+
+    assert kept == {
+        "tool": "files", "action": "write_text", "risk": "high", "created_by": "[erased]", "scope_hash": "s" * 64,
+        "args": {"text_length": 3}, "args_withheld": True, "fields_withheld": ["reason", "summary"],
+    }
