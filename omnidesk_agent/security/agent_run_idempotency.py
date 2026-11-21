@@ -181,9 +181,8 @@ class JsonStateAgentRunIdempotencyStore:
 
     def _subject_rows(self, actor: str) -> list[dict[str, Any]]:
         """Every row of the actor; refuses rather than silently missing rows past a listing cap."""
-        values = getattr(self.state, "values", None)
-        if callable(values):
-            rows = list(values(self.namespace))
+        if hasattr(self.state, "values"):
+            rows = list(self.state.values(self.namespace))
         else:
             rows = self.state.list(self.namespace, limit=_LIST_CAP)
             if len(rows) >= _LIST_CAP:

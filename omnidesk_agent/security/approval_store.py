@@ -234,9 +234,9 @@ class ApprovalStore:
                         (new_status, json.dumps(new_proposal, ensure_ascii=False), json.dumps(new_result, ensure_ascii=False), now, approval_id),
                     )
                     changed += 1
-        erase_dual = getattr(getattr(self, "dual_approval_store", None), "erase_subject", None)
-        if callable(erase_dual):
-            changed += int(erase_dual(actor))
+        dual: Any = getattr(self, "dual_approval_store", None)
+        if dual is not None and hasattr(dual, "erase_subject"):
+            changed += int(dual.erase_subject(actor))
         return changed
 
     @staticmethod
