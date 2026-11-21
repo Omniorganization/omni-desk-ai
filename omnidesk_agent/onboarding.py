@@ -175,7 +175,7 @@ def build_offline_doctor_checks(cfg: AppConfig, *, root: Path, required: bool) -
 
 def build_model_doctor_checks(cfg: AppConfig, *, required: bool) -> list[DoctorCheck]:
     """Whether the planner (and vision, when enabled) can reach a model: key variables only, nothing is called."""
-    from omnidesk_agent.validation.models import credential_status, route_profiles
+    from omnidesk_agent.validation.models import env_var_status, route_profiles
 
     if cfg.llm.provider == "rule":
         return [DoctorCheck("model:planner", "pass", "llm.provider is rule: the keyword planner needs no model", category="models")]
@@ -183,7 +183,7 @@ def build_model_doctor_checks(cfg: AppConfig, *, required: bool) -> list[DoctorC
     checks: list[DoctorCheck] = []
     for task in tasks:
         route = [name for name in route_profiles(cfg.models.routing, task, cfg.models.default) if name in cfg.models.profiles and cfg.models.profiles[name].enabled]
-        statuses = {name: credential_status(cfg.models.profiles[name].api_key_env) if name in cfg.models.profiles else "missing" for name in route}
+        statuses = {name: env_var_status(cfg.models.profiles[name].api_key_env) if name in cfg.models.profiles else "missing" for name in route}
         keyed = [name for name, status in statuses.items() if status == "present"]
         keyless = [name for name, status in statuses.items() if status == "not_required"]
         missing = sorted({str(cfg.models.profiles[name].api_key_env) for name, status in statuses.items() if status == "missing" and name in cfg.models.profiles})

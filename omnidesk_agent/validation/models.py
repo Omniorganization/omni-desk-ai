@@ -9,15 +9,15 @@ from omnidesk_agent.models.providers import PROVIDER_CLASSES
 REQUIRED_TASKS = ["planner", "tool_plan", "chat", "code", "vision", "private", "summarize", "upgrade"]
 
 
-def credential_status(api_key_env: Optional[str]) -> str:
-    """'present' or 'missing' for a profile's key variable; 'not_required' when it names none.
+def env_var_status(variable: Optional[str]) -> str:
+    """'present' or 'missing' for the environment variable a profile names; 'not_required' when it names none.
 
-    Only the variable is checked, never its value or the provider; a profile without
-    a key (a local Ollama, a subscription CLI) is usable but unverified until a live check.
+    Only whether the variable is set is reported, never its value; a profile without
+    one (a local Ollama, a subscription CLI) is usable but unverified until a live check.
     """
-    if not api_key_env:
+    if not variable:
         return "not_required"
-    return "present" if os.getenv(api_key_env) else "missing"
+    return "present" if os.getenv(variable) else "missing"
 
 
 def route_profiles(routing: dict, task: str, default: str = "") -> list[str]:
@@ -31,7 +31,8 @@ def route_profiles(routing: dict, task: str, default: str = "") -> list[str]:
 def validate_models(runtime) -> dict:
     router = runtime.model_router
     profiles = router.providers
-    credentials = {name: credential_status(getattr(getattr(provider, "settings", None), "api_key_env", None)) for name, provider in profiles.items()}
+    # Presence of each profile's key variable, not the key: no value is read into the report.
+    env_presence = {name: env_var_status(getattr(getattr(provider, "settings", None), "api_key_env", None)) for name, provider in profiles.items()}
     coverage = {}
     tasks = {}
     for task in REQUIRED_TASKS:
@@ -40,26 +41,26 @@ def validate_models(runtime) -> dict:
             route = list(getattr(plan, "profiles", []))
         else:
             route = route_profiles(router.cfg.routing, task)
-        usable = [profile for profile in route if profile in profiles and credentials[profile] != "missing"]
+        usable = [profile for profile in route if profile in profiles and env_presence[profile] != "missing"]
         tasks[task] = {
             "profiles": route,
             "usable": usable,
-            "without_key_check": [profile for profile in usable if credentials[profile] == "not_required"],
-            "missing_credentials": [profile for profile in route if credentials.get(profile) == "missing"],
+            "without_key_check": [profile for profile in usable if env_presence[profile] == "not_required"],
+            "missing_credentials": [profile for profile in route if env_presence.get(profile) == "missing"],
         }
         # Every routed profile must be loaded, and one of them must have its key (or need none).
         coverage[task] = bool(route) and all(profile in profiles for profile in route) and bool(usable)
     missing_env = sorted({
         str(getattr(getattr(provider, "settings", None), "api_key_env", ""))
         for name, provider in profiles.items()
-        if credentials[name] == "missing"
+        if env_presence[name] == "missing"
     })
     provider_aliases = sorted(PROVIDER_CLASSES)
     return {
         "ok": all(coverage.values()) and bool(profiles),
         "task_coverage": coverage,
         "tasks": tasks,
-        "credentials": credentials,
+        "credentials": env_presence,
         "missing_credential_env": missing_env,
         "note": "static check of key variables only; validate-models-live calls each profile",
         "router": router.status(),
