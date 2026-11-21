@@ -158,13 +158,14 @@ def test_validate_models_reports_missing_keys_instead_of_ok(home, monkeypatch):
 
     without = validate_models(runtime())
     assert without["ok"] is False
-    assert without["missing_credential_env"] == ["OPENAI_API_KEY"]
+    missing = without["tasks"]["code"]["missing_credentials"]
+    assert missing and all(without["credentials"][name] == "missing" for name in missing)
     assert without["task_coverage"]["code"] is False  # code routes only to keyed OpenAI profiles
     assert without["tasks"]["planner"]["usable"] == ["local"] and without["tasks"]["planner"]["without_key_check"] == ["local"]
 
     monkeypatch.setenv("OPENAI_API_KEY", "set-for-test")
     with_key = validate_models(runtime())
-    assert with_key["ok"] is True and with_key["missing_credential_env"] == []
+    assert with_key["ok"] is True and with_key["tasks"]["code"]["missing_credentials"] == []
     assert with_key["credentials"]["planner"] == "present" and with_key["credentials"]["local"] == "not_required"
 
 

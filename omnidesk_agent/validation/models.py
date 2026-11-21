@@ -50,19 +50,13 @@ def validate_models(runtime) -> dict:
         }
         # Every routed profile must be loaded, and one of them must have its key (or need none).
         coverage[task] = bool(route) and all(profile in profiles for profile in route) and bool(usable)
-    missing_env = sorted({
-        str(getattr(getattr(provider, "settings", None), "api_key_env", ""))
-        for name, provider in profiles.items()
-        if env_presence[name] == "missing"
-    })
     provider_aliases = sorted(PROVIDER_CLASSES)
     return {
         "ok": all(coverage.values()) and bool(profiles),
         "task_coverage": coverage,
         "tasks": tasks,
         "credentials": env_presence,
-        "missing_credential_env": missing_env,
-        "note": "static check of key variables only; validate-models-live calls each profile",
+        "note": "static check of key variables only; `doctor` names the variables to set, validate-models-live calls each profile",
         "router": router.status(),
         "supported_provider_aliases": provider_aliases,
         "token_budget_layer": "ModelRouter",
