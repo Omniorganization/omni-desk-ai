@@ -14,7 +14,7 @@ from omnidesk_agent.config import LarkConfig, FeishuConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
 from omnidesk_agent.channels.idempotency import provider_retry_key
-from omnidesk_agent.channels.provider_errors import ensure_provider_success
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success, token_step_failed
 
 # Lark answers an invalid or expired tenant_access_token with these codes; the
 # message was not sent, so it may be repeated once with a fresh token.
@@ -231,14 +231,17 @@ class _BaseLarkFeishuChannel:
         if not refresh and self._tenant_token and self._tenant_token[1] > time.time() + 60:
             return self._tenant_token[0]
         if not self.app_id or not self.app_secret:
-            raise RuntimeError(f"{self.name} app id/secret missing")
-        result = await self.http.post(
-            f"{self.api_base}/auth/v3/tenant_access_token/internal",
-            json={"app_id": self.app_id, "app_secret": self.app_secret},
-            channel=self.name,
-            idempotent=True,
-        )
-        ensure_provider_success(self.name, result)
+            raise before_send(RuntimeError(f"{self.name} app id/secret missing"), "config_error")
+        try:
+            result = await self.http.post(
+                f"{self.api_base}/auth/v3/tenant_access_token/internal",
+                json={"app_id": self.app_id, "app_secret": self.app_secret},
+                channel=self.name,
+                idempotent=True,
+            )
+            ensure_provider_success(self.name, result)
+        except ChannelHttpError as exc:
+            raise token_step_failed(self.name, exc) from exc
         data = result.data if isinstance(result.data, dict) else {}
         token = data.get("tenant_access_token")
         if not isinstance(token, str) or not token:

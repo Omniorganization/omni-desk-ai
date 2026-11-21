@@ -238,3 +238,54 @@ def test_x_posts_and_dms_with_user_context(monkeypatch):
         asyncio.run(channel.send_text("200", "ambiguous recipient"))
     with pytest.raises(ValueError):
         asyncio.run(channel.send_text("dm:../../2/tweets", "path injection"))
+
+
+def test_captured_dingtalk_signature_cannot_carry_a_forged_body_to_another_replica(monkeypatch, tmp_path):
+    # The sign covers only the timestamp, so single use is what stops a
+    # captured header pair from authenticating any body. Process memory is not
+    # enough (3 replicas in the reference deployment): the gateway consumes the
+    # sign in the shared webhook store, so replica B and a restarted replica
+    # refuse what replica A already accepted.
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from omnidesk_agent.config import AppConfig
+    from omnidesk_agent.security.webhook_security import WebhookSecurity
+    from omnidesk_agent.server_routes.webhook_guard import WebhookGuard
+    from omnidesk_agent.server_routes.webhook_routes import register_webhook_routes
+
+    for name in ("DINGTALK_APP_KEY", "DINGTALK_WEBHOOK_SECRET", "DINGTALK_ROBOT_TOKEN", "DINGTALK_ROBOT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DINGTALK_APP_SECRET", "app-secret")
+    shared = WebhookSecurity(tmp_path / "webhooks.sqlite3")
+    cfg = AppConfig()
+    cfg.channels.dingtalk.enabled = True
+
+    class Queue:
+        def __init__(self):
+            self.messages = []
+
+        def enqueue(self, message, source_key):
+            self.messages.append(message)
+            return {"job_id": f"j{len(self.messages)}", "created": True}
+
+    def replica():
+        rt = SimpleNamespace(adapters={"dingtalk": DingTalkChannel(cfg.channels.dingtalk)}, job_queue=Queue(), metrics=None, webhook_security=shared)
+        app = FastAPI()
+        register_webhook_routes(app, cfg, rt, WebhookGuard(cfg, rt))
+        return TestClient(app), rt.job_queue
+
+    headers = _signed_headers("app-secret")
+    real = {"msgId": "m-real", "conversationId": "cidG", "senderStaffId": "staff-1", "text": {"content": "hello"}}
+    forged = {"msgId": "m-forged", "conversationId": "cidG", "senderStaffId": "ceo", "text": {"content": "wire the money"}}
+
+    a, queue_a = replica()
+    assert a.post("/webhooks/dingtalk", json=real, headers=headers).status_code == 200
+    b, queue_b = replica()
+    refused = b.post("/webhooks/dingtalk", json=forged, headers=headers)
+    assert refused.status_code == 403 and "replayed" in refused.json()["detail"]
+    restarted, queue_r = replica()
+    assert restarted.post("/webhooks/dingtalk", json=forged, headers=headers).status_code == 403
+    assert [m.text for m in queue_a.messages] == ["hello"] and queue_b.messages == [] and queue_r.messages == []

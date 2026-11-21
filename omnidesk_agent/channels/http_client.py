@@ -75,6 +75,24 @@ class ChannelHttpError(RuntimeError):
         self.response_json = response_json
         self.provider_code = provider_code
         self.headers = dict(headers or {})
+        # Unredacted parsed body, for provider_value() only; never log it.
+        self._raw_json: Any = None
+
+    def provider_value(self, *path: Any) -> Any:
+        """One scalar from the unredacted error body (``response_json`` is redacted).
+
+        Redaction rewrites long digit strings such as LINE message ids, so a
+        field the adapter must record is read here; containers are not returned.
+        """
+        value = self._raw_json
+        for key in path:
+            if isinstance(value, dict) and isinstance(key, str):
+                value = value.get(key)
+            elif isinstance(value, list) and isinstance(key, int) and -len(value) <= key < len(value):
+                value = value[key]
+            else:
+                return None
+        return value if isinstance(value, (str, int, float, bool)) else None
 
 
 def set_channel_offline_mode(enabled: bool) -> None:
@@ -238,6 +256,10 @@ class ChannelHttpClient:
         timeouts = _error_types(lib, ("TimeoutException",))
         async with lib.AsyncClient(timeout=self.timeout) as client:
             attempt = 0
+            # An earlier attempt that may have been delivered (a timeout or
+            # transport error after sending, or a 5xx) decides the outcome even
+            # if a later repeat fails before sending or is rate limited.
+            maybe_delivered: Optional[tuple[str, Optional[int], str]] = None
             while True:
                 try:
                     response = await client.request(method, url, **kwargs)
@@ -246,20 +268,22 @@ class ChannelHttpClient:
                         await asyncio.sleep(self._delay(attempt, None))
                         attempt += 1
                         continue
+                    if maybe_delivered is not None:
+                        raise self._ambiguous(maybe_delivered, channel) from exc
                     raise ChannelHttpError(
                         f"channel provider unreachable; request was not sent: {_redact_error_text(exc)}",
                         channel=channel, request_sent=False, category="not_sent",
                     ) from exc
                 except transport as exc:
+                    timed_out = bool(timeouts) and isinstance(exc, timeouts)
+                    detail = f"channel provider network error after the request was sent: {_redact_error_text(exc) or type(exc).__name__}"
+                    if maybe_delivered is None:
+                        maybe_delivered = ("timeout" if timed_out else "network_error", None, detail)
                     if repeatable and attempt < self.max_retries:
                         await asyncio.sleep(self._delay(attempt, None))
                         attempt += 1
                         continue
-                    timed_out = bool(timeouts) and isinstance(exc, timeouts)
-                    raise ChannelHttpError(
-                        f"channel provider network error after the request was sent: {_redact_error_text(exc) or type(exc).__name__}",
-                        channel=channel, request_sent=True, category="timeout" if timed_out else "network_error",
-                    ) from exc
+                    raise self._ambiguous(maybe_delivered, channel) from exc
                 request_id = self._request_id(response.headers)
                 if response.status_code < 400:
                     return ChannelHttpResult(
@@ -269,15 +293,23 @@ class ChannelHttpClient:
                         request_id=request_id,
                         headers=dict(response.headers),
                     )
+                raw_json = _parse_json(response.text[:65536])
                 response_text = _redact_error_text(response.text)[:2000]
-                response_json = _redacted_json(_parse_json(response.text[:65536]))
+                response_json = _redacted_json(raw_json)
                 hint = retry_after_seconds(response.headers, response_json)
+                earlier = maybe_delivered
+                if response.status_code >= 500 and maybe_delivered is None:
+                    maybe_delivered = ("provider_5xx", response.status_code, f"channel provider HTTP {response.status_code}")
                 may_repeat = response.status_code in NOT_PROCESSED_STATUS_CODES or (repeatable and response.status_code in RETRYABLE_STATUS_CODES)
                 if may_repeat and attempt < self.max_retries and (hint is None or hint <= self.max_backoff):
                     await asyncio.sleep(self._delay(attempt, hint))
                     attempt += 1
                     continue
-                raise ChannelHttpError(
+                if earlier is not None and response.status_code != 409:
+                    # A 409 is a dedupe answer (LINE: already accepted) that the
+                    # adapter reads; anything else cannot undo an earlier attempt.
+                    raise self._ambiguous(earlier, channel)
+                error = ChannelHttpError(
                     f"channel provider HTTP {response.status_code}",
                     status_code=response.status_code,
                     request_id=request_id,
@@ -288,6 +320,16 @@ class ChannelHttpClient:
                     response_json=response_json,
                     headers=dict(response.headers),
                 )
+                error._raw_json = raw_json
+                raise error
+
+    @staticmethod
+    def _ambiguous(outcome: tuple[str, Optional[int], str], channel: str) -> ChannelHttpError:
+        category, status, detail = outcome
+        return ChannelHttpError(
+            f"{detail} (a repeated attempt then failed; the first may have been delivered)",
+            status_code=status, channel=channel, request_sent=True, category=category,
+        )
 
     def _delay(self, attempt: int, hint: Optional[float]) -> float:
         if hint is not None:

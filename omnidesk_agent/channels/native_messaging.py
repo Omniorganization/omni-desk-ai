@@ -13,7 +13,7 @@ from omnidesk_agent.channels.base import WebhookEnvelope
 from omnidesk_agent.channels.channel_auth import CertFetcher, GoogleChatJwtVerifier, bearer_token, google_chat_requires_jwt, secret_equals
 from omnidesk_agent.channels.http_client import ChannelHttpClient
 from omnidesk_agent.channels.idempotency import provider_retry_key
-from omnidesk_agent.channels.provider_errors import ensure_provider_success
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success
 from omnidesk_agent.channels.verify import env_secret, header, verify_hmac_sha256
 from omnidesk_agent.config import (
     DiscordConfig,
@@ -298,14 +298,14 @@ class GoogleChatChannel:
             configured_space = google_chat_webhook_space(self.incoming_webhook_url)
             named = recipient if recipient.startswith("spaces/") else (google_chat_webhook_space(recipient) if recipient.startswith("https://") else "")
             if named != configured_space:
-                raise PermissionError(f"Google Chat recipient must be {configured_space}, the space of GOOGLE_CHAT_WEBHOOK_URL")
+                raise before_send(PermissionError(f"Google Chat recipient must be {configured_space}, the space of GOOGLE_CHAT_WEBHOOK_URL"), "bad_request")
             url = self.incoming_webhook_url
         else:
             url = recipient
             if not url.startswith("https://"):
-                raise RuntimeError("Google Chat incoming webhook URL is missing")
+                raise before_send(RuntimeError("Google Chat incoming webhook URL is missing"), "config_error")
             if google_chat_webhook_space(url) not in self.allowed_outbound_spaces:
-                raise PermissionError("Google Chat space is not in channels.google_chat.allowed_outbound_spaces")
+                raise before_send(PermissionError("Google Chat space is not in channels.google_chat.allowed_outbound_spaces"), "bad_request")
         result = await self.http.post(str(url), json={"text": text}, idempotency_key=kwargs.get("idempotency_key"), channel=self.name)
         data = result.data if isinstance(result.data, dict) else {}
         return {"message_id": data.get("name"), "request_id": result.request_id}

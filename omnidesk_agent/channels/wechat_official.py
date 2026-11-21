@@ -11,7 +11,7 @@ import defusedxml.ElementTree as ET
 from omnidesk_agent.config import WeChatOfficialConfig
 from omnidesk_agent.core.models import ChannelMessage
 from omnidesk_agent.channels.http_client import ChannelHttpClient, ChannelHttpError
-from omnidesk_agent.channels.provider_errors import ensure_provider_success
+from omnidesk_agent.channels.provider_errors import before_send, ensure_provider_success, token_step_failed
 
 
 WECHAT_SIGNATURE_MAX_AGE_SECONDS = 300
@@ -132,17 +132,20 @@ class WeChatOfficialChannel:
         if not refresh and self._access_token and self._access_token[1] > time.time() + 60:
             return self._access_token[0]
         if not self.app_id or not self.app_secret:
-            raise RuntimeError("WeChat app id/secret missing")
+            raise before_send(RuntimeError("WeChat app id/secret missing"), "config_error")
         # stable_token in normal mode (force_refresh false) returns the current
         # token while it is valid, so replicas fetching their own copy do not
         # invalidate each other, and the secret travels in the body, not the URL.
-        result = await self.http.post(
-            WECHAT_STABLE_TOKEN_URL,
-            json={"grant_type": "client_credential", "appid": self.app_id, "secret": self.app_secret, "force_refresh": False},
-            channel=self.name,
-            idempotent=True,
-        )
-        ensure_provider_success(self.name, result)
+        try:
+            result = await self.http.post(
+                WECHAT_STABLE_TOKEN_URL,
+                json={"grant_type": "client_credential", "appid": self.app_id, "secret": self.app_secret, "force_refresh": False},
+                channel=self.name,
+                idempotent=True,
+            )
+            ensure_provider_success(self.name, result)
+        except ChannelHttpError as exc:
+            raise token_step_failed(self.name, exc) from exc
         data = result.data if isinstance(result.data, dict) else {}
         token = data.get("access_token")
         if not isinstance(token, str) or not token:

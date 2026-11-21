@@ -72,11 +72,9 @@ class LineChannel:
             accepted_request_id = {k.lower(): v for k, v in exc.headers.items()}.get("x-line-accepted-request-id")
             if exc.status_code == 409 and idempotency_key and accepted_request_id:
                 # An earlier attempt with this retry key was already accepted;
-                # for push, LINE repeats that attempt's sentMessages.
-                body = exc.response_json if isinstance(exc.response_json, dict) else {}
-                sent = body.get("sentMessages") if isinstance(body.get("sentMessages"), list) else []
-                first = sent[0] if sent and isinstance(sent[0], dict) else {}
-                message_id = first.get("id")
+                # for push, LINE repeats that attempt's sentMessages. The id is
+                # read unredacted: redaction would turn it into a phone mask.
+                message_id = exc.provider_value("sentMessages", 0, "id")
                 return {"message_id": None if message_id is None else str(message_id), "request_id": accepted_request_id}
             raise
         data = result.data if isinstance(result.data, dict) else {}

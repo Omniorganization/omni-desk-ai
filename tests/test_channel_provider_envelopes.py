@@ -268,3 +268,62 @@ def test_discord_send_carries_an_enforced_nonce_stable_per_message(monkeypatch):
     assert len(module.calls) == 2 and len(nonces) == 1 and len(nonces.pop()) <= 25
     assert all(call["json"]["enforce_nonce"] is True for call in module.calls)
     assert result["message_id"] == "111"
+
+
+def test_failures_before_the_message_is_sent_get_a_plain_outcome(monkeypatch, tmp_path):
+    # Nothing to reconcile when the token call failed, and nothing to retry
+    # when the recipient or the configuration is wrong.
+    from omnidesk_agent.channels.x_channel import XChannel
+    from omnidesk_agent.config import XConfig
+
+    # The token call is idempotent, so the transport repeats it before giving up.
+    module = ScriptedHttpx([TimeoutException("timed out")] * 3)
+    monkeypatch.setattr(http_client, "httpx", module)
+    row = _dispatch(tmp_path / "wechat", "wechat_official", _wechat(monkeypatch), "openid-1")
+    assert (row["status"], row["error_category"]) == ("retry", "not_sent")  # not "ambiguous"
+
+    module = ScriptedHttpx([FakeResponse(200, {"errcode": -1, "errmsg": "system busy"})])
+    monkeypatch.setattr(http_client, "httpx", module)
+    row = _dispatch(tmp_path / "wechat-busy", "wechat_official", _wechat(monkeypatch), "openid-1")
+    assert (row["status"], row["error_category"]) == ("retry", "not_sent")
+
+    monkeypatch.setenv("DINGTALK_ROBOT_TOKEN", "robot-token")
+    row = _dispatch(tmp_path / "dingtalk", "dingtalk", DingTalkChannel(DingTalkConfig(enabled=True)), "alice")
+    assert (row["status"], row["error_category"]) == ("dead_letter", "bad_request")
+
+    for name in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET", "X_BEARER_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    row = _dispatch(tmp_path / "x", "x", XChannel(XConfig(enabled=True)), "public")
+    assert (row["status"], row["error_category"]) == ("dead_letter", "config_error")
+    row = _dispatch(tmp_path / "x-bad", "x", XChannel(XConfig(enabled=True)), "200")
+    assert (row["status"], row["error_category"]) == ("dead_letter", "bad_request")
+
+
+def test_lark_refreshes_a_rejected_tenant_token_once_and_keeps_one_uuid(monkeypatch):
+    monkeypatch.setenv("LARK_APP_ID", "cli_a")
+    monkeypatch.setenv("LARK_APP_SECRET", "s")
+    module = ScriptedHttpx([
+        FakeResponse(200, {"code": 0, "tenant_access_token": "t-1", "expire": 7200}),
+        FakeResponse(200, {"code": 99991663, "msg": "Invalid access token for authorization."}),
+        FakeResponse(200, {"code": 0, "tenant_access_token": "t-2", "expire": 7200}),
+        FakeResponse(200, {"code": 0, "data": {"message_id": "om_ok"}}),
+    ])
+    monkeypatch.setattr(http_client, "httpx", module)
+
+    result = asyncio.run(LarkChannel(LarkConfig(enabled=True)).send_text("ou_user", "hi", idempotency_key="k1"))
+
+    sends = [call for call in module.calls if call["url"].endswith("/im/v1/messages")]
+    assert [call["headers"]["Authorization"] for call in sends] == ["Bearer t-1", "Bearer t-2"]
+    assert len({call["json"]["uuid"] for call in sends}) == 1  # the same dedupe key for both attempts
+    assert result["message_id"] == "om_ok"
+
+
+def test_lark_legacy_event_callback_is_parsed(monkeypatch):
+    monkeypatch.setenv("LARK_VERIFICATION_TOKEN", "v-token")
+    channel = LarkChannel(LarkConfig(enabled=True, allowed_open_ids=["ou_legacy"]))
+    legacy = {"uuid": "u-1", "token": "v-token", "ts": "1700000000.1", "type": "event_callback",
+              "event": {"type": "message", "msg_type": "text", "open_id": "ou_legacy", "open_chat_id": "oc_legacy", "open_message_id": "om_legacy", "text": "@_user_1 hello", "text_without_at_bot": "hello"}}
+    message = channel.parse_webhook(legacy)
+    assert (message.sender_id, message.thread_id, message.message_id, message.text) == ("ou_legacy", "oc_legacy", "om_legacy", "hello")
+    assert channel.parse_webhook({**legacy, "event": {**legacy["event"], "type": "add_bot"}}) is None
+    assert channel.parse_webhook({**legacy, "event": {**legacy["event"], "open_id": "ou_stranger"}}) is None
