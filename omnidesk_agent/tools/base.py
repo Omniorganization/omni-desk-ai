@@ -71,10 +71,10 @@ def _digest(data: bytes, ctx: Optional[Any]) -> str:
 
     A plain SHA-256 of low-entropy content (a typed password) lets anyone who can
     read approval records or the audit log, where the content itself is withheld,
-    test guesses offline. ``PermissionManager.digest(data)`` keys it with a key
+    test guesses offline. ``PermissionManager.keyed_digest(data)`` keys it with a key
     derived from the audit key, stable across restarts and replicas.
     """
-    keyed = getattr(getattr(ctx, "permissions", None), "digest", None) if ctx is not None else None
+    keyed = getattr(getattr(ctx, "permissions", None), "keyed_digest", None) if ctx is not None else None
     if callable(keyed):
         value = keyed(data)
         if isinstance(value, str) and value:

@@ -3,7 +3,7 @@
 Approval records and the audit log keep `x_sha256` and the scope hash, while
 redaction withholds `x` itself. With a plain SHA-256 of a typed password,
 anyone who can read those records can test guesses offline. When the
-permission manager has a digest key (PermissionManager.digest: HMAC-SHA256
+permission manager has a digest key (PermissionManager.keyed_digest: HMAC-SHA256
 under a key derived from the audit key), they cannot. Without one, digests
 stay plain SHA-256, as before.
 """
@@ -48,7 +48,7 @@ class Allow:
 
 
 class KeyedAllow(Allow):
-    def digest(self, data: bytes) -> str:
+    def keyed_digest(self, data: bytes) -> str:
         return keyed(data)
 
 
@@ -93,7 +93,7 @@ def test_a_keyed_queued_send_is_delivered_and_a_rewritten_one_is_not(tmp_path):
         queued = await tool.call("send_text", {"channel": "telegram", "recipient": "u1", "text": PASSWORD}, ToolContext(permissions=KeyedAllow()))
         row_id = queued.data["outbound_id"]
         assert json.loads(store.get(row_id)["payload_json"])["text_sha256"] == keyed(PASSWORD.encode("utf-8"))
-        dispatcher = OutboundDispatcher(store, {"telegram": adapter}, digest=keyed)
+        dispatcher = OutboundDispatcher(store, {"telegram": adapter}, keyed_digest=keyed)
         assert await dispatcher.run_once() is True
         assert store.get(row_id)["status"] == "sent" and adapter.sent == [("u1", PASSWORD)]
 

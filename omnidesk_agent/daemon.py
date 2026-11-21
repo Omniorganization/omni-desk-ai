@@ -145,7 +145,7 @@ class OmniDeskRuntime:
         )
         self.orchestrator.storage_plan = self.storage_plan
         self.webhook_worker: Optional[WebhookWorker] = WebhookWorker(self.job_queue, self.orchestrator)
-        self.outbound_dispatcher: Optional[OutboundDispatcher] = OutboundDispatcher(self.outbound_messages, self.adapters, digest=getattr(self.permissions, "digest", None))
+        self.outbound_dispatcher: Optional[OutboundDispatcher] = OutboundDispatcher(self.outbound_messages, self.adapters, keyed_digest=getattr(self.permissions, "keyed_digest", None))
         self.learning_job = DailySelfLearningJob(self.memory, cfg.workspace.root, sandbox_cfg=cfg.sandbox)
         self.governance = GovernedSelfImprovement(cfg.workspace.root, Path.cwd(), sandbox_cfg=cfg.sandbox)
         self.proposal_store = self.governance.proposal_store
