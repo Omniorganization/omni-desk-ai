@@ -38,10 +38,10 @@ The approved recipient is where the message goes: an adapter refuses a recipient
 A send that the provider may have performed must not be sent again blindly, because most providers cannot deduplicate it. The shared transport (`channels/http_client.py`) therefore repeats a request only when that cannot duplicate a message:
 
 - the request never reached the provider (connection refused, DNS, connect or pool timeout, proxy failure);
-- the provider answered 408, 425 or 429, meaning it did not act; a provider back-off hint (`Retry-After`, Telegram `parameters.retry_after`, Discord `retry_after`, Matrix `retry_after_ms`) longer than 3 seconds is handed to the outbox instead of being slept through;
+- the provider answered 408, 425 or 429, meaning it did not act; a provider back-off hint (`Retry-After`, Telegram `parameters.retry_after`, Discord `retry_after`, Matrix `retry_after_ms`) longer than 3 seconds ends the request instead of being slept through, and is recorded on the error as `retry_after_seconds`. The outbox does not read it yet: its own back-off schedule (30 s, doubling) still applies;
 - the request is idempotent: `GET`/`PUT`, or a send carrying a dedupe key the provider honours.
 
-After a read timeout, a dropped connection or a 5xx, the error goes straight to the outbound dispatcher, which records a provider without native dedupe as `ambiguous` for reconciliation (`scripts/reconcile_outbound.py` lists them; requeue only after checking the provider) rather than resending it.
+After a read timeout, a dropped connection or a 5xx, the error goes straight to the outbound dispatcher (for a transport-repeatable send, the first attempt that may have been delivered decides the outcome even if a later repeat fails before sending or is rate limited), which records a provider without native dedupe as `ambiguous` for reconciliation (`scripts/reconcile_outbound.py` lists them; requeue only after checking the provider) rather than resending it.
 
 | Provider dedupe | Channels | Effect |
 |---|---|---|
@@ -59,9 +59,9 @@ Errors are classified from what the provider says, not only the HTTP status: WeC
 
 ### DingTalk
 
-Inbound robot callbacks are verified with DingTalk's `timestamp` and `sign` headers: `sign = base64(HMAC-SHA256(app secret, timestamp + "\n" + app secret))`, with the timestamp within 5 minutes. The signature does not cover the body, so each one is accepted once per process; `DINGTALK_APP_SECRET` must be set. A deployment that fronts DingTalk with a body-signing relay can still use the bridge HMAC (`DINGTALK_WEBHOOK_SECRET`) when the DingTalk headers are absent.
+Inbound robot callbacks are verified with DingTalk's `timestamp` and `sign` headers: `sign = base64(HMAC-SHA256(app secret, timestamp + "\n" + app secret))`, with the timestamp within 5 minutes. The signature does not cover the body, so each one is accepted once: the gateway consumes it in the shared webhook store (SQLite or PostgreSQL, the same store as WeChat's nonces), so another replica or a restarted one refuses a captured header pair; `DINGTALK_APP_SECRET` must be set. A deployment that fronts DingTalk with a body-signing relay can still use the bridge HMAC (`DINGTALK_WEBHOOK_SECRET`) when the DingTalk headers are absent; when they are present the DingTalk signature is what is checked, because production requires every `*_env` (the bridge secret included) and real DingTalk traffic never carries the bridge header.
 
-Outbound uses the robot OpenAPI with an access token from `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET` (robot code defaults to the app key): `group:<openConversationId>` (or a bare `cid…` id) for a group and `user:<userId>` for a 1:1 chat. Inbound 1:1 messages are threaded as `user:<senderStaffId>` so a reply reaches the sender. `robot` posts through the custom group robot webhook (`DINGTALK_ROBOT_TOKEN`, optional `DINGTALK_ROBOT_SECRET`), which can only reach its own group; any other recipient is refused.
+Outbound uses the robot OpenAPI at `api.dingtalk.com` with an access token from `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET` (robot code defaults to the app key): `group:<openConversationId>` (or a bare `cid…` id) for a group and `user:<userId>` for a 1:1 chat. Inbound 1:1 messages are threaded as `user:<senderStaffId>` so a reply reaches the sender. `robot` posts through the custom group robot webhook (`DINGTALK_ROBOT_TOKEN`, optional `DINGTALK_ROBOT_SECRET`), which can only reach its own group; any other recipient is refused. The gateway needs egress to `api.dingtalk.com:443` (and `oapi.dingtalk.com:443` for the group robot); the reference Kubernetes NetworkPolicies allow no external egress, so add both before enabling the channel.
 
 ### Lark / Feishu
 
@@ -69,7 +69,7 @@ Schema 2.0 events carry the verification token in `header.token`; legacy 1.0 eve
 
 ### X
 
-`X_WEBHOOK_CRC_TOKEN` holds the secret X signs with: the OAuth 2.0 client secret for `X-Twitter-Webhooks-Signature-OAuth2`, or the OAuth 1.0a consumer secret for the legacy `X-Twitter-Webhooks-Signature`. Event bodies must be JSON objects. Posts (`POST /2/tweets`, recipient `public`) and DMs (`POST /2/dm_conversations/with/{id}/messages`, recipient `dm:<user id>`) are signed with OAuth 1.0a user context from `X_API_KEY`/`X_API_SECRET`/`X_ACCESS_TOKEN`/`X_ACCESS_SECRET`. `X_BEARER_TOKEN` is used only when those are missing and only works if it holds an OAuth 2.0 user-context token; an app-only bearer token cannot post, and nothing refreshes a user token. Inbound DMs are threaded as `dm:<sender id>`, and echoes of the account's own DMs are ignored.
+`X_WEBHOOK_CRC_TOKEN` holds the secret X signs with: the OAuth 2.0 client secret for `X-Twitter-Webhooks-Signature-OAuth2`, or the OAuth 1.0a consumer secret for the legacy `X-Twitter-Webhooks-Signature`. Event bodies must be JSON objects. Posts (`POST /2/tweets`, recipient `public`) and DMs (`POST /2/dm_conversations/with/{id}/messages`, recipient `dm:<user id>`; new in this release and approval-gated like every send) go to `api.x.com:443` and are signed with OAuth 1.0a user context from `X_API_KEY`/`X_API_SECRET`/`X_ACCESS_TOKEN`/`X_ACCESS_SECRET`. `X_BEARER_TOKEN` is used only when those are missing and only works if it holds an OAuth 2.0 user-context token; an app-only bearer token cannot post, and nothing refreshes a user token. Inbound DMs are threaded as `dm:<sender id>`, and echoes of the account's own DMs are ignored.
 
 ### Telegram polling
 
@@ -138,7 +138,7 @@ When `GOOGLE_CHAT_WEBHOOK_URL` is set every send goes to that webhook, so the re
 2. Google Chat outbound without `GOOGLE_CHAT_WEBHOOK_URL`: list the target spaces in `allowed_outbound_spaces`. With it, use `spaces/<id>` of that webhook as the recipient.
 3. Matrix: move the hook token from the URL to `Authorization: Bearer`.
 4. X: make sure `X_WEBHOOK_CRC_TOKEN` (the secret X signs with) and `X_WEBHOOK_SECRET` (bridge HMAC, optional) differ. Set the four OAuth 1.0a user credentials to post; use recipient `public` for posts and `dm:<user id>` for DMs.
-5. DingTalk: set `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET` for callbacks and replies; recipients become `group:…`, `cid…`, `user:…` or `robot`.
+5. DingTalk: set `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET` for callbacks and replies and allow egress to `api.dingtalk.com:443`; recipients become `group:…`, `cid…`, `user:…` or `robot`. Multi-replica deployments need the shared webhook store (`backend: postgres`) so a DingTalk signature is single-use across replicas.
 6. Lark / Feishu: if the app has an Encrypt Key, set `LARK_ENCRYPT_KEY`/`FEISHU_ENCRYPT_KEY`; plaintext events are then refused.
 7. Teams: set `MICROSOFT_TEAMS_APP_ID`, `MICROSOFT_TEAMS_APP_PASSWORD` and `MICROSOFT_TEAMS_TENANT_ID`, and allow egress to `login.botframework.com` and `login.microsoftonline.com`. After that the static `MICROSOFT_TEAMS_INBOUND_TOKEN` is no longer accepted.
 8. QQ: set `QQ_BOT_SECRET`; a custom `api_base` pointing at `api.sgroup.qq.com` should move to `https://api.bot.qq.com`.

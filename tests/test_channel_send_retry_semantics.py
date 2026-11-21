@@ -176,7 +176,7 @@ def test_rate_limit_is_repeated_because_the_provider_did_not_act(monkeypatch, tm
     assert row["status"] == "sent"
 
 
-def test_long_provider_backoff_is_handed_to_the_outbox_not_slept_through(monkeypatch, tmp_path):
+def test_long_provider_backoff_is_not_slept_through_and_is_recorded_on_the_error(monkeypatch, tmp_path):
     module = ScriptedHttpx([FakeResponse(429, {"ok": False, "error_code": 429, "description": "Too Many Requests: retry after 40", "parameters": {"retry_after": 40}})])
     monkeypatch.setattr(http_client, "httpx", module)
 
@@ -253,3 +253,38 @@ def test_line_push_records_the_sent_message_id(monkeypatch, tmp_path):
 
     assert row["status"] == "sent"
     assert row["provider_message_id"] == "461230966842064897"
+
+
+def test_a_repeat_that_fails_differently_keeps_the_first_attempts_ambiguity(monkeypatch, tmp_path):
+    # Discord's nonce lets the transport repeat, but the outbox may not. If the
+    # first attempt timed out or got a 5xx (it may have posted) and the repeats
+    # then fail before sending or are rate limited, the send is still ambiguous,
+    # not a plain retry the outbox would resend after the nonce window.
+    from omnidesk_agent.channels.native_messaging import DiscordChannel
+    from omnidesk_agent.config import DiscordConfig
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "bot")
+    for script, category in (
+        ([ReadTimeout("timed out"), ConnectError("refused"), ConnectError("refused")], "timeout"),
+        ([FakeResponse(503), FakeResponse(429, {"retry_after": 0}), FakeResponse(429, {"retry_after": 0})], "provider_5xx"),
+    ):
+        module = ScriptedHttpx(script)
+        monkeypatch.setattr(http_client, "httpx", module)
+        row = _dispatch_once(tmp_path / category, "discord", DiscordChannel(DiscordConfig(enabled=True)), recipient="chan")
+        assert (row["status"], row["error_category"]) == ("ambiguous", category)
+        assert len(module.calls) == 3
+
+
+def test_line_accepted_409_records_the_string_message_id_unredacted(monkeypatch, tmp_path):
+    # LINE sends message ids as long digit strings, which redaction masks as a
+    # phone number; the recorded id must be the real one.
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "line-token")
+    module = ScriptedHttpx([
+        ReadTimeout("timed out"),
+        FakeResponse(409, {"message": "The retry key is already accepted", "sentMessages": [{"id": "461230966842064897", "quoteToken": "q"}]}, {"x-line-accepted-request-id": "accepted-req-1"}),
+    ])
+    monkeypatch.setattr(http_client, "httpx", module)
+
+    row = _dispatch_once(tmp_path, "line", LineChannel(LineConfig(enabled=True)), recipient="U123")
+
+    assert row["status"] == "sent" and row["provider_message_id"] == "461230966842064897"

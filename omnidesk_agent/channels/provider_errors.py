@@ -324,3 +324,30 @@ def classify_channel_error(exc: BaseException) -> ChannelErrorInfo:
     if "template" in text or "session window" in text or "policy" in text:
         return _info("policy_error", status)
     return _info("unknown", status)
+
+
+def before_send(exc: BaseException, category: str) -> BaseException:
+    """Tag an error raised before the message request was sent with its outbox category.
+
+    Recipient refusals (``bad_request``) and missing credentials
+    (``config_error``) would otherwise classify as ``unknown`` and be retried.
+    """
+    setattr(exc, "category", category)
+    setattr(exc, "request_sent", False)
+    return exc
+
+
+def token_step_failed(channel: str, exc: ChannelHttpError) -> ChannelHttpError:
+    """An access-token call failed, so the message itself was never sent.
+
+    A timeout or 5xx on the token call must not mark the message ambiguous
+    (nothing to reconcile); it is a plain retry. Rate limits, auth and config
+    answers keep their category.
+    """
+    category = classify_channel_error(exc).category
+    if category in {"timeout", "network_error", "provider_5xx", "unknown"}:
+        category = "not_sent"
+    return ChannelHttpError(
+        f"{channel} access token request failed, so the message was not sent: {exc}",
+        status_code=exc.status_code, channel=channel, request_sent=False, category=category,
+    )
