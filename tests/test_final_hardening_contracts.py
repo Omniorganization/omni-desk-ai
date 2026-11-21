@@ -246,7 +246,13 @@ def test_governance_evaluation_writes_state_machine_checks_contract(tmp_path: Pa
         gov.regression_runner.run = ok_run
         gov.security_runner.run = ok_run
         gov.risk_classifier.classify = lambda *a, **k: {"can_auto_canary": True, "requires_human_approval": False}
-        result = await gov.evaluate_proposal(proposal.proposal_id, allow_canary=True)
+        # CANARY is reachable only through a recorded shadow comparison.
+        result = await gov.evaluate_proposal(
+            proposal.proposal_id,
+            allow_canary=True,
+            stable_plan={"steps": [{"risk": "medium"}, {"risk": "medium"}]},
+            shadow_plan={"steps": [{"risk": "low"}]},
+        )
         stored = gov.proposal_store.get(proposal.proposal_id)
         assert result["evaluation"]["checks"]["regression"]["ok"] is True
         assert stored.metadata["checks"]["security"]["ok"] is True

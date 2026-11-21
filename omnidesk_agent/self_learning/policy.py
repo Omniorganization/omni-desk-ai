@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from omnidesk_agent.self_learning.forbidden_intent import forbidden_intents
 from omnidesk_agent.self_learning.schemas import LearningProposal
 
 
@@ -10,7 +11,9 @@ STAGE_OBSERVE = "stage_1_observe"
 STAGE_KNOWLEDGE_PROMPT = "stage_2_knowledge_prompt"
 STAGE_CODE_PR = "stage_3_code_pr"
 
-KNOWLEDGE_PROMPT_TYPES = {"knowledge_update", "prompt_template", "workflow_rule"}
+# A learned skill is planner guidance like a prompt or workflow rule: it needs
+# the same stage-2 human approval before it is applied.
+KNOWLEDGE_PROMPT_TYPES = {"knowledge_update", "prompt_template", "workflow_rule", "skill_update"}
 CODE_PR_TYPES = {"code_fix", "test_improvement"}
 
 FORBIDDEN_METADATA_FLAGS = {
@@ -160,6 +163,10 @@ class SelfLearningBoundaryPolicy:
         text = "\n".join(str(part or "") for part in text_parts).lower()
         for blocker, patterns in FORBIDDEN_CONTENT_PATTERNS.items():
             if any(pattern in text for pattern in patterns) and blocker not in blockers:
+                blockers.append(blocker)
+        # Rephrasings ("skip the approval step", "remove the audit logs").
+        for blocker in forbidden_intents(text):
+            if blocker not in blockers:
                 blockers.append(blocker)
 
     @staticmethod

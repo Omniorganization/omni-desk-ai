@@ -45,6 +45,28 @@ class UpgradeMemory:
         self.conn.execute("""INSERT OR REPLACE INTO upgrade_memory (upgrade_id, created_at, change_type, target, before_success_rate, after_success_rate, rollback, side_effects, verdict, human_feedback, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (record["upgrade_id"], record.get("created_at", time.time()), record.get("change_type", "workflow"), record.get("target", "unknown"), record.get("before_success_rate"), record.get("after_success_rate"), 1 if record.get("rollback") else 0, json.dumps(record.get("side_effects", []), ensure_ascii=False), record.get("verdict", "unknown"), record.get("human_feedback"), json.dumps(record.get("metadata", {}), ensure_ascii=False)))
         self.conn.commit()
 
+    def record_feedback(self, upgrade_id: str, *, decision: str, feedback: str, reviewer: str, change_type: str = "workflow", target: str = "unknown") -> None:
+        """Attach a human decision without replacing the evaluation evidence."""
+        row = self.conn.execute("SELECT metadata FROM upgrade_memory WHERE upgrade_id=?", (upgrade_id,)).fetchone()
+        review = {"decision": decision, "reviewer": reviewer, "reason": feedback, "at": time.time()}
+        if row is None:
+            self.record({
+                "upgrade_id": upgrade_id,
+                "change_type": change_type,
+                "target": target,
+                "verdict": f"human_{decision}",
+                "human_feedback": feedback,
+                "metadata": {"human_review": review},
+            })
+            return
+        metadata = json.loads(row["metadata"] or "{}")
+        metadata.setdefault("human_reviews", []).append(review)
+        self.conn.execute(
+            "UPDATE upgrade_memory SET human_feedback=?, metadata=? WHERE upgrade_id=?",
+            (feedback, json.dumps(metadata, ensure_ascii=False), upgrade_id),
+        )
+        self.conn.commit()
+
     def effectiveness(self, change_type: Optional[str] = None) -> dict:
         if change_type:
             rows = self.conn.execute("SELECT * FROM upgrade_memory WHERE change_type=?", (change_type,)).fetchall()
